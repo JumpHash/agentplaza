@@ -1,2 +1,2 @@
--- Deletes one recording's index row; its events go with it (ON DELETE CASCADE). $1 = id (text)
-DELETE FROM station_recordings WHERE id = $1
+-- Deletes one recording's index row. Its actions and frames are deleted by their own statements. ?1 = id.
+DELETE FROM "station_recording" WHERE "id" = ?1

@@ -1,0 +1,4 @@
+{
+  "goal": "Read src/lib.rs and answer the question in QUESTION.md: write only the answer, a number, into ANSWER.txt.",
+  "check": "[ \"$(tr -d ' \\n' < ANSWER.txt)\" = 3 ]"
+}

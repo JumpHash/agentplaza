@@ -270,7 +270,7 @@ pub fn dialog<'a, M: Clone + 'a>(
         Dialog::Promote(id) => {
             let body = column![
                 ui::faint(format!("Promote {id} to a model agent.")),
-                ui::faint("Promotion gives the model its own agent on the roster: a CID, no VM, no wallet, no tools and no chat. Other agents can invoke it with invoke_model where its card allows their role. Nobody can assign it tasks or message it."),
+                ui::faint("Promotion gives the model its own agent on the roster: a CID, no VM, no tools and no chat. Other agents can invoke it with invoke_model where its card allows their role. Nobody can assign it tasks or message it."),
                 footer(c, act, ui::btn("Promote", Some("check"), Kind::Primary, (!busy).then(|| act(Act::Confirm)))),
             ]
             .spacing(12);

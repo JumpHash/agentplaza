@@ -15,7 +15,7 @@ installed there (Blender, compilers, browsers, anything).
 | Desktop control (4, 5) | `crates/apz-desktop`: the `Desktop` trait, frames, keys and a fake for tests. Backends: `apz-desktop-x11` (a private Xvfb display per agent, the owner's display shared, XShm capture, XTest input), `apz-desktop-wayland` (ScreenCast and RemoteDesktop portals in one dialog; PipeWire capture behind the opt-in `pipewire` feature), `apz-desktop-macos` (CoreGraphics capture and events, Accessibility), `apz-desktop-windows` (DXGI Desktop Duplication with a GDI fallback, SendInput, UI Automation, app catalogue), `apz-desktop-atspi` (AT-SPI tree and actions, logind idle time). |
 | Shared operations (3) | `crates/apz-ops`: files, runs and terminals, shared by the agent harness and the daemon. Windows runs sit in a job object and Windows terminals run on ConPTY. |
 | Daemon (3, 4, 8, 10) | `crates/apz-workstation`: join and enrolment (`enrol.rs`, `join.rs`, `cli.rs`), the hub link (`link.rs`, `uplink.rs`), the backend choice per platform (`backend.rs`), session routing with the pixel lane (`route.rs`), the work folder and its sync (`work.rs`, `sync.rs`), the OS account (`account.rs`), the service install (`service.rs`), and vsock (`vsock.rs`: AF_VSOCK on Linux, the viosock provider on Windows). The binary is `src/main.rs`. |
-| Hub: stations (6, 7, 8, 10) | `crates/apid/src/stations/`: `registry` (stations and join codes), `link` (a station's socket), `leases` (the pixel queue and `pixel_capacity`), `act` (the choke point: checks, laws, audit, deliver), `tools` (the agents' tools and the hub MCP tools), `screen` (live view and thumbnails), `control` and `takeover` (the owner's takeover and its three policies), `recordings` (frames with their capture times), `sync` (the mirror, the pause and conflicts), `ops` (audit, STOP ALL), `hooks` (recordings and charges), `vms` (VMs on nodes), `api` (routes). Migrations `0010` to `0013` are in `crates/apid/sql/migrations/`. |
+| Hub: stations (6, 7, 8, 10) | `crates/apid/src/stations/`: `registry` (stations and join codes), `link` (a station's socket), `leases` (the pixel queue and `pixel_capacity`), `act` (the choke point: checks, laws, audit, deliver), `tools` (the agents' tools and the hub MCP tools), `screen` (live view and thumbnails), `control` and `takeover` (the owner's takeover and its three policies), `recordings` (frames with their capture times), `sync` (the mirror, the pause and conflicts), `ops` (audit, STOP ALL), `hooks` (recordings and charges), `vms` (VMs on nodes), `api` (routes). |
 | Nodes and VMs (10) | `crates/noded/src/workstation.rs` (records, `cid_for`, the backend choice), `ws_qemu.rs` (QEMU/KVM), `ws_relay.rs` (the vsock relay, four connections per VM), `crates/vmm/src/host_vsock.rs` (the QEMU host's AF_VSOCK listeners), `scripts/mk-workstation-guest.sh` (the guest recipe). |
 | Apps (9) | Web: `apps/web/src/views/workstations*.ts` (list, live view, recordings, work folder), `workstations-vms.ts` (the workstation VMs and the **New VM** form), `station-machine.ts` and `machine-list.ts` (Machines), `apps/web/src/ide/` (`station:` workspaces). Desktop: `apps/desktop/src/console/screens/workstations*.rs` (including `workstations_vms.rs`, the VMs and the New VM form), `machines.rs`, `floor.rs`, `ide*.rs`. The Floor's models and screen state: `crates/apz-engine/src/fleet.rs` and `hardware.rs`. CLI: `apps/cli/src/cmd/stations.rs` and `stations/` (list, show, codes, leases, drain, revoke, settings, audit, recordings, sync, files, screenshot, watch; `take` and `input` in `control.rs`; `vms` list, create and delete in `vms.rs`), `cmd/workstation.rs` (join, status, leave), and the TUI's Workstations tab on `w` (`apps/cli/src/tui/workstations.rs`), where `T` takes over the selected workstation. |
 | Setup (1) | **Add as a workstation** in `apps/desktop/src/console/boot.rs` and `workstation_setup.rs`; `agentplaza workstation join` uses `crates/apz-workstation/src/enrol.rs`. A station is never the hub's own machine: it is refused at join and at every hello. |
@@ -169,14 +169,14 @@ through the hub with an owner token.
 
 - `crates/apid/src/stations.rs`: enrollment (join codes, drain, revoke, as `nodes.rs`), the station registry with
   facts and health, leases, and the tool routes the agents' calls go through. The laws classify every station action
-  (`laws.rs`), and every action is audited in Postgres (an append-only `station_audit` table, like `ide_audit`).
+  (`laws.rs`), and every action is audited in SQLite (an append-only `station_audit` table, like `ide_audit`).
 - Live view: `WS /v1/stations/{id}/screen` streams frames to the owner (WebSockets only, project rule): compressed
   tiles for the first version, H.264 through WebCodecs later. `WS /v1/stations/{id}/control` carries the owner's
   takeover input.
-- Recordings: per lease, screenshots and actions with timestamps, stored as blobs in Garage with an index row in
-  Postgres, and each frame's capture time in `station_recording_frames`, which playback runs on. Settings on the hub: on or
-  off, retention days, frame rate (1 to 5 a second, the hub's sampler cap), and whether to record the owner's takeovers.
-  Edited from the web, the desktop app and the CLI/TUI (`agentplaza stations recordings ...`).
+- Recordings: per lease, screenshots and actions with timestamps, stored as blobs in the hub's object store (`apz-blobs`)
+  with an index row in SQLite, and each frame's capture time in `station_recording_frames`, which playback runs on.
+  Settings on the hub: on or off, retention days, frame rate (1 to 5 a second, the hub's sampler cap), and whether to
+  record the owner's takeovers. Edited from the web, the desktop app and the CLI/TUI (`agentplaza stations recordings ...`).
 - Workstation setup on the hub (per workstation, edited from the web, the desktop app and the CLI/TUI): the agent OS
   account (chosen at enrollment), recording on or off and retention, the work folder, snapshot-and-reset for VMs, and
   the **takeover policy**: when the owner takes over a pixel session, either the agent waits and resumes when the
@@ -192,8 +192,8 @@ through the hub with an owner token.
 
 Both paths the owner chose:
 
-- **Deliverables:** an agent marks a file as a deliverable and it is copied into the plaza Library (Garage), exactly
-  as files from agent VMs are today.
+- **Deliverables:** an agent marks a file as a deliverable and it is copied into the plaza Library, which keeps it in the
+  hub's object store (`apz-blobs`), exactly as files from agent VMs are today.
 - **Work folder sync, both ways:** each workstation has a work folder (default `~/AgentPlaza` under the agent's OS
   user, changeable in the workstation's setup) that syncs with the hub continuously in both directions,
   content-addressed, so outputs land in the plaza even if nobody marks them, and files the owner or other agents put

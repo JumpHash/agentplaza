@@ -11,7 +11,7 @@ out the same way, which each platform's packager maps into its own format.
 | Raspberry Pi 4/5 (Raspberry Pi OS 64-bit) | `agentplaza_<v>_arm64-raspberrypi.deb`, `agentplaza-<v>-raspberrypi-arm64.tar.gz` | `.github/workflows/raspberry-pi.yml` → `packaging/raspberry-pi/build.sh` |
 
 `.github/workflows/release.yml` runs on every push to `main` except one that touches only `docs/`,
-Markdown files or `VERSION`. It builds the guest (`guest.yml`) and the relay (`relay.yml`),
+Markdown files or `VERSION`. It builds the guest (`guest.yml`),
 picks the next version (semantic versioning, see below), runs the four platform workflows with
 packaging on, and publishes a GitHub Release `v<version>` (tag + changelog + all deliverables with
 `SHA256SUMS`). `main` is protected (pull requests only), so the release writes nothing back to it.
@@ -29,8 +29,6 @@ stage.sh <target-triple> <cargo-out-dir> <stage-dir> <version>
                     Linux, Apple Silicon: noded, vsockd, apz-vmm, vmctl
                     Windows x64: noded, vsockd, vmctl
                     (+ .exe on Windows; Windows arm64 and Intel Macs: none, hub/desktop/link only)
-                    every bundle: mcp_relay-x86_64, mcp_relay-aarch64 (the container relay, static musl;
-                    the macOS app keeps them in Contents/Resources/relay)
 <stage>/share/agentplaza/
     console/        the web console (apps/web/dist), served by apid
     roles/initial-roles.json
@@ -45,8 +43,7 @@ The stage refuses a console `dist` without the wasm engine and the IDE's wasm: r
 `apps/web/build.mjs` first.
 
 The guest comes from `scripts/mk-guest.sh` (built per architecture by `.github/workflows/guest.yml`,
-cached) and is read from `target/guest` (or `APZ_GUEST_DIR`). The relay binaries are read from
-`APZ_RELAY_DIR` (the relay job's artifact) or from the dev tree's musl builds.
+cached) and is read from `target/guest` (or `APZ_GUEST_DIR`).
 
 At run time `apz_os::dirs::resources()` finds `share/agentplaza` next to the binaries
 (`<bin>/../share/agentplaza`; inside a macOS bundle `Contents/Resources/share/agentplaza`), so

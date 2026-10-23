@@ -1,5 +1,5 @@
 //! Operator-spawned agents and every agent's model override, kept in plaza.db (the `spawned` tables, saved by the
-//! store's saver). A restart respawns each spawned agent under its old CID, so its wallet and workspace line up.
+//! store's saver). A restart respawns each spawned agent under its old CID, so its workspace lines up.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -35,21 +35,18 @@ pub struct Registry {
 }
 
 /// A spawned run still waiting for its first hello: its CID when noded has named it already (a fork), its
-/// role, model override and project.
+/// role and model override.
 #[derive(Debug, Clone)]
 struct Pending {
     cid: u64,
     role: String,
     model: Option<String>,
-    project: Option<String>,
 }
 
-/// What a hello brings: the agent's model override, and on a pending spawn's first hello, the project it
-/// was spawned for.
+/// What a hello brings: the agent's model override (its work comes from its session, not from its spawn).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Arrival {
     pub model: Option<String>,
-    pub project: Option<String>,
 }
 
 /// The registry, plus the spawns still waiting for their hello.
@@ -98,13 +95,8 @@ impl Store {
     }
 
     /// Noded booted a spawn (an operator's run, or a fork) as guest `cid`: that guest's first hello is this
-    /// spawn, matched by its CID and never by the role a guest claims. A `project` is the one its agent joins
-    /// at that hello.
-    pub fn expect_cid(&self, cid: u64, role: &str, model: Option<String>, project: Option<String>) {
-        self.push_pending(cid, role, model, project);
-    }
-
-    fn push_pending(&self, cid: u64, role: &str, model: Option<String>, project: Option<String>) {
+    /// spawn, matched by its CID and never by the role a guest claims.
+    pub fn expect_cid(&self, cid: u64, role: &str, model: Option<String>) {
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -112,15 +104,13 @@ impl Store {
                 cid,
                 role: role.to_owned(),
                 model,
-                project,
             });
     }
 
-    /// A session said hello. A first hello of a pending spawn is recorded; returns the model
-    /// override to apply to the agent, and the project it was spawned for (on that first hello only).
+    /// A session said hello. A first hello of a pending spawn is recorded; returns the model override to apply
+    /// to the agent.
     pub fn hello(&self, cid: u64, _claimed_role: &str) -> Arrival {
         let known = self.guard().spawned.iter().any(|entry| entry.cid == cid);
-        let mut project = None;
         if !known {
             let claimed = {
                 let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
@@ -131,11 +121,9 @@ impl Store {
             if let Some(Pending {
                 role: spawned_role,
                 model,
-                project: wanted,
                 ..
             }) = claimed
             {
-                project = wanted;
                 // The plaza's role for the spawn, never the role the guest claims in its hello.
                 let entry = Entry {
                     cid,
@@ -152,7 +140,6 @@ impl Store {
         }
         Arrival {
             model: self.model_for(cid),
-            project,
         }
     }
 
@@ -253,7 +240,7 @@ mod snapshot_tests {
     #[test]
     fn the_registry_comes_back_whole_from_its_tables() {
         let store = Store::default();
-        store.expect_cid(42, "worker", Some("model-a".into()), None);
+        store.expect_cid(42, "worker", Some("model-a".into()));
         store.hello(42, "worker");
         store.set_model(7, Some("model-b")).unwrap();
         let conn = Connection::open_in_memory().unwrap();
@@ -282,34 +269,38 @@ mod tests {
         assert!(!store.note_fleet_role(200, "architect"));
         assert_eq!(store.role_of(200).as_deref(), Some("architect"));
         // An operator spawn's recorded role wins over the fleet's.
-        store.expect_cid(201, "builder", None, None);
+        store.expect_cid(201, "builder", None);
         store.hello(201, "builder");
         store.note_fleet_role(201, "qa");
         assert_eq!(store.role_of(201).as_deref(), Some("builder"));
     }
 
     #[test]
-    fn a_spawn_for_a_project_brings_it_on_the_first_hello_only() {
+    fn a_spawn_brings_its_model_override_on_the_first_hello_only() {
         let store = Store::default();
-        store.expect_cid(301, "builder", None, Some("pr2".into()));
-        store.expect_cid(300, "qa", None, None);
+        store.expect_cid(301, "builder", Some("openai/gpt-6".into()));
+        store.expect_cid(300, "qa", None);
         assert_eq!(
             store.hello(300, "qa"),
             Arrival::default(),
-            "a spawn without a project waits on the bench"
+            "a spawn without a model override brings none"
         );
-        assert_eq!(store.hello(301, "builder").project.as_deref(), Some("pr2"));
         assert_eq!(
-            store.hello(301, "builder").project,
-            None,
-            "a reconnect joins nothing again"
+            store.hello(301, "builder").model.as_deref(),
+            Some("openai/gpt-6")
         );
+        assert_eq!(
+            store.hello(301, "builder").model.as_deref(),
+            Some("openai/gpt-6"),
+            "a reconnect keeps the model it was given"
+        );
+        assert_eq!(store.role_of(301).as_deref(), Some("builder"));
     }
 
     #[test]
     fn a_fork_is_matched_by_its_cid_and_a_role_never_takes_it() {
         let store = Store::default();
-        store.expect_cid(501, "builder", Some("model-b".into()), None);
+        store.expect_cid(501, "builder", Some("model-b".into()));
         assert_eq!(
             store.hello(502, "builder"),
             Arrival::default(),
@@ -321,7 +312,7 @@ mod tests {
             "the fork's own hello takes its spawn"
         );
         // A hello that names another CID, or claims any role, takes no pending spawn.
-        store.expect_cid(503, "orchestrator", Some("model-c".into()), None);
+        store.expect_cid(503, "orchestrator", Some("model-c".into()));
         assert_eq!(
             store.hello(504, "orchestrator"),
             Arrival::default(),
@@ -340,7 +331,7 @@ mod tests {
     #[test]
     fn registry_survives_a_round_trip() {
         let store = Store::default();
-        store.expect_cid(42, "worker", Some("model-a".into()), None);
+        store.expect_cid(42, "worker", Some("model-a".into()));
         assert_eq!(store.hello(42, "worker").model.as_deref(), Some("model-a"));
         store.set_model(7, Some("model-b")).unwrap();
         let saved = |store: &Store| {

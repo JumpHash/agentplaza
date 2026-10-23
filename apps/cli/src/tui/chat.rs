@@ -1,10 +1,9 @@
-//! The Chat tab: your conversations with the orchestrator, where a project is talked into being (`agentplaza chat`).
-//! The list (`GET /v1/owner/conversations`, newest first) is on the left; the selected conversation on the right: its
-//! messages, newest at the bottom, with an answer streaming as the orchestrator writes it, and under them its project
-//! draft as `agentplaza chat` prints it. `t` writes to the selected conversation and `n` opens a new one (the footer
-//! takes the text; Enter sends it); `S` starts the draft at the revision on screen, after a confirm. The conversations'
-//! views come with the hub's `owner_conversation` events; one not seen yet is read when it is selected. Declared from
-//! `app.rs`, which holds the tab's state and runs its requests.
+//! The Chat tab: your chats (`agentplaza chats`): the orchestrator's (`main`), a project's with its planner and a task's.
+//! The list (`GET /v1/chats`, newest activity first) is on the left; the selected chat on the right: its messages, newest
+//! at the bottom. A card waiting for you shows as a line that names it, and the Inbox tab answers it. `t` writes to the
+//! selected chat and `n` opens a new one with the project the switcher shows (or the first open project) and writes the
+//! first message to it (the footer takes the text; Enter sends it). A chat is read when it is selected and the list says
+//! it changed. Declared from `app.rs`, which holds the tab's state and runs its requests.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -16,24 +15,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Row, Table};
 use serde_json::Value;
 
-use super::context_bar::{self, Owner};
 use super::{App, Palette, style};
-use crate::cmd::chat::{delta_text, draft_lines, speaker, startable, unanswered};
 use crate::tui::screens::{clip, local_time, show};
-use crate::tui::workspace_view::{prose_lines, text_lines, thinking, with_cursor, with_gutter};
+use crate::tui::workspace_view::{prose_lines, text_lines, with_gutter};
 
-/// The hub's list of your conversations, which the tab polls while it shows.
-pub const PATH: &str = "/v1/owner/conversations";
-/// The most bytes of an answer's streamed text the tab keeps.
-const LIVE_MAX: usize = 20_000;
-/// How long a read of a conversation waits for its answer before it may be asked again.
+/// The hub's list of your chats, which the tab polls while it shows.
+pub const PATH: &str = "/v1/chats";
+/// How long a read of a chat waits for its answer before it may be asked again.
 const RETRY: Duration = Duration::from_secs(5);
-/// The width of the conversations list beside the conversation.
-const LIST_WIDTH: u16 = 42;
-/// Below this many columns the list sits above the conversation.
+/// The width of the chats list beside the chat.
+const LIST_WIDTH: u16 = 46;
+/// Below this many columns the list sits above the chat.
 const SIDE_BY_SIDE: u16 = 100;
 
-/// A message being written in the footer: to a conversation (by its id), or the first message of a new one.
+/// A message being written in the footer: to a chat (by its id), or the first message of a new chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Compose {
     To(String, String),
@@ -58,28 +53,22 @@ impl Compose {
     pub fn label(&self) -> String {
         match self {
             Compose::To(id, _) => format!("message to {id}"),
-            Compose::New(_) => "a new conversation".to_string(),
+            Compose::New(_) => "a new chat".to_string(),
         }
     }
 }
 
-/// The tab's state: the conversations' views as the hub last sent them, the reads under way, and the answers being
-/// written.
+/// The tab's state: the chats' views as the hub last sent them, and the reads under way.
 #[derive(Debug, Default)]
 pub struct ChatTab {
-    /// Each conversation's view, by id.
+    /// Each chat's view (its last messages), by id.
     pub views: HashMap<String, Value>,
-    /// The orchestrator each conversation talks to, and the work items it waits on (`unanswered`), by id.
-    waiting: HashMap<String, (u64, Vec<u64>)>,
     /// The reads asked for and not answered yet, and when they were asked.
     reading: HashMap<String, Instant>,
-    /// The text streamed so far of each answer being written, by work item: the model call it is from, and the text.
-    pub live: HashMap<u64, (String, String)>,
 }
 
 impl ChatTab {
-    /// Takes a conversation's view (an event's, or a read's). An older one than the view held is skipped; the streamed
-    /// text of the answers it holds is dropped.
+    /// Takes a chat's view (a read's). An older one than the view held is skipped.
     pub fn on_view(&mut self, view: Value) {
         let Some(id) = view.get("id").and_then(Value::as_str).map(str::to_string) else {
             return;
@@ -92,48 +81,11 @@ impl ChatTab {
         {
             return;
         }
-        for work in answered(&view) {
-            self.live.remove(&work);
-        }
-        let cid = view.get("cid").and_then(Value::as_u64).unwrap_or(0);
-        self.waiting.insert(id.clone(), (cid, unanswered(&view)));
         self.views.insert(id, view);
     }
 
-    /// Streams an answer: the text of a `delta` of a work item a conversation waits on. A new model call of the same
-    /// work starts a new paragraph.
-    pub fn on_delta(&mut self, data: &Value) {
-        let Some(text) = delta_text(data) else {
-            return;
-        };
-        let (Some(cid), Some(work)) = (
-            data.get("cid").and_then(Value::as_u64),
-            data.get("work").and_then(Value::as_u64),
-        ) else {
-            return;
-        };
-        let awaited = self
-            .waiting
-            .values()
-            .any(|(orchestrator, works)| *orchestrator == cid && works.contains(&work));
-        if !awaited {
-            return;
-        }
-        let req = data.get("req").and_then(Value::as_str).unwrap_or("");
-        let (call, streamed) = self.live.entry(work).or_default();
-        if call != req {
-            if !streamed.is_empty() {
-                streamed.push_str("\n\n");
-            }
-            *call = req.to_string();
-        }
-        if streamed.len() < LIVE_MAX {
-            streamed.push_str(text);
-        }
-    }
-
-    /// The conversation to read for a row of the list, when one is due: its view is not here, or the list says it
-    /// changed since. A read under way (or one that failed, for a few seconds) is not asked again.
+    /// The chat to read for a row of the list, when one is due: its view is not here, or the list says it changed since.
+    /// A read under way (or one that failed, for a few seconds) is not asked again.
     pub fn wants(&self, summary: &Value) -> Option<String> {
         let id = summary.get("id")?.as_str()?;
         if self
@@ -150,7 +102,7 @@ impl ChatTab {
         due.then(|| id.to_string())
     }
 
-    /// Notes that conversation `id` is being read.
+    /// Notes that chat `id` is being read.
     pub fn reading(&mut self, id: &str) {
         self.reading.insert(id.to_string(), Instant::now());
     }
@@ -160,52 +112,20 @@ fn updated(v: &Value) -> u64 {
     v.get("updated_ms").and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// The work items a conversation's answers end.
-fn answered(view: &Value) -> Vec<u64> {
-    view.get("messages")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|m| m.get("from").and_then(Value::as_str) == Some("orchestrator"))
-        .filter_map(|m| m.get("work").and_then(Value::as_u64))
-        .collect()
-}
-
-/// A conversation of the list as cells: its id; where it stands (its project once it started one, else its draft's
-/// revision); `…` while an answer is awaited; and its title.
+/// A chat of the list as cells: its id, its kind, the project or task it is about (`-` for the orchestrator's), and
+/// its title.
 pub fn summary_cells(c: &Value) -> [String; 4] {
-    let project = c.get("project").and_then(Value::as_str);
-    let revision = c.pointer("/draft/revision").and_then(Value::as_u64);
-    let state = match (project, revision) {
-        (Some(project), _) => project.to_string(),
-        (None, Some(revision)) => format!("r{revision}"),
-        (None, None) => "-".to_string(),
+    let about = match (c.get("project"), c.get("task")) {
+        (_, Some(task)) if !task.is_null() => show(Some(task)),
+        (Some(project), _) if !project.is_null() => show(Some(project)),
+        _ => "-".to_string(),
     };
-    let waiting = c.get("pending").and_then(Value::as_u64).unwrap_or(0) > 0;
     [
         show(c.get("id")),
-        state,
-        if waiting { "…" } else { "" }.to_string(),
+        show(c.get("kind")),
+        about,
         show(c.get("title")),
     ]
-}
-
-/// The draft pane's title: the draft's revision, and what can be done with it.
-pub fn draft_title(draft: &Value, project: Option<&str>) -> String {
-    let revision = show(draft.get("revision"));
-    if draft.get("started_ms").is_some_and(|ms| !ms.is_null()) {
-        let project = project.map(|p| format!(" as {p}")).unwrap_or_default();
-        format!(" draft r{revision} · started{project} ")
-    } else if startable(draft) {
-        format!(" draft r{revision} · S starts it ")
-    } else {
-        let problems = draft
-            .get("problems")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let what = if problems == 1 { "thing" } else { "things" };
-        format!(" draft r{revision} · {problems} {what} to settle before Start ")
-    }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -220,26 +140,19 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         (list, talk)
     };
     list(frame, list_area, app);
-    conversation(frame, talk_area, app);
-    if let Some(picker) = &app.ws.picker {
-        context_bar::overlay(frame, area, picker, app.palette);
-    }
+    chat(frame, talk_area, app);
 }
 
-/// The conversation the tab selects, as the context bar reads it: its owner, and its model as the list says it.
-pub fn selected(app: &App) -> Option<(Owner, Option<String>)> {
+/// The id of the chat the tab selects.
+pub fn selected(app: &App) -> Option<String> {
     let summary = app.array(PATH).get(app.selected)?;
-    let id = summary.get("id")?.as_str()?;
-    Some((
-        Owner::Conversation(id.to_string()),
-        context_bar::model_of(summary.get("model")),
-    ))
+    Some(summary.get("id")?.as_str()?.to_string())
 }
 
 fn list(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let all = app.array(PATH);
-    let block = style::panel(&format!("conversations · {}", all.len()), &palette, false);
+    let block = style::panel(&format!("chats · {}", all.len()), &palette, false);
     if all.is_empty() {
         let empty = Line::from(Span::styled(
             "none yet: n opens one",
@@ -248,7 +161,7 @@ fn list(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new(empty).block(block), area);
         return;
     }
-    let head = Row::new(["ID", "STATE", "", "TITLE"].map(String::from))
+    let head = Row::new(["ID", "KIND", "ABOUT", "TITLE"].map(String::from))
         .style(Style::new().fg(palette.muted).add_modifier(Modifier::BOLD));
     let body = all.iter().enumerate().map(|(i, c)| {
         let row = Row::new(summary_cells(c));
@@ -259,117 +172,88 @@ fn list(frame: &mut Frame, area: Rect, app: &App) {
         }
     });
     let widths = [
+        Constraint::Length(10),
         Constraint::Length(8),
-        Constraint::Length(6),
-        Constraint::Length(1),
+        Constraint::Length(10),
         Constraint::Fill(1),
     ];
     frame.render_widget(Table::new(body, widths).header(head).block(block), area);
 }
 
-fn conversation(frame: &mut Frame, area: Rect, app: &App) {
+fn chat(frame: &mut Frame, area: Rect, app: &App) {
     let palette = app.palette;
     let muted = Style::new().fg(palette.muted);
     let Some(summary) = app.array(PATH).get(app.selected) else {
         let hint = Line::from(Span::styled(
-            "n opens a conversation with the orchestrator",
+            "n opens a chat with a project's planner",
             muted,
         ));
         frame.render_widget(
-            Paragraph::new(hint).block(style::panel("conversation", &palette, false)),
+            Paragraph::new(hint).block(style::panel("chat", &palette, false)),
             area,
         );
         return;
     };
     let id = show(summary.get("id"));
-    let view = app.chat.views.get(&id);
-    let draft = view.and_then(|v| v.get("draft")).filter(|d| d.is_object());
-    let project = view.and_then(|v| v.get("project")).and_then(Value::as_str);
-    let drafted = draft.map(|d| draft_lines(d, project)).unwrap_or_default();
-    let (talk, below) = if drafted.is_empty() {
-        (area, None)
-    } else {
-        let most = (area.height * 3 / 5).max(3);
-        let height = (drafted.len() as u16 + 2).min(most);
-        let [talk, below] =
-            Layout::vertical([Constraint::Min(3), Constraint::Length(height)]).areas(area);
-        (talk, Some(below))
-    };
-    // The context bar sits under the transcript, above the draft and the footer's input.
-    let [talk, bar] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(talk);
     let title = format!(
         " {id} · {} · t message · n new ",
         clip(&show(summary.get("title")), 40)
     );
-    let width = usize::from(talk.width.saturating_sub(2));
-    let height = usize::from(talk.height.saturating_sub(2));
-    let lines = match view {
-        Some(view) => talk_lines(
-            view,
-            &app.chat.live,
-            width,
-            height,
-            palette,
-            &apz_rich::Ctx::default(),
-            app.clock,
-        ),
+    let width = usize::from(area.width.saturating_sub(2));
+    let height = usize::from(area.height.saturating_sub(2));
+    let lines = match app.chat.views.get(&id) {
+        Some(view) => talk_lines(view, width, height, palette, &apz_rich::Ctx::default()),
         None => vec![Line::from(Span::styled("reading…", muted))],
     };
     frame.render_widget(
         Paragraph::new(lines).block(style::panel(&title, &palette, true)),
-        talk,
+        area,
     );
-    let owner = Owner::Conversation(id);
-    let context = app.ws.contexts.get(&owner);
-    frame.render_widget(
-        Paragraph::new(context_bar::bar_line(
-            context, bar.width, palette, app.clock,
-        )),
-        bar,
-    );
-    if app.ws.breakdown {
-        context_bar::panel(frame, talk, context, palette);
-    }
-    if let (Some(below), Some(draft)) = (below, draft) {
-        let lines: Vec<Line> = drafted.into_iter().map(Line::from).collect();
-        let block = style::panel(&draft_title(draft, project), &palette, false);
-        frame.render_widget(Paragraph::new(lines).block(block), below);
-    }
 }
 
-/// The line over a message: its role's glyph (`›` for you, `●` for the orchestrator and the other agents), who wrote it,
-/// when, and how an answer's work ended when it did not end done.
+/// The line over a message: `›` for you, `●` for a session, `·` for the hub; who wrote it, when, and the kind of a
+/// message that is a question or a notice.
 fn head_line(m: &Value, palette: Palette) -> Line<'static> {
-    let from = m.get("from").and_then(Value::as_str).unwrap_or("");
-    let who = speaker(from).to_string();
     let at = m
         .get("at_ms")
         .and_then(Value::as_i64)
         .map(local_time)
         .unwrap_or_default();
-    let status = match m.get("status").and_then(Value::as_str) {
-        None | Some("done") => String::new(),
-        Some(status) => format!(" · {status}"),
+    let kind = match show(m.get("kind")).as_str() {
+        "message" | "-" => String::new(),
+        kind => format!(" · {kind}"),
     };
-    let (glyph, name) = if from == "owner" {
-        (
+    match show(m.get("author")).as_str() {
+        "owner" => Line::from(vec![
             Span::styled(
                 "› ",
                 Style::new().fg(palette.accent).add_modifier(Modifier::BOLD),
             ),
-            Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            Span::styled("● ", Style::new().fg(palette.ok)),
-            Style::new().fg(palette.ink2()).add_modifier(Modifier::BOLD),
-        )
-    };
-    Line::from(vec![
-        glyph,
-        Span::styled(who, name),
-        Span::styled(format!(" · {at}{status}"), Style::new().fg(palette.muted)),
-    ])
+            Span::styled(
+                "you",
+                Style::new().fg(palette.ink()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" · {at}{kind}"), Style::new().fg(palette.muted)),
+        ]),
+        "session" => {
+            let seat = match show(m.get("seat")).as_str() {
+                "-" => String::new(),
+                seat => format!(" ({seat})"),
+            };
+            Line::from(vec![
+                Span::styled("● ", Style::new().fg(palette.ok)),
+                Span::styled(
+                    format!("session {}{seat}", show(m.get("session"))),
+                    Style::new().fg(palette.ink2()).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" · {at}{kind}"), Style::new().fg(palette.muted)),
+            ])
+        }
+        _ => Line::from(Span::styled(
+            format!("· hub · {at}{kind}"),
+            Style::new().fg(palette.muted),
+        )),
+    }
 }
 
 /// Lines indented under a message's head, so the text lines up after the glyph.
@@ -386,59 +270,41 @@ fn indent(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The newest `height` lines of the conversation, wrapped to `width`: each message's head, its text and a blank line,
-/// oldest first; then the answers being written, as far as they have streamed (the cursor after their words), or a
-/// `Thinking…` line while the orchestrator has written nothing yet. Only the messages that reach the screen are wrapped.
+/// The newest `height` lines of the chat, wrapped to `width`: each message's head, its text and a blank line, oldest
+/// first. A card in a message names it on a line of its own, for the Inbox to answer.
 fn talk_lines(
     view: &Value,
-    live: &HashMap<u64, (String, String)>,
     width: usize,
     height: usize,
     palette: Palette,
     rctx: &apz_rich::Ctx,
-    clock: f32,
 ) -> Vec<Line<'static>> {
-    let muted = Style::new().fg(palette.muted);
-    let bold = Style::new().add_modifier(Modifier::BOLD);
     let inner = width.saturating_sub(2).max(1);
-    // The blocks, newest first, until the screen is full.
-    let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
-    let waiting = unanswered(view);
-    let mut streamed = Vec::new();
-    for work in &waiting {
-        if let Some((_, text)) = live.get(work).filter(|(_, text)| !text.is_empty()) {
-            streamed.push(Line::from(vec![
-                Span::styled("● ", Style::new().fg(palette.ok)),
-                Span::styled("orchestrator", bold.fg(palette.ink2())),
-                Span::styled(" · writing…", muted),
-            ]));
-            let mut body = indent(prose_lines(text, rctx, palette.accent, inner));
-            with_cursor(&mut body, clock, palette.accent);
-            streamed.extend(body);
-        }
-    }
-    if streamed.is_empty() && !waiting.is_empty() {
-        streamed.push(thinking(clock, palette));
-    }
-    let mut count = streamed.len();
-    blocks.push(streamed);
     let messages = view
         .get("messages")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default();
+    let mut blocks: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut count = 0;
     for m in messages.iter().rev() {
         if count >= height {
             break;
         }
-        let text = m.get("text").and_then(Value::as_str).unwrap_or("");
+        let text = show(m.get("text"));
         let mut block = vec![head_line(m, palette)];
-        let body = if m.get("from").and_then(Value::as_str) == Some("owner") {
-            text_lines(text, inner, Style::new().fg(palette.ink()))
+        let body = if show(m.get("author")) == "owner" {
+            text_lines(&text, inner, Style::new().fg(palette.ink()))
         } else {
-            prose_lines(text, rctx, palette.accent, inner)
+            prose_lines(&text, rctx, palette.accent, inner)
         };
         block.extend(indent(body));
+        if let Some(card) = m.get("card").and_then(Value::as_str) {
+            block.push(Line::from(Span::styled(
+                format!("  ▸ card {card} waits for you: answer it in the Inbox (i)"),
+                Style::new().fg(palette.warn()),
+            )));
+        }
         block.push(Line::raw(""));
         count += block.len();
         blocks.push(block);
@@ -476,149 +342,83 @@ mod tests {
             .collect()
     }
 
-    fn view(updated_ms: u64, answered: bool) -> Value {
-        let mut messages =
-            vec![json!({ "from": "owner", "text": "Fix the flaky tests", "at_ms": 0, "work": 41 })];
-        if answered {
-            messages.push(json!({ "from": "orchestrator", "text": "Which repo?", "at_ms": 60_000, "work": 41, "status": "done" }));
-        }
-        json!({ "id": "conv-3", "cid": 3, "title": "Release 0.9", "updated_ms": updated_ms, "messages": messages })
+    fn view(updated_ms: u64) -> Value {
+        json!({ "id": "chat-pr3", "kind": "project", "project": "pr3", "title": "Release 0.9", "updated_ms": updated_ms,
+            "messages": [
+                { "author": "owner", "kind": "message", "text": "Fix the flaky tests", "at_ms": 0 },
+                { "author": "session", "session": "s12", "seat": "planner", "kind": "question", "text": "Which repo?", "at_ms": 60_000, "card": "c4" }
+            ] })
     }
 
     #[test]
-    fn an_answer_streams_until_it_is_in_and_another_agents_text_is_left_out() {
-        let mut tab = ChatTab::default();
-        tab.on_view(view(10, false));
-        let delta = |cid: u64, req: &str, text: &str| json!({ "cid": cid, "work": 41, "req": req, "delta": { "type": "text", "text": text } });
-        tab.on_delta(&delta(3, "r1", "Which "));
-        tab.on_delta(&delta(3, "r1", "repo?"));
-        tab.on_delta(&delta(9, "r1", "not mine"));
-        assert_eq!(tab.live[&41].1, "Which repo?");
-        tab.on_delta(&delta(3, "r2", "Thanks."));
-        assert_eq!(tab.live[&41].1, "Which repo?\n\nThanks.");
-        let lines = talk_lines(
-            &tab.views["conv-3"],
-            &tab.live,
-            40,
-            20,
-            palette(),
-            &apz_rich::Ctx::default(),
-            0.75,
-        );
+    fn a_chat_reads_oldest_first_and_names_a_card_waiting_for_the_owner() {
+        let lines = talk_lines(&view(10), 60, 20, palette(), &apz_rich::Ctx::default());
         assert_eq!(
             text_of(&lines),
             [
                 "› you · 1970-01-01 00:00",
                 "  Fix the flaky tests",
                 "",
-                "● orchestrator · writing…",
+                "● session s12 (planner) · 1970-01-01 00:01 · question",
                 "  Which repo?",
+                "  ▸ card c4 waits for you: answer it in the Inbox (i)",
                 "",
-                "  Thanks.",
             ]
         );
-        // The answer is in: its streamed text goes, and an older view does not bring it back.
-        tab.on_view(view(20, true));
-        assert!(tab.live.is_empty());
-        tab.on_view(view(10, false));
-        assert_eq!(tab.views["conv-3"]["updated_ms"], 20);
-        let lines = talk_lines(
-            &tab.views["conv-3"],
-            &tab.live,
-            40,
-            3,
-            palette(),
-            &apz_rich::Ctx::default(),
-            0.75,
-        );
+    }
+
+    #[test]
+    fn only_the_newest_lines_that_fit_are_drawn() {
+        let lines = talk_lines(&view(10), 60, 3, palette(), &apz_rich::Ctx::default());
         assert_eq!(
             text_of(&lines),
-            ["● orchestrator · 1970-01-01 00:01", "  Which repo?", ""],
-            "only the newest lines that fit"
+            [
+                "  Which repo?",
+                "  ▸ card c4 waits for you: answer it in the Inbox (i)",
+                "",
+            ]
         );
     }
 
     #[test]
-    fn a_conversation_is_read_when_it_is_new_or_the_list_says_it_changed() {
+    fn an_older_view_does_not_replace_a_newer_one() {
         let mut tab = ChatTab::default();
-        let summary = json!({ "id": "conv-3", "updated_ms": 10 });
-        assert_eq!(tab.wants(&summary).as_deref(), Some("conv-3"));
-        tab.reading("conv-3");
+        tab.on_view(view(20));
+        tab.on_view(view(10));
+        assert_eq!(tab.views["chat-pr3"]["updated_ms"], 20);
+        tab.on_view(view(30));
+        assert_eq!(tab.views["chat-pr3"]["updated_ms"], 30);
+    }
+
+    #[test]
+    fn a_chat_is_read_when_it_is_new_or_the_list_says_it_changed() {
+        let mut tab = ChatTab::default();
+        let summary = json!({ "id": "chat-pr3", "updated_ms": 10 });
+        assert_eq!(tab.wants(&summary).as_deref(), Some("chat-pr3"));
+        tab.reading("chat-pr3");
         assert_eq!(tab.wants(&summary), None, "a read is under way");
-        tab.on_view(view(10, false));
+        tab.on_view(view(10));
         assert_eq!(tab.wants(&summary), None, "the view is current");
-        let newer = json!({ "id": "conv-3", "updated_ms": 20 });
-        assert_eq!(tab.wants(&newer).as_deref(), Some("conv-3"));
+        let newer = json!({ "id": "chat-pr3", "updated_ms": 20 });
+        assert_eq!(tab.wants(&newer).as_deref(), Some("chat-pr3"));
     }
 
     #[test]
-    fn the_list_shows_where_each_conversation_stands() {
-        let started = json!({ "id": "conv-3", "title": "Release 0.9", "project": "pr3", "draft": { "revision": 4 }, "pending": 0 });
-        assert_eq!(
-            summary_cells(&started),
-            ["conv-3", "pr3", "", "Release 0.9"]
-        );
-        let drafting = json!({ "id": "conv-4", "title": "Docs", "project": null, "draft": { "revision": 2 }, "pending": 1 });
-        assert_eq!(summary_cells(&drafting), ["conv-4", "r2", "…", "Docs"]);
-        let new = json!({ "id": "conv-5", "title": "Hello", "draft": null, "pending": 1 });
-        assert_eq!(summary_cells(&new), ["conv-5", "-", "…", "Hello"]);
-    }
-
-    #[test]
-    fn the_draft_title_says_what_can_be_done_with_it() {
-        let ready = json!({ "revision": 3, "problems": [] });
-        assert_eq!(draft_title(&ready, None), " draft r3 · S starts it ");
-        let blocked = json!({ "revision": 3, "problems": ["the draft has no tasks yet"] });
-        assert_eq!(
-            draft_title(&blocked, None),
-            " draft r3 · 1 thing to settle before Start "
-        );
-        let started = json!({ "revision": 3, "problems": [], "started_ms": 9 });
-        assert_eq!(
-            draft_title(&started, Some("pr3")),
-            " draft r3 · started as pr3 "
-        );
+    fn the_list_shows_each_chats_kind_and_what_it_is_about() {
+        let main = json!({ "id": "main", "kind": "main", "project": null, "task": null, "title": "Orchestrator" });
+        assert_eq!(summary_cells(&main), ["main", "main", "-", "Orchestrator"]);
+        let task = json!({ "id": "chat-t4", "kind": "task", "project": "pr3", "task": "t4", "title": "Fix it" });
+        assert_eq!(summary_cells(&task), ["chat-t4", "task", "t4", "Fix it"]);
     }
 
     #[test]
     fn the_composer_says_where_its_text_goes() {
-        let mut to = Compose::To("conv-3".into(), String::new());
+        let mut to = Compose::To("chat-pr3".into(), String::new());
         to.text_mut().push_str("hi");
         assert_eq!(
             (to.text(), to.label().as_str()),
-            ("hi", "message to conv-3")
+            ("hi", "message to chat-pr3")
         );
-        assert_eq!(Compose::New(String::new()).label(), "a new conversation");
-    }
-
-    #[test]
-    fn the_streamed_answer_ends_in_a_blinking_cursor_and_a_silent_turn_says_thinking() {
-        let mut tab = ChatTab::default();
-        tab.on_view(view(10, false));
-        let text = |clock: f32, tab: &ChatTab| {
-            text_of(&talk_lines(
-                &tab.views["conv-3"],
-                &tab.live,
-                40,
-                20,
-                palette(),
-                &apz_rich::Ctx::default(),
-                clock,
-            ))
-        };
-        let silent = text(0.0, &tab);
-        assert!(silent.last().unwrap().ends_with("Thinking…"), "{silent:?}");
-        let delta = json!({ "cid": 3, "work": 41, "req": "r1", "delta": { "type": "text", "text": "Which repo?" } });
-        tab.on_delta(&delta);
-        assert_eq!(
-            text(0.0, &tab).last().unwrap(),
-            "  Which repo?▌",
-            "on in the first half second"
-        );
-        assert_eq!(
-            text(0.75, &tab).last().unwrap(),
-            "  Which repo?",
-            "off in the second half"
-        );
+        assert_eq!(Compose::New(String::new()).label(), "a new chat");
     }
 }

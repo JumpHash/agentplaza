@@ -1,13 +1,14 @@
-// New project: three ways to begin. Talk it through with the orchestrator (a conversation in the IDE, where it drafts the
-// project beside the chat; files can go with the first message), open one directly with a title and a goal (files picked
-// here are its first change), or bring a project that exists: a repository on a git platform, a git address, a folder on
-// the hub, or files from this computer, with its mode, its environments and whether it is finished.
+// New project: three ways to begin. Talk it through with the orchestrator (its chat, opened in the IDE, where it drafts the
+// project in the planner's chat beside it; files can go with the first message), open one directly with a title and a
+// goal (files picked here are its first change), or bring a project that exists: a repository on a git platform, a git
+// address, a folder on the hub, or files from this computer, with its mode, its environments and whether it is finished.
 
 import '../styles/proto/newproject.css';
 import { api } from '../api';
+import { workApi, MAIN_CHAT } from '../api-work';
 import { ENV_KINDS, projectsApi, type ProjectMode } from '../api-projects';
 import { platforms } from '../api-platforms';
-import { openConversation } from '../ide/open';
+import { openTalk } from '../ide/open';
 import { hrefIn } from '../router';
 import { refreshProjects } from '../scope';
 import { attempt, button, field, input, modal, select, textarea, toast } from './components';
@@ -101,11 +102,11 @@ function fileBox(opts: { text: string; folders: boolean; chips?: boolean }): Fil
 }
 
 export function openNewProject(): void {
-  // ---- Talk it through: a conversation, with files on its first message.
+  // ---- Talk it through: the orchestrator's chat, with files on the first message.
   const ask = textarea({ rows: 4, placeholder: 'What do you want done? “The scheduler tests are flaky and I want 0.9 out this week.”' });
   const talkFiles = fileBox({ text: 'Drop files here or choose them', folders: false, chips: true });
   dropZone(ask, talkFiles.add);
-  const talk = button('Start a conversation', () => void startTalk(), { kind: 'primary', icon: 'conversations' });
+  const talk = button('Start a chat', () => void startTalk(), { kind: 'primary', icon: 'conversations' });
   const startTalk = async (): Promise<void> => {
     const text = ask.value.trim();
     if (!text) {
@@ -119,13 +120,14 @@ export function openNewProject(): void {
       talk.disabled = false;
       return;
     }
-    const conversation = await attempt(() => api.openConversation(text, attached.map((a) => a.id)));
-    if (!conversation) {
+    // The orchestrator's chat is the owner's one line to it: the words go there, and the chat opens.
+    const said = await attempt(() => workApi.say(MAIN_CHAT, text, attached.map((a) => a.id)));
+    if (!said) {
       talk.disabled = false;
       return;
     }
     close();
-    openConversation(conversation.id);
+    openTalk(MAIN_CHAT);
   };
 
   // ---- Or open it directly: an empty project of the owner's, with its first files if any.
@@ -369,7 +371,7 @@ export function openNewProject(): void {
         'section.np-sec',
         { 'aria-label': 'Talk it through' },
         h('h3.np-h', null, 'Talk it through'),
-        h('p.np-p', null, 'The orchestrator asks what it needs and drafts the project beside the conversation: its tasks, its team and its budget. You start it when it looks right.'),
+        h('p.np-p', null, 'The orchestrator asks what it needs and drafts the project beside the chat: its tasks and its budget. You start it when it looks right.'),
         field('Your goal', ask),
         fieldBox('Files', talkFiles.el),
         h('div.np-foot', null, talk),

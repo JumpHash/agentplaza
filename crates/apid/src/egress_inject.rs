@@ -23,10 +23,12 @@
 //! POST   /internal/egress/inject {cid, host, port, method, path}   → {header, value, rule} | {}
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, KeyPair,
     KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, date_time_ymd,
@@ -44,8 +46,8 @@ const BINDING: &str = "egress";
 const PLACEHOLDER: &str = "${SECRET}";
 /// A rule's port when it names none: HTTPS.
 const DEFAULT_PORT: u16 = 443;
-/// The owner's rules, at `<state-dir>/egress-inject.json`.
-const RULES_FILE: &str = "egress-inject.json";
+/// The component the owner's rules are saved as in plaza.db (table `egress_rule`).
+const COMPONENT: &str = "egress_rules";
 /// The egress CA's certificate and its key (0600), under the state dir.
 const CA_CERT_FILE: &str = "egress-ca.pem";
 const CA_KEY_FILE: &str = "egress-ca.key";
@@ -75,13 +77,21 @@ type Refusal = (u16, String);
 
 /// One rule: for agents of `roles`, a request to `host:port` with one of `methods` under `path_prefix`
 /// gets `header: format` with the secret's value in `${SECRET}`. `secret` is the vault's name for it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Saved as table `egress_rule`: the id is its key, and the roles and methods are child lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "egress_rule")]
 #[serde(default)]
 pub struct Rule {
+    /// `egr-` and twelve hex digits.
+    #[table(key)]
     pub id: String,
+    /// The roles it is for; empty = every role.
+    #[table(list)]
     pub roles: Vec<String>,
     pub host: String,
     pub port: u16,
+    /// The methods it is for; empty = any.
+    #[table(list)]
     pub methods: Vec<String>,
     pub path_prefix: String,
     pub header: String,
@@ -112,6 +122,11 @@ impl Default for Rule {
 /// The port a proxy question names when it names none.
 pub fn default_port() -> u16 {
     DEFAULT_PORT
+}
+
+/// The rules' table: `egress_rule`, one row a rule, with its roles and methods as child lists.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Rule)
 }
 
 /// Checks a rule and normalizes it: the host lower-cased, the methods upper-cased. `bound` says whether
@@ -302,34 +317,29 @@ impl RuleSet {
     }
 }
 
-/// The owner's rules, held in memory and saved to `<state-dir>/egress-inject.json` on every change.
-pub(crate) struct Store {
-    path: PathBuf,
-    /// Why the file could not be read. While it is set no rule applies and nothing is written, so a
-    /// damaged file is never replaced by a shorter list.
-    unreadable: Option<String>,
+/// The owner's rules in memory: the working copy the saver keeps in plaza.db (table `egress_rule`). Each change is
+/// saved before its answer (see [`change`]).
+#[derive(Default)]
+pub struct Store {
+    /// Held from a change's plan to its save, so a change that cannot be saved restores the rules it replaced and
+    /// no other change lands in between.
+    changing: Mutex<()>,
     set: Mutex<RuleSet>,
 }
 
 impl Store {
-    pub fn load(state_dir: &Path) -> Store {
-        let path = state_dir.join(RULES_FILE);
-        let (rules, unreadable) = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice::<Vec<Rule>>(&bytes) {
-                Ok(rules) => (rules, None),
-                Err(e) => (Vec::new(), Some(format!("{}: {e}", path.display()))),
-            },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
-            Err(e) => (Vec::new(), Some(format!("{}: {e}", path.display()))),
-        };
-        if let Some(why) = &unreadable {
-            eprintln!("apid: the egress rules are unreadable, so none applies ({why})");
-        }
-        Store {
-            path,
-            unreadable,
-            set: Mutex::new(RuleSet { rules }),
-        }
+    /// Replaces the rules with what plaza.db holds (at start). A load that fails leaves the component held out of
+    /// writes (see store/saver.rs).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let rules: Vec<Rule> = apz_store::table::load_list(conn, def())?;
+        self.set().rules = rules;
+        Ok(())
+    }
+
+    /// The rules' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let set = self.set();
+        RowSet::list(def(), set.rules.iter())
     }
 
     fn set(&self) -> MutexGuard<'_, RuleSet> {
@@ -339,84 +349,84 @@ impl Store {
     fn list(&self) -> Vec<Rule> {
         self.set().rules.clone()
     }
+}
 
-    fn create(
-        &self,
-        mut rule: Rule,
-        now: u64,
-        bound: impl Fn(&str) -> Result<bool, String>,
-    ) -> Result<Rule, Refusal> {
-        rule.id = new_id();
-        rule.created_ms = now;
-        validate(&mut rule, bound).map_err(bad_request)?;
-        let mut set = self.set();
-        let mut next = set.rules.clone();
-        next.push(rule.clone());
-        self.save(&next)?;
-        set.rules = next;
-        Ok(rule)
+/// Makes one change to the rules and saves it before the owner's answer. `plan` gets the rules as they are and
+/// returns the answer with the rules after the change, or a refusal. A change that cannot be saved is undone.
+fn change<A>(
+    app: &App,
+    plan: impl FnOnce(&[Rule]) -> Result<(A, Vec<Rule>), Refusal>,
+) -> Result<A, Refusal> {
+    let store = store(app);
+    let _one_at_a_time = store
+        .changing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let (answer, next) = plan(&store.list())?;
+    let previous = std::mem::replace(&mut store.set().rules, next);
+    if crate::store::saver::save_now(app, COMPONENT) {
+        return Ok(answer);
     }
+    store.set().rules = previous;
+    Err((
+        500,
+        "the egress rules could not be saved; nothing changed".into(),
+    ))
+}
 
-    /// Merges `patch` into the rule `id`; its id and creation time stay.
-    fn update(
-        &self,
-        id: &str,
-        patch: Map<String, Value>,
-        bound: impl Fn(&str) -> Result<bool, String>,
-    ) -> Result<Rule, Refusal> {
-        let mut set = self.set();
-        let index = set
-            .rules
-            .iter()
-            .position(|rule| rule.id == id)
-            .ok_or_else(|| not_found(id))?;
-        let mut merged = serde_json::to_value(&set.rules[index]).map_err(internal)?;
-        if let Value::Object(base) = &mut merged {
-            for (key, value) in patch {
-                if key != "id" && key != "created_ms" {
-                    base.insert(key, value);
-                }
+/// The rules with `rule` added last: validated, with a new id and the time it was made.
+fn plan_create(
+    rules: &[Rule],
+    mut rule: Rule,
+    now: u64,
+    bound: impl Fn(&str) -> Result<bool, String>,
+) -> Result<(Rule, Vec<Rule>), Refusal> {
+    rule.id = new_id();
+    rule.created_ms = now;
+    validate(&mut rule, bound).map_err(bad_request)?;
+    let mut next = rules.to_vec();
+    next.push(rule.clone());
+    Ok((rule, next))
+}
+
+/// The rules with the rule `id` merged with `patch`; its id and creation time stay.
+fn plan_update(
+    rules: &[Rule],
+    id: &str,
+    patch: Map<String, Value>,
+    bound: impl Fn(&str) -> Result<bool, String>,
+) -> Result<(Rule, Vec<Rule>), Refusal> {
+    let index = position_of(rules, id)?;
+    let mut merged = serde_json::to_value(&rules[index]).map_err(internal)?;
+    if let Value::Object(base) = &mut merged {
+        for (key, value) in patch {
+            if key != "id" && key != "created_ms" {
+                base.insert(key, value);
             }
         }
-        let mut rule: Rule = serde_json::from_value(merged).map_err(bad_request)?;
-        rule.id = id.to_string();
-        rule.created_ms = set.rules[index].created_ms;
-        validate(&mut rule, bound).map_err(bad_request)?;
-        let mut next = set.rules.clone();
-        next[index] = rule.clone();
-        self.save(&next)?;
-        set.rules = next;
-        Ok(rule)
     }
+    let mut rule: Rule = serde_json::from_value(merged).map_err(bad_request)?;
+    rule.id = id.to_string();
+    rule.created_ms = rules[index].created_ms;
+    validate(&mut rule, bound).map_err(bad_request)?;
+    let mut next = rules.to_vec();
+    next[index] = rule.clone();
+    Ok((rule, next))
+}
 
-    fn remove(&self, id: &str) -> Result<(), Refusal> {
-        let mut set = self.set();
-        let index = set
-            .rules
-            .iter()
-            .position(|rule| rule.id == id)
-            .ok_or_else(|| not_found(id))?;
-        let mut next = set.rules.clone();
-        next.remove(index);
-        self.save(&next)?;
-        set.rules = next;
-        Ok(())
-    }
+/// The rules without the rule `id`.
+fn plan_remove(rules: &[Rule], id: &str) -> Result<((), Vec<Rule>), Refusal> {
+    let index = position_of(rules, id)?;
+    let mut next = rules.to_vec();
+    next.remove(index);
+    Ok(((), next))
+}
 
-    fn save(&self, rules: &[Rule]) -> Result<(), Refusal> {
-        if let Some(why) = &self.unreadable {
-            return Err((
-                409,
-                format!("the egress rules file is unreadable; fix or remove it first ({why})"),
-            ));
-        }
-        let bytes = serde_json::to_vec_pretty(rules).map_err(internal)?;
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| (500, format!("{}: {e}", dir.display())))?;
-        }
-        apz_os::private::write(&self.path, &bytes)
-            .map_err(|e| (500, format!("{}: {e}", self.path.display())))
-    }
+fn position_of(rules: &[Rule], id: &str) -> Result<usize, Refusal> {
+    rules
+        .iter()
+        .position(|rule| rule.id == id)
+        .ok_or_else(|| not_found(id))
 }
 
 fn bad_request(why: impl ToString) -> Refusal {
@@ -438,23 +448,16 @@ fn new_id() -> String {
     format!("egr-{hex}")
 }
 
-/// The hub's rules. There is one hub per process, so the store is loaded from its state dir on first
-/// use and kept for the process.
-static STORE: OnceLock<Store> = OnceLock::new();
-
-fn store(app: &App) -> &'static Store {
-    STORE.get_or_init(|| {
-        let store = Store::load(&app.config.state_dir);
-        register_consumers(app, &store);
-        store
-    })
+/// The hub's rules: `app.egress_rules`, loaded from plaza.db at start.
+fn store(app: &App) -> &Store {
+    &app.egress_rules
 }
 
 /// Tells the vault which secrets the egress rules read, so its screen shows each as wanted by
-/// "Egress credential for <host>" (and which node lacks it). Called whenever the rules change.
-fn register_consumers(app: &App, store: &Store) {
+/// "Egress credential for <host>" (and which node lacks it). Called at start, and whenever the rules change.
+pub(crate) fn register_consumers(app: &App) {
     app.vault.unregister_consumer(BINDING);
-    for rule in store.list() {
+    for rule in store(app).list() {
         app.vault.register_consumer(
             BINDING,
             &format!("Egress credential for {}", rule.host),
@@ -753,9 +756,12 @@ fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Ok(rule) => rule,
         Err(e) => return Response::error(400, &e.to_string()),
     };
-    match store(app).create(rule, apz_plaza::now_ms(), bound_in_vault(app)) {
+    let now = apz_plaza::now_ms();
+    match change(app, |rules| {
+        plan_create(rules, rule, now, bound_in_vault(app))
+    }) {
         Ok(rule) => {
-            register_consumers(app, store(app));
+            register_consumers(app);
             Response::json(200, &rule)
         }
         Err((status, why)) => Response::error(status, &why),
@@ -766,9 +772,11 @@ fn update_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Ok(Value::Object(patch)) = req.json::<Value>() else {
         return Response::error(400, "the body must be a JSON object");
     };
-    match store(app).update(p.get("id"), patch, bound_in_vault(app)) {
+    match change(app, |rules| {
+        plan_update(rules, p.get("id"), patch, bound_in_vault(app))
+    }) {
         Ok(rule) => {
-            register_consumers(app, store(app));
+            register_consumers(app);
             Response::json(200, &rule)
         }
         Err((status, why)) => Response::error(status, &why),
@@ -776,9 +784,9 @@ fn update_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
-    match store(app).remove(p.get("id")) {
+    match change(app, |rules| plan_remove(rules, p.get("id"))) {
         Ok(()) => {
-            register_consumers(app, store(app));
+            register_consumers(app);
             Response::json(200, &json!({ "ok": true }))
         }
         Err((status, why)) => Response::error(status, &why),
@@ -788,6 +796,7 @@ fn delete_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn rule(host: &str) -> Rule {
         Rule {
@@ -1011,45 +1020,51 @@ mod tests {
     }
 
     #[test]
-    fn the_rules_survive_a_restart_and_a_damaged_file_is_never_replaced() {
-        let dir = scratch("rules");
-        let store = Store::load(&dir);
-        let created = store
-            .create(rule("example.com"), 1_000, known)
-            .unwrap_or_else(|e| panic!("{e:?}"));
+    fn the_rules_come_back_whole_from_their_table() {
+        let store = Store::default();
+        let mut both = rule("example.com");
+        both.roles = vec!["builder".into(), "researcher".into()];
+        both.methods = vec!["GET".into(), "POST".into()];
+        let (created, next) =
+            plan_create(&[], both, 1_000, known).unwrap_or_else(|e| panic!("{e:?}"));
         assert!(created.id.starts_with("egr-") && created.created_ms == 1_000);
-        let patched = store
-            .update(
-                &created.id,
-                json!({"enabled": false, "id": "ignored"})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                known,
-            )
-            .unwrap_or_else(|e| panic!("{e:?}"));
+        store.set().rules = next;
+        let (patched, next) = plan_update(
+            &store.list(),
+            &created.id,
+            json!({"enabled": false, "id": "ignored"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            known,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
         assert!(!patched.enabled && patched.id == created.id);
+        store.set().rules = next;
 
-        let reloaded = Store::load(&dir);
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let reloaded = Store::default();
+        reloaded.load(&conn).unwrap();
         assert_eq!(reloaded.list(), vec![patched.clone()]);
-        reloaded.remove(&created.id).unwrap();
-        assert!(Store::load(&dir).list().is_empty());
 
-        std::fs::write(dir.join(RULES_FILE), b"{not json").unwrap();
-        let damaged = Store::load(&dir);
-        assert!(damaged.list().is_empty());
-        let refused = damaged.create(rule("example.com"), 1, known).unwrap_err();
-        assert_eq!(refused.0, 409);
-        assert_eq!(std::fs::read(dir.join(RULES_FILE)).unwrap(), b"{not json");
+        let (_, next) = plan_remove(&reloaded.list(), &created.id).unwrap();
+        reloaded.set().rules = next;
+        apz_store::table::replace(&conn, def(), &reloaded.rows().unwrap()).unwrap();
+        let emptied = Store::default();
+        emptied.load(&conn).unwrap();
+        assert!(emptied.list().is_empty());
     }
 
     #[test]
     fn an_unknown_rule_id_is_a_404() {
-        let dir = scratch("unknown");
-        let store = Store::load(&dir);
-        assert_eq!(store.remove("egr-none").unwrap_err().0, 404);
+        assert_eq!(plan_remove(&[], "egr-none").unwrap_err().0, 404);
         let patch = Map::new();
-        assert_eq!(store.update("egr-none", patch, known).unwrap_err().0, 404);
+        assert_eq!(
+            plan_update(&[], "egr-none", patch, known).unwrap_err().0,
+            404
+        );
     }
 
     #[test]

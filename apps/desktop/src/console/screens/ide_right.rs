@@ -43,12 +43,10 @@ fn in_scope(st: &State) -> impl Fn(u64, Option<&str>) -> bool + '_ {
             return true;
         }
         let Some(project) = project else { return true };
-        // Its agents: the ones working on it, and the ones that worked on it before membership.
-        st.roster
-            .iter()
-            .any(|a| a.cid == cid && a.project.as_deref() == Some(project.id.as_str()))
-            || project.members.contains(&cid)
-            || task.is_some_and(|t| project.tasks.iter().any(|id| id == t))
+        // Its agents: the ones working on it, and the orchestrator, which works on every project.
+        st.roster.iter().any(|a| {
+            a.cid == cid && (a.orchestrator || a.project.as_deref() == Some(project.id.as_str()))
+        }) || task.is_some_and(|t| project.tasks.iter().any(|id| id == t))
     }
 }
 

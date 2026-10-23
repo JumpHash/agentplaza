@@ -17,6 +17,7 @@
 //! | `GET repos/{repo}/symbols/{id}?ref=` | a definition's history across renames and moves |
 //! | `GET changes/{change}` | a change: revisions, intents, records, queue and export state |
 //! | `GET revisions/{rev}`, `…/files`, `…/file?path=`, `…/tree`, `…/diff?path=` | a revision, its files, its change tree, its diff |
+//! | `GET revisions/{rev}/symbols?path=`, `…/names?name=` or `…?find=` | a file's symbols and references, a name's definitions and references (the code-intelligence fallback) |
 //! | `GET ops?since=&limit=`, `GET packs`, `GET keys`, `GET records?subject=` | the op log, packs, keys, signed records |
 //! | `GET verify?subject=&deep=` | the verification report |
 //! | `GET events` | what happens, as server-sent events |
@@ -27,7 +28,7 @@
 //! | `POST stop {on}` | STOP ALL on or off (apid only) |
 //! | `wire/…` | objects in and out ([`crate::wire`]) |
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -577,6 +578,17 @@ fn repo_routes(router: Router<H>) -> Router<H> {
                 _ => fail(404, "no such repo"),
             }
         })
+        .get("/v1/repos/{repo}/stats", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let st = h.store.state();
+            match st.repos.get(p.get("repo")) {
+                Some(r) if h.may_read(&st, &who, &r.name, "") => ok(repo_stats(h, &st, &r.name)),
+                _ => fail(404, "no such repo"),
+            }
+        })
         .get("/v1/repos/{repo}/log", |h: &H, req, p| log_route(h, req, p))
         .get("/v1/repos/{repo}/queue", |h: &H, req, p| {
             let st = h.store.state();
@@ -939,6 +951,67 @@ fn revision_routes(router: Router<H>) -> Router<H> {
                     let st = h.store.state();
                     t.files.retain(|f| h.may_read(&st, &who, &repo, &f.path));
                     ok(json!(t))
+                }
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/revisions/{rev}/symbols", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let Some(path) = q(req, "path") else { return fail(400, "symbols needs ?path=") };
+            let repo = match rev_repo(h, p.get("rev")) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            if !h.may_read(&h.store.state(), &who, &repo, &path) {
+                return fail(404, "no such file");
+            }
+            let tree = match h.store.tree(p.get("rev")) {
+                Ok(t) => t,
+                Err(e) => return fail(404, e),
+            };
+            let Some(entry) = tree.get(&path) else { return fail(404, "no such file") };
+            let parsed = h.derived.parse(&h.store, &path, &entry.hash);
+            ok(json!({
+                "revision": p.get("rev"),
+                "repo": repo,
+                "path": path,
+                "pack": parsed.pack,
+                "error": parsed.error,
+                "symbols": parsed.symbols,
+                "references": parsed.references,
+            }))
+        })
+        .get("/v1/revisions/{rev}/names", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let rev = p.get("rev");
+            let repo = match rev_repo(h, rev) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            // `name` is one name; `find` is every name containing the text, without case.
+            let (want, asked): (Box<dyn Fn(&str) -> bool>, Value) = match (q(req, "name"), q(req, "find")) {
+                (Some(name), _) => {
+                    let wanted = name.clone();
+                    (Box::new(move |n: &str| n == wanted), json!({ "name": name }))
+                }
+                (None, Some(text)) => {
+                    let wanted = text.to_lowercase();
+                    (Box::new(move |n: &str| n.to_lowercase().contains(&wanted)), json!({ "find": text }))
+                }
+                (None, None) => return fail(400, "names needs ?name= or ?find="),
+            };
+            match h.derived.find_names(&h.store, rev, want) {
+                Ok((defs, refs)) => {
+                    let st = h.store.state();
+                    let defs: Vec<_> = defs.into_iter().filter(|d| h.may_read(&st, &who, &repo, &d.path)).collect();
+                    let refs: Vec<_> = refs.into_iter().filter(|r| h.may_read(&st, &who, &repo, &r.path)).collect();
+                    ok(json!({ "revision": rev, "repo": repo, "query": asked, "definitions": defs, "references": refs }))
                 }
                 Err(e) => fail(404, e),
             }
@@ -1573,6 +1646,29 @@ pub fn repo_view(st: &State, r: &crate::state::Repo) -> Value {
     })
 }
 
+/// A repo's stored objects: the distinct blobs its revisions name, and their bytes in the blob store. The store is the
+/// plaza's, so this is what the repo references, not what the store holds beside it.
+fn repo_stats(h: &H, st: &State, repo: &str) -> Value {
+    let deltas = st
+        .revisions
+        .values()
+        .filter(|rev| st.changes.get(&rev.change).is_some_and(|c| c.repo == repo))
+        .flat_map(|rev| rev.deltas.iter());
+    let (blobs, bytes) = blob_bytes(deltas, |hash| h.store.blobs.size(hash));
+    json!({ "repo": repo, "blobs": blobs, "bytes": bytes })
+}
+
+/// The distinct blobs `deltas` name, and their bytes as `size_of` gives them (a blob the store no longer holds counts
+/// no bytes).
+fn blob_bytes<'a>(
+    deltas: impl IntoIterator<Item = &'a Delta>,
+    size_of: impl Fn(&Hash) -> Option<u64>,
+) -> (usize, u64) {
+    let distinct: HashSet<Hash> = deltas.into_iter().filter_map(|d| d.after).collect();
+    let bytes = distinct.iter().filter_map(&size_of).sum();
+    (distinct.len(), bytes)
+}
+
 pub fn change_summary(st: &State, c: &Change) -> Value {
     let latest = c
         .landed
@@ -1637,5 +1733,24 @@ mod tests {
         assert_eq!(refused("ci v2 exists".into()).status, 400);
         assert_eq!(refused("repo ci is frozen".into()).status, 409);
         assert_eq!(refused("bad repo name \"\"".into()).status, 400);
+    }
+
+    #[test]
+    fn a_repo_counts_each_blob_once_at_the_size_the_store_gives_it() {
+        let file = |path: &str, after: Option<u8>| Delta {
+            path: path.to_string(),
+            after: after.map(|byte| Hash([byte; 32])),
+            mode: 0o100644,
+        };
+        let deltas = [
+            file("a", Some(1)),
+            file("b", Some(2)),
+            file("a2", Some(1)),
+            file("c", Some(3)),
+            file("gone", None),
+        ];
+        // Blob 3 is no longer in the store: it is named, but takes no bytes.
+        let size_of = |hash: &Hash| (hash.0[0] != 3).then(|| u64::from(hash.0[0]) * 10);
+        assert_eq!(blob_bytes(&deltas, size_of), (3, 30));
     }
 }

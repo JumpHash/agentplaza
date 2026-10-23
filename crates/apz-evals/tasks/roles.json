@@ -1,0 +1,20 @@
+{
+  "roles": {
+    "builder": {
+      "tools": [
+        "run",
+        "run_tests",
+        "read",
+        "edit"
+      ]
+    },
+    "reviewer": {
+      "tools": [
+        "run",
+        "run_tests",
+        "read",
+        "plaza_verdict"
+      ]
+    }
+  }
+}

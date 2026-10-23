@@ -102,7 +102,7 @@ fn body(req: &ChatRequest) -> Value {
     if let Some(t) = req.temperature {
         body["inferenceConfig"]["temperature"] = json!((f64::from(t) * 1000.0).round() / 1000.0);
     }
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(system) = req.system_text() {
         body["system"] = json!([{"text": system}]);
     }
     if !req.tools.is_empty() {
@@ -175,13 +175,24 @@ fn decode(v: &Value, model: &str, sink: &mut dyn FnMut(Delta)) -> ChatResponse {
             });
         } else if let Some(tool) = block.get("toolUse") {
             let name = tool["name"].as_str().unwrap_or("").to_string();
-            sink(Delta::ToolUse { name: name.clone() });
             let input = if tool["input"].is_object() {
                 tool["input"].clone()
             } else {
                 json!({})
             };
             let id = tool["toolUseId"].as_str().unwrap_or("").to_string();
+            // A call comes whole in the answer: its start, its input and its end go out together.
+            let index = content.len();
+            sink(Delta::ToolUse {
+                name: name.clone(),
+                index,
+                id: id.clone(),
+            });
+            sink(Delta::ToolInput {
+                index,
+                json: input.to_string(),
+            });
+            sink(Delta::BlockEnd { index });
             content.push(Block::ToolUse {
                 id,
                 name,
@@ -334,9 +345,12 @@ mod tests {
         ];
         let (gw, _) = gateway_with_secrets(vec![p], &pair, &[]);
         let mut req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0".into(),
             system: Some("sys".into()),
             tools: vec![ToolSpec {
+                deferred: false,
                 name: "bash".into(),
                 description: "d".into(),
                 input_schema: json!({"type": "object"}),
@@ -439,6 +453,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "aws/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -472,6 +488,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "bedrock/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -511,6 +529,8 @@ mod tests {
             );
             match gw.complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "bedrock/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -542,6 +562,8 @@ mod tests {
             );
             match gw.complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "aws-b/amazon.nova-pro-v1:0".into(),
                     ..request("hi")
                 },
@@ -583,6 +605,8 @@ mod tests {
         );
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "bedrock-eu/amazon.nova-pro-v1:0".into(),
                 ..request("hi")
             },
@@ -591,6 +615,8 @@ mod tests {
         .unwrap();
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "aws/amazon.nova-pro-v1:0".into(),
                 ..request("hi")
             },
@@ -639,6 +665,8 @@ mod tests {
             .build();
         match gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "bedrock/amazon.nova-pro-v1:0".into(),
                 ..request("hi")
             },

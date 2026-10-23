@@ -19,10 +19,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::Write;
+use std::num::NonZeroUsize;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,11 +38,17 @@ use serde_json::{Value, json};
 
 use crate::acp::hub::HubLink;
 use crate::bash;
+use crate::exec;
 use crate::files::{self, Workspace};
+use crate::helpers::{self, Board};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
+use crate::script;
 use crate::session::{SessionError, escape_for_transcript, kind_of};
+use crate::tool_batch::{self, Streamed, Touch};
+use crate::tool_search::{self, Deferred};
 use crate::tools;
-use crate::{checkpoints, library, plan, search_tools, shells};
+use crate::v2;
+use crate::{checkpoints, library, plan};
 
 /// A chat thread whose history serializes past this is closed: its next work
 /// starts a new conversation, opened with the thread's last summary.
@@ -49,8 +57,16 @@ pub const THREAD_CLOSE_BYTES: usize = 400 * 1024;
 const STUCK_FAILURES: u32 = 3;
 /// Token-limit stops a work item continues past (with a "continue" message).
 const TOKEN_LIMIT_CONTINUES: u32 = 1;
+/// How many times a step session that ends its turn without a handover is asked for one before it ends without.
+const HANDOVER_ASKS: u32 = 2;
+/// What a step's output says when its task is finished and nothing is left for another session: no handover is asked.
+const TASK_DONE: &str = "TASK DONE";
+/// What the harness asks a step session that ended its turn without a handover (journal.rs, 9.2).
+const HANDOVER_ASK: &str = "Write your handover with handover_write first: what stands, what is done, what is next, what to check first. Then end your turn. If the task is finished and nothing is left for another session, end with the line TASK DONE instead.";
 /// How often a local tool's thread is checked while the beat runs beside it.
 const LOCAL_POLL: Duration = Duration::from_millis(20);
+/// How long a script's calls that arrive together wait to be decided as one batch.
+const SCRIPT_GATHER: Duration = Duration::from_millis(5);
 /// How long queued work waits for the profile. A hub restart can welcome the agent before its
 /// profile is ready, and the profile follows a few seconds later.
 const PROFILE_WAIT: Duration = Duration::from_secs(60);
@@ -58,10 +74,33 @@ const PROFILE_WAIT: Duration = Duration::from_secs(60);
 /// A local tool's result: its output, or why it failed.
 type Outcome = Result<String, String>;
 
+/// A call's run, owned, so that it runs on a thread of its own.
+type Thunk<'a> = Box<dyn FnOnce() -> Outcome + Send + 'a>;
+
+/// A call's outcome and how long the call ran, in milliseconds (the tool's time, as the report carries it).
+struct Timed {
+    outcome: Outcome,
+    ms: u64,
+}
+
+impl Timed {
+    /// Runs `run` and times it.
+    fn run(run: impl FnOnce() -> Outcome) -> Timed {
+        let started = Instant::now();
+        let outcome = run();
+        Timed {
+            outcome,
+            ms: started.elapsed().as_millis() as u64,
+        }
+    }
+}
+
 /// How the policy and the hub settle one of a model turn's tool calls.
 enum Route {
     /// Refused for its input: the text the model sees, without asking the hub.
     Refused(String),
+    /// Answered here, not run: `tool_search`'s text, which the model sees as a success.
+    Answered(String),
     /// Allowed by the policy with this id: it runs here.
     Local(String),
     /// Left to the hub, in the turn's batch.
@@ -70,21 +109,70 @@ enum Route {
 
 /// How an allowed call runs: the program or the engine's launch spec its decision carries, and the policy the
 /// harness decided it under (None for a call the hub decided).
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Allowance {
     program: Option<Program>,
     engine: Option<EngineSpec>,
     policy: Option<String>,
 }
 
+/// One of a turn's calls: a result the model gets as it stands, or a call that runs here.
+enum Step {
+    /// Settled without running: the result text the model sees, and whether it is an error.
+    Settled(String, bool),
+    Run(Run),
+}
+
+/// A call that runs here: the call, what it touches, how it runs, and the `run_script` call it belongs to when a script
+/// made it.
+#[derive(Clone)]
+struct Run {
+    id: String,
+    name: String,
+    input: Value,
+    touch: Touch,
+    allowance: Allowance,
+    script: Option<String>,
+}
+
+/// A turn's calls as they settle. Each result goes back in the model's order, and each run is reported once the calls
+/// before it have settled.
+struct Turn {
+    steps: Vec<Step>,
+    /// Each run's outcome, once it has one.
+    outcomes: Vec<Option<Timed>>,
+    /// The results settled so far, in the model's order.
+    results: Vec<(String, bool)>,
+}
+
+/// A read-only call that ran while its answer streamed, kept for the answer's tool turn: the policy it ran under, and
+/// the call it ran for (its tool and input) and its outcome.
+struct Early {
+    policy: String,
+    name: String,
+    input: Value,
+    timed: Timed,
+}
+
+/// A read-only call still running while its answer streams.
+struct Running<'scope> {
+    id: String,
+    policy: String,
+    name: String,
+    input: Value,
+    thread: thread::ScopedJoinHandle<'scope, Timed>,
+}
+
 /// The report a guest sends once it has run a call. A call the policy decided carries its record: its tool, its
-/// input and the policy it was decided under.
-fn tool_report(
+/// input and the policy it was decided under. It carries how long the call ran.
+pub(crate) fn tool_report(
     work: u64,
     call: &str,
     ok: bool,
     output: String,
     record: Option<&(String, String, Value)>,
+    ms: u64,
+    script: Option<&str>,
 ) -> GuestMessage {
     let (policy, name, input) = match record {
         Some((policy, name, input)) => (
@@ -102,6 +190,8 @@ fn tool_report(
         policy,
         name,
         input,
+        duration_ms: Some(ms),
+        script: script.map(str::to_string),
     }
 }
 
@@ -161,9 +251,14 @@ struct Agent<'a, 'l, S, W> {
     /// The last model call's request id.
     req: u64,
     profile: Option<AgentProfile>,
+    /// The work item's deferred tools, and which of them the model has fetched.
+    deferred: Deferred,
     /// The hub's signed policy: the tools this agent runs without asking. None until the hub sends one, and then
     /// every call goes to the hub.
     policy: Option<PolicySnapshot>,
+    /// The read-only calls that ran while the last model answer streamed, by call id. The answer's tool turn uses each
+    /// one the answer asks for, under the same policy; the others are not used.
+    early: HashMap<String, Early>,
     queue: VecDeque<Job>,
     threads: HashMap<String, Thread>,
     /// Orders the stored threads: the next value a stored thread takes.
@@ -182,6 +277,9 @@ struct Agent<'a, 'l, S, W> {
     /// The conversation's size right after the last compression of this work item: an automatic
     /// compression waits until it has grown by a quarter of `compress_at` since.
     compressed_size: u64,
+    /// The context the work item's latest model call used, in tokens (its input and cache reads and
+    /// writes). After a compression it waits for the next call's count.
+    context_used: u64,
     /// Model calls the operator allowed beyond the profile's turn budget.
     extra_turns: u32,
     /// Set while a local tool runs, once the work item is cancelled or the agent is stopping: an
@@ -190,6 +288,8 @@ struct Agent<'a, 'l, S, W> {
     /// A stop that arrived while a local tool ran. The loop takes it at its next wait, as it
     /// would have taken the line had it arrived then.
     stopping: Option<String>,
+    /// The helpers this connection runs (see `helpers`): started and awaited through the agent's own tools.
+    helpers: Arc<Board>,
     /// When the next stats report is due.
     next_stats: Instant,
     /// Each process's CPU ticks at the last stats report, by pid, and when that report was taken.
@@ -310,18 +410,45 @@ pub fn serve<S: Duplex, W: Write + Send>(
     profile: Option<AgentProfile>,
     heartbeat: Duration,
 ) -> Result<u64, SessionError> {
+    let cap = helpers::cap_for(thread::available_parallelism().map_or(1, NonZeroUsize::get));
+    serve_capped(lines, log, workspace, profile, heartbeat, cap)
+}
+
+/// [`serve`], with the most helpers that run at once given (see `helpers::cap_for`).
+pub(crate) fn serve_capped<S: Duplex, W: Write + Send>(
+    lines: &mut Lines<S>,
+    log: &mut W,
+    workspace: &Workspace,
+    profile: Option<AgentProfile>,
+    heartbeat: Duration,
+    cap: usize,
+) -> Result<u64, SessionError> {
+    let (board, helper_events) = Board::new(cap);
     let writer = Lines::new(lines.get_ref().duplicate()?);
     let shared = Shared::new(writer, log);
     // The first stats report measures CPU from here, so the baseline is taken now.
     let baseline = sample_processes(Path::new(PROC_DIR));
+    // The profile a session starts with carries the project's hooks too (hooks.rs).
+    if let Some(profile) = &profile {
+        crate::hooks::set_for(workspace, profile.hooks.clone());
+    }
     let (inbox_tx, inbox_rx) = mpsc::channel();
     let (operator_tx, operator_rx) = mpsc::channel();
+    let (exec_tx, exec_rx) = mpsc::channel();
     let shared_ref = &shared;
     let outcome = thread::scope(|scope| {
-        scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx));
+        scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx, exec_tx));
+        scope.spawn(move || exec::serve(exec_rx, shared_ref, workspace));
+        let dispatch_board = Arc::clone(&board);
         scope.spawn(move || {
-            let exec = |name: &str, args: &Value| {
-                tools::serve(workspace, name, args).map_err(|err| err.to_string())
+            helpers::dispatch(scope, helper_events, dispatch_board, shared_ref, workspace)
+        });
+        scope.spawn(move || {
+            let exec = |name: &str, args: &Value| match name {
+                "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
+                    v2::serve(workspace, OPERATOR_WORK, name, args).map_err(|err| err.to_string())
+                }
+                _ => tools::serve(workspace, name, args).map_err(|err| err.to_string()),
             };
             serve_operators(operator_rx, shared_ref, exec, OPERATOR_EXPIRY)
         });
@@ -334,7 +461,9 @@ pub fn serve<S: Duplex, W: Write + Send>(
             seq: 0,
             req: 0,
             profile,
+            deferred: Deferred::default(),
             policy: None,
+            early: HashMap::new(),
             queue: VecDeque::new(),
             threads: load_threads(workspace),
             clock: 0,
@@ -344,9 +473,11 @@ pub fn serve<S: Duplex, W: Write + Send>(
             compress_requested: false,
             lane: None,
             compressed_size: 0,
+            context_used: 0,
             extra_turns: 0,
             tool_cancel: Arc::new(AtomicBool::new(false)),
             stopping: None,
+            helpers: Arc::clone(&board),
             next_stats: Instant::now() + STATS_EVERY,
             ticks: baseline.iter().map(|p| (p.pid, p.ticks)).collect(),
             ticked_at: Instant::now(),
@@ -358,6 +489,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             .max()
             .unwrap_or(0);
         let outcome = agent.run();
+        board.close();
         shared_ref.stop();
         outcome
     });
@@ -367,7 +499,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
     Ok(calls)
 }
 
-impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
+impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
     /// The agent loop: runs queued work and waits for the host, until the host stops it.
     /// Work does not start before the profile arrives; it waits up to `PROFILE_WAIT`, and
     /// then fails as having no model.
@@ -502,7 +634,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             HostMessage::Stop { reason } => {
                 // A stop ends the agent's background shells too; a cancel of one work item
                 // leaves them running.
-                crate::shells::stop_all(self.workspace);
+                v2::stop_all(self.workspace);
                 Incoming::Stop(reason)
             }
             HostMessage::Work {
@@ -528,6 +660,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             HostMessage::Profile { profile } => {
                 // A changed profile can add or drop the egress CA (the owner edited a rule).
                 crate::trust::install(self.workspace, profile.egress_ca.as_deref());
+                crate::hooks::set_for(self.workspace, profile.hooks.clone());
                 self.profile = Some(profile);
                 Incoming::Handled
             }
@@ -597,26 +730,68 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         }
     }
 
-    /// Runs a local tool on its own thread, beating beside it and taking the
-    /// host's messages meanwhile. A panicking tool is an error result, not a dead
-    /// session.
-    fn run_local(&mut self, job: impl FnOnce() -> Outcome + Send) -> Result<Outcome, SessionError> {
+    /// Sends the heartbeat and the stats report when either is due.
+    fn beat_when_due(&mut self) -> Result<(), SessionError> {
+        if Instant::now() >= self.next_beat {
+            self.beat()?;
+        }
+        if Instant::now() >= self.next_stats {
+            self.report_stats()?;
+        }
+        Ok(())
+    }
+
+    /// Runs `jobs` on as many threads as the VM has CPUs, beating and taking the host's messages meanwhile. `done` gets
+    /// each job's index and outcome as its job finishes. A job that panics is an error result, not a dead session.
+    fn run_jobs(
+        &mut self,
+        jobs: Vec<(usize, Thunk<'a>)>,
+        done: &mut dyn FnMut(&mut Self, usize, Timed) -> Result<(), SessionError>,
+    ) -> Result<(), SessionError> {
+        let total = jobs.len();
+        if total == 0 {
+            return Ok(());
+        }
+        let threads = thread::available_parallelism()
+            .map_or(1, NonZeroUsize::get)
+            .min(total);
         self.tool_cancel.store(false, Ordering::SeqCst);
-        thread::scope(|scope| -> Result<Outcome, SessionError> {
-            let handle = scope.spawn(job);
-            while !handle.is_finished() {
-                if Instant::now() >= self.next_beat {
-                    self.beat()?;
-                }
-                if Instant::now() >= self.next_stats {
-                    self.report_stats()?;
-                }
-                self.hear_during_tool()?;
-                thread::sleep(LOCAL_POLL);
+        let queue = Mutex::new(VecDeque::from(jobs));
+        let (finished, outcomes) = mpsc::channel();
+        thread::scope(|scope| {
+            for _ in 0..threads {
+                let (queue, finished) = (&queue, finished.clone());
+                scope.spawn(move || {
+                    loop {
+                        let next = queue
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .pop_front();
+                        let Some((index, job)) = next else { break };
+                        let timed = Timed::run(|| {
+                            panic::catch_unwind(AssertUnwindSafe(job))
+                                .unwrap_or_else(|_| Err("internal: the tool panicked".to_string()))
+                        });
+                        let _ = finished.send((index, timed));
+                    }
+                });
             }
-            Ok(handle
-                .join()
-                .unwrap_or_else(|_| Err("internal: the tool panicked".to_string())))
+            drop(finished);
+            let mut seen = 0;
+            while seen < total {
+                match outcomes.recv_timeout(LOCAL_POLL) {
+                    Ok((index, timed)) => {
+                        seen += 1;
+                        done(&mut *self, index, timed)?;
+                    }
+                    Err(RecvTimeoutError::Timeout) => {
+                        self.beat_when_due()?;
+                        self.hear_during_tool()?;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            Ok(())
         })
     }
 
@@ -728,8 +903,12 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         self.steers.clear();
         self.compress_requested = false;
         self.compressed_size = 0;
+        self.context_used = 0;
         self.extra_turns = 0;
+        self.deferred = Deferred::new(&profile.tools);
         let result = self.drive(job.work, &profile, &mut messages);
+        // A helper ends with its work item: one still running is stopped.
+        self.helpers.cancel_work(job.work);
         // The last state, so the seal has it.
         if let Some(lane) = self.lane.take()
             && let Err(err) = crate::weft_lane::snapshot(
@@ -782,6 +961,9 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         let mut paused_waits = 0u32;
         // The last tool call's name and input, and how many times in a row it failed.
         let mut failing: Option<(String, u32)> = None;
+        // Whether a handover was written in this work (a step session must write one), and how often it was asked.
+        let mut handed_over = false;
+        let mut handover_asks = 0u32;
         loop {
             if let Some(reason) = self.cancelled.take() {
                 return Ok((WorkStatus::Stopped, reason));
@@ -796,9 +978,18 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 }
             }
             let size = serialized_len(messages.as_slice()) as u64;
-            let auto = profile.compress_at > 0
-                && size > profile.compress_at
-                && size > self.compressed_size.saturating_add(profile.compress_at / 4);
+            // With the model's window known, the conversation compresses once its last call used `compact_at_pct` of
+            // the window; without it, once it is larger than `compress_at` bytes and has grown by a quarter of that.
+            let auto = if profile.context_window > 0 && profile.compact_at_pct > 0 {
+                self.context_used.saturating_mul(100)
+                    >= profile
+                        .context_window
+                        .saturating_mul(u64::from(profile.compact_at_pct))
+            } else {
+                profile.compress_at > 0
+                    && size > profile.compress_at
+                    && size > self.compressed_size.saturating_add(profile.compress_at / 4)
+            };
             if self.compress_requested || auto {
                 let reason = if self.compress_requested {
                     "asked"
@@ -806,6 +997,8 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                     "auto"
                 };
                 self.compress_requested = false;
+                // The next call's count measures the compressed conversation.
+                self.context_used = 0;
                 self.compress(work, profile, messages, reason)?;
             }
             if turns >= profile.max_turns.saturating_add(self.extra_turns) {
@@ -832,7 +1025,14 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 }
                 Err(reason) => return Ok((WorkStatus::Failed, reason)),
             };
-            let ChatResponse { content, stop, .. } = response;
+            let ChatResponse {
+                content,
+                stop,
+                usage,
+                ..
+            } = response;
+            self.context_used =
+                usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
             messages.push(Message::assistant(content.clone()));
 
             let uses: Vec<(String, String, Value, Option<Value>)> = content
@@ -852,6 +1052,9 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             let mut stuck = None;
             let outcomes = self.tool_turn(work, &uses)?;
             for ((id, name, input, _), (text, is_error)) in uses.into_iter().zip(outcomes) {
+                if name == "handover_write" && !is_error {
+                    handed_over = true;
+                }
                 let key = format!("{name} {input}");
                 failing = match (is_error, failing.take()) {
                     (false, _) => None,
@@ -903,7 +1106,27 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             }
 
             match stop {
-                StopReason::EndTurn => return Ok((WorkStatus::Done, blocks_text(&content))),
+                StopReason::EndTurn => {
+                    let said = blocks_text(&content);
+                    if profile.handover && !handed_over && !said.contains(TASK_DONE) {
+                        if handover_asks < HANDOVER_ASKS {
+                            handover_asks += 1;
+                            match messages.last_mut() {
+                                Some(last) if last.role == Role::User => {
+                                    last.content.push(Block::Text {
+                                        text: HANDOVER_ASK.to_string(),
+                                    })
+                                }
+                                _ => messages.push(Message::user_text(HANDOVER_ASK)),
+                            }
+                            continue;
+                        }
+                        self.shared.note(&format!(
+                            "agent-harness: work {work} ended without a handover"
+                        ));
+                    }
+                    return Ok((WorkStatus::Done, said));
+                }
                 StopReason::Refusal => {
                     return Ok((WorkStatus::Failed, "the model declined".to_string()));
                 }
@@ -986,7 +1209,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             }
         }
         let request = format!(
-            "Summarize this work so far for yourself, so you can continue it without the transcript: the goal, what you did, what you found, files you created or changed (paths), decisions, what failed, and the next steps. Be specific and complete; at most 600 words.\n\n{transcript}"
+            "Summarize this work so far for yourself, so you can continue it without the transcript. The transcript may start with an earlier summary: keep what it says that still holds. Write four parts, each as short points: Decisions (each with its reason); Dead ends (what was tried and why it failed); Open questions; Where it stands (the goal, what is done, files you created or changed (paths), and the next steps). Be specific and complete; at most 600 words.\n\n{transcript}"
         );
         let mut summary_profile = profile.clone();
         summary_profile.tools.clear();
@@ -1018,6 +1241,7 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             after,
             folded: (cut - 1) as u32,
             reason: reason.to_string(),
+            summary,
         })?;
         Ok(())
     }
@@ -1034,24 +1258,103 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
         let req = self.req;
         let request = ChatRequest {
             model: String::new(),
-            system: (!profile.system.is_empty()).then(|| profile.system.clone()),
+            system: None,
+            system_parts: profile.system_parts.clone(),
             messages: messages.to_vec(),
-            tools: profile.tools.clone(),
+            tools: self.deferred.request_tools(&profile.tools),
+            // The whole prefix of the conversation is cached for the next call (PLAN 13.3).
+            cache_last_message: true,
             max_tokens: 0,
             temperature: None,
             effort: None,
         };
-        self.say(&GuestMessage::ModelCall { req, work, request })?;
-        let (ok, response, error) =
-            self.await_message("model_result", |message| match message {
-                HostMessage::ModelResult {
-                    req: got,
-                    ok,
-                    response,
-                    error,
-                } if got == req => Ok((ok, response, error)),
-                other => Err(other),
-            })?;
+        self.say(&GuestMessage::ModelCall {
+            req,
+            work,
+            request,
+            helper: None,
+        })?;
+        // The calls that ran ahead of an earlier answer are not this answer's.
+        self.early.clear();
+        let workspace = self.workspace;
+        let (ok, response, error) = thread::scope(|scope| -> Result<_, Halt> {
+            let mut streamed = Streamed::default();
+            let mut running = Vec::new();
+            let answer = loop {
+                match self.pump()? {
+                    // A read-only call whose block is whole starts now, if the policy allows it and no call before it
+                    // could change what it reads (see `tool_batch::Streamed`).
+                    Incoming::Message(HostMessage::ModelDelta { req: got, delta })
+                        if got == req =>
+                    {
+                        let Some(whole) = streamed.push(workspace, delta) else {
+                            continue;
+                        };
+                        // A deferred tool the model has not fetched runs in no way, not even ahead of the answer.
+                        let allowed = self.policy.as_ref().filter(|policy| {
+                            policy.allow.contains(&whole.name)
+                                && self.deferred.refusal(&whole.name).is_none()
+                        });
+                        let Some(policy) = allowed.map(|policy| policy.id.clone()) else {
+                            continue;
+                        };
+                        let (name, input) = (whole.name.clone(), whole.input.clone());
+                        let (shared, call) = (self.shared, whole.id.clone());
+                        let thread = scope.spawn(move || {
+                            Timed::run(|| {
+                                let outcome = run_guest_tool(workspace, work, &name, &input);
+                                crate::anchors::surface(
+                                    shared, workspace, work, &call, &name, &input, outcome,
+                                )
+                            })
+                        });
+                        running.push(Running {
+                            id: whole.id,
+                            policy,
+                            name: whole.name,
+                            input: whole.input,
+                            thread,
+                        });
+                    }
+                    Incoming::Message(HostMessage::ModelResult {
+                        req: got,
+                        ok,
+                        response,
+                        error,
+                    }) if got == req => break (ok, response, error),
+                    Incoming::Message(other) => {
+                        let kind = kind_of(&other);
+                        self.shared.note(&format!(
+                            "agent-harness: ignoring {kind} while waiting for model_result"
+                        ));
+                    }
+                    Incoming::Stop(reason) => return Err(Halt::Stop(reason)),
+                    Incoming::Beat | Incoming::Handled => {}
+                }
+            };
+            // The answer is in: the calls that ran ahead finish first, beating meanwhile.
+            while running.iter().any(|call| !call.thread.is_finished()) {
+                self.beat_when_due()?;
+                self.hear_during_tool()?;
+                thread::sleep(LOCAL_POLL);
+            }
+            for call in running {
+                let timed = call.thread.join().unwrap_or_else(|_| Timed {
+                    outcome: Err("internal: the tool panicked".to_string()),
+                    ms: 0,
+                });
+                self.early.insert(
+                    call.id,
+                    Early {
+                        policy: call.policy,
+                        name: call.name,
+                        input: call.input,
+                        timed,
+                    },
+                );
+            }
+            Ok(answer)
+        })?;
         Ok(match (ok, response) {
             (true, Some(response)) => Ok(response),
             (true, None) => Err("the host sent no answer".to_string()),
@@ -1061,27 +1364,52 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
 
     /// The turn's tool calls, in the model's order, each as its result text and whether it is an error. A call with
     /// invalid input is refused without asking the host. A call the policy allows runs here, reported under the policy
-    /// it was decided by. The others go to the host in one batch, which answers once; then the calls run in order,
-    /// one at a time, each as its decision says.
+    /// it was decided by. The others go to the host in one batch, which answers once. The calls that run here run in
+    /// waves: the calls that touch nothing in common run at once, and the rest keep their order (see `tool_batch`).
     fn tool_turn(
         &mut self,
         work: u64,
         uses: &[(String, String, Value, Option<Value>)],
     ) -> Result<Vec<(String, bool)>, Halt> {
-        let policy = self.policy.clone();
+        let early = std::mem::take(&mut self.early);
+        let steps = self.decide(work, uses, None)?;
+        self.run_steps(work, steps, early)
+    }
+
+    /// How one call is routed: refused for its input or its tool, answered by `tool_search`, allowed by the policy (it
+    /// runs here), or left to the hub. The same for a model's call and a script's.
+    fn route(&mut self, name: &str, input: &Value, meta: Option<&Value>) -> Route {
+        if let Some(reason) = invalid_input(input, meta) {
+            Route::Refused(format!("INVALID_INPUT: {reason}"))
+        } else if name == tool_search::TOOL {
+            match input["query"].as_str() {
+                Some(query) => Route::Answered(self.deferred.search(query)),
+                None => Route::Refused("INVALID_INPUT: tool_search needs a query".into()),
+            }
+        } else if let Some(reason) = self.deferred.refusal(name) {
+            Route::Refused(reason)
+        } else {
+            match &self.policy {
+                Some(policy) if policy.allow.iter().any(|tool| tool == name) => {
+                    Route::Local(policy.id.clone())
+                }
+                _ => Route::Hub,
+            }
+        }
+    }
+
+    /// Decides the calls of a turn, or of a batch a script made, in order: each call's step. A call the policy or the hub
+    /// allows runs here. `script` is the `run_script` call the calls belong to, when a script made them; the calls are
+    /// reported under it. The calls the hub decides go to it in one batch.
+    fn decide(
+        &mut self,
+        work: u64,
+        uses: &[(String, String, Value, Option<Value>)],
+        script: Option<&str>,
+    ) -> Result<Vec<Step>, Halt> {
         let routes: Vec<Route> = uses
             .iter()
-            .map(|(_, name, input, meta)| {
-                if let Some(reason) = invalid_input(input, meta.as_ref()) {
-                    return Route::Refused(format!("INVALID_INPUT: {reason}"));
-                }
-                match &policy {
-                    Some(policy) if policy.allow.iter().any(|tool| tool == name) => {
-                        Route::Local(policy.id.clone())
-                    }
-                    _ => Route::Hub,
-                }
-            })
+            .map(|(_, name, input, meta)| self.route(name, input, meta.as_ref()))
             .collect();
         let calls: Vec<BatchCall> = uses
             .iter()
@@ -1108,131 +1436,443 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
                 .map(|decision| (decision.call.clone(), decision))
                 .collect();
         }
-        let mut outcomes = Vec::with_capacity(uses.len());
-        for ((id, name, input, _), route) in uses.iter().zip(routes) {
-            let outcome = match route {
-                Route::Refused(text) => (text, true),
-                Route::Local(policy) => {
-                    let allowance = Allowance {
-                        policy: Some(policy),
-                        ..Allowance::default()
-                    };
-                    self.run_allowed(work, id, name, input, allowance)?
-                }
-                Route::Hub => match decided.remove(id) {
-                    Some(decision) => self.apply_decision(work, id, name, input, decision)?,
-                    None => (
-                        "the host sent no decision for this tool call".to_string(),
-                        true,
+        let steps = uses
+            .iter()
+            .zip(routes)
+            .map(|((id, name, input, _), route)| {
+                let step = match route {
+                    Route::Refused(text) => Step::Settled(text, true),
+                    Route::Answered(text) => Step::Settled(text, false),
+                    Route::Local(policy) => run_step(
+                        self.workspace,
+                        id,
+                        name,
+                        input,
+                        Allowance {
+                            policy: Some(policy),
+                            ..Allowance::default()
+                        },
                     ),
+                    Route::Hub => match decided.remove(id) {
+                        Some(decision) => decided_step(self.workspace, id, name, input, decision),
+                        None => Step::Settled(
+                            "the host sent no decision for this tool call".to_string(),
+                            true,
+                        ),
+                    },
+                };
+                match (step, script) {
+                    (Step::Run(run), Some(script)) => Step::Run(Run {
+                        script: Some(script.to_string()),
+                        ..run
+                    }),
+                    (step, _) => step,
+                }
+            })
+            .collect();
+        Ok(steps)
+    }
+
+    /// Runs the steps of a turn or of a script's batch, and returns each call's result in order. A call that ran while the
+    /// answer streamed (`early`) is not run again. The calls still to run go in waves: the calls that touch nothing in
+    /// common run at once, and the rest keep their order (see `tool_batch`). A script runs alone: it touches the whole
+    /// workspace (see `tool_batch::touch`), so no other call shares its wave.
+    fn run_steps(
+        &mut self,
+        work: u64,
+        steps: Vec<Step>,
+        mut early: HashMap<String, Early>,
+    ) -> Result<Vec<(String, bool)>, Halt> {
+        let outcomes = steps
+            .iter()
+            .map(|step| match step {
+                Step::Run(run) => early
+                    .remove(&run.id)
+                    .filter(|ran| {
+                        ran.name == run.name
+                            && ran.input == run.input
+                            && run.allowance.policy.as_deref() == Some(ran.policy.as_str())
+                    })
+                    .map(|ran| ran.timed),
+                Step::Settled(..) => None,
+            })
+            .collect();
+        let mut turn = Turn {
+            steps,
+            outcomes,
+            results: Vec::new(),
+        };
+        // The calls still to run, in waves (see `tool_batch::waves`). They are found before anything settles, since
+        // settling takes the outcomes it reports: a call that ran ahead of the answer is not run again.
+        let pending: Vec<usize> = (0..turn.steps.len())
+            .filter(|&index| {
+                matches!(turn.steps[index], Step::Run(_)) && turn.outcomes[index].is_none()
+            })
+            .collect();
+        let touches: Vec<Touch> = pending
+            .iter()
+            .map(|&index| match &turn.steps[index] {
+                Step::Run(run) => run.touch.clone(),
+                Step::Settled(..) => Touch::Other,
+            })
+            .collect();
+        self.settle(work, &mut turn)?;
+        for wave in tool_batch::waves(&touches) {
+            let mut jobs: Vec<(usize, Thunk<'a>)> = Vec::new();
+            for &position in &wave {
+                let index = pending[position];
+                let Step::Run(run) = &turn.steps[index] else {
+                    continue;
+                };
+                if run.name == script::TOOL {
+                    let run = run.clone();
+                    let timed = self.script_run(work, &run)?;
+                    turn.outcomes[index] = Some(timed);
+                    self.settle(work, &mut turn)?;
+                } else {
+                    jobs.push((index, self.job(work, run)));
+                }
+            }
+            self.run_jobs(jobs, &mut |agent, index, timed| {
+                turn.outcomes[index] = Some(timed);
+                agent.settle(work, &mut turn)
+            })?;
+        }
+        self.settle(work, &mut turn)?;
+        Ok(turn.results)
+    }
+
+    /// Runs one `run_script` call, and returns its timed result: the script's value, or why it did not finish.
+    fn script_run(&mut self, work: u64, run: &Run) -> Result<Timed, Halt> {
+        let started = Instant::now();
+        let outcome = self.script_drive(work, run)?;
+        Ok(Timed {
+            outcome,
+            ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// Runs the script of one `run_script` call while it makes its calls: each batch of calls it makes is decided and
+    /// run here (see `script_batch`), until the script ends, runs past its time or its output, or the work is cancelled.
+    /// A host stop ends the wait with [`Halt::Stop`].
+    fn script_drive(&mut self, work: u64, run: &Run) -> Result<Outcome, Halt> {
+        let script = match script::Script::parse(&run.input) {
+            Ok(script) => script,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let tools = self
+            .profile
+            .as_ref()
+            .map_or_else(Vec::new, |profile| profile.tools.clone());
+        let mut session = match script::Session::start(self.workspace, &script, &tools) {
+            Ok(session) => session,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let (calls, requests) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_secs(script.timeout_s);
+        let mut made = 0;
+        let mut stopped = loop {
+            if let Some(reason) = self.stopping.take() {
+                return Err(Halt::Stop(reason));
+            }
+            if self.cancelled.is_some() {
+                break Some("the work item was cancelled; the script was killed".to_string());
+            }
+            if session.exited() {
+                break None;
+            }
+            if Instant::now() >= deadline {
+                break Some(format!(
+                    "timed out after {} s; the script was killed",
+                    script.timeout_s
+                ));
+            }
+            if session.output_bytes() > script::MAX_OUTPUT_BYTES {
+                break Some(output_cap_reason());
+            }
+            session.accept(&calls);
+            match requests.recv_timeout(LOCAL_POLL) {
+                Ok(first) => {
+                    let mut batch = vec![first];
+                    let gathered_until = Instant::now() + SCRIPT_GATHER;
+                    while let Ok(next) = requests
+                        .recv_timeout(gathered_until.saturating_duration_since(Instant::now()))
+                    {
+                        batch.push(next);
+                    }
+                    self.script_batch(work, &run.id, &mut made, batch)?;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.beat_when_due()?;
+                    self.hear_during_tool()?;
+                }
+                Err(RecvTimeoutError::Disconnected) => break None,
+            }
+        };
+        // A script that printed past the cap and ended before the look above is still past it.
+        if stopped.is_none() && session.output_bytes() > script::MAX_OUTPUT_BYTES {
+            stopped = Some(output_cap_reason());
+        }
+        Ok(session.finish(stopped))
+    }
+
+    /// Decides and runs one batch of the calls a script made, and answers each on its connection. A call past the
+    /// script's cap, and a call to `run_script`, are refused here; the others are decided as `decide` says.
+    fn script_batch(
+        &mut self,
+        work: u64,
+        script_call: &str,
+        made: &mut usize,
+        batch: Vec<script::Request>,
+    ) -> Result<(), Halt> {
+        let mut answers: Vec<Option<(String, bool)>> = vec![None; batch.len()];
+        let mut uses = Vec::new();
+        let mut slots = Vec::new();
+        for (slot, request) in batch.iter().enumerate() {
+            *made += 1;
+            if *made > script::MAX_CALLS {
+                answers[slot] = Some((
+                    format!(
+                        "INVALID_INPUT: a script makes at most {} tool calls",
+                        script::MAX_CALLS
+                    ),
+                    true,
+                ));
+            } else if request.name == script::TOOL {
+                answers[slot] = Some(("a script cannot run a script".to_string(), true));
+            } else {
+                uses.push((
+                    format!("{script_call}.{made}"),
+                    request.name.clone(),
+                    request.input.clone(),
+                    None,
+                ));
+                slots.push(slot);
+            }
+        }
+        if !uses.is_empty() {
+            let steps = self.decide(work, &uses, Some(script_call))?;
+            let results = self.run_steps(work, steps, HashMap::new())?;
+            for (slot, result) in slots.into_iter().zip(results) {
+                answers[slot] = Some(result);
+            }
+        }
+        for (request, answer) in batch.into_iter().zip(answers) {
+            if let Some((output, is_error)) = answer {
+                request.answer(!is_error, &output);
+            }
+        }
+        Ok(())
+    }
+
+    /// Settles the turn's calls in the model's order, as far as their outcomes are known: a call that ran is reported,
+    /// and every result is kept for the model.
+    fn settle(&mut self, work: u64, turn: &mut Turn) -> Result<(), SessionError> {
+        while let Some(step) = turn.steps.get(turn.results.len()) {
+            let index = turn.results.len();
+            let result = match step {
+                Step::Settled(text, is_error) => (text.clone(), *is_error),
+                Step::Run(run) => match turn.outcomes[index].take() {
+                    Some(timed) => self.report(work, run, timed)?,
+                    None => break,
                 },
             };
-            outcomes.push(outcome);
+            turn.results.push(result);
         }
-        Ok(outcomes)
+        Ok(())
     }
 
-    /// The hub's decision on one call of the turn: an allowed call runs here and is reported; a done, pending or
-    /// denied call is its result.
-    fn apply_decision(
+    /// Reports a call that ran here, and returns its result for the model. A call the policy decided carries its record
+    /// in the report: its tool, its input and the policy it was decided under.
+    fn report(
         &mut self,
         work: u64,
-        id: &str,
-        name: &str,
-        input: &Value,
-        decided: BatchDecision,
-    ) -> Result<(String, bool), Halt> {
-        let BatchDecision {
-            decision,
-            output,
-            is_error,
-            program,
-            engine,
-            ..
-        } = decided;
-        match decision {
-            Decision::Allow => {
-                let allowance = Allowance {
-                    program,
-                    engine,
-                    policy: None,
-                };
-                self.run_allowed(work, id, name, input, allowance)
-            }
-            Decision::Done => Ok((cap_output(&output, MAX_TOOL_OUTPUT), is_error)),
-            // Held for the owner (only an ACP engine's requests are held, and those wait on their own
-            // nested ids). A model's call that comes back held is an error it can retry later.
-            Decision::Pending => Ok((
-                "the owner has not decided this tool call yet; try again later".to_string(),
-                true,
-            )),
-            Decision::Deny if output.is_empty() => {
-                Ok(("the host denied this tool call".to_string(), true))
-            }
-            Decision::Deny => Ok((output, true)),
-        }
-    }
-
-    /// Runs one call the host allowed, or the policy did, and reports it. A call the policy decided carries its
-    /// record in the report: its tool, its input and the policy it was decided under.
-    fn run_allowed(
-        &mut self,
-        work: u64,
-        id: &str,
-        name: &str,
-        input: &Value,
-        allowance: Allowance,
-    ) -> Result<(String, bool), Halt> {
-        let Allowance {
-            program,
-            engine,
-            policy,
-        } = allowance;
-        let workspace = self.workspace;
-        // A library tool comes with its program; built-in tools run from this harness.
-        let outcome = match program {
-            Some(program) => self.run_local(move || library::run(workspace, &program, input))?,
-            // An engine runs as an ACP session whose every action the hub checks. The hub's
-            // launch spec, for an engine instance the owner configured, comes with the decision.
-            None if name == "code_engine" => {
-                let shared = self.shared;
-                let cancel = Arc::clone(&self.tool_cancel);
-                let call = id.to_string();
-                // The engine's MCP server offers the profile's plaza tools, through the hub.
-                let tools = self
-                    .profile
-                    .as_ref()
-                    .map_or_else(Vec::new, |profile| profile.tools.clone());
-                let protocol = self.profile.as_ref().map_or(1, |profile| {
-                    crate::acp::run::protocol_offer(&profile.engine_transport)
-                });
-                self.run_local(move || {
-                    let link = HubLink::new(shared, work, call, &cancel, tools);
-                    crate::acp::run::run(workspace, input, &link, protocol, engine.as_ref())
-                })?
-            }
-            None => self.run_local(move || run_guest_tool(workspace, name, input))?,
-        };
-        let (ok, output) = match outcome {
+        run: &Run,
+        timed: Timed,
+    ) -> Result<(String, bool), SessionError> {
+        let (ok, output) = match timed.outcome {
             Ok(output) => (true, output),
             Err(err) => (false, err),
         };
-        let record = policy.map(|policy| (policy, name.to_string(), input.clone()));
+        let record = run
+            .allowance
+            .policy
+            .clone()
+            .map(|policy| (policy, run.name.clone(), run.input.clone()));
         // A packaged tool travels to the host whole (the library files it from the report);
         // the model only needs to hear what was packaged.
-        if name == "tool_package" && ok {
-            self.say(&tool_report(work, id, ok, output.clone(), record.as_ref()))?;
+        if run.name == "tool_package" && ok {
+            self.say(&tool_report(
+                work,
+                &run.id,
+                ok,
+                output.clone(),
+                record.as_ref(),
+                timed.ms,
+                run.script.as_deref(),
+            ))?;
             return Ok((library::summary(&output), false));
         }
         let output = cap_output(&output, MAX_TOOL_OUTPUT);
-        self.say(&tool_report(work, id, ok, output.clone(), record.as_ref()))?;
+        self.say(&tool_report(
+            work,
+            &run.id,
+            ok,
+            output.clone(),
+            record.as_ref(),
+            timed.ms,
+            run.script.as_deref(),
+        ))?;
         Ok((output, !ok))
+    }
+
+    /// The job that runs `run` here: a library tool with its program, an engine's ACP session, or a built-in tool. The
+    /// job owns what it needs, so it can run on a thread of its own.
+    fn job(&self, work: u64, run: &Run) -> Thunk<'a> {
+        let workspace = self.workspace;
+        let name = run.name.clone();
+        let input = run.input.clone();
+        match run.allowance.program.clone() {
+            Some(program) => Box::new(move || library::run(workspace, &program, &input)),
+            // An engine runs as an ACP session whose every action the hub checks. The hub's launch spec, for an engine
+            // instance the owner configured, comes with the decision.
+            None if name == "code_engine" => {
+                let shared = self.shared;
+                let cancel = Arc::clone(&self.tool_cancel);
+                let call = run.id.clone();
+                let engine = run.allowance.engine.clone();
+                // The engine's MCP server offers the profile's plaza tools, through the hub.
+                let tools = self.profile.as_ref().map_or_else(Vec::new, |profile| {
+                    profile
+                        .tools
+                        .iter()
+                        .filter(|tool| tool.name != tool_search::TOOL)
+                        .cloned()
+                        .collect()
+                });
+                // The prompt parts the engine is told, as its instruction file (see `acp::adapter`).
+                let instructions = self.profile.as_ref().map_or_else(Vec::new, |profile| {
+                    profile
+                        .system_parts
+                        .iter()
+                        .map(|part| part.text.clone())
+                        .collect()
+                });
+                let protocol = self.profile.as_ref().map_or(1, |profile| {
+                    crate::acp::run::protocol_offer(&profile.engine_transport)
+                });
+                Box::new(move || {
+                    // The plaza's VM tools the hub lets run here (code intelligence, tests, library programs)
+                    // run through the same path as the agent's own calls.
+                    let here =
+                        move |name: &str, input: &Value, program: Option<&Program>| match program {
+                            Some(program) => library::run(workspace, program, input),
+                            None => run_guest_tool(workspace, work, name, input),
+                        };
+                    let link = HubLink::new(shared, work, call, &cancel, tools)
+                        .in_vm(here)
+                        .with_instructions(instructions);
+                    crate::acp::run::run(workspace, &input, &link, protocol, engine.as_ref())
+                })
+            }
+            // A helper is started and awaited here: the board runs it on a thread of the agent's scope.
+            None if name == "spawn_helper" => {
+                let board = Arc::clone(&self.helpers);
+                let profile = self.profile.clone();
+                let policy = self.policy.clone();
+                Box::new(move || match profile {
+                    Some(profile) => board.spawn(work, &profile, policy, &input),
+                    None => Err("this agent has no model".to_string()),
+                })
+            }
+            None if name == "await_helper" => {
+                let board = Arc::clone(&self.helpers);
+                Box::new(move || board.await_report(&input))
+            }
+            None => {
+                let shared = self.shared;
+                let call = run.id.clone();
+                Box::new(move || {
+                    let outcome = run_guest_tool(workspace, work, &name, &input);
+                    crate::anchors::surface(shared, workspace, work, &call, &name, &input, outcome)
+                })
+            }
+        }
+    }
+}
+
+/// Why a script was stopped for printing past its output cap.
+fn output_cap_reason() -> String {
+    format!(
+        "printed more than {} KiB; the script was killed",
+        script::MAX_OUTPUT_BYTES >> 10
+    )
+}
+
+/// The step of a call that runs here: what it is, and what it touches.
+fn run_step(
+    workspace: &Workspace,
+    id: &str,
+    name: &str,
+    input: &Value,
+    allowance: Allowance,
+) -> Step {
+    Step::Run(Run {
+        id: id.to_string(),
+        name: name.to_string(),
+        input: input.clone(),
+        touch: tool_batch::touch(workspace, name, input),
+        allowance,
+        script: None,
+    })
+}
+
+/// The step of a call the hub decided: an allowed call runs here under the hub's launch spec, and any other is
+/// settled as its decision says.
+fn decided_step(
+    workspace: &Workspace,
+    id: &str,
+    name: &str,
+    input: &Value,
+    decided: BatchDecision,
+) -> Step {
+    let BatchDecision {
+        decision,
+        output,
+        is_error,
+        program,
+        engine,
+        ..
+    } = decided;
+    match decision {
+        Decision::Allow => run_step(
+            workspace,
+            id,
+            name,
+            input,
+            Allowance {
+                program,
+                engine,
+                policy: None,
+            },
+        ),
+        Decision::Done => Step::Settled(cap_output(&output, MAX_TOOL_OUTPUT), is_error),
+        // Held for the owner (only an ACP engine's requests are held, and those wait on their own nested ids). A
+        // model's call that comes back held is an error it can retry later.
+        Decision::Pending => Step::Settled(
+            "the owner has not decided this tool call yet; try again later".to_string(),
+            true,
+        ),
+        Decision::Deny if output.is_empty() => {
+            Step::Settled("the host denied this tool call".to_string(), true)
+        }
+        Decision::Deny => Step::Settled(output, true),
     }
 }
 
 /// Why a tool call's input cannot run, found without asking the host: the
 /// gateway could not parse the model's arguments, or they are not an object.
-fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
+pub(crate) fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
     if meta.is_some_and(|meta| {
         meta.get("kind").and_then(Value::as_str) == Some("gateway")
             && meta.get("error").and_then(Value::as_str) == Some("INVALID_JSON")
@@ -1245,16 +1885,20 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
     None
 }
 
-/// The names [`run_guest_tool`] serves itself, besides the file tools of [`tools::serve`].
-const GUEST_TOOLS: [&str; 21] = [
-    "bash",
+/// The work id the owner's operator calls run under in the v2 tools: a work item of its own, so the reads and
+/// shell of the agent's work items are not mixed with the owner's.
+const OPERATOR_WORK: u64 = 0;
+
+/// The names [`run_guest_tool`] serves itself, besides the tools of [`tools::serve`].
+const GUEST_TOOLS: [&str; 25] = [
+    "run_script",
+    "read",
+    "edit",
+    "find",
+    "search",
+    "run",
+    "run_tests",
     "install_packages",
-    "multi_edit",
-    "glob",
-    "grep",
-    "bash_start",
-    "bash_output",
-    "bash_kill",
     "todo_write",
     "code_engine",
     "tool_package",
@@ -1267,7 +1911,11 @@ const GUEST_TOOLS: [&str; 21] = [
     "checkpoint_diff",
     "checkpoint_restore",
     "checkpoint_list",
-    "edit_file",
+    "symbols",
+    "definition",
+    "references",
+    "diagnostics",
+    "outline",
 ];
 
 /// True for a tool the harness runs itself, so the VM's own tools: the ones an engine's plaza MCP
@@ -1276,19 +1924,18 @@ pub(crate) fn is_guest_tool(name: &str) -> bool {
     GUEST_TOOLS.contains(&name) || tools::serves(name)
 }
 
-/// Runs a tool the host allowed, under the names the model knows. `edit_file`
-/// takes `old` and `new` from the model, which the file tool calls `find` and
-/// `replace`.
-fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
+/// Runs a tool the host allowed, under the names the model knows.
+pub(crate) fn run_guest_tool(
+    workspace: &Workspace,
+    work: u64,
+    name: &str,
+    input: &Value,
+) -> Outcome {
     match name {
-        "bash" => bash::run(workspace, input),
+        "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
+            v2::serve(workspace, work, name, input).map_err(|err| err.to_string())
+        }
         "install_packages" => bash::install_packages(workspace, input),
-        "multi_edit" => files::multi_edit(workspace, input),
-        "glob" => search_tools::glob(workspace, input),
-        "grep" => search_tools::grep(workspace, input),
-        "bash_start" => shells::start(workspace, input),
-        "bash_output" => shells::output(workspace, input),
-        "bash_kill" => shells::kill(workspace, input),
         "todo_write" => plan::todo_write(workspace, input),
         "tool_package" => library::package(workspace, input),
         "deliver_file" => library::deliver(workspace, input),
@@ -1300,9 +1947,8 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         "checkpoint_diff" => checkpoints::diff(workspace, input),
         "checkpoint_restore" => checkpoints::restore(workspace, input),
         "checkpoint_list" => checkpoints::list(workspace, input),
-        "edit_file" => {
-            let args = edit_args(input)?;
-            tools::serve(workspace, name, &args).map_err(|err| err.to_string())
+        "symbols" | "definition" | "references" | "diagnostics" | "outline" => {
+            crate::code_intel::run(workspace, name, input)
         }
         // The owner's IDE tools come from the hub's operator, never from the model's own calls.
         name if name.starts_with("ide_") => Err(format!(
@@ -1310,20 +1956,6 @@ fn run_guest_tool(workspace: &Workspace, name: &str, input: &Value) -> Outcome {
         )),
         _ => tools::serve(workspace, name, input).map_err(|err| err.to_string()),
     }
-}
-
-/// The file tool's arguments for the model's `{path, old, new}`.
-fn edit_args(input: &Value) -> Result<Value, String> {
-    let (Some(old), Some(new)) = (
-        input.get("old").and_then(Value::as_str),
-        input.get("new").and_then(Value::as_str),
-    ) else {
-        return Err("invalid input: edit_file needs string \"old\" and \"new\"".to_string());
-    };
-    let mut args = input.clone();
-    args["find"] = json!(old);
-    args["replace"] = json!(new);
-    Ok(args)
 }
 
 /// The size of a conversation as it is sent, in bytes.
@@ -1493,7 +2125,7 @@ mod thread_store_tests {
 pub const PAUSED: &str = apz_proto::wire::MODEL_PAUSED;
 
 /// How long to wait before asking again after the `n`-th "paused" answer in a row: 2, 4, 8, 15, then 30 seconds.
-fn paused_wait(n: u32) -> Duration {
+pub(crate) fn paused_wait(n: u32) -> Duration {
     Duration::from_secs(match n {
         0 => 2,
         1 => 4,
@@ -1531,6 +2163,7 @@ mod tests {
         let workspace = scratch("ide-guard");
         let err = run_guest_tool(
             &workspace,
+            1,
             "ide_write",
             &json!({"path": "a.txt", "text": "x", "expected_hash": null}),
         )
@@ -1543,9 +2176,32 @@ mod tests {
         json!({
             "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
             "profile": {
-                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
-                "tools": [{"name": "bash", "description": "run", "input_schema": {"type": "object"}}],
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": [{"name": "run", "description": "run", "input_schema": {"type": "object"}}],
                 "max_turns": max_turns,
+            },
+        })
+        .to_string()
+    }
+
+    /// The tools of a profile that defers one: `bash` in full, `ledger_rows` by name, and `tool_search`.
+    fn deferred_tools() -> Value {
+        json!([
+            {"name": "run", "description": "run", "input_schema": {"type": "object"}},
+            {"name": "ledger_rows", "description": "read the ledger rows", "deferred": true,
+             "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+            {"name": "tool_search", "description": "fetch the schemas of deferred tools", "input_schema": {"type": "object"}},
+        ])
+    }
+
+    /// A welcome whose profile offers `tools`, with the system prompt of [`welcome`].
+    fn welcome_with_tools(tools: Value) -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x",
+                "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": tools, "max_turns": 10,
             },
         })
         .to_string()
@@ -1557,10 +2213,15 @@ mod tests {
     }
 
     fn answer(req: u64, content: Value, stop: &str) -> String {
+        answer_using(req, content, stop, 1)
+    }
+
+    /// The answer to model call `req`, whose context used `input` tokens.
+    fn answer_using(req: u64, content: Value, stop: &str, input: u64) -> String {
         json!({
             "type": "model_result", "req": req, "ok": true,
             "response": {"model": "anthropic/x", "content": content, "stop": stop,
-                         "usage": {"input_tokens": 1, "output_tokens": 1}},
+                         "usage": {"input_tokens": input, "output_tokens": 1}},
         })
         .to_string()
     }
@@ -1611,6 +2272,28 @@ mod tests {
         value
     }
 
+    /// The next line that is not the hub's answer to a memory query: a read or an edit asks the hub which entries are
+    /// anchored to the paths it touched, after it ran. The query is answered with no entries, so the result stays as it was.
+    fn next_past_memory(host: &mut Lines<UnixStream>) -> Value {
+        loop {
+            let value = next_msg(host);
+            if value["type"] == "tool_request" && value["name"] == "memory_anchored" {
+                let call = value["call"].as_str().expect("a call id").to_string();
+                host.send(&json!({"type": "tool_decision", "call": call, "decision": "allow", "output": "{\"entries\":[]}"}).to_string())
+                    .unwrap();
+                continue;
+            }
+            return value;
+        }
+    }
+
+    /// Expects a read's or an edit's `tool_report`, past the memory queries it made.
+    fn expect_report(host: &mut Lines<UnixStream>) -> Value {
+        let value = next_past_memory(host);
+        assert_eq!(value["type"], "tool_report", "{value}");
+        value
+    }
+
     /// Ends the session the way the hub does, and checks the `bye`.
     fn stop(host: &mut Lines<UnixStream>) {
         host.send(r#"{"type":"stop","reason":"test over"}"#)
@@ -1635,6 +2318,7 @@ mod tests {
             &IDENTITY,
             workspace,
             Some("builder"),
+            None,
             HEARTBEAT,
         );
         drop(guest);
@@ -1652,7 +2336,10 @@ mod tests {
                 host.send(&work(1, "task", "t", "say hi")).unwrap();
                 let first = expect_type(host, "model_call");
                 assert_eq!(
-                    (first["req"].clone(), first["request"]["system"].clone()),
+                    (
+                        first["req"].clone(),
+                        first["request"]["system_parts"][0]["text"].clone()
+                    ),
                     (json!(1), json!("be brief"))
                 );
                 assert_eq!(
@@ -1661,7 +2348,7 @@ mod tests {
                 );
                 host.send(&answer(
                     1,
-                    json!([tool_use("t1", "bash", json!({"command": "echo hi"}))]),
+                    json!([tool_use("t1", "run", json!({"command": "echo hi"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -1671,18 +2358,18 @@ mod tests {
                         batch["calls"][0]["call"].clone(),
                         batch["calls"][0]["name"].clone()
                     ),
-                    (json!("t1"), json!("bash"))
+                    (json!("t1"), json!("run"))
                 );
                 host.send(&decision("t1", "allow", "", false)).unwrap();
                 let report = expect_type(host, "tool_report");
                 assert_eq!(
                     (report["ok"].clone(), report["output"].clone()),
-                    (json!(true), json!("hi\nexit 0"))
+                    (json!(true), json!(r#"{"exit":0,"output":"hi\n"}"#))
                 );
                 let second = expect_type(host, "model_call");
                 assert_eq!(
                     second["request"]["messages"][2]["content"][0]["content"],
-                    "hi\nexit 0"
+                    r#"{"exit":0,"output":"hi\n"}"#
                 );
                 host.send(&answer(2, json!([text("all done")]), "end_turn"))
                     .unwrap();
@@ -1733,7 +2420,7 @@ mod tests {
                 expect_type(host, "model_call");
                 host.send(&answer(
                     1,
-                    json!([tool_use("d1", "bash", json!({"command": "rm -rf /"}))]),
+                    json!([tool_use("d1", "run", json!({"command": "rm -rf /"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -1765,7 +2452,7 @@ mod tests {
                 .map(|n| {
                     tool_use(
                         &format!("f{n}"),
-                        "bash",
+                        "run",
                         json!({"command": format!("echo {n}")}),
                     )
                 })
@@ -1790,7 +2477,10 @@ mod tests {
                 let report = expect_type(host, "tool_report");
                 assert_eq!(
                     (report["call"].clone(), report["output"].clone()),
-                    (json!(format!("f{n}")), json!(format!("{n}\nexit 0"))),
+                    (
+                        json!(format!("f{n}")),
+                        json!(format!(r#"{{"exit":0,"output":"{n}\n"}}"#))
+                    ),
                     "{report}"
                 );
                 assert!(report.get("policy").is_none(), "{report}");
@@ -1814,14 +2504,14 @@ mod tests {
         let workspace = scratch("local");
         run_hub(&workspace, |host| {
             host.send(&welcome(10)).unwrap();
-            host.send(&policy_line("p1", &["bash"])).unwrap();
+            host.send(&policy_line("p1", &["run"])).unwrap();
             host.send(&work(1, "task", "t", "five things")).unwrap();
             expect_type(host, "model_call");
             let calls: Vec<Value> = (1..=5)
                 .map(|n| {
                     tool_use(
                         &format!("l{n}"),
-                        "bash",
+                        "run",
                         json!({"command": format!("echo {n}")}),
                     )
                 })
@@ -1841,9 +2531,9 @@ mod tests {
                     ),
                     (
                         json!(format!("l{n}")),
-                        json!(format!("{n}\nexit 0")),
+                        json!(format!(r#"{{"exit":0,"output":"{n}\n"}}"#)),
                         json!("p1"),
-                        json!("bash"),
+                        json!("run"),
                         json!({"command": format!("echo {n}")}),
                     ),
                     "{report}"
@@ -1862,15 +2552,15 @@ mod tests {
         let workspace = scratch("mixed");
         run_hub(&workspace, |host| {
             host.send(&welcome(10)).unwrap();
-            host.send(&policy_line("p2", &["bash"])).unwrap();
+            host.send(&policy_line("p2", &["run"])).unwrap();
             host.send(&work(1, "task", "t", "mixed")).unwrap();
             expect_type(host, "model_call");
             host.send(&answer(
                 1,
                 json!([
-                    tool_use("m1", "bash", json!({"command": "echo 1"})),
+                    tool_use("m1", "run", json!({"command": "echo 1"})),
                     tool_use("m2", "search", json!({"pattern": "x"})),
-                    tool_use("m3", "bash", json!({"command": "echo 3"})),
+                    tool_use("m3", "run", json!({"command": "echo 3"})),
                 ]),
                 "tool_use",
             ))
@@ -1882,7 +2572,10 @@ mod tests {
             host.send(&batch_answer(1, vec![entry("m2", "done", "3 hits", false)]))
                 .unwrap();
             // The two bash calls run after the answer, in order, each reported under the policy.
-            for (call, output) in [("m1", "1\nexit 0"), ("m3", "3\nexit 0")] {
+            for (call, output) in [
+                ("m1", r#"{"exit":0,"output":"1\n"}"#),
+                ("m3", r#"{"exit":0,"output":"3\n"}"#),
+            ] {
                 let report = expect_type(host, "tool_report");
                 assert_eq!(
                     (
@@ -1904,7 +2597,11 @@ mod tests {
                 .collect();
             assert_eq!(
                 contents,
-                vec![json!("1\nexit 0"), json!("3 hits"), json!("3\nexit 0")],
+                vec![
+                    json!(r#"{"exit":0,"output":"1\n"}"#),
+                    json!("3 hits"),
+                    json!(r#"{"exit":0,"output":"3\n"}"#)
+                ],
                 "{results}"
             );
             host.send(&answer(2, json!([text("done")]), "end_turn"))
@@ -1925,7 +2622,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&answer(
                 1,
-                json!([tool_use("h1", "bash", json!({"command": "echo 1"}))]),
+                json!([tool_use("h1", "run", json!({"command": "echo 1"}))]),
                 "tool_use",
             ))
             .unwrap();
@@ -1936,6 +2633,79 @@ mod tests {
             assert!(report.get("policy").is_none(), "{report}");
             expect_type(host, "model_call");
             host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_deferred_tool_is_fetched_through_tool_search_and_then_offered_in_full() {
+        let workspace = scratch("tool-search");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(deferred_tools())).unwrap();
+            host.send(&work(1, "task", "t", "find the rows")).unwrap();
+            let first = expect_type(host, "model_call");
+            // The index: the deferred tool by name with an empty schema, the others as they are.
+            assert_eq!(first["request"]["tools"][1]["name"], "ledger_rows");
+            assert_eq!(
+                first["request"]["tools"][1]["input_schema"],
+                json!({"type": "object"})
+            );
+            assert_eq!(first["request"]["cache_last_message"], true);
+            host.send(&answer(
+                1,
+                json!([tool_use("s1", "tool_search", json!({"query": "ledger"}))]),
+                "tool_use",
+            ))
+            .unwrap();
+            // The harness answers the search itself: no tool batch goes to the hub.
+            let second = expect_type(host, "model_call");
+            let result = &second["request"]["messages"][2]["content"][0];
+            assert_eq!(result["is_error"], false, "{second}");
+            assert!(
+                result["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(r#""path""#)),
+                "{second}"
+            );
+            // From now on the schema is in the request.
+            assert_eq!(
+                second["request"]["tools"][1]["input_schema"]["properties"]["path"]["type"],
+                "string"
+            );
+            assert!(second["request"]["tools"][1].get("deferred").is_none());
+            host.send(&answer(2, json!([text("found")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_deferred_tool_called_before_its_fetch_is_refused_here() {
+        let workspace = scratch("tool-search-refused");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(deferred_tools())).unwrap();
+            host.send(&work(1, "task", "t", "read the rows")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([tool_use("d1", "ledger_rows", json!({"path": "rows.csv"}))]),
+                "tool_use",
+            ))
+            .unwrap();
+            // Refused without a batch to the hub, and the model reads why.
+            let second = expect_type(host, "model_call");
+            let result = &second["request"]["messages"][2]["content"][0];
+            assert_eq!(result["is_error"], true, "{second}");
+            assert!(
+                result["content"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("fetch its schema with tool_search first")),
+                "{second}"
+            );
+            host.send(&answer(2, json!([text("gave up")]), "end_turn"))
                 .unwrap();
             expect_type(host, "work_done");
             stop(host);
@@ -1962,7 +2732,10 @@ mod tests {
             host.send(&json!({"type": "profile", "profile": profile}).to_string())
                 .unwrap();
             let call = expect_type(host, "model_call");
-            assert_eq!(call["request"]["system"], "be brief", "{call}");
+            assert_eq!(
+                call["request"]["system_parts"][0]["text"], "be brief",
+                "{call}"
+            );
             host.send(&answer(1, json!([text("hi back")]), "end_turn"))
                 .unwrap();
             let done = expect_type(host, "work_done");
@@ -1983,7 +2756,7 @@ mod tests {
         json!({
             "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
             "profile": {
-                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
                 "tools": [{"name": "search", "description": "find", "input_schema": {"type": "object"}}],
                 "max_turns": 10, "compress_at": 1, "keep_recent": 1,
             },
@@ -2000,7 +2773,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&control(
                 1,
-                json!({"action": "steer", "from": "mayor", "text": "focus on the parser"}),
+                json!({"action": "steer", "from": "orchestrator", "text": "focus on the parser"}),
             ))
             .unwrap();
             host.send(&answer(
@@ -2014,12 +2787,89 @@ mod tests {
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
             assert_eq!(
-                results[1]["text"], "[note from mayor]: focus on the parser",
+                results[1]["text"], "[note from orchestrator]: focus on the parser",
                 "{results}"
             );
             host.send(&answer(2, json!([text("found")]), "end_turn"))
                 .unwrap();
             expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    fn step_welcome(max_turns: u32) -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system": "be brief",
+                "tools": [{"name": "handover_write", "description": "hand over", "input_schema": {"type": "object"}}],
+                "max_turns": max_turns, "handover": true,
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_step_that_ends_without_a_handover_is_asked_for_one_twice_and_then_ends() {
+        let workspace = scratch("handover-asks");
+        run_hub(&workspace, |host| {
+            host.send(&step_welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(1, json!([text("done")]), "end_turn"))
+                .unwrap();
+            let first = expect_type(host, "model_call");
+            let messages = &first["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(3), "{messages}");
+            assert!(
+                messages[2]["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("Write your handover with handover_write")),
+                "{messages}"
+            );
+            host.send(&answer(2, json!([text("still done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(3, json!([text("done again")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["status"], "done", "{done}");
+            assert_eq!(done["summary"], "done again", "{done}");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_step_ends_at_once_once_it_wrote_its_handover_or_says_the_task_is_done() {
+        let workspace = scratch("handover-written");
+        run_hub(&workspace, |host| {
+            host.send(&step_welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "h1",
+                    "handover_write",
+                    json!({"stands": "s", "done": "d", "next": "n"})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&decision("h1", "done", "handover recorded", false))
+                .unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("written")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["status"], "done", "{done}");
+            host.send(&work(2, "task", "t", "again")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(3, json!([text("TASK DONE")]), "end_turn"))
+                .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["summary"], "TASK DONE", "{done}");
             stop(host);
         });
     }
@@ -2075,6 +2925,154 @@ mod tests {
         });
     }
 
+    /// A profile that compacts once its last call used 70 % of a 1000-token window; it has no byte threshold.
+    fn windowed_welcome() -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": [{"name": "search", "description": "find", "input_schema": {"type": "object"}}],
+                "max_turns": 20, "compress_at": 0, "keep_recent": 1,
+                "compact_at_pct": 70, "context_window": 1000,
+            },
+        })
+        .to_string()
+    }
+
+    /// One turn of a windowed session: the call (request `req`) asks for the search `id`, which runs, and its
+    /// context used 800 of the window's 1000 tokens.
+    fn windowed_turn(host: &mut Lines<UnixStream>, req: u64, id: &str) {
+        expect_type(host, "model_call");
+        host.send(&answer_using(
+            req,
+            json!([tool_use(id, "search", json!({"pattern": id}))]),
+            "tool_use",
+            800,
+        ))
+        .unwrap();
+        expect_type(host, "tool_batch");
+        host.send(&decision(id, "done", "hits", false)).unwrap();
+    }
+
+    /// A compaction: the summary call (request `req`) is answered with `summary`. Returns the call and the
+    /// `compressed` message.
+    fn compaction(host: &mut Lines<UnixStream>, req: u64, summary: &str) -> (Value, Value) {
+        let call = expect_type(host, "model_call");
+        let asked = call["request"]["messages"][0]["content"][0]["text"].to_string();
+        assert!(
+            asked.contains("Summarize")
+                && [
+                    "Decisions",
+                    "Dead ends",
+                    "Open questions",
+                    "Where it stands"
+                ]
+                .iter()
+                .all(|part| asked.contains(part)),
+            "{asked}"
+        );
+        host.send(&answer_using(req, json!([text(summary)]), "end_turn", 1))
+            .unwrap();
+        (call, expect_type(host, "compressed"))
+    }
+
+    #[test]
+    fn a_context_under_the_share_of_the_window_is_not_compressed() {
+        let workspace = scratch("under-share");
+        run_hub(&workspace, |host| {
+            host.send(&windowed_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            for (req, id) in [(1, "s1"), (2, "s2")] {
+                expect_type(host, "model_call");
+                host.send(&answer_using(
+                    req,
+                    json!([tool_use(id, "search", json!({"pattern": id}))]),
+                    "tool_use",
+                    600,
+                ))
+                .unwrap();
+                expect_type(host, "tool_batch");
+                host.send(&decision(id, "done", "hits", false)).unwrap();
+            }
+            // 600 of 1000 is under 70 %: the next call sees the whole conversation, with no summary asked.
+            let next = expect_type(host, "model_call");
+            assert_eq!(
+                next["request"]["messages"].as_array().map(Vec::len),
+                Some(5),
+                "{next}"
+            );
+            host.send(&answer_using(3, json!([text("done")]), "end_turn", 600))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_decision_survives_three_compactions_of_the_context() {
+        let workspace = scratch("three-compactions");
+        run_hub(&workspace, |host| {
+            host.send(&windowed_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "decide how agents are named"))
+                .unwrap();
+            // Two turns first: a compaction folds only what is older than the latest turn.
+            windowed_turn(host, 1, "s1");
+            windowed_turn(host, 2, "s2");
+            let first = "Decisions: sessions, not named agents, because a seat is a session with its own history.\nDead ends: none.\nOpen questions: none.\nWhere it stands: the naming is settled.";
+            let (_, compressed) = compaction(host, 3, first);
+            assert_eq!(
+                (compressed["folded"].clone(), compressed["reason"].clone()),
+                (json!(2), json!("auto")),
+                "{compressed}"
+            );
+            assert!(
+                compressed["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains("sessions, not named agents")),
+                "{compressed}"
+            );
+            windowed_turn(host, 4, "s3");
+            // The second summary is asked for with the first one in its transcript: the decision carries forward.
+            let (second_call, _) = compaction(
+                host,
+                5,
+                "Decisions: sessions, not named agents (a seat is a session).\nDead ends: none.\nOpen questions: none.\nWhere it stands: naming settled, two turns folded.",
+            );
+            assert!(
+                second_call["request"]["messages"][0]["content"][0]["text"]
+                    .to_string()
+                    .contains("sessions, not named agents"),
+                "{second_call}"
+            );
+            windowed_turn(host, 6, "s4");
+            let (_, third) = compaction(
+                host,
+                7,
+                "Decisions: sessions, not named agents (a seat is a session).\nDead ends: none.\nOpen questions: none.\nWhere it stands: naming settled, three compactions in.",
+            );
+            assert_eq!(third["folded"], json!(2), "{third}");
+            // The call after the third compaction answers from the summary, not from the folded turns.
+            let answering = expect_type(host, "model_call");
+            let messages = &answering["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(3), "{messages}");
+            assert!(
+                messages[0]
+                    .to_string()
+                    .contains("sessions, not named agents"),
+                "{messages}"
+            );
+            host.send(&answer_using(
+                8,
+                json!([text("We decided on sessions, not named agents.")]),
+                "end_turn",
+                1,
+            ))
+            .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
     #[test]
     fn malformed_tool_input_is_refused_without_asking_the_host() {
         let workspace = scratch("invalid");
@@ -2082,8 +3080,8 @@ mod tests {
             host.send(&welcome(10)).unwrap();
             host.send(&work(1, "task", "t", "go")).unwrap();
             expect_type(host, "model_call");
-            let not_an_object = tool_use("i1", "bash", json!("ls"));
-            let gateway_meta = json!({"type": "tool_use", "id": "i2", "name": "bash", "input": {},
+            let not_an_object = tool_use("i1", "run", json!("ls"));
+            let gateway_meta = json!({"type": "tool_use", "id": "i2", "name": "run", "input": {},
                                       "meta": {"kind": "gateway", "error": "INVALID_JSON"}});
             host.send(&answer(1, json!([not_an_object, gateway_meta]), "tool_use"))
                 .unwrap();
@@ -2196,7 +3194,7 @@ mod tests {
                     let call = format!("s{req}");
                     host.send(&answer(
                         req,
-                        json!([tool_use(&call, "bash", json!({"command": "x"}))]),
+                        json!([tool_use(&call, "run", json!({"command": "x"}))]),
                         "tool_use",
                     ))
                     .unwrap();
@@ -2208,7 +3206,7 @@ mod tests {
                     (done["status"].clone(), done["summary"].clone()),
                     (
                         json!("stopped"),
-                        json!("stuck: bash failed 3 times in a row with the same input")
+                        json!("stuck: run failed 3 times in a row with the same input")
                     )
                 );
                 stop(host);
@@ -2229,7 +3227,7 @@ mod tests {
                     .unwrap();
                 host.send(&answer(
                     1,
-                    json!([tool_use("c1", "bash", json!({"command": "echo hi"}))]),
+                    json!([tool_use("c1", "run", json!({"command": "echo hi"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -2253,7 +3251,7 @@ mod tests {
                 expect_type(host, "model_call");
                 host.send(&answer(
                     1,
-                    json!([tool_use("c1", "bash", json!({"command": "sleep 1"}))]),
+                    json!([tool_use("c1", "run", json!({"command": "sleep 1"}))]),
                     "tool_use",
                 ))
                 .unwrap();
@@ -2411,7 +3409,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&answer(
                 1,
-                json!([tool_use("slow", "bash", json!({"command": "sleep 1"}))]),
+                json!([tool_use("slow", "run", json!({"command": "sleep 1"}))]),
                 "tool_use",
             ))
             .unwrap();
@@ -2468,17 +3466,21 @@ mod tests {
     }
 
     #[test]
-    fn the_model_edit_arguments_map_onto_the_file_tools_names() {
-        let mapped = edit_args(&json!({"path": "a.txt", "old": "x", "new": "y"})).unwrap();
-        assert_eq!(
-            (mapped["find"].clone(), mapped["replace"].clone()),
-            (json!("x"), json!("y"))
-        );
-        assert!(
-            edit_args(&json!({"path": "a.txt", "old": "x"}))
-                .unwrap_err()
-                .starts_with("invalid input:")
-        );
+    fn the_v2_tools_are_served_here_and_the_v1_names_are_not() {
+        let workspace = scratch("v2-served");
+        std::fs::write(workspace.dir().join("a.txt"), "one\ntwo\n").expect("a scratch file");
+        let out = run_guest_tool(
+            &workspace,
+            1,
+            "read",
+            &json!({"files": [{"path": "a.txt"}]}),
+        )
+        .expect("a read");
+        let reply: Value = serde_json::from_str(&out).expect("JSON");
+        assert_eq!(reply["files"][0]["lines"], 2, "{reply}");
+        let err = run_guest_tool(&workspace, 1, "read_file", &json!({"path": "a.txt"}))
+            .expect_err("read_file is gone");
+        assert_eq!(err, "no such tool: read_file");
     }
 
     /// A `/proc/<pid>/stat` line as the kernel writes it, with a name that holds a space and a bracket.
@@ -2531,6 +3533,328 @@ mod tests {
         );
     }
 
+    /// A named pipe in the workspace. A read of it waits until a writer opens and closes it, so a read takes as long as
+    /// the writer keeps it waiting.
+    fn pipe(workspace: &Workspace, name: &str) -> std::path::PathBuf {
+        let path = workspace.dir().join(name);
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success(), "mkfifo {name}");
+        path
+    }
+
+    /// One fragment of model call `req`'s answer, as the hub sends it while the answer streams.
+    fn fragment(req: u64, delta: Value) -> String {
+        json!({"type": "model_delta", "req": req, "delta": delta}).to_string()
+    }
+
+    #[test]
+    fn a_read_shows_the_entries_anchored_to_its_file_once_per_work_item() {
+        let workspace = scratch("anchored-read");
+        std::fs::write(
+            workspace.dir().join("placement.rs"),
+            "fn move_claimed() {}\n",
+        )
+        .unwrap();
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("reads", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "read the placement"))
+                .unwrap();
+            expect_type(host, "model_call");
+            let read =
+                |call: &str| tool_use(call, "read", json!({"files": [{"path": "placement.rs"}]}));
+            host.send(&answer(1, json!([read("r1")]), "tool_use"))
+                .unwrap();
+            // The first read asks the hub which entries are anchored to the file, and shows the one it answers with.
+            let asked = expect_type(host, "tool_request");
+            assert_eq!(asked["name"], "memory_anchored", "{asked}");
+            assert_eq!(asked["input"]["paths"], json!(["placement.rs"]));
+            let entry = json!({"id": "P-0017", "kind": "pitfall", "status": "active", "title": "A move releases its claim", "text": "Release it first."});
+            host.send(&json!({"type": "tool_decision", "call": asked["call"], "decision": "allow", "output": json!({"entries": [entry]}).to_string()}).to_string()).unwrap();
+            let report = expect_type(host, "tool_report");
+            let output: Value = serde_json::from_str(report["output"].as_str().unwrap()).unwrap();
+            assert_eq!(output["memory"][0]["id"], "P-0017", "{report}");
+            // A second read of the file in the same work item asks no more, and shows nothing new.
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([read("r2")]), "tool_use"))
+                .unwrap();
+            let again = expect_type(host, "tool_report");
+            let output: Value = serde_json::from_str(again["output"].as_str().unwrap()).unwrap();
+            assert!(output.get("memory").is_none(), "{again}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn five_reads_of_different_files_finish_the_turn_in_about_one_read() {
+        let workspace = scratch("five-reads");
+        // Each file is a pipe that a writer fills 300 ms after a read opens it, so one read takes 300 ms.
+        let names: Vec<String> = (1..=5).map(|n| format!("slow{n}.txt")).collect();
+        for name in &names {
+            let path = pipe(&workspace, name);
+            thread::spawn(move || {
+                let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                    return;
+                };
+                thread::sleep(Duration::from_millis(300));
+                let _ = writer.write_all(b"slow\n");
+            });
+        }
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("reads", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "read five")).unwrap();
+            expect_type(host, "model_call");
+            let calls: Vec<Value> = names
+                .iter()
+                .enumerate()
+                .map(|(n, name)| {
+                    tool_use(&format!("r{n}"), "read", json!({"files": [{"path": name}]}))
+                })
+                .collect();
+            let asked = Instant::now();
+            host.send(&answer(1, json!(calls), "tool_use")).unwrap();
+            // The reports go out in the answer's order, once all five reads are done.
+            for n in 0..5 {
+                let report = expect_report(host);
+                assert_eq!(
+                    (report["call"].clone(), report["ok"].clone()),
+                    (json!(format!("r{n}")), json!(true)),
+                    "{report}"
+                );
+            }
+            expect_type(host, "model_call");
+            let took = asked.elapsed();
+            assert!(
+                took < Duration::from_millis(900),
+                "five reads took {took:?}; one read takes 300 ms"
+            );
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn two_edits_of_one_file_keep_their_order() {
+        let workspace = scratch("two-edits");
+        let notes = workspace.dir().join("notes.txt");
+        std::fs::write(&notes, "a").unwrap();
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("edits", &["edit"])).unwrap();
+            host.send(&work(1, "task", "t", "edit twice")).unwrap();
+            expect_type(host, "model_call");
+            // The second edit finds "b" only once the first has written it.
+            host.send(&answer(
+                1,
+                json!([
+                    tool_use(
+                        "e1",
+                        "edit",
+                        json!({"edits": [{"path": "notes.txt", "old": "a", "new": "b"}]})
+                    ),
+                    tool_use(
+                        "e2",
+                        "edit",
+                        json!({"edits": [{"path": "notes.txt", "old": "b", "new": "c"}]})
+                    ),
+                ]),
+                "tool_use",
+            ))
+            .unwrap();
+            for call in ["e1", "e2"] {
+                let report = expect_report(host);
+                assert_eq!(
+                    (report["call"].clone(), report["ok"].clone()),
+                    (json!(call), json!(true)),
+                    "{report}"
+                );
+            }
+            expect_type(host, "model_call");
+            assert_eq!(std::fs::read_to_string(&notes).unwrap(), "c");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_read_whose_call_is_whole_starts_before_the_answer_ends_and_its_result_is_the_one_reported()
+    {
+        let workspace = scratch("ahead");
+        let path = pipe(&workspace, "ahead.txt");
+        // The writer opens the pipe, which only a running read does, and writes once the test says so.
+        let (opened, reader_opened) = mpsc::channel();
+        let (go, write_now) = mpsc::channel::<()>();
+        thread::spawn(move || {
+            let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                return;
+            };
+            let _ = opened.send(());
+            if write_now.recv().is_ok() {
+                let _ = writer.write_all(b"early data\n");
+            }
+        });
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("ahead", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "read ahead")).unwrap();
+            expect_type(host, "model_call");
+            // The answer streams the read as a whole call: its start, its input and its end.
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_use", "name": "read", "index": 0, "id": "r1"}),
+            ))
+            .unwrap();
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_input", "index": 0, "json": "{\"files\": [{\"path\": \"ahead.txt\"}]}"}),
+            ))
+            .unwrap();
+            host.send(&fragment(1, json!({"type": "block_end", "index": 0})))
+                .unwrap();
+            // The read has started while the answer is still to come.
+            reader_opened
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the read started before the answer ended");
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "r1",
+                    "read",
+                    json!({"files": [{"path": "ahead.txt"}]})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            // The writer writes only now, so the read's result can only be the one it started with.
+            go.send(()).unwrap();
+            let report = expect_report(host);
+            assert_eq!(report["call"], "r1", "{report}");
+            assert!(
+                report["output"]
+                    .as_str()
+                    .is_some_and(|output| output.contains("early data")),
+                "{report}"
+            );
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_write_never_starts_before_the_answer_ends() {
+        let workspace = scratch("ahead-write");
+        std::fs::write(workspace.dir().join("w.txt"), "a").unwrap();
+        let file = workspace.dir().join("w.txt");
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&policy_line("write", &["edit"])).unwrap();
+            host.send(&work(1, "task", "t", "edit")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_use", "name": "edit", "index": 0, "id": "w1"}),
+            ))
+            .unwrap();
+            host.send(&fragment(1, json!({"type": "tool_input", "index": 0, "json": "{\"edits\": [{\"path\": \"w.txt\", \"old\": \"a\", \"new\": \"b\"}]}"})))
+                .unwrap();
+            host.send(&fragment(1, json!({"type": "block_end", "index": 0})))
+                .unwrap();
+            // A write that had started early would have landed by now.
+            thread::sleep(Duration::from_millis(300));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "a");
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "w1",
+                    "edit",
+                    json!({"edits": [{"path": "w.txt", "old": "a", "new": "b"}]})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            let report = expect_report(host);
+            assert_eq!(report["ok"], json!(true), "{report}");
+            expect_type(host, "model_call");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "b");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_read_the_policy_does_not_allow_never_starts_before_the_answer_ends() {
+        let workspace = scratch("ahead-held");
+        let path = pipe(&workspace, "held.txt");
+        let (opened, reader_opened) = mpsc::channel();
+        thread::spawn(move || {
+            let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                return;
+            };
+            let _ = opened.send(());
+            let _ = writer.write_all(b"held\n");
+        });
+        run_hub(&workspace, move |host| {
+            host.send(&welcome(10)).unwrap();
+            // STOP ALL: an empty policy allows nothing, so the read goes to the hub with the rest of the answer.
+            host.send(&policy_line("held", &[])).unwrap();
+            host.send(&work(1, "task", "t", "read held")).unwrap();
+            expect_type(host, "model_call");
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_use", "name": "read", "index": 0, "id": "h1"}),
+            ))
+            .unwrap();
+            host.send(&fragment(
+                1,
+                json!({"type": "tool_input", "index": 0, "json": "{\"files\": [{\"path\": \"held.txt\"}]}"}),
+            ))
+            .unwrap();
+            host.send(&fragment(1, json!({"type": "block_end", "index": 0})))
+                .unwrap();
+            // Nothing opens the pipe before the answer is in.
+            assert!(
+                reader_opened
+                    .recv_timeout(Duration::from_millis(300))
+                    .is_err(),
+                "the read ran before the answer ended"
+            );
+            host.send(&answer(
+                1,
+                json!([tool_use(
+                    "h1",
+                    "read",
+                    json!({"files": [{"path": "held.txt"}]})
+                )]),
+                "tool_use",
+            ))
+            .unwrap();
+            let batch = expect_type(host, "tool_batch");
+            assert_eq!(batch["calls"][0]["call"], "h1", "{batch}");
+            host.send(&decision("h1", "allow", "", false)).unwrap();
+            let report = expect_report(host);
+            assert!(report.get("policy").is_none(), "{report}");
+            expect_type(host, "model_call");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
     #[test]
     fn a_stats_report_reads_the_process_table_it_is_given() {
         let dir = std::env::temp_dir().join(format!("apz-proc-{}", std::process::id()));
@@ -2551,5 +3875,284 @@ mod tests {
                 rss_mib: 200.0,
             }]
         );
+    }
+
+    #[test]
+    fn a_tool_report_carries_how_long_its_call_ran_and_a_timed_run_keeps_its_outcome() {
+        let report = tool_report(1, "toolu_1", true, "ok".into(), None, 7, None);
+        assert_eq!(
+            report,
+            GuestMessage::ToolReport {
+                work: 1,
+                call: "toolu_1".into(),
+                ok: true,
+                output: "ok".into(),
+                policy: None,
+                name: None,
+                input: None,
+                duration_ms: Some(7),
+                script: None,
+            }
+        );
+        let timed = Timed::run(|| {
+            thread::sleep(Duration::from_millis(20));
+            Err("late".to_string())
+        });
+        assert_eq!(timed.outcome, Err("late".to_string()));
+        assert!(timed.ms >= 20, "{}", timed.ms);
+    }
+
+    /// A profile that offers the tools the script tests call: `read`, `run`, `tool_search`, and `run_script`.
+    fn script_tools() -> Value {
+        json!([
+            {"name": "read", "description": "read files", "input_schema": {"type": "object", "properties": {"files": {"type": "array"}}}},
+            {"name": "run", "description": "run a command", "input_schema": {"type": "object"}},
+            {"name": "tool_search", "description": "fetch the schemas of deferred tools", "input_schema": {"type": "object"}},
+            {"name": "run_script", "description": "run a script", "input_schema": {"type": "object"}},
+        ])
+    }
+
+    /// The `run_script` call a model makes with `language` and `code`, and an optional time limit.
+    fn script_use(id: &str, language: &str, code: &str, timeout_s: Option<u64>) -> Value {
+        let mut input = json!({"language": language, "code": code});
+        if let Some(seconds) = timeout_s {
+            input["timeout_s"] = json!(seconds);
+        }
+        tool_use(id, "run_script", input)
+    }
+
+    /// The ten-file survey: read each file, keep the names of those with an error, and set the summary.
+    const SURVEY: &str = "rows = []\nfor n in range(10):\n    text = read({\"files\": [{\"path\": \"f%d.txt\" % n}]})\n    if \"ERROR\" in text:\n        rows.append(\"f%d.txt\" % n)\nresult({\"files\": 10, \"with_errors\": rows})\n";
+
+    #[test]
+    fn a_ten_file_survey_is_one_model_call_and_its_reads_run_under_the_policy() {
+        let workspace = scratch("survey");
+        for n in 0..10 {
+            let body = if n == 3 || n == 7 {
+                "ERROR: bad row\n"
+            } else {
+                "fine\n"
+            };
+            std::fs::write(workspace.dir().join(format!("f{n}.txt")), body).unwrap();
+        }
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("survey", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "survey the files"))
+                .unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([script_use("s1", "python", SURVEY, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            // The script is not under the policy: the hub decides it, once.
+            let batch = expect_type(host, "tool_batch");
+            assert_eq!(batch["calls"][0]["name"], "run_script", "{batch}");
+            host.send(&batch_answer(1, vec![entry("s1", "allow", "", false)]))
+                .unwrap();
+            // Its ten reads run here under the policy, each reported under the script call.
+            for n in 0..10 {
+                let report = expect_report(host);
+                assert_eq!(report["call"], json!(format!("s1.{}", n + 1)), "{report}");
+                assert_eq!(report["script"], "s1", "{report}");
+                assert_eq!(report["policy"], "survey", "{report}");
+                assert_eq!(report["name"], "read", "{report}");
+            }
+            // The script's own call is reported when it returns, under no policy: the hub allowed it.
+            let outer = expect_report(host);
+            assert_eq!(outer["call"], "s1", "{outer}");
+            assert!(
+                outer.get("policy").is_none() && outer.get("script").is_none(),
+                "{outer}"
+            );
+            let value: Value = serde_json::from_str(outer["output"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                value,
+                json!({"files": 10, "with_errors": ["f3.txt", "f7.txt"]}),
+                "{outer}"
+            );
+            // The model's next call sees the summary as the script call's result, and nothing of the ten reads.
+            let next = expect_type(host, "model_call");
+            let seen = next.to_string();
+            assert!(seen.contains("with_errors"), "{seen}");
+            assert!(!seen.contains("bad row"), "{seen}");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_call_outside_the_policy_goes_to_the_hub_in_a_batch_of_its_own() {
+        let workspace = scratch("script-hub");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("reads", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "run one command")).unwrap();
+            expect_type(host, "model_call");
+            let code = "result(run({\"command\": \"echo hi\"}))\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s2", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            let outer = expect_type(host, "tool_batch");
+            assert_eq!(outer["calls"][0]["name"], "run_script", "{outer}");
+            host.send(&batch_answer(1, vec![entry("s2", "allow", "", false)]))
+                .unwrap();
+            // The script's `run` is not under the policy: it goes to the hub, alone, under its own call id.
+            let inner = expect_type(host, "tool_batch");
+            assert_eq!(inner["calls"].as_array().map(Vec::len), Some(1), "{inner}");
+            assert_eq!(inner["calls"][0]["call"], "s2.1", "{inner}");
+            assert_eq!(inner["calls"][0]["name"], "run", "{inner}");
+            host.send(&batch_answer(1, vec![entry("s2.1", "allow", "", false)]))
+                .unwrap();
+            // The hub allowed it, so it runs here, reported under the script call.
+            let report = expect_report(host);
+            assert_eq!(report["call"], "s2.1", "{report}");
+            assert_eq!(report["script"], "s2", "{report}");
+            assert!(report.get("policy").is_none(), "{report}");
+            let outer = expect_report(host);
+            assert_eq!(outer["call"], "s2", "{outer}");
+            assert!(outer["output"].as_str().unwrap().contains("hi"), "{outer}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_call_the_hub_denies_raises_in_the_script_and_its_message_comes_back() {
+        let workspace = scratch("script-denied");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "try one command")).unwrap();
+            expect_type(host, "model_call");
+            let code = "try:\n    run({\"command\": \"rm -rf /\"})\nexcept PlazaError as err:\n    result(str(err))\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s3", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s3", "allow", "", false)]))
+                .unwrap();
+            let inner = expect_type(host, "tool_batch");
+            assert_eq!(inner["calls"][0]["call"], "s3.1", "{inner}");
+            host.send(&batch_answer(
+                1,
+                vec![entry("s3.1", "deny", "the owner denied it", true)],
+            ))
+            .unwrap();
+            // The denial is the script's to catch: its message is the script's value, and no report is made for it.
+            let outer = expect_report(host);
+            assert_eq!(outer["call"], "s3", "{outer}");
+            assert_eq!(outer["output"], "the owner denied it", "{outer}");
+            assert_eq!(outer["ok"], true, "{outer}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_past_its_time_is_stopped_and_its_call_says_so() {
+        let workspace = scratch("script-time");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "wait")).unwrap();
+            expect_type(host, "model_call");
+            let code = "import time\ntime.sleep(60)\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s4", "python", code, Some(1))]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s4", "allow", "", false)]))
+                .unwrap();
+            let started = Instant::now();
+            let outer = expect_report(host);
+            assert_eq!(outer["ok"], false, "{outer}");
+            assert!(
+                outer["output"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("[timed out after 1 s; the script was killed]"),
+                "{outer}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "{:?}",
+                started.elapsed()
+            );
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_past_its_output_cap_is_stopped_and_its_call_says_so() {
+        let workspace = scratch("script-output");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "print a lot")).unwrap();
+            expect_type(host, "model_call");
+            // 3000 lines of 101 bytes: more than the 256 KiB the script may print.
+            let code = "for i in range(3000):\n    print('x' * 100)\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s5", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s5", "allow", "", false)]))
+                .unwrap();
+            let outer = expect_report(host);
+            assert_eq!(outer["ok"], false, "{outer}");
+            assert!(
+                outer["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("printed more than 256 KiB"),
+                "{outer}"
+            );
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_makes_at_most_fifty_calls_and_the_rest_are_refused_in_the_script() {
+        let workspace = scratch("script-calls");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "count")).unwrap();
+            expect_type(host, "model_call");
+            // Fifty-two refused calls (tool_search with no query is refused here, not by the hub): two are past the cap.
+            let code = "over = 0\nfor n in range(52):\n    try:\n        call(\"tool_search\", {})\n    except PlazaError as err:\n        if \"at most 50\" in str(err):\n            over += 1\nresult(over)\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s6", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s6", "allow", "", false)]))
+                .unwrap();
+            let outer = expect_report(host);
+            assert_eq!(outer["output"], "2", "{outer}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
     }
 }

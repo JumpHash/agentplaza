@@ -39,7 +39,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// The tools an agent of `role` (CID `cid`, granted `granted`) runs without asking the hub: the guest's own tools its
 /// grant covers, which the laws permit for this agent and no law reads the input of. Nothing while the agent's mode
-/// is not autonomous (ask and read-only decide each call) or while it is held (STOP ALL, or on the bench).
+/// is not autonomous (ask and read-only decide each call) or while it is held (STOP ALL, or its project paused or
+/// over).
 pub(crate) fn allowed(
     laws: &Laws,
     cid: u64,
@@ -128,7 +129,7 @@ fn current(app: &App, agent: &Agent) -> Vec<String> {
         .collect();
     let fallback = crate::project_settings::permission_mode(app, agent.cid);
     let (mode, _) = app.approvals.effective(agent.cid, Some(fallback));
-    let held = app.control.paused() || crate::membership::held(app, agent).is_some();
+    let held = app.control.paused() || crate::projects::held(app, agent).is_some();
     allowed(app.laws, agent.cid, &agent.role, &granted, mode, held)
 }
 
@@ -228,19 +229,13 @@ mod tests {
     fn a_tool_whose_input_a_law_reads_is_not_allowed_locally() {
         let laws = laws();
         // Commands and file writes are checked for the flags of their input (C-001c, C-002b).
-        for tool in [
-            "bash",
-            "write_file",
-            "edit_file",
-            "install_packages",
-            "fetch_url",
-        ] {
+        for tool in ["run", "edit", "install_packages", "fetch_url"] {
             assert!(laws.tests_input(tool), "{tool} tests its input");
         }
         // A message reads its recipient, and a read-only tool no law reads the input of.
         assert!(laws.tests_input("plaza_send_message"));
-        assert!(!laws.tests_input("glob"));
-        assert!(!laws.tests_input("grep"));
+        assert!(!laws.tests_input("find"));
+        assert!(!laws.tests_input("search"));
         let local = allowed(
             &laws,
             7,
@@ -249,19 +244,13 @@ mod tests {
             Mode::Autonomous,
             false,
         );
-        for tool in [
-            "bash",
-            "write_file",
-            "edit_file",
-            "install_packages",
-            "fetch_url",
-        ] {
+        for tool in ["run", "edit", "install_packages", "fetch_url"] {
             assert!(
                 !local.iter().any(|t| t == tool),
                 "{tool} is decided by the hub"
             );
         }
-        assert!(local.iter().any(|t| t == "glob"), "{local:?}");
+        assert!(local.iter().any(|t| t == "find"), "{local:?}");
     }
 
     #[test]
@@ -299,7 +288,7 @@ mod tests {
         let laws = laws();
         let granted = granted_to_builder();
         assert!(!allowed(&laws, 7, "builder", &granted, Mode::Autonomous, false).is_empty());
-        // Ask and read-only decide each call; a held agent (STOP ALL, or on the bench) runs nothing.
+        // Ask and read-only decide each call; a held agent (STOP ALL, or its project paused or over) runs nothing.
         assert!(allowed(&laws, 7, "builder", &granted, Mode::Ask, false).is_empty());
         assert!(allowed(&laws, 7, "builder", &granted, Mode::ReadOnly, false).is_empty());
         assert!(allowed(&laws, 7, "builder", &granted, Mode::Autonomous, true).is_empty());
@@ -307,7 +296,7 @@ mod tests {
 
     #[test]
     fn the_snapshot_id_binds_the_agent_the_time_and_the_list() {
-        let list = vec!["glob".to_string(), "grep".to_string()];
+        let list = vec!["find".to_string(), "find".to_string()];
         let id = id_of(7, 100, &list);
         assert_eq!(id.len(), 64, "{id}");
         assert_eq!(
@@ -325,24 +314,24 @@ mod tests {
         let snapshot = PolicySnapshot {
             id: "policy-a".into(),
             issued_ms: 1,
-            allow: vec!["glob".into()],
+            allow: vec!["find".into()],
             signature: "sig".into(),
         };
         keep(9, snapshot);
-        assert_eq!(violation(9, "policy-a", "glob"), None);
+        assert_eq!(violation(9, "policy-a", "find"), None);
         assert!(
-            violation(9, "policy-a", "bash")
+            violation(9, "policy-a", "run")
                 .unwrap()
                 .contains("does not allow")
         );
         assert!(
-            violation(9, "policy-b", "glob")
+            violation(9, "policy-b", "find")
                 .unwrap()
                 .contains("never issued")
         );
         // Another agent's snapshot is not this agent's.
         assert!(
-            violation(8, "policy-a", "glob")
+            violation(8, "policy-a", "find")
                 .unwrap()
                 .contains("never issued")
         );
@@ -363,13 +352,13 @@ mod tests {
         }
         // The oldest are gone, so a report under one of them is "never issued"; the newest still names a snapshot.
         assert!(
-            violation(11, "p0", "glob")
+            violation(11, "p0", "find")
                 .unwrap()
                 .contains("never issued")
         );
         let newest = format!("p{}", KEPT as u64 + 2);
         assert!(
-            violation(11, &newest, "glob")
+            violation(11, &newest, "find")
                 .unwrap()
                 .contains("does not allow")
         );

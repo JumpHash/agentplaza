@@ -6,7 +6,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 /// A git platform.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    apz_store::Column,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Github,
@@ -65,7 +77,7 @@ impl Kind {
 }
 
 /// How an authorization was given.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "lowercase")]
 pub enum Via {
     /// A GitHub App installed on a user or an organisation (the repositories chosen on GitHub).
@@ -77,7 +89,7 @@ pub enum Via {
 }
 
 /// What an authorization covers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     /// An account and whatever it can reach.
@@ -89,7 +101,7 @@ pub enum Level {
 }
 
 /// The account an authorization is: the owner as the platform knows them (W19: the author of exported commits).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct Account {
     pub id: u64,
@@ -158,17 +170,19 @@ impl Auth {
 
 /// The owner's choice of what the plaza may use under one authorization: per namespace, every repository or the
 /// ones named. A namespace that is not here is not authorized.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct Grants {
+    #[table(map)]
     pub namespaces: BTreeMap<String, NamespaceGrant>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct NamespaceGrant {
     pub all: bool,
     /// Repository names (without the namespace).
+    #[table(set)]
     pub repos: BTreeSet<String>,
 }
 

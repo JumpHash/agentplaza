@@ -1023,18 +1023,6 @@ pub const CATALOG: &[MetricDef] = &[
         "API requests answered with a 5xx status."
     ),
     m!(
-        "hub.pg_ms",
-        "Postgres query time",
-        Ms,
-        Histogram,
-        Basic,
-        Hub,
-        [],
-        "a timer around the hub's database client",
-        ATOMIC,
-        "Time of each database round trip."
-    ),
-    m!(
         "hub.wake_queue",
         "Wakes waiting",
         Count,
@@ -1081,18 +1069,6 @@ pub const CATALOG: &[MetricDef] = &[
         "vsockd's /v1/metrics on the node, read each tick",
         "one loopback request per tick",
         "Times the node's keepalive sessions woke up: per open session, the idle cost of an agent."
-    ),
-    m!(
-        "hub.pg_in_use",
-        "Postgres connections in use",
-        Count,
-        Gauge,
-        Basic,
-        Hub,
-        [],
-        "the hub's database client",
-        ATOMIC,
-        "Database connections busy."
     ),
     m!(
         "hub.bus_lag_ms",
@@ -1222,21 +1198,9 @@ pub const CATALOG: &[MetricDef] = &[
         Standard,
         Service,
         [],
-        "hourly size reads of Garage, Weft and Postgres",
+        "hourly size reads of blobs, Weft and SQLite",
         "one size query per store per hour",
-        "Size of a plaza store: objects, git, database tables (the metrics tables listed apart)."
-    ),
-    m!(
-        "treasury.credits",
-        "Treasury credits",
-        Count,
-        Gauge,
-        Basic,
-        Global,
-        [],
-        "the treasury journal",
-        ATOMIC,
-        "Plaza credits left."
+        "Size of a plaza store: blobs, git, database tables (the metrics tables listed apart)."
     ),
     // The metrics system's own cost.
     m!(
@@ -1298,18 +1262,6 @@ pub const CATALOG: &[MetricDef] = &[
         "the metrics system measuring itself",
         ATOMIC,
         "Queries answered from the cache."
-    ),
-    m!(
-        "self.pg_bytes_day",
-        "Metrics storage growth",
-        Bytes,
-        Gauge,
-        Off,
-        Hub,
-        [],
-        "the metrics system measuring itself",
-        ATOMIC,
-        "Bytes the metrics tables grew by in the last day."
     ),
     m!(
         "self.alert_eval_ms",

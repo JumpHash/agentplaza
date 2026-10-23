@@ -1,0 +1,22 @@
+meta {
+  name: List the sessions
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/sessions
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the sessions are a list", function () {
+    expect(res.getBody()).to.be.an("array");
+  });
+}

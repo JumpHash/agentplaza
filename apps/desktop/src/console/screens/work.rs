@@ -1500,7 +1500,7 @@ fn planning<'a>(state: &'a State, p: &'a Project) -> Element<'a, Msg> {
             col(
                 "approval",
                 approval.into_iter().collect(),
-                "The mayor approves."
+                "The orchestrator approves."
             ),
         ]
         .spacing(10),
@@ -1919,7 +1919,7 @@ mod tests {
             7,
             Some(Step {
                 stage: "approval".into(),
-                tool: Some("plaza_pay".into()),
+                tool: Some("plaza_hire".into()),
                 since_ms: 2,
             }),
         );

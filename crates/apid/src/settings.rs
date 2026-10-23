@@ -4,8 +4,9 @@
 //! `// contract` — keep them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use apz_cache::Generations;
 use apz_gateway::ModelRef;
 use apz_http::{Response, RouteDoc, Router};
 use apz_plaza::social::{self, Prune};
@@ -33,6 +34,12 @@ pub fn tier_of(role: &str) -> Tier {
     } else {
         Tier::Worker
     }
+}
+
+/// Whether `role` works across projects without a session on one: only the orchestrator, which opens the projects
+/// and runs them.
+pub fn plaza_wide(role: &str) -> bool {
+    matches!(tier_of(role), Tier::Orchestrator)
 }
 
 /// The models each tier's list names (canonical `provider/model[@effort]`). The orchestrator may run
@@ -67,7 +74,7 @@ impl Default for ModelPolicy {
     }
 }
 
-/// Price per million tokens, in credits (1 credit = $0.001).
+/// Price per million tokens, in US dollars.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, apz_store::Table)]
 pub struct Price {
     pub input: f64,
@@ -99,8 +106,6 @@ pub struct Settings {
     pub retention: Retention,
     /// How the plaza's laws are applied (see `laws.rs`).
     pub laws: LawsSettings,
-    /// How payments and model calls are gated and charged (see `payments.rs`, `llm_proxy.rs`).
-    pub payments: Payments,
     /// The Lab's settings (`docs/design/foundry.md`, "Hugging Face").
     pub foundry: FoundrySettings,
     /// The owner's explicit confirmation that a contributor model (one that trains its provider's
@@ -261,7 +266,6 @@ impl Default for Settings {
             vm_auto_checkpoints: true,
             retention: Retention::default(),
             laws: LawsSettings::default(),
-            payments: Payments::default(),
             foundry: FoundrySettings::default(),
             allow_training_models: false,
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
@@ -289,27 +293,6 @@ pub struct LawsSettings {
     /// Whether an operation that has permit laws is refused unless one of them allows it. Off: only
     /// forbids refuse, and a permit only allows.
     pub strict_permits: bool,
-}
-
-/// How payments and model calls are gated and charged. Any `u64` is a valid threshold, so
-/// there is nothing to refuse at save time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
-#[serde(default)]
-pub struct Payments {
-    /// A payment over this many credits waits for the owner's approval. `0` means every payment asks.
-    pub approve_over: u64,
-    /// Whether model calls are charged to the agent's task escrow (or its wallet when it has no
-    /// task), and refused when it cannot pay.
-    pub charge_models: bool,
-}
-
-impl Default for Payments {
-    fn default() -> Self {
-        Self {
-            approve_over: 500,
-            charge_models: true,
-        }
-    }
 }
 
 /// The fewest a retention count may be, so the plaza keeps a usable window.
@@ -394,8 +377,6 @@ struct SettingsRow {
     #[table(flatten)]
     laws: LawsSettings,
     #[table(flatten)]
-    payments: Payments,
-    #[table(flatten)]
     foundry: FoundrySettings,
     allow_training_models: bool,
     review_timeout_minutes: u32,
@@ -436,7 +417,6 @@ impl From<&Settings> for SettingsRow {
             vm_auto_checkpoints: s.vm_auto_checkpoints,
             retention: s.retention,
             laws: s.laws,
-            payments: s.payments,
             foundry: s.foundry,
             allow_training_models: s.allow_training_models,
             review_timeout_minutes: s.review_timeout_minutes,
@@ -485,7 +465,6 @@ impl From<SettingsRow> for Settings {
             vm_auto_checkpoints: r.vm_auto_checkpoints,
             retention: r.retention,
             laws: r.laws,
-            payments: r.payments,
             foundry: r.foundry,
             allow_training_models: r.allow_training_models,
             review_timeout_minutes: r.review_timeout_minutes,
@@ -518,6 +497,8 @@ pub fn def() -> &'static apz_store::TableDef {
 pub struct Store {
     dev_models: bool,
     inner: Mutex<Settings>,
+    /// The hub's generations: a save bumps `settings`.
+    gens: Arc<Generations<String>>,
 }
 
 /// The model in canonical `provider/model[@effort]` form.
@@ -548,7 +529,14 @@ impl Store {
         Self {
             dev_models,
             inner: Mutex::new(fresh(dev_models)),
+            gens: Arc::default(),
         }
+    }
+
+    /// Counts this store's saves in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
     }
 
     /// Replaces the settings with what the store holds (at start; the defaults when nothing is stored). A stored
@@ -602,7 +590,9 @@ impl Store {
         self.check(&new)?;
         let mut guard = self.lock();
         new.board_pauses = guard.board_pauses.clone();
-        Ok(install(&mut guard, new))
+        let saved = install(&mut guard, new);
+        crate::sources::bump(&self.gens, crate::sources::SETTINGS);
+        Ok(saved)
     }
 
     /// Pauses (`on`) or resumes the deliveries of one project's board, or of the whole board (`project`
@@ -626,6 +616,7 @@ impl Store {
         }
         let changed = next.board_pauses != before;
         let saved = install(&mut guard, next);
+        crate::sources::bump(&self.gens, crate::sources::SETTINGS);
         Ok((changed, saved.board_pauses))
     }
 
@@ -1700,36 +1691,6 @@ mod tests {
                 "the other ACP switches keep their defaults"
             );
         }
-
-        // payments_default_and_settings_saved_without_them_load_the_defaults: payments default, and settings saved without them load the defaults.
-        {
-            assert_eq!(
-                Payments::default(),
-                Payments {
-                    approve_over: 500,
-                    charge_models: true
-                }
-            );
-            assert_eq!(Settings::default().payments, Payments::default());
-
-            // Settings saved before payments existed carry no such key: they load the defaults.
-            let mut old = serde_json::to_value(Settings::default()).unwrap();
-            old.as_object_mut().unwrap().remove("payments");
-            let loaded: Settings = serde_json::from_value(old).unwrap();
-            assert_eq!(loaded.payments, Payments::default());
-
-            // A partial block keeps the fields it names and defaults the rest.
-            let partial: Settings =
-                serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}}))
-                    .unwrap();
-            assert_eq!(
-                partial.payments,
-                Payments {
-                    approve_over: 0,
-                    charge_models: true
-                }
-            );
-        }
     }
 
     #[test]
@@ -1871,20 +1832,14 @@ mod tests {
     }
 
     #[test]
-    fn payments_round_trip_through_the_store() {
-        let store = Store::new(false);
-        let s = Settings {
-            payments: Payments {
-                approve_over: 0,
-                charge_models: false,
-            },
-            ..Settings::default()
-        };
-        assert_eq!(store.put(s.clone()).unwrap(), s);
-        assert_eq!(reloaded(&store, false).get().payments, s.payments);
-
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, s);
+    fn a_save_moves_the_settings_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::new(false).with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::SETTINGS.to_string();
+        store.put(store.get()).expect("put");
+        let saved = gens.get(&key);
+        assert!(saved > 0, "a put moves the settings");
+        store.set_board_pause(None, true).expect("pause");
+        assert!(gens.get(&key) > saved, "a board pause moves the settings");
     }
 }

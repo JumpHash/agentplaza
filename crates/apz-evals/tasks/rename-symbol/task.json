@@ -1,0 +1,4 @@
+{
+  "goal": "Rename the function compute_total to sum_total everywhere in the workspace (src/lib.rs and README.md), so the crate still builds and its test passes.",
+  "check": "! grep -rq compute_total . && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-rename-symbol && /tmp/apz-rename-symbol"
+}

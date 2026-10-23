@@ -3,30 +3,34 @@
 //! key, the key goes into the vault (`usage:<id>`), and the hub reads `GET <url>/v0/management/usage` and
 //! `GET <url>/v0/management/auth-files` with it. The key never leaves the hub, and the answers are reduced
 //! to totals, models and accounts before a console sees them (CLIProxyAPI keys its per-API figures by the
-//! client keys, which are dropped here).
-//!
-//! The models a CLIProxyAPI hub serves are added as an ordinary API provider (OpenAI-compatible, its
 //! client key in the vault): that is how subscription accounts reach agents without a key in any VM.
+//!
+//! The providers are saved in plaza.db (table `usage_provider`); their keys stay in the vault.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::providers::{Failure, failure, lock, write_atomic};
+use crate::providers::{Failure, failure, lock};
 use crate::state::App;
+use crate::store::saver::save_now;
 use crate::vault::{Consumer, OnBehalf, name_for};
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const OWNER: &str = "owner";
 
-/// One usage provider as stored: no key, only where it is.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One usage provider as stored: no key, only where it is. Its row is keyed by `id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "usage_provider")]
 pub struct UsageProvider {
+    /// `[a-z0-9_-]`, at most 40 characters.
+    #[table(key)]
     pub id: String,
     pub kind: String,
     pub url: String,
@@ -51,40 +55,50 @@ fn cliproxyapi() -> String {
     "cliproxyapi".into()
 }
 
+/// The usage providers and their last readings. Held in memory; the providers are saved in plaza.db.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     list: Mutex<Vec<UsageProvider>>,
     /// The last reading of each provider, by id.
     last: Mutex<std::collections::BTreeMap<String, Value>>,
 }
 
 impl Store {
-    pub fn load(state_dir: &std::path::Path) -> std::io::Result<Self> {
-        let path = state_dir.join("usage-providers.json");
-        let list = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e),
-        };
-        Ok(Self {
-            path,
-            list: Mutex::new(list),
-            last: Mutex::new(Default::default()),
-        })
+    /// The providers' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let items = lock(&self.list);
+        RowSet::list(def(), items.iter())
     }
 
-    fn save(&self, list: Vec<UsageProvider>) -> Result<(), Failure> {
-        let bytes = serde_json::to_vec_pretty(&list).map_err(|e| (500, e.to_string()))?;
-        write_atomic(&self.path, &bytes, 0o600)
-            .map_err(|e| (500, format!("write usage-providers.json: {e}")))?;
-        *lock(&self.list) = list;
+    /// Replaces the providers with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<UsageProvider> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.list) = stored;
         Ok(())
     }
 
     fn get(&self, id: &str) -> Option<UsageProvider> {
         lock(&self.list).iter().find(|p| p.id == id).cloned()
     }
+}
+
+/// The usage providers' table: `usage_provider`, one row per provider.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(UsageProvider)
+}
+
+/// Replaces the providers and writes them now, so the owner's answer comes after the write. When the write
+/// fails the providers stay as they were.
+fn save(app: &App, list: Vec<UsageProvider>) -> Result<(), Failure> {
+    let before = std::mem::replace(&mut *lock(&app.usage_providers.list), list);
+    if save_now(app, "usage_providers") {
+        return Ok(());
+    }
+    *lock(&app.usage_providers.list) = before;
+    Err((
+        500,
+        "write usage providers: the store did not save them".into(),
+    ))
 }
 
 /// The vault name and binding of a usage provider's management key.
@@ -358,7 +372,7 @@ fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         label: body.label,
     };
     list.push(p.clone());
-    if let Err(f) = app.usage_providers.save(list) {
+    if let Err(f) = save(app, list) {
         return failure(f);
     }
     read(app, &p);
@@ -380,7 +394,7 @@ fn delete_route(app: &App, _: &Request, params: &Params<'_>) -> Response {
     if list.len() == before {
         return failure((404, format!("no usage provider `{id}`")));
     }
-    if let Err(f) = app.usage_providers.save(list) {
+    if let Err(f) = save(app, list) {
         return failure(f);
     }
     let _ = app
@@ -407,6 +421,32 @@ mod tests {
         assert!(check_url("ftp://x").is_err());
         assert!(check_url("https://user:pw@x").is_err());
         assert!(check_url("https://x/?k=1").is_err());
+    }
+
+    #[test]
+    fn the_providers_come_back_whole_from_their_table() {
+        let store = Store::default();
+        *lock(&store.list) = vec![
+            UsageProvider {
+                id: "hub-a".into(),
+                kind: "cliproxyapi".into(),
+                url: "https://hub.example.ts.net:8318".into(),
+                label: Some("Hub A".into()),
+            },
+            UsageProvider {
+                id: "hub-b".into(),
+                kind: "cliproxyapi".into(),
+                url: "https://b.example.ts.net".into(),
+                label: None,
+            },
+        ];
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+
+        let back = Store::default();
+        back.load(&conn).unwrap();
+        assert_eq!(*lock(&back.list), *lock(&store.list));
     }
 
     #[test]

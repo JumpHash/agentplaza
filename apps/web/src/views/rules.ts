@@ -36,6 +36,7 @@ import {
   withStrictPermits,
   type TierKey,
 } from './rules-model';
+import { standingCard } from './rules-standing';
 
 const RELOAD_MS = 1000;
 const EFFECTS: [LawFilter['effect'], string][] = [['all', 'All'], ['permit', 'Allows'], ['forbid', 'Forbids']];
@@ -75,6 +76,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let rulesError = '';
   let strict: boolean | null = null;
   let strictBusy = false;
+
+  // The owner's standing rules: the text every session and engine file carries (rules-standing.ts).
+  const standingSec = standingCard(() => alive);
 
   // Strict permits: the switch, its state and its help text.
   const strictInput = h('input', { type: 'checkbox', role: 'switch', 'aria-describedby': 'rules-strict-help' }) as HTMLInputElement;
@@ -371,7 +375,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       n ? `Refused ${plural(n, 'time', 'times')}` : 'Not refused yet',
       l.last_at_ms ? ` · last ${ago(l.last_at_ms)}` : '',
       l.agents.length ? ' · by ' : '',
-      l.agents.flatMap((a, i) => [i ? ', ' : '', h('a', { href: href('agents', a.cid) }, agentLabelIn(agents.get(), a.cid)), ` (${a.count})`]),
+      l.agents.flatMap((a, i) => [i ? ', ' : '', h('a', { href: href('sessions', a.cid) }, agentLabelIn(agents.get(), a.cid)), ` (${a.count})`]),
     );
   }
 
@@ -635,7 +639,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     h('header.page-head', null, h('div.page-head-row', null, h('h1', null, 'Rules'), h('span.sp'), h('div.page-actions')), h('p.lede', null, 'The laws the plaza ships with, and the owner’s own JHRL rules.')),
     constitutionBanner,
     strip,
-    h('div.rl-main', null, strictSec, builtinSec, ownerSec),
+    h('div.rl-main', null, standingSec, strictSec, builtinSec, ownerSec),
   );
 
   search.addEventListener('input', () => {
@@ -687,7 +691,7 @@ function diagnosticList(diags: Diagnostic[], pick: (d: Diagnostic) => void): HTM
 
 const REFUSAL_COLUMNS: Column<WouldRefuse>[] = [
   { label: 'When', cell: (w) => ago(w.at_ms) },
-  { label: 'Agent', cell: (w) => h('a', { href: href('agents', w.cid) }, agentName({ cid: w.cid, role: w.role })) },
+  { label: 'Agent', cell: (w) => h('a', { href: href('sessions', w.cid) }, agentName({ cid: w.cid, role: w.role })) },
   { label: 'Role', cell: (w) => w.role },
   { label: 'Tool', cell: (w) => h('code', null, w.tool) },
   { label: 'Laws', cell: (w) => w.laws.join(', ') },

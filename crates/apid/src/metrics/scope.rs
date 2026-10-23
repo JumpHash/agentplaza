@@ -274,7 +274,7 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
             Some((node, rest)) if node == fleet::LOCAL || app.nodes.get(node).is_some() => {
                 format!("{node} · {rest}")
             }
-            // The hub's own stores ("store:postgres · plaza") are named by what follows.
+            // The hub's own stores ("store:sqlite · plaza") are named by what follows.
             Some(("store", rest)) => rest.to_string(),
             _ => entity.to_string(),
         },
@@ -290,7 +290,7 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
 }
 
 /// The node a volume or service lives on: the node its id starts with (`n1:/var/lib/plaza`), else the hub's own
-/// node, which runs the plaza's stores, the metrics module and the MCP clients (`store:postgres · plaza`,
+/// node, which runs the plaza's stores, the metrics module and the MCP clients (`store:sqlite · plaza`,
 /// `metrics`, `MCP: linear`).
 fn owner_node<'a>(nodes: &[String], entity: &'a str) -> &'a str {
     match entity.split_once(':') {
@@ -787,7 +787,7 @@ mod tests {
     fn the_hubs_stores_and_clients_live_on_its_own_node() {
         let nodes = vec!["n0".to_string(), "n1".to_string()];
         assert_eq!(owner_node(&nodes, "n1:/var/lib/plaza"), "n1");
-        assert_eq!(owner_node(&nodes, "store:postgres · plaza"), fleet::LOCAL);
+        assert_eq!(owner_node(&nodes, "store:sqlite · plaza"), fleet::LOCAL);
         assert_eq!(owner_node(&nodes, "MCP: linear"), fleet::LOCAL);
         assert_eq!(owner_node(&nodes, "metrics"), fleet::LOCAL);
     }
@@ -840,13 +840,13 @@ mod tests {
     #[test]
     fn a_tool_scope_keeps_only_the_series_of_that_tool() {
         let facts = Facts::default();
-        let scope = parse_scope("tool:bash");
+        let scope = parse_scope("tool:run");
         let keeps = |kind: EntityKind, entity: &str| {
             let key = SeriesKey::new("tool.calls", kind, entity);
             covers(&facts, &scope, key.kind, &key.entity, &key.labels)
         };
-        assert!(keeps(EntityKind::Tool, "bash"));
-        assert!(!keeps(EntityKind::Tool, "edit_file"));
-        assert!(!keeps(EntityKind::Route, "bash"));
+        assert!(keeps(EntityKind::Tool, "run"));
+        assert!(!keeps(EntityKind::Tool, "edit"));
+        assert!(!keeps(EntityKind::Route, "run"));
     }
 }

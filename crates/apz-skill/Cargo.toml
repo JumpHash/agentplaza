@@ -10,6 +10,11 @@ publish = false
 apz-prompt = { path = "../apz-prompt" }
 serde.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate"] }
+# The hub's store derives its table of a version's findings on `Finding`. Off by default, as apz-prompt's is.
+apz-store = { path = "../apz-store", optional = true }
+
+[features]
+store = ["dep:apz-store", "apz-prompt/store"]
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::{
     FileBody, FileIn, MAX_TAG, MAX_TAGS, MAX_TITLE, NewSkill, Skill, SkillFile, Skills, Source,
-    StoreError, Version, VersionMeta, sha256_hex, valid_binding, valid_id,
+    StoreError, Version, VersionMeta, valid_binding, valid_id,
 };
 use crate::events::Bus;
 use crate::state::App;
@@ -157,14 +157,14 @@ struct PublishBody {
     version: u32,
 }
 
-/// A file to save: `content_b64` (new bytes) or `sha256` (an unchanged file already stored), never both.
+/// A file to save: `content_b64` (new bytes) or `hash` (an unchanged file already stored), never both.
 #[derive(Debug, Deserialize)]
 struct FileBodyIn {
     path: String,
     #[serde(default)]
     executable: bool,
     content_b64: Option<String>,
-    sha256: Option<String>,
+    hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,7 +214,7 @@ fn view<'a>(skills: &Skills, v: &'a Version) -> Result<VersionView<'a>, StoreErr
     })
 }
 
-/// The files a diff lists: added, removed, and changed (sha256 or the executable bit).
+/// The files a diff lists: added, removed, and changed (hash or the executable bit).
 #[derive(Serialize)]
 struct FileChanges {
     added: Vec<String>,
@@ -231,7 +231,7 @@ fn file_changes(old: &[SkillFile], new: &[SkillFile]) -> FileChanges {
     for f in new {
         match old.iter().find(|o| o.path == f.path) {
             None => out.added.push(f.path.clone()),
-            Some(o) if o.sha256 != f.sha256 || o.executable != f.executable => {
+            Some(o) if o.hash != f.hash || o.executable != f.executable => {
                 out.changed.push(f.path.clone())
             }
             Some(_) => {}
@@ -305,21 +305,21 @@ fn bindings_checked(mut bindings: Vec<String>) -> Result<Vec<String>, StoreError
     Ok(bindings)
 }
 
-/// The files as `Skills::prepare` takes them: base64 bytes, or the sha256 of a file already stored.
+/// The files as `Skills::prepare` takes them: base64 bytes, or the hash of a file already stored.
 fn file_ins(files: Vec<FileBodyIn>) -> Result<Vec<FileIn>, StoreError> {
     files
         .into_iter()
         .map(|f| {
-            let body = match (f.content_b64, f.sha256) {
+            let body = match (f.content_b64, f.hash) {
                 (Some(b64), None) => FileBody::Bytes(
                     base64::engine::general_purpose::STANDARD
                         .decode(b64.as_bytes())
                         .map_err(|_| invalid(format!("{}: content_b64 is not base64", f.path)))?,
                 ),
-                (None, Some(sha)) => FileBody::Known(sha),
+                (None, Some(hash)) => FileBody::Known(hash),
                 _ => {
                     return Err(invalid(format!(
-                        "{}: give content_b64 or sha256, not both",
+                        "{}: give content_b64 or hash, not both",
                         f.path
                     )));
                 }
@@ -333,20 +333,21 @@ fn file_ins(files: Vec<FileBodyIn>) -> Result<Vec<FileIn>, StoreError> {
         .collect()
 }
 
-/// True when SKILL.md and the files (path, sha256 and executable bit) are the latest version's.
+/// True when SKILL.md and the files (path, hash and executable bit) are the latest version's.
 fn unchanged(latest: &Version, skill_md: &str, files: &[FileIn]) -> bool {
-    if sha256_hex(skill_md.as_bytes()) != latest.meta.sha256 || files.len() != latest.files.len() {
+    let md_hash = apz_blobs::Hash::of(skill_md.as_bytes()).to_string();
+    if md_hash != latest.meta.hash || files.len() != latest.files.len() {
         return false;
     }
     files.iter().all(|f| {
-        let sha = match &f.body {
-            FileBody::Bytes(bytes) => sha256_hex(bytes),
-            FileBody::Known(sha) => sha.clone(),
+        let hash = match &f.body {
+            FileBody::Bytes(bytes) => apz_blobs::Hash::of(bytes).to_string(),
+            FileBody::Known(hash) => hash.clone(),
         };
         latest
             .files
             .iter()
-            .any(|old| old.path == f.path && old.sha256 == sha && old.executable == f.executable)
+            .any(|old| old.path == f.path && old.hash == hash && old.executable == f.executable)
     })
 }
 
@@ -380,30 +381,10 @@ fn load_version(skills: &Skills, id: &str, v: u32) -> Result<Version, StoreError
     skills.store().version(id, v)?.ok_or(StoreError::NotFound)
 }
 
-/// A skill as the list and detail routes show it: its fields, the live version's score, and the best version.
+/// A skill as the list and detail routes show it: its fields, the live version's score, and the best version (cached by
+/// the skill's generation, see `Skills::summary`).
 fn summary(skills: &Skills, s: &Skill) -> Result<Value, StoreError> {
-    let versions = skills.store().versions(&s.id)?;
-    let best = apz_prompt::best_version(versions.iter().map(|v| (v.version, v.score)));
-    let score = s
-        .active_version
-        .and_then(|live| versions.iter().find(|v| v.version == live))
-        .map(|v| v.score);
-    Ok(json!({
-        "id": s.id,
-        "name": s.name,
-        "title": s.title,
-        "description": s.description,
-        "tags": s.tags,
-        "bindings": s.bindings,
-        "active_version": s.active_version,
-        "latest_version": s.latest_version,
-        "best_version": best,
-        "score": score,
-        "source": s.source,
-        "created_ms": s.created_ms,
-        "updated_ms": s.updated_ms,
-        "archived_ms": s.archived_ms,
-    }))
+    skills.summary(&s.id)
 }
 
 fn skill_reply(skills: &Skills, skill: Skill, status: u16) -> Result<Response, StoreError> {
@@ -500,7 +481,7 @@ fn file(skills: &Skills, id: &str, v: &str, path: &str) -> Result<Response, Stor
         .ok_or(StoreError::NotFound)?;
     let bytes = skills
         .blobs()
-        .get(&entry.sha256)
+        .get(&entry.hash)
         .map_err(StoreError::Failed)?;
     let ct = content_type(path, &bytes);
     Ok(Response::new(200, ct, bytes).with_header("x-content-type-options", "nosniff"))
@@ -612,18 +593,297 @@ fn rules_body() -> Value {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use apz_cache::Generations;
 
     use super::*;
-    use crate::skills::store_mem::MemorySkills;
+    use crate::skills::store_db::DbSkills;
     use crate::skills::tests::MemBlobs;
+    use crate::skills::{Event, LIBRARY, NewVersion, SkillStore, skill_key};
+
+    /// The library's store, counting the reads of skills' versions.
+    struct Counting {
+        inner: DbSkills,
+        versions: AtomicUsize,
+    }
+
+    impl Counting {
+        fn new() -> Arc<Counting> {
+            Arc::new(Counting {
+                inner: DbSkills::for_tests(),
+                versions: AtomicUsize::new(0),
+            })
+        }
+
+        fn reset(&self) {
+            self.versions.store(0, Ordering::SeqCst);
+        }
+
+        fn version_reads(&self) -> usize {
+            self.versions.load(Ordering::SeqCst)
+        }
+    }
+
+    impl SkillStore for Counting {
+        fn list(&self, archived: bool) -> Result<Vec<Skill>, String> {
+            self.inner.list(archived)
+        }
+        fn get(&self, id: &str) -> Result<Option<Skill>, String> {
+            self.inner.get(id)
+        }
+        fn versions(&self, id: &str) -> Result<Vec<VersionMeta>, String> {
+            self.versions.fetch_add(1, Ordering::SeqCst);
+            self.inner.versions(id)
+        }
+        fn version(&self, id: &str, version: u32) -> Result<Option<Version>, String> {
+            self.inner.version(id, version)
+        }
+        fn create(
+            &self,
+            new: &NewSkill,
+            first: &NewVersion,
+            actor: &str,
+            now_ms: u64,
+        ) -> Result<Skill, StoreError> {
+            self.inner.create(new, first, actor, now_ms)
+        }
+        fn add_version(
+            &self,
+            id: &str,
+            base: u32,
+            next: &NewVersion,
+            actor: &str,
+            now_ms: u64,
+        ) -> Result<VersionMeta, StoreError> {
+            self.inner.add_version(id, base, next, actor, now_ms)
+        }
+        fn set_meta(
+            &self,
+            id: &str,
+            title: &str,
+            tags: &[String],
+            actor: &str,
+            now_ms: u64,
+        ) -> Result<Skill, StoreError> {
+            self.inner.set_meta(id, title, tags, actor, now_ms)
+        }
+        fn set_bindings(
+            &self,
+            id: &str,
+            bindings: &[String],
+            actor: &str,
+            now_ms: u64,
+        ) -> Result<Skill, StoreError> {
+            self.inner.set_bindings(id, bindings, actor, now_ms)
+        }
+        fn set_active(
+            &self,
+            id: &str,
+            version: Option<u32>,
+            actor: &str,
+            now_ms: u64,
+        ) -> Result<Skill, StoreError> {
+            self.inner.set_active(id, version, actor, now_ms)
+        }
+        fn set_archived(
+            &self,
+            id: &str,
+            archived: bool,
+            actor: &str,
+            now_ms: u64,
+        ) -> Result<Skill, StoreError> {
+            self.inner.set_archived(id, archived, actor, now_ms)
+        }
+        fn events(&self, id: &str, limit: u32) -> Result<Vec<Event>, String> {
+            self.inner.events(id, limit)
+        }
+        fn bound(&self, binding: &str) -> Result<Vec<(Skill, VersionMeta)>, String> {
+            self.inner.bound(binding)
+        }
+    }
+
+    /// GOOD with another name, so that several skills can be live at once.
+    fn named(name: &str) -> String {
+        GOOD.replacen("pdf-forms", name, 1)
+    }
+
+    /// The reference file GOOD links to, sent by its hash: a version of GOOD must keep it.
+    fn kept_reference() -> Vec<FileBodyIn> {
+        vec![in_file("reference.md", None, Some(hash_of(REFERENCE)))]
+    }
+
+    fn create_named(lib: &Skills, bus: &Bus, id: &str) {
+        let mut body = new_skill(&named(id));
+        body.id = Some(id.into());
+        body.bindings = Vec::new();
+        create(lib, bus, body).expect("create");
+    }
+
+    fn ids_and_versions(response: &Response) -> Vec<(String, u64, Option<u64>)> {
+        json_of(response)["skills"]
+            .as_array()
+            .expect("a list of skills")
+            .iter()
+            .map(|s| {
+                (
+                    s["id"].as_str().unwrap().to_string(),
+                    s["latest_version"].as_u64().unwrap(),
+                    s["active_version"].as_u64(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_list_reads_each_skills_versions_once_and_then_none() {
+        let counting = Counting::new();
+        let store: Arc<dyn SkillStore> = counting.clone();
+        let blobs = Arc::new(MemBlobs::default());
+        let lib = Skills::with_generations(store, blobs.clone(), Arc::default());
+        let bus = Bus::default();
+        for id in ["alpha", "beta", "gamma"] {
+            create_named(&lib, &bus, id);
+        }
+
+        // A cold library (no summary built yet) reads each skill's versions once.
+        let cold = Skills::with_generations(counting.clone(), blobs, Arc::default());
+        counting.reset();
+        let first = list(&cold, false).expect("list");
+        assert_eq!(counting.version_reads(), 3, "one read per skill");
+        // The next lists read none: each summary is answered from the cache.
+        counting.reset();
+        let second = list(&cold, false).expect("list");
+        assert_eq!(
+            counting.version_reads(),
+            0,
+            "no per-skill read after the first"
+        );
+        assert_eq!(json_of(&first), json_of(&second));
+
+        // A new version of one skill rebuilds that skill's summary and no other.
+        let more = format!("{}\nMore.\n", named("beta"));
+        add_version(
+            &cold,
+            &bus,
+            "beta",
+            version_body(&more, kept_reference(), 1),
+        )
+        .expect("version 2");
+        counting.reset();
+        let after_version = list(&cold, false).expect("list");
+        assert_eq!(counting.version_reads(), 1, "only beta is read again");
+        assert_eq!(
+            ids_and_versions(&after_version)[1],
+            ("beta".to_string(), 2, None)
+        );
+        // The publish answers beta's new summary, so the list after it reads none.
+        publish(&cold, &bus, "beta", PublishBody { version: 2 }).expect("publish");
+        counting.reset();
+        let listed = list(&cold, false).expect("list");
+        assert_eq!(
+            counting.version_reads(),
+            0,
+            "the publish already rebuilt beta"
+        );
+        assert_eq!(
+            ids_and_versions(&listed),
+            [
+                ("alpha".to_string(), 1, None),
+                ("beta".to_string(), 2, Some(2)),
+                ("gamma".to_string(), 1, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_write_of_a_skill_moves_its_generation_and_the_librarys() {
+        let gens: Arc<Generations<String>> = Arc::default();
+        let lib = Skills::with_generations(
+            Arc::new(DbSkills::for_tests()),
+            Arc::new(MemBlobs::default()),
+            Arc::clone(&gens),
+        );
+        let bus = Bus::default();
+        let stamp = |id: &str| (gens.get(&skill_key(id)), gens.get(&LIBRARY.to_string()));
+        let moved = |id: &str, write: &dyn Fn()| {
+            let before = stamp(id);
+            write();
+            let after = stamp(id);
+            assert!(
+                after.0 > before.0 && after.1 > before.1,
+                "a write moves the skill's and the library's generation"
+            );
+        };
+
+        moved("pdf-forms", &|| {
+            create(&lib, &bus, new_skill(GOOD)).expect("create");
+        });
+        let more = format!(
+            "{GOOD}
+More.
+"
+        );
+        moved("pdf-forms", &|| {
+            add_version(
+                &lib,
+                &bus,
+                "pdf-forms",
+                version_body(&more, kept_reference(), 1),
+            )
+            .expect("version");
+        });
+        moved("pdf-forms", &|| {
+            publish(&lib, &bus, "pdf-forms", PublishBody { version: 2 }).expect("publish");
+        });
+        moved("pdf-forms", &|| {
+            set_bindings(
+                &lib,
+                &bus,
+                "pdf-forms",
+                BindingsBody {
+                    bindings: vec!["role:reviewer".into()],
+                },
+            )
+            .expect("bindings");
+        });
+        moved("pdf-forms", &|| {
+            set_meta(
+                &lib,
+                &bus,
+                "pdf-forms",
+                MetaBody {
+                    title: "Forms".into(),
+                    tags: Vec::new(),
+                },
+            )
+            .expect("meta");
+        });
+        moved("pdf-forms", &|| {
+            unpublish(&lib, &bus, "pdf-forms").expect("unpublish");
+        });
+        moved("pdf-forms", &|| {
+            archive(&lib, &bus, "pdf-forms", true).expect("archive");
+        });
+        moved("pdf-forms", &|| {
+            archive(&lib, &bus, "pdf-forms", false).expect("restore");
+        });
+
+        // A read moves nothing.
+        let before = stamp("pdf-forms");
+        list(&lib, false).expect("list");
+        detail(&lib, "pdf-forms").expect("detail");
+        assert_eq!(stamp("pdf-forms"), before);
+    }
 
     const GOOD: &str = "---\nname: pdf-forms\ndescription: Fill PDF forms. Use when the task involves a PDF with form fields.\n---\n# PDF forms\n\nRead [the reference](reference.md) first.\n";
     const REFERENCE: &[u8] = b"# Reference\n";
 
     fn library() -> Skills {
-        Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+        Skills::with_generations(
+            Arc::new(DbSkills::for_tests()),
             Arc::new(MemBlobs::default()),
+            Arc::default(),
         )
     }
 
@@ -635,13 +895,18 @@ mod tests {
         base64::engine::general_purpose::STANDARD.encode(bytes)
     }
 
-    fn in_file(path: &str, content_b64: Option<String>, sha256: Option<String>) -> FileBodyIn {
+    fn in_file(path: &str, content_b64: Option<String>, hash: Option<String>) -> FileBodyIn {
         FileBodyIn {
             path: path.into(),
             executable: false,
             content_b64,
-            sha256,
+            hash,
         }
+    }
+
+    /// The hash of `bytes`, as a client sends a file it does not send again.
+    fn hash_of(bytes: &[u8]) -> String {
+        apz_blobs::Hash::of(bytes).to_string()
     }
 
     fn new_skill(md: &str) -> CreateBody {
@@ -681,7 +946,7 @@ mod tests {
         assert_eq!(json_of(&got)["versions"].as_array().map(Vec::len), Some(1));
         assert!(json_of(&got)["live"].is_null());
 
-        // Version 2 changes SKILL.md; the reference file is sent by its sha256 alone.
+        // Version 2 changes SKILL.md; the reference file is sent by its hash alone.
         let more = format!("{GOOD}\nMore.\n");
         let added = add_version(
             &lib,
@@ -689,7 +954,7 @@ mod tests {
             "pdf-forms",
             version_body(
                 &more,
-                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                vec![in_file("reference.md", None, Some(hash_of(REFERENCE)))],
                 1,
             ),
         )
@@ -704,7 +969,7 @@ mod tests {
             "pdf-forms",
             version_body(
                 &more,
-                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                vec![in_file("reference.md", None, Some(hash_of(REFERENCE)))],
                 2,
             ),
         )
@@ -720,7 +985,7 @@ mod tests {
                 "pdf-forms",
                 version_body(
                     GOOD,
-                    vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                    vec![in_file("reference.md", None, Some(hash_of(REFERENCE)))],
                     1
                 )
             ),
@@ -843,7 +1108,7 @@ mod tests {
             ),
             Err(StoreError::Invalid(_))
         ));
-        // A sha256 of a file the blobs do not hold is refused, not stored.
+        // A hash of a file the store does not hold is refused, not stored.
         assert!(matches!(
             add_version(
                 &lib,
@@ -873,7 +1138,7 @@ mod tests {
             "pdf-forms",
             version_body(
                 &more,
-                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                vec![in_file("reference.md", None, Some(hash_of(REFERENCE)))],
                 1,
             ),
         )
@@ -885,7 +1150,7 @@ mod tests {
             "pdf-forms",
             version_body(
                 &more,
-                vec![in_file("reference.md", None, Some(sha256_hex(REFERENCE)))],
+                vec![in_file("reference.md", None, Some(hash_of(REFERENCE)))],
                 2,
             ),
         )

@@ -187,18 +187,20 @@ fn body(req: &ChatRequest, model: &str, ep: &Endpoint) -> Value {
     } else {
         req.max_tokens
     };
+    let mut conversation = messages(&req.messages);
+    let mut system = system_blocks(req);
+    place_breakpoints(req, &mut system, &mut conversation);
     let mut body = json!({
         "max_tokens": max_tokens,
-        "messages": messages(&req.messages),
+        "messages": conversation,
         "stream": true,
-        "cache_control": {"type": "ephemeral"},
     });
     if ep.vertex {
         body["anthropic_version"] = json!(VERTEX_VERSION);
     } else {
         body["model"] = json!(model);
     }
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if !system.is_empty() {
         body["system"] = json!(system);
     }
     if !req.tools.is_empty() {
@@ -228,6 +230,65 @@ fn body(req: &ChatRequest, model: &str, ep: &Endpoint) -> Value {
         body["fallbacks"] = json!("default");
     }
     body
+}
+
+/// Anthropic takes at most this many cache breakpoints in one request.
+const MAX_BREAKPOINTS: usize = 4;
+
+/// The system prompt as text blocks, one per non-empty part.
+fn system_blocks(req: &ChatRequest) -> Vec<Value> {
+    if req.system_parts.is_empty() {
+        return req
+            .system_text()
+            .map(|text| vec![json!({"type": "text", "text": text})])
+            .unwrap_or_default();
+    }
+    req.system_parts
+        .iter()
+        .filter(|part| !part.text.is_empty())
+        .map(|part| json!({"type": "text", "text": part.text}))
+        .collect()
+}
+
+/// Puts the call's cache breakpoints on `system` and `conversation`: after each cached system part, then at the end of
+/// the conversation when the request asks for it. Past the limit the earliest breakpoints are dropped, so the last
+/// message, which caches the whole prefix, always keeps its place.
+fn place_breakpoints(req: &ChatRequest, system: &mut [Value], conversation: &mut [Value]) {
+    let mut marks: Vec<Option<usize>> = req
+        .system_parts
+        .iter()
+        .filter(|part| !part.text.is_empty())
+        .enumerate()
+        .filter(|(_, part)| part.cache)
+        .map(|(index, _)| Some(index))
+        .collect();
+    if req.cache_last_message {
+        marks.push(None);
+    }
+    let dropped = marks.len().saturating_sub(MAX_BREAKPOINTS);
+    for mark in marks.into_iter().skip(dropped) {
+        let cache = json!({"type": "ephemeral"});
+        match mark {
+            Some(index) => system[index]["cache_control"] = cache,
+            None => {
+                let block = conversation.iter_mut().rev().find_map(|message| {
+                    message["content"]
+                        .as_array_mut()?
+                        .iter_mut()
+                        .rev()
+                        .find(|block| {
+                            matches!(
+                                block["type"].as_str(),
+                                Some("text" | "tool_use" | "tool_result")
+                            )
+                        })
+                });
+                if let Some(block) = block {
+                    block["cache_control"] = cache;
+                }
+            }
+        }
+    }
 }
 
 /// The conversation in Messages API form: display-only thinking and other
@@ -379,6 +440,8 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                     "tool_use" => {
                         sink(Delta::ToolUse {
                             name: s(&cb["name"]),
+                            index: index as usize,
+                            id: s(&cb["id"]),
                         });
                         Acc::Tool {
                             id: s(&cb["id"]),
@@ -409,11 +472,26 @@ fn read_stream(body: impl Read, sink: &mut dyn FnMut(Delta)) -> Result<Turn, Gat
                     (Some(Acc::Thinking { signature, .. }), "signature_delta") => {
                         signature.push_str(field("signature"))
                     }
-                    (Some(Acc::Tool { json, .. } | Acc::Raw(_, json)), "input_json_delta") => {
+                    (Some(Acc::Tool { json, .. }), "input_json_delta") => {
+                        let chunk = field("partial_json");
+                        json.push_str(chunk);
+                        sink(Delta::ToolInput {
+                            index: index as usize,
+                            json: chunk.to_string(),
+                        });
+                    }
+                    (Some(Acc::Raw(_, json)), "input_json_delta") => {
                         json.push_str(field("partial_json"))
                     }
                     (Some(Acc::Raw(raw, _)), _) => append_strings(raw, d),
                     _ => {}
+                }
+            }
+            "content_block_stop" => {
+                if matches!(blocks.get(&index), Some(Acc::Tool { .. })) {
+                    sink(Delta::BlockEnd {
+                        index: index as usize,
+                    });
                 }
             }
             "message_delta" => {
@@ -541,10 +619,11 @@ pub(crate) fn list_models(ctx: &Ctx) -> Result<Vec<ModelInfo>, GatewayError> {
 mod tests {
     use super::*;
     use crate::testutil::{FakeServer, Reply, gateway, provider, sse_body};
-    use apz_proto::chat::ToolSpec;
+    use apz_proto::chat::{SystemPart, ToolSpec};
 
     fn tool() -> ToolSpec {
         ToolSpec {
+            deferred: false,
             name: "bash".into(),
             description: "run".into(),
             input_schema: json!({"type": "object"}),
@@ -654,6 +733,88 @@ mod tests {
         ("message_stop", r#"{"type":"message_stop"}"#),
     ];
 
+    fn part(text: &str, cache: bool) -> SystemPart {
+        SystemPart {
+            text: text.into(),
+            cache,
+        }
+    }
+
+    /// The body a first-party Anthropic provider is sent for `req`.
+    fn sent_body(req: &ChatRequest) -> Value {
+        let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM))]);
+        let p = provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::Env("ANTHROPIC_API_KEY".into()),
+        );
+        gateway(vec![p]).complete(req, &mut |_| {}).unwrap();
+        server.requests()[0].json()
+    }
+
+    #[test]
+    fn cache_breakpoints_follow_the_system_parts_and_the_last_message() {
+        let req = ChatRequest {
+            model: "a/claude-opus-5-5".into(),
+            system: None,
+            system_parts: vec![
+                part("harness", true),
+                part("", true),
+                part("rules", true),
+                part("seat", false),
+            ],
+            cache_last_message: true,
+            messages: vec![Message::user_text("hi")],
+            tools: Vec::new(),
+            max_tokens: 0,
+            temperature: None,
+            effort: None,
+        };
+        let b = sent_body(&req);
+        let cache = json!({"type": "ephemeral"});
+        assert_eq!(
+            b["system"],
+            json!([
+                {"type": "text", "text": "harness", "cache_control": cache},
+                {"type": "text", "text": "rules", "cache_control": cache},
+                {"type": "text", "text": "seat"},
+            ])
+        );
+        assert_eq!(b["messages"][0]["content"][0]["cache_control"], cache);
+        assert!(b.get("cache_control").is_none());
+    }
+
+    #[test]
+    fn past_four_breakpoints_the_earliest_are_dropped() {
+        let req = ChatRequest {
+            model: "a/claude-opus-5-5".into(),
+            system: None,
+            system_parts: ["one", "two", "three", "four"]
+                .into_iter()
+                .map(|text| part(text, true))
+                .collect(),
+            cache_last_message: true,
+            messages: vec![Message::user_text("hi")],
+            tools: Vec::new(),
+            max_tokens: 0,
+            temperature: None,
+            effort: None,
+        };
+        let b = sent_body(&req);
+        let marked = |block: &Value| block.get("cache_control").is_some();
+        let system = b["system"].as_array().unwrap();
+        assert!(!marked(&system[0]));
+        assert!(system[1..].iter().all(marked));
+        assert!(marked(&b["messages"][0]["content"][0]));
+        let total = system
+            .iter()
+            .chain([&b["messages"][0]["content"][0]])
+            .filter(|block| marked(block))
+            .count();
+        assert_eq!(total, MAX_BREAKPOINTS);
+    }
+
     #[test]
     fn request_translation_for_an_adaptive_first_party_model() {
         let server = FakeServer::start(vec![Reply::sse(sse_body(TEXT_STREAM))]);
@@ -671,6 +832,8 @@ mod tests {
             .insert("anthropic-beta".into(), "extra-beta".into());
         let gw = gateway(vec![p]);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "a/claude-opus-5-5".into(),
             system: Some("be brief".into()),
             messages: history(),
@@ -692,8 +855,8 @@ mod tests {
         assert_eq!(b["model"], "claude-opus-5-5");
         assert_eq!(b["max_tokens"], 32000);
         assert_eq!(b["stream"], true);
-        assert_eq!(b["system"], "be brief");
-        assert_eq!(b["cache_control"], json!({"type": "ephemeral"}));
+        assert_eq!(b["system"], json!([{"type": "text", "text": "be brief"}]));
+        assert!(b.get("cache_control").is_none());
         assert_eq!(b["thinking"], json!({"type": "adaptive"}));
         assert_eq!(b["output_config"], json!({"effort": "medium"}));
         assert_eq!(b["fallbacks"], "default");
@@ -732,6 +895,8 @@ mod tests {
         );
         let gw = gateway(vec![p]);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "a/claude-haiku-4-5-20251001".into(),
             system: None,
             messages: vec![Message::user_text("hi")],
@@ -788,6 +953,8 @@ mod tests {
         p.options = Some(serde_json::from_value(json!({"first_party": true})).unwrap());
         let gw = gateway(vec![p]);
         let pinned = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "a/claude-haiku-5-5@low".into(),
             effort: Some("high".into()),
             ..crate::testutil::request("hi")
@@ -795,6 +962,8 @@ mod tests {
         gw.complete(&pinned, &mut |_| {}).unwrap();
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "a/claude-opus-5-5".into(),
                 ..crate::testutil::request("hi")
             },
@@ -821,6 +990,8 @@ mod tests {
             Auth::None,
         )]);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "a/claude-opus-5-5".into(),
             ..crate::testutil::request("hi")
         };
@@ -881,8 +1052,99 @@ mod tests {
             ]
         );
         assert!(deltas.contains(&Delta::ToolUse {
-            name: "bash".into()
+            name: "bash".into(),
+            index: 3,
+            id: "tu9".into(),
         }));
+    }
+
+    #[test]
+    fn a_tool_call_streams_its_start_its_input_chunks_and_its_end() {
+        let server = FakeServer::start(vec![Reply::sse(sse_body(&[
+            (
+                "message_start",
+                r#"{"type":"message_start","message":{"model":"m","usage":{"input_tokens":5}}}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Looking."}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":0}"#,
+            ),
+            (
+                "content_block_start",
+                r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tu1","name":"read_file","input":{}}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\": "}}"#,
+            ),
+            (
+                "content_block_delta",
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"a.txt\"}"}}"#,
+            ),
+            (
+                "content_block_stop",
+                r#"{"type":"content_block_stop","index":1}"#,
+            ),
+            (
+                "message_delta",
+                r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}"#,
+            ),
+            ("message_stop", r#"{"type":"message_stop"}"#),
+        ]))]);
+        let gw = gateway(vec![provider(
+            "a",
+            ProviderKind::Anthropic,
+            &server,
+            Auth::None,
+        )]);
+        let mut deltas = Vec::new();
+        let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
+            model: "a/m".into(),
+            ..crate::testutil::request("hi")
+        };
+        let resp = gw.complete(&req, &mut |d| deltas.push(d)).unwrap();
+        assert_eq!(
+            deltas,
+            vec![
+                Delta::Text {
+                    text: "Looking.".into()
+                },
+                Delta::ToolUse {
+                    name: "read_file".into(),
+                    index: 1,
+                    id: "tu1".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "{\"path\": ".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "\"a.txt\"}".into(),
+                },
+                Delta::BlockEnd { index: 1 },
+            ]
+        );
+        assert_eq!(resp.stop, StopReason::ToolUse);
+        assert_eq!(
+            resp.content[1],
+            Block::ToolUse {
+                id: "tu1".into(),
+                name: "read_file".into(),
+                input: json!({"path": "a.txt"}),
+                meta: None,
+            }
+        );
     }
 
     #[test]
@@ -927,6 +1189,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "a/m".into(),
                     ..crate::testutil::request("go")
                 },
@@ -957,6 +1221,8 @@ mod tests {
         );
         let gw = gateway(vec![p]);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "v/claude-opus-5-5".into(),
             ..crate::testutil::request("hi")
         };

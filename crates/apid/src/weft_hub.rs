@@ -442,7 +442,7 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
     let app = Arc::clone(app);
     let (repo, change) = (repo.to_string(), change.to_string());
     std::thread::spawn(move || {
-        // The task is done when its change lands: the worker is paid now.
+        // The task is done when its change lands.
         if let Ok(detail) = app.weft.get(&format!("/changes/{change}"))
             && let Some(task) = detail["task"].as_str()
         {
@@ -460,6 +460,10 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
             }
             crate::review_graph::post_land(&app, &repo, &change, task);
         }
+        // The landing changed main: the projects on the repo read their memory again.
+        crate::project_memory::landed(&app, &repo, &change);
+        // And each project's base on the repo is rebuilt from the new main (16.4).
+        crate::base_builds::landed(&app, &repo);
         export_all(&app, &repo);
         // And the landing goes to the environments that run main.
         crate::environments::tracked(&app, &repo, "main", &change);
@@ -509,7 +513,7 @@ fn credential(app: &App, name: Option<&str>) -> Option<String> {
 
 /// An agent's key, certified for its current role and project (a new key when the project changed).
 pub fn agent_key(app: &App, cid: u64) -> Result<Arc<KeyPair>, String> {
-    let project = app.members.project_of(cid);
+    let project = crate::projects::project_of(app, cid);
     if let Some((k, p)) = app
         .weft
         .agents

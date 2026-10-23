@@ -68,11 +68,21 @@ pub const BUNDLED: &[(&str, &str, Option<&str>)] = &[
         Some(include_str!("../packs/json/symbols.scm")),
     ),
     (
+        "kotlin",
+        include_str!("../packs/kotlin/pack.json"),
+        Some(include_str!("../packs/kotlin/symbols.scm")),
+    ),
+    (
         "markdown",
         include_str!("../packs/markdown/pack.json"),
         Some(include_str!("../packs/markdown/symbols.scm")),
     ),
     ("php", include_str!("../packs/php/pack.json"), None),
+    (
+        "powershell",
+        include_str!("../packs/powershell/pack.json"),
+        Some(include_str!("../packs/powershell/symbols.scm")),
+    ),
     ("python", include_str!("../packs/python/pack.json"), None),
     ("ruby", include_str!("../packs/ruby/pack.json"), None),
     (

@@ -127,7 +127,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::prompts::store_mem::MemoryPrompts;
+    use crate::prompts::store::SqlitePrompts;
 
     const T0: u64 = 1_800_000_000_000;
     const V1: &str = "# Builder\n\n## Purpose\nYou build.\n\n## Responsibilities\n- Write code.\n\n## Deliverables\n- Code.\n\n## Boundaries\n- Stay in your VM.\n";
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn imports_publishes_and_follows_releases_until_the_owner_edits() {
-        let prompts = Prompts::new(Arc::new(MemoryPrompts::in_memory()));
+        let prompts = Prompts::new(Arc::new(SqlitePrompts::for_tests()));
         let label = |r: &str| r.to_string();
         assert_eq!(
             import(&prompts, &builtins(V1), label, T0)["builder"],

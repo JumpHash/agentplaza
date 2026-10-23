@@ -1,7 +1,7 @@
 //! `agentplaza`: the AgentPlaza command line. Every console feature as a command (the same hub API
-//! the web console and the desktop app use), `agentplaza chat` to talk a project into being with the
-//! orchestrator, `agentplaza tui` for the plaza live in the terminal, and `agentplaza node` to make
-//! this machine a node of a network.
+//! the web console and the desktop app use), `agentplaza chats` to talk to the orchestrator and the
+//! planners, `agentplaza tui` for the plaza live in the terminal, and `agentplaza node` to make this
+//! machine a node of a network.
 
 mod cmd;
 mod ctx;
@@ -34,15 +34,29 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// The plaza at a glance: hub, nodes, agents, work, spend.
+    /// The plaza at a glance: hub, nodes, agents, work.
     Overview,
-    /// Talk to the orchestrator: a conversation drafts a project (its tasks, team, budget and settings), and /start
-    /// opens, staffs and plans it at once. `--list` lists your conversations.
-    Chat(cmd::chat::Args),
-    /// Agents: list (all, a project's, or the bench), inspect, create, talk to, stop, restart, set models.
+    /// Sessions: the work engine's sessions (a seat's step, a project's planner, the orchestrator): list the live
+    /// ones first, show one, its context and transcript, or stop it.
+    Sessions(cmd::sessions::Args),
+    /// A task's seats: each filled by one session at a time, with its state, model, attempts and round.
+    Seats(cmd::seats::Args),
+    /// The inbox: the cards waiting for you, each with its buttons; `inbox answer` gives one of them.
+    Inbox(cmd::inbox::Args),
+    /// Budgets: a project's and a task's (cap, spent, reserved, held, left), set with `--set`, and their ledgers.
+    #[command(subcommand)]
+    Budget(cmd::budget::Cmd),
+    /// Chats: the orchestrator's chat (`main`), a project's chat with its planner and a task's: the list (`--project`,
+    /// `--archived`), show, post, open a chat with a project, archive one.
+    Chats(cmd::chats::Args),
+    /// Agents: the VMs the sessions run on, by cid: talk to one, stop, restart, retire, wipe, sleep, checkpoint,
+    /// roll back, fork, and set its model.
     #[command(subcommand)]
     Agents(cmd::agents::Cmd),
-    /// Projects: open one, put agents on it, pause, resume or archive it, its settings and budget, its plan's stages.
+    /// Seat templates: the roles a task's seats are filled from, built in and custom. `roles` lists them; `save` and
+    /// `delete` change the custom ones.
+    Roles(cmd::roles::Args),
+    /// Projects: open one, pause, resume or archive it, its settings, its plan's stages.
     #[command(subcommand)]
     Projects(cmd::projects::Cmd),
     /// Tasks: the work queue, each task in a project.
@@ -75,9 +89,6 @@ enum Command {
     /// The board: posts and announcements.
     #[command(subcommand)]
     Board(cmd::board::Cmd),
-    /// The treasury: budgets, balances, spend.
-    #[command(subcommand)]
-    Treasury(cmd::treasury::Cmd),
     /// Model usage: what the calls cost over a window, the series, the call log, and the prices.
     #[command(subcommand)]
     Usage(cmd::usage::Cmd),
@@ -200,8 +211,13 @@ fn run(cli: Cli) -> Result<(), String> {
     ctx.rich = rich::Mode::decide(&terminal, Some(ctx.client.base()));
     match cli.command {
         Command::Overview => cmd::overview::run(&ctx),
-        Command::Chat(a) => cmd::chat::run(&ctx, a),
+        Command::Sessions(a) => cmd::sessions::run(&ctx, a),
+        Command::Seats(a) => cmd::seats::run(&ctx, a),
+        Command::Inbox(a) => cmd::inbox::run(&ctx, a),
+        Command::Budget(c) => cmd::budget::run(&ctx, c),
+        Command::Chats(c) => cmd::chats::run(&ctx, c),
         Command::Agents(c) => cmd::agents::run(&ctx, c),
+        Command::Roles(args) => cmd::roles::run(&ctx, args),
         Command::Projects(c) => cmd::projects::run(&ctx, c),
         Command::Tasks(c) => cmd::tasks::run(&ctx, c),
         Command::Weft(args) => cmd::weft::run(&ctx, args),
@@ -213,7 +229,6 @@ fn run(cli: Cli) -> Result<(), String> {
         Command::Skills(c) => cmd::skills::run(&ctx, c),
         Command::Approvals(c) => cmd::approvals::run(&ctx, c),
         Command::Board(c) => cmd::board::run(&ctx, c),
-        Command::Treasury(c) => cmd::treasury::run(&ctx, c),
         Command::Usage(c) => cmd::usage::run(&ctx, c),
         Command::Metrics(c) => cmd::metrics::run(&ctx, c),
         Command::Rules(c) => cmd::rules::run(&ctx, c),
@@ -265,33 +280,59 @@ mod tests {
         assert!(super::Cli::try_parse_from(["agentplaza", "e2b"]).is_err());
     }
 
-    /// `chat` takes its message as words, and goes on with a conversation by its id; `--list` stands alone.
+    /// The work engine's commands parse as their help says: sessions with their filters and actions, seats, the inbox
+    /// and its answers, the budgets and their ledgers, and the chats.
     #[test]
-    fn chat_takes_a_message_and_a_conversation() {
-        let cli = super::Cli::try_parse_from([
-            "agentplaza",
-            "chat",
-            "--conversation",
-            "conv-3",
-            "ship",
-            "0.9",
-        ])
-        .unwrap();
-        let super::Command::Chat(args) = cli.command else {
-            panic!("chat parses as chat");
+    fn the_work_engine_commands_parse() {
+        let ok = |args: &[&str]| {
+            let mut all = vec!["agentplaza"];
+            all.extend_from_slice(args);
+            super::Cli::try_parse_from(all).is_ok()
         };
-        assert_eq!(args.conversation.as_deref(), Some("conv-3"));
-        assert_eq!(args.message, ["ship", "0.9"]);
-        assert_eq!(args.wait, 600);
-        assert!(super::Cli::try_parse_from(["agentplaza", "chat", "--list"]).is_ok());
+        assert!(ok(&["sessions"]));
+        assert!(ok(&["sessions", "--task", "t4", "--live"]));
+        assert!(ok(&["sessions", "--state", "paused"]));
+        assert!(!ok(&["sessions", "--state", "sleeping"]), "no such state");
+        assert!(ok(&["sessions", "show", "s3"]));
+        assert!(ok(&["sessions", "context", "s3"]));
+        assert!(ok(&["sessions", "transcript", "s3", "--follow"]));
+        assert!(ok(&["sessions", "stop", "s3", "--yes"]));
+        assert!(!ok(&["sessions", "show"]), "show names a session");
+        assert!(ok(&["seats", "t4"]));
+        assert!(ok(&["inbox"]));
+        assert!(ok(&["inbox", "answer", "c7", "raise", "--amount", "12.5"]));
+        assert!(ok(&["inbox", "answer", "c7", "start"]));
+        assert!(!ok(&["inbox", "answer", "c7"]), "answer names a choice");
+        assert!(ok(&[
+            "budget", "project", "pr3", "--set", "usd", "50", "--warn", "90"
+        ]));
+        assert!(ok(&[
+            "budget",
+            "project",
+            "pr3",
+            "--set",
+            "tokens",
+            "200000",
+            "--monthly",
+            "5000"
+        ]));
         assert!(
-            super::Cli::try_parse_from(["agentplaza", "chat", "--list", "hello"]).is_err(),
-            "--list takes no message"
+            !ok(&["budget", "project", "pr3", "--warn", "90"]),
+            "a warn share goes with --set"
         );
         assert!(
-            super::Cli::try_parse_from(["agentplaza", "chat", "--archived"]).is_err(),
-            "--archived goes with --list"
+            ok(&["budget", "task", "t4", "--set", "usd"]),
+            "a budget with no cap"
         );
+        assert!(ok(&["budget", "ledger", "pr3", "--limit", "20"]));
+        assert!(ok(&["budget", "ledger", "t4", "--task"]));
+        assert!(ok(&["chats"]));
+        assert!(ok(&["chats", "--project", "pr3", "--archived"]));
+        assert!(ok(&["chats", "show", "main", "--limit", "20"]));
+        assert!(ok(&["chats", "post", "main", "ship it"]));
+        assert!(ok(&["chats", "open", "pr3", "--title", "Release 0.9"]));
+        assert!(ok(&["chats", "archive", "chat-pr3", "--undo"]));
+        assert!(!ok(&["chat", "--list"]), "the chat command is chats now");
     }
 
     /// The project-scoped flags and subcommands parse as their help says.
@@ -302,17 +343,20 @@ mod tests {
             all.extend_from_slice(args);
             super::Cli::try_parse_from(all).is_ok()
         };
-        assert!(ok(&["agents", "list", "--project", "pr3"]));
-        assert!(ok(&["agents", "list", "--bench"]));
-        assert!(!ok(&["agents", "list", "--bench", "--project", "pr3"]));
-        assert!(ok(&[
-            "agents",
-            "create",
-            "--role",
-            "builder",
-            "--project",
-            "pr3"
-        ]));
+        assert!(ok(&["sessions", "--project", "pr3", "--live"]));
+        assert!(!ok(&["sessions", "--bench"]), "no such option");
+        assert!(
+            !ok(&["agents", "list"]),
+            "the agents' roster is the sessions"
+        );
+        assert!(
+            !ok(&["agents", "create", "--role", "builder"]),
+            "seats are filled by sessions, not spawned by hand"
+        );
+        assert!(
+            ok(&["agents", "stop", "7", "--yes"]),
+            "a VM is still stopped by its cid"
+        );
         assert!(ok(&["tasks", "list", "--project", "pr3"]));
         assert!(ok(&["tasks", "create", "Fix it", "--project", "pr3"]));
         assert!(ok(&["tasks", "move", "t4", "--project", "pr3"]));
@@ -334,10 +378,7 @@ mod tests {
             "--kind",
             "film"
         ]));
-        assert!(ok(&["projects", "members", "pr3"]));
-        assert!(ok(&["projects", "members", "pr3", "add", "7"]));
-        assert!(ok(&["projects", "members", "pr3", "remove", "7", "--yes"]));
-        assert!(ok(&["projects", "members", "pr3", "suggested"]));
+        assert!(!ok(&["projects", "members", "pr3"]), "no such command");
         assert!(ok(&["projects", "pause", "pr3"]));
         assert!(ok(&["projects", "resume", "pr3"]));
         assert!(ok(&["projects", "archive", "pr3", "--yes"]));
@@ -356,13 +397,6 @@ mod tests {
             "set needs a pair"
         );
         assert!(ok(&["projects", "settings", "pr3", "unset", "effort"]));
-        assert!(ok(&["projects", "budget", "pr3"]));
-        assert!(ok(&["projects", "budget", "pr3", "add", "5000"]));
-        assert!(ok(&["projects", "budget", "pr3", "return", "1000"]));
-        assert!(
-            !ok(&["projects", "budget", "pr3", "add", "0"]),
-            "credits are at least 1"
-        );
         // A project's life after launch: its mode, adopting one, maintenance, environments, files.
         assert!(ok(&["projects", "modes"]));
         assert!(ok(&["projects", "mode", "pr3", "maintenance"]));

@@ -1,6 +1,6 @@
 # Plan: the hub, its nodes, and a desktop app at parity
 
-Owner's decisions (2026-10-12): the hub is today's apid (control plane, state in Postgres, laws,
+Owner's decisions (2026-10-12): the hub is today's apid (control plane, state in SQLite, laws,
 console, model gateway, git, files) plus node management, hostable anywhere. A node is a machine
 running noded (VMs) and its own agent gateway (vsockd), dialling out to the hub. The desktop app
 stays native (iced) and is ported to full parity with the web console. Join codes are the only way
@@ -17,7 +17,7 @@ a node enters a hub, and they are hardened.
                           │ HTTPS, owner token
                           ▼
    ┌──────────────── hub (apid) ─────────────────┐
-   │ state (Postgres) · laws · git · files · LLMs│
+   │ state (SQLite) · laws · git · files · LLMs│
    │ node registry · join codes · command queues │
    └──────────────────────▲──────────────────────┘
                           │ HTTPS (pinned cert), every request signed by the node's key
@@ -109,7 +109,7 @@ Service start and stop is in `console/services.rs`. Feature-level parity with th
 checked here.
 
 Native iced, same design language as the web console (`apps/web/DESIGN.md`).
-- **Startup chooser:** *Start locally* (starts Postgres/Garage if present, apid, vsockd,
+- **Startup chooser:** *Start locally* (apid, vsockd,
   noded on this machine), *Host a hub*, *Join a hub* (paste a token; starts apz-link, noded,
   vsockd), *Connect to a hub* (URL + owner token, console only).
   - The choice is remembered.

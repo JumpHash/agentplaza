@@ -223,7 +223,7 @@ const DEFAULT_FAMILY: Family = Family {
     role: "",
     name: "default",
     workflow: default_workflow,
-    tools: &["write_file", "read_file"],
+    tools: &["edit", "read"],
 };
 
 /// A builder's: the round trip into `build-notes.txt`.
@@ -231,7 +231,7 @@ const BUILDER_FAMILY: Family = Family {
     role: "builder",
     name: "builder",
     workflow: builder_workflow,
-    tools: &["write_file", "read_file"],
+    tools: &["edit", "read"],
 };
 
 /// A read-only family's: the workspace searched, nothing written. It is the
@@ -352,7 +352,7 @@ pub fn builder_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
 pub fn read_only_workflow(task: &Task, driver: &mut dyn Driver) -> Run {
     let pattern = search_pattern(task);
     let output = driver.call("search", json!({ "pattern": pattern, "path": "." }))?;
-    Ok(Report::Summary(render_search(&output)?))
+    Ok(Report::Summary(render_search(&pattern, &output)?))
 }
 
 /// The token the workspace is searched for: the first word of the task's goal,
@@ -400,15 +400,19 @@ fn one_line(text: &str) -> String {
 /// what came back is what went in — the round trip, proven rather than
 /// assumed.
 fn write_then_read(driver: &mut dyn Driver, path: &str, content: &str) -> Result<(), DriveError> {
-    driver.call("write_file", json!({ "path": path, "content": content }))?;
-    let output = driver.call("read_file", json!({ "path": path }))?;
+    let wrote = driver.call(
+        "edit",
+        json!({ "create": [{ "path": path, "content": content }] }),
+    )?;
+    check_written(&wrote)?;
+    let output = driver.call("read", json!({ "files": [{ "path": path }] }))?;
     let read = read_content(&output).ok_or_else(|| DriveError::BadOutput {
-        name: "read_file".to_string(),
+        name: "read".to_string(),
         reason: format!("the read of {path} carries no `content`"),
     })?;
     if read != content {
         return Err(DriveError::BadOutput {
-            name: "read_file".to_string(),
+            name: "read".to_string(),
             reason: format!(
                 "{path} read back {} byte(s), not the {} written",
                 read.len(),
@@ -419,13 +423,47 @@ fn write_then_read(driver: &mut dyn Driver, path: &str, content: &str) -> Result
     Ok(())
 }
 
-/// The `content` of a `read_file` result, when the answer is that shape.
+/// Whether an `edit` result says its one file was written: the harness answers
+/// per file, with `ok` and, when it refused, the reason.
+fn check_written(output: &str) -> Result<(), DriveError> {
+    let file = serde_json::from_str::<serde_json::Value>(output)
+        .ok()
+        .and_then(|value| value.get("files")?.get(0).cloned());
+    match file
+        .as_ref()
+        .and_then(|file| file.get("ok"))
+        .and_then(serde_json::Value::as_bool)
+    {
+        Some(true) => Ok(()),
+        Some(false) => Err(DriveError::Refused {
+            name: "edit".to_string(),
+            output: file
+                .as_ref()
+                .and_then(|file| file.get("error"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        }),
+        None => Err(DriveError::BadOutput {
+            name: "edit".to_string(),
+            reason: "the edit result carries no `ok` for its file".to_string(),
+        }),
+    }
+}
+
+/// The `content` of a `read` result's first file, when the answer is that
+/// shape. The harness numbers each line (`cat -n`: a right-aligned number, a tab,
+/// the line), so the numbers are stripped and the lines joined back.
 fn read_content(output: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(output).ok()?;
-    value
-        .get("content")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+    let numbered = value.get("files")?.get(0)?.get("content")?.as_str()?;
+    Some(
+        numbered
+            .lines()
+            .map(|line| line.split_once('\t').map_or(line, |(_, text)| text))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// A `search` result, rendered as the one line a read-only run finishes with:
@@ -434,28 +472,27 @@ fn read_content(output: &str) -> Option<String> {
 ///
 /// The whole line is bounded ([`bounded`]) so nothing a guest says can grow a
 /// task's note past the ledger's own bound.
-fn render_search(output: &str) -> Result<String, DriveError> {
+fn render_search(pattern: &str, output: &str) -> Result<String, DriveError> {
     let bad = |reason: String| DriveError::BadOutput {
         name: "search".to_string(),
         reason,
     };
     let value: serde_json::Value = serde_json::from_str(output)
         .map_err(|err| bad(format!("the search result is not JSON: {err}")))?;
-    let pattern = value
-        .get("pattern")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| bad("the search result carries no `pattern`".to_string()))?;
     let matches = value
         .get("matches")
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| bad("the search result carries no `matches` array".to_string()))?;
-    let files = value
-        .get("files_scanned")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+    let mut paths: Vec<&str> = matches
+        .iter()
+        .filter_map(|entry| entry.get("path").and_then(serde_json::Value::as_str))
+        .collect();
+    paths.sort_unstable();
+    paths.dedup();
     let mut line = format!(
-        "read-only: search {pattern:?} matched {} line(s) in {files} file(s) scanned",
-        matches.len()
+        "read-only: search {pattern:?} matched {} line(s) in {} file(s)",
+        matches.len(),
+        paths.len()
     );
     if value
         .get("truncated")
@@ -468,7 +505,7 @@ fn render_search(output: &str) -> Result<String, DriveError> {
     }
     if let Some(first) = matches.first() {
         let file = first
-            .get("file")
+            .get("path")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("<unnamed>");
         let number = first
@@ -541,9 +578,7 @@ mod tests {
         let (librarian, _) = run("librarian", &task("t1", "g", "librarian"));
         assert_eq!(
             librarian.expect("the librarian workflow runs"),
-            Report::Summary(
-                "read-only: search \"g\" matched 0 line(s) in 0 file(s) scanned".to_string()
-            )
+            Report::Summary("read-only: search \"g\" matched 0 line(s) in 0 file(s)".to_string())
         );
         for generic in ["architect", "builderx", "Builder", ""] {
             let (run, _) = run(generic, &task("t1", "g", generic));
@@ -605,23 +640,15 @@ mod tests {
         let roles = manifest(&[
             (
                 "builder",
-                &[
-                    "bash",
-                    "read_file",
-                    "write_file",
-                    "edit_file",
-                    "list",
-                    "search",
-                ],
+                &["run", "run_tests", "read", "edit", "find", "search"],
             ),
             ("librarian", &["read_memory", "search", "transcript_search"]),
-            ("architect", &["bash", "read_file", "list", "search"]),
+            ("architect", &["run", "run_tests", "read", "find", "search"]),
             ("auditor", &["read_audit", "read_usage", "search"]),
             (
                 "legal-gov-judge",
                 &["read_case_record", "search_precedent", "issue_ruling"],
             ),
-            ("mayor", &["read_file", "list", "search"]),
         ]);
         let roles = Some(&roles);
 
@@ -636,9 +663,9 @@ mod tests {
             Plan::Drive(&READ_ONLY_FAMILY),
             "a librarian's script is already read-only"
         );
-        // The codex's architect declares no `write_file` — but it does declare
-        // `bash`, and a shell can write, so its round trip is granted through
-        // the shell. (This is the implication stated in the mapping, taken
+        // The codex's architect declares no `edit` — but it does declare `run`,
+        // and a shell can write, so its round trip is granted through the
+        // shell. (This is the implication stated in the mapping, taken
         // literally.)
         assert_eq!(
             plan_for("architect", roles),
@@ -646,9 +673,9 @@ mod tests {
             "a shell grant covers the default's write"
         );
         // A role that may read and search but has no write *and* no shell — the
-        // mayor — falls back to the read-only script.
+        // auditor — falls back to the read-only script.
         assert_eq!(
-            plan_for("mayor", roles),
+            plan_for("auditor", roles),
             Plan::Drive(&READ_ONLY_FAMILY),
             "no write grant and no shell: the read-only fallback"
         );
@@ -701,10 +728,22 @@ mod tests {
                 Report::Artifacts(vec![artifact.to_string()]),
                 "{case} reports its artifact"
             );
-            assert_eq!(agent.sequence(), vec!["write_file", "read_file"], "{case}");
-            assert_eq!(agent.arg(0, "path"), artifact, "{case} writes its artifact");
-            assert_eq!(agent.arg(0, "content"), line, "{case} writes the task line");
-            assert_eq!(agent.arg(1, "path"), artifact, "{case} reads it back");
+            assert_eq!(agent.sequence(), vec!["edit", "read"], "{case}");
+            assert_eq!(
+                agent.args(0)["create"][0]["path"],
+                artifact,
+                "{case} writes its artifact"
+            );
+            assert_eq!(
+                agent.args(0)["create"][0]["content"],
+                line,
+                "{case} writes the task line"
+            );
+            assert_eq!(
+                agent.args(1)["files"][0]["path"],
+                artifact,
+                "{case} reads it back"
+            );
             assert_eq!(agent.calls(), 2, "{case}");
         }
     }
@@ -735,7 +774,7 @@ mod tests {
         };
         assert_eq!(
             line,
-            "read-only: search \"memory\" matched 1 line(s) in 1 file(s) scanned; \
+            "read-only: search \"memory\" matched 1 line(s) in 1 file(s); \
              first: handbook.md:2: memory curation"
         );
         assert!(run.artifacts().is_empty());
@@ -755,7 +794,7 @@ mod tests {
         assert_eq!(
             run,
             Report::Summary(
-                "read-only: search \"nothing\" matched 0 line(s) in 0 file(s) scanned".to_string()
+                "read-only: search \"nothing\" matched 0 line(s) in 0 file(s)".to_string()
             )
         );
         // And an answer that is not a search result is a failure, not an empty
@@ -808,7 +847,7 @@ mod tests {
     #[test]
     fn a_refusal_is_final_and_unreachability_is_retryable() {
         let refusal = DriveError::Refused {
-            name: "write_file".to_string(),
+            name: "edit".to_string(),
             output: "denied: path \"../x\" contains \"..\"".to_string(),
         };
         let mut agent = FakeAgent::failing(refusal.clone());
@@ -818,11 +857,11 @@ mod tests {
         assert!(!err.is_retryable());
         assert_eq!(
             err.note(),
-            "tool write_file refused: denied: path \"../x\" contains \"..\""
+            "tool edit refused: denied: path \"../x\" contains \"..\""
         );
 
         let unreachable = DriveError::Unreachable {
-            name: "write_file".to_string(),
+            name: "edit".to_string(),
             reason: "the agent did not answer within 5000 ms".to_string(),
         };
         let mut agent = FakeAgent::failing(unreachable.clone());
@@ -831,7 +870,7 @@ mod tests {
         assert!(err.is_retryable());
         assert_eq!(
             err.note(),
-            "tool write_file unavailable: the agent did not answer within 5000 ms"
+            "tool edit unavailable: the agent did not answer within 5000 ms"
         );
     }
 
@@ -871,10 +910,9 @@ mod tests {
         for bad in [
             "not json at all",
             r#"{"pattern":"x"}"#,
-            r#"{"matches":[]}"#,
-            r#"{"pattern":"x","matches":"none"}"#,
+            r#"{"matches":"none"}"#,
         ] {
-            let err = render_search(bad).expect_err("not a search result");
+            let err = render_search("p", bad).expect_err("not a search result");
             assert!(
                 matches!(err, DriveError::BadOutput { .. }),
                 "{bad}: {err:?}"
@@ -882,28 +920,32 @@ mod tests {
         }
 
         let rendered = render_search(
-            r#"{"pattern":"p","path":".","matches":[{"file":"a.txt","line":3,"text":"p here"}],
-                "files_scanned":2,"bytes_scanned":9,"skipped":0,"truncated":false}"#,
+            "p",
+            r#"{"matches":[{"path":"a.txt","line":3,"text":"p here","before":[],"after":[]}],
+                "truncated":false}"#,
         )
         .expect("a search result renders");
         assert_eq!(
             rendered,
-            "read-only: search \"p\" matched 1 line(s) in 2 file(s) scanned; first: a.txt:3: p here"
+            "read-only: search \"p\" matched 1 line(s) in 1 file(s); first: a.txt:3: p here"
         );
 
         let cut = render_search(
-            r#"{"pattern":"p","matches":[{"file":"a.txt","line":1,"text":"p"}],
-                "files_scanned":9,"truncated":true}"#,
+            "p",
+            r#"{"matches":[{"path":"a.txt","line":1,"text":"p"}],"truncated":true}"#,
         )
         .expect("a search result renders");
         assert!(cut.contains("cut short"), "{cut}");
-        assert!(cut.contains("9 file(s)"), "{cut}");
+        assert!(cut.contains("1 file(s)"), "{cut}");
 
         // A guest's enormous match text is bounded, and so is the whole line.
-        let huge = render_search(&format!(
-            r#"{{"pattern":"p","matches":[{{"file":"a.txt","line":1,"text":"{}"}}],"files_scanned":1}}"#,
-            "x".repeat(100_000)
-        ))
+        let huge = render_search(
+            "p",
+            &format!(
+                r#"{{"matches":[{{"path":"a.txt","line":1,"text":"{}"}}]}}"#,
+                "x".repeat(100_000)
+            ),
+        )
         .expect("a search result renders");
         assert!(
             huge.chars().count() <= MAX_NOTE_DETAIL + 1,
@@ -927,7 +969,7 @@ mod tests {
         // A refusal whose output is enormous still makes a note the ledger
         // will take.
         let err = DriveError::Refused {
-            name: "read_file".to_string(),
+            name: "read".to_string(),
             output: "x".repeat(100_000),
         };
         assert!(err.note().len() < 1024, "{} bytes", err.note().len());

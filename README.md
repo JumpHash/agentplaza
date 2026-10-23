@@ -118,8 +118,8 @@ systems marked yes:
 | Windows 11 (or 10 2004+), x64 | yes | yes, with the Windows Hypervisor Platform feature |
 | Windows, arm64 | yes (the node link) | not yet: run them on a node elsewhere |
 
-The desktop app's "Start locally" and "Host a hub" also need Docker, for the Postgres 17 container, and the ports
-7700 (hub), 8899 (node daemon), 19080 (node agent gateway) and 5434 (the container).
+The desktop app's "Start locally" and "Host a hub" need no Docker and no database server: the hub keeps its state in
+SQLite files in its state folder. They use the ports 7700 (hub), 8899 (node daemon) and 19080 (node agent gateway).
 The macOS builds are not notarized yet, and the MSI is not code-signed yet.
 
 ## Quick start
@@ -127,8 +127,7 @@ The macOS builds are not notarized yet, and the MSI is not code-signed yet.
 1. **Set up a plaza.** Open the desktop app and choose *Start locally*. It checks the requirements and sets up the
    containers. On Linux you can instead start the services with
    `systemctl --user enable --now agentplaza-hub agentplaza-node`, or run `apid` in a terminal on any system. The hub
-   keeps its state in files unless
-   `APZ_DATABASE_URL` points it at Postgres.
+   keeps its state in SQLite files in its state folder.
 2. **Open the console** at <http://127.0.0.1:7700>. The owner token is written once to the state folder
    (`owner-token`), and the console on this machine signs in without a password.
 3. **Add a model key.** On the Models screen, add a key to a provider card. From the command line:
@@ -138,9 +137,9 @@ The macOS builds are not notarized yet, and the MSI is not code-signed yet.
 5. **Start a project.** Choose *New project* in the switcher at the top of the console, and tell the orchestrator
    what you want done. It drafts the project beside the conversation (its tasks, its team and its budget), and you
    press *Start project*. From the command line: `agentplaza chat "Fix the flaky scheduler tests and ship 0.9"`, then
-   `/start`. A fresh plaza runs the orchestrator alone: every other agent works on one project at a time, and agents
-   on none wait on the bench and use nothing. Proposals from the orchestrator wait in Approvals until you approve
-   them.
+   `/start`. A fresh plaza runs the orchestrator alone: every other agent works on one project at a time, through the
+   seats its tasks give it, and an agent on none does nothing. Proposals from the orchestrator wait in Approvals until
+   you approve them.
 6. **Add a workstation.** On the hub: `agentplaza stations codes create --label workstation --ttl 15`. On the machine:
    `agentplaza workstation join <code> --hub https://<hub>`. Agents act on it as a separate `agentplaza` OS account
    by default. `--account owner` makes them act as your own account, which the console warns about.
@@ -157,9 +156,9 @@ The full walkthrough, with the troubleshooting questions, is in the [guide](http
 agentplaza overview                                 # the plaza at a glance: hub, nodes, agents, work, spend
 agentplaza chat "Fix the flaky scheduler tests and ship 0.9"   # talk a project into being; /start starts it
 agentplaza projects list                            # the projects, with their stage and state
-agentplaza agents list --bench                      # the agents on no project, which do nothing until put on one
-agentplaza projects members pr1 add 7               # put agent 7 on project pr1
-agentplaza agents create --role researcher --count 2 --project pr1   # two researchers for project pr1
+agentplaza agents list --project pr1               # the agents working on project pr1
+agentplaza roles                                    # the seat templates a task's seats are filled from
+agentplaza agents create --role researcher --count 2   # two researchers
 agentplaza agents list --status working             # the agents that are working (or idle, offline)
 agentplaza tasks create "Survey the open issues" --project pr1 --role researcher --details "List them, with the blockers"
 agentplaza tasks list --project pr1                 # a project's tasks, with each task's lane and assignee
@@ -186,9 +185,9 @@ the desktop app.
   workstations), with its load and status, or as a list. Each machine has its own view: the live model, its hardware
   with each GPU's card, load, 2D drawings, VM slots, agents and events. Three styles (Ink, Blueprint, Night). Drawn by
   a Rust wgpu engine (`crates/apz-engine`), in the browser as WebAssembly on WebGPU with WebGL2 as the fallback.
-- **Projects.** Agents work on one project at a time; on none, they wait on the bench and use nothing. A project is
-  talked into being with the orchestrator: it drafts the tasks, the team and the budget beside the conversation, and
-  Start opens, staffs and plans it at once. A project overrides the plaza's settings for its agents (models, effort,
+- **Projects.** Agents work on one project at a time, through the seats its tasks give them; on none, they do nothing. A project is
+  talked into being with the orchestrator: it drafts the tasks and the budget beside the conversation, and
+  Start opens and plans it at once. A project overrides the plaza's settings for its agents (models, effort,
   limits, permissions, budget), and the consoles switch between projects.
 - **Projects after launch.** A project is in build or maintenance. In maintenance its agents read its feedback, reports and analytics, keep a map of it and propose work with its value and risk; the owner picks each proposal. Environments run deploys, and protected ones wait for the owner. A project that exists can be brought in from a git platform, a git address or a folder, and files can be dropped into projects and chats (`docs/guide/projects-after-launch.md`).
 - **The IDE.** A workspace for the agents' repositories, modelled on Coral and t3code (`docs/design/ide.md`). The
@@ -361,14 +360,10 @@ The test commands:
 
 ```sh
 cargo test --workspace                       # the Rust tests (CI runs them with nextest)
-scripts/test-db.sh db                        # apid's database tests, against a throwaway Postgres 17 container
-scripts/test-db.sh all                       # every apid test with the database set
 cd apps/web && npm run check                 # typecheck, build and the console's tests
 python3 -I tests/acceptance/run.py all       # the acceptance matrix (hosts its own stacks; see --help)
-cd trainer && uv sync --locked && uv run pytest -q
+cd trainer && uv sync --locked --extra cpu && uv run --extra cpu pytest -q
 ```
-
-`scripts/test-db.sh` needs the `postgres:17` image already present locally; it never pulls.
 
 The CI workflows, and when each one runs, are described in [docs/dev/ci.md](docs/dev/ci.md). The repository's folders
 are listed in [docs/repository-layout.md](docs/repository-layout.md).

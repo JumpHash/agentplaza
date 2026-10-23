@@ -1,5 +1,5 @@
 // Projects: the list (#/projects) and a project's page (#/projects/<id>/<tab>): its header and its pipeline from brief to
-// delivery, its Plan (documents, critiques, tasks, files, history), and its Team, Settings, Maintenance and Environments
+// delivery, its Plan (documents, critiques, tasks, files, history), and its Settings, Maintenance and Environments
 // tabs. The owner approves, sends back, pauses, archives and changes the mode from here. The markup is the prototype's
 // (styles/proto/projects.css); the data and the actions are the console's.
 
@@ -12,7 +12,6 @@ import { ago, attempt, badge, button, card, field, modal, select, textarea, toas
 import { openNewProject } from '../ui/new-project';
 import { isLive, refreshProjects } from '../scope';
 import { settingsTab } from './project-settings';
-import { teamTab } from './project-team';
 import { maintenanceTab } from './project-maintenance';
 import { environmentsTab } from './project-environments';
 import { projectsApi, type ModeDef, type ProjectMode } from '../api-projects';
@@ -46,7 +45,7 @@ const TASK_TONE: Record<WorkState, Tone> = {
 };
 const APPROVABLE: ProjectStage[] = ['critique', 'approval'];
 /** The tabs of a project's page that are drawn here; the others (Work, Tasks, Weft) are the console's own screens. */
-const OWN_TABS = ['plan', 'maintenance', 'environments', 'team', 'settings'];
+const OWN_TABS = ['plan', 'maintenance', 'environments', 'settings'];
 const TAB_LINKS: [string, string][] = [
   ['plan', 'Plan'],
   ['work', 'Work'],
@@ -54,7 +53,6 @@ const TAB_LINKS: [string, string][] = [
   ['history', 'Weft'],
   ['maintenance', 'Maintenance'],
   ['environments', 'Environments'],
-  ['team', 'Team'],
   ['settings', 'Settings'],
 ];
 
@@ -334,7 +332,7 @@ function openMode(p: Project, done: () => void): void {
 }
 
 function openApprove(p: Project, done: () => void): void {
-  const note = textarea({ rows: 3, placeholder: 'A note for the team (optional)' });
+  const note = textarea({ rows: 3, placeholder: 'A note for its agents (optional)' });
   dialog('Approve plan', [field('Note', note)], (close) => [
     lbtn(
       'Approve plan',
@@ -352,7 +350,7 @@ function openApprove(p: Project, done: () => void): void {
   ]);
 }
 
-/** Sends the project back to an earlier stage, with the reason the team must act on. */
+/** Sends the project back to an earlier stage, with the reason its agents must act on. */
 function openSendBack(p: Project, done: () => void): void {
   const earlier = PROJECT_STAGES.slice(0, stageIndex(p.stage));
   const stage = select(
@@ -366,7 +364,7 @@ function openSendBack(p: Project, done: () => void): void {
       () => {
         const why = reason.value.trim();
         if (!why) {
-          toast('Give a reason so the team knows what to change', 'error');
+          toast('Give a reason so the agents know what to change', 'error');
           return;
         }
         void (async () => {
@@ -386,7 +384,7 @@ function openSendBack(p: Project, done: () => void): void {
 function openArchive(p: Project, done: () => void): void {
   dialog(
     'Archive project?',
-    [h('p.muted', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn, its agents go back to the bench, and the rest of its budget goes back to the plaza. Its history stays.`)],
+    [h('p.muted', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn and its agents stop working on it. Its history stays.`)],
     (close) => [
       lbtn('Cancel', () => close(), { kind: 'ghost' }),
       lbtn(
@@ -519,7 +517,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       h('p.pj-intro', null, 'Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.'),
       ordered.length
         ? h('div.pj-list', null, ordered.map(projectRow))
-        : emptyState(icon('commit', '', 22), 'No projects yet.', 'Start one in a conversation with the orchestrator: it drafts the tasks, the team and the budget, and you start it.', newBtn),
+        : emptyState(icon('commit', '', 22), 'No projects yet.', 'Start one in a chat with the orchestrator: it drafts the tasks and the budget, and you start it.', newBtn),
     ];
   };
 
@@ -529,15 +527,13 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       void refreshProjects();
     };
     const body: (Node | null)[] =
-      tab === 'team'
-        ? [teamTab(p, refresh)]
-        : tab === 'settings'
-          ? [settingsTab(p)]
-          : tab === 'maintenance'
-            ? [keep(`maintenance:${p.id}:${modeOf(p)}`, () => maintenanceTab(p, refresh))]
-            : tab === 'environments'
-              ? [keep(`environments:${p.id}:${p.archived ? 'archived' : 'live'}`, () => environmentsTab(p))]
-              : planTab(p);
+      tab === 'settings'
+        ? [settingsTab(p)]
+        : tab === 'maintenance'
+          ? [keep(`maintenance:${p.id}:${modeOf(p)}`, () => maintenanceTab(p, refresh))]
+          : tab === 'environments'
+            ? [keep(`environments:${p.id}:${p.archived ? 'archived' : 'live'}`, () => environmentsTab(p))]
+            : planTab(p);
     return [...header(p, refresh), tabsBar(p, tab), h('div.pj-body', null, body)];
   };
 

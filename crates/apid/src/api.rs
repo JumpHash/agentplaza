@@ -85,6 +85,7 @@ pub fn router() -> Router<App> {
     let router = crate::engine_instances::routes(router);
     let router = crate::context_track::routes(router);
     let router = crate::usage_providers::routes(router);
+    let router = crate::evals::routes(router);
     let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);
@@ -99,14 +100,14 @@ pub fn router() -> Router<App> {
     let router = crate::hub_mcp::owner::routes(router);
     let router = crate::library::routes(router);
     let router = crate::deliverables::routes(router);
+    let router = crate::storage::routes(router);
     let router = crate::toolbox::routes(router);
     let router = crate::adopt::routes(router);
     let router = crate::projects::routes(router);
+    let router = crate::project_memory::routes(router);
     let router = crate::maintenance::routes(router);
     let router = crate::environments::routes(router);
     let router = crate::project_files::routes(router);
-    let router = crate::membership::routes(router);
-    let router = crate::conversations::routes(router);
     let router = crate::drafts::routes(router);
     let router = crate::project_settings::routes(router);
     let router = crate::harness_control::routes(router);
@@ -120,10 +121,12 @@ pub fn router() -> Router<App> {
     let router = crate::weft_hub::routes(router);
     let router = crate::platforms::routes(router);
     let router = crate::review_graph::routes::routes(router);
+    let router = crate::recipes::routes::routes(router);
     let router = crate::unfurl::routes(router);
     let router = crate::ide::routes(router);
     let router = crate::ide_term::routes(router);
     let router = crate::rules::routes(router);
+    let router = crate::standing_rules::routes(router);
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
     let router = crate::sleep::routes(router);

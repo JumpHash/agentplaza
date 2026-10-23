@@ -39,6 +39,7 @@ pub mod shell;
 pub mod toast;
 pub mod ui;
 pub mod view;
+pub mod work_api;
 pub mod workstation_setup;
 
 use iced::{Element, Subscription, Task};
@@ -190,7 +191,7 @@ fn boot() -> (Console, Task<Msg>) {
     }
     // `APZ_PROJECT=<id>` and `APZ_TASK=<id>` open that project's page and that task's page (capture hooks).
     if let Ok(project) = std::env::var("APZ_PROJECT") {
-        // `APZ_PROJECT_TAB=maintenance|environments|team|settings` opens that tab of its page.
+        // `APZ_PROJECT_TAB=maintenance|environments|settings` opens that tab of its page.
         console.shell.current = match std::env::var("APZ_PROJECT_TAB")
             .ok()
             .and_then(|tab| screens::projects::Tab::named(&tab))
@@ -269,16 +270,6 @@ fn boot() -> (Console, Task<Msg>) {
             capture = onboard::local_task().map(|checks| Msg::Onboard(onboard::Msg::Local(checks)));
         }
         _ => {}
-    }
-    // `APZ_WIZARD=1` (a capture hook): the Agents screen opens with its spawn wizard.
-    if std::env::var_os("APZ_WIZARD").is_some() {
-        console.shell.current = screens::Id::Agents;
-        capture = Task::batch([
-            capture,
-            Task::done(Msg::Screen(screens::Msg::Agents(
-                screens::agents::Msg::Wizard(screens::wizard::WizardMsg::Open),
-            ))),
-        ]);
     }
     let reveal = onboard::reveal::<Msg>(&console.onboard, true);
     let tasks = Task::batch([

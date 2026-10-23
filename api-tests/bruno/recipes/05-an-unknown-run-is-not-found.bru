@@ -1,0 +1,15 @@
+meta {
+  name: An unknown recipe run is not found
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/recipe-runs/rr-0/graph
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

@@ -7,15 +7,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
+use apz_cache::Generations;
 use apz_plaza::ConnectedAgent;
 use apz_plaza::social::PostRequest;
-use apz_plaza::tasks::{CreateTask, Task, resolve_budget};
+use apz_plaza::tasks::{CreateTask, Task};
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::WorkKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
+use crate::laws::Laws;
 use crate::scheduler::Origin;
 use crate::settings::tier_of;
 use crate::state::App;
@@ -45,17 +47,14 @@ const ALWAYS: &[&str] = &[
     "plaza_board_comment",
     "plaza_send_message",
     "plaza_message_seat",
+    "team_set",
+    "thread_read",
+    "thread_answer",
     "share_file",
     "plaza_get_file",
     "fetch_url",
     "download",
     "install_packages",
-    "glob",
-    "grep",
-    "multi_edit",
-    "bash_start",
-    "bash_output",
-    "bash_kill",
     "todo_write",
     "code_engine",
     "deliver_file",
@@ -67,7 +66,6 @@ const ALWAYS: &[&str] = &[
     "checkpoint_diff",
     "checkpoint_restore",
     "checkpoint_list",
-    "plaza_pay",
     "plaza_connector_propose",
     "plaza_skills",
     "plaza_skill_read",
@@ -82,22 +80,64 @@ const ALWAYS: &[&str] = &[
     "weft_show",
     "weft_blame",
     "weft_map",
+    "weft_change_tree",
+    "weft_touches",
     "plaza_maintenance",
     "plaza_maintenance_map",
     "plaza_maintenance_propose",
     "plaza_maintenance_signal",
     "plaza_environments",
     "plaza_deploy",
+    "journal_note",
+    "journal_read",
+    "handover_write",
+    "brief",
+    "memory_search",
+    "memory_get",
+    "memory_propose",
+    "memory_record_decision",
+    "memory_land",
+    "memory_anchored",
+    "memory_verify",
 ];
+
+/// The tools a seat uses on most steps: offered with their schemas. Every other tool is deferred: the model sees its name
+/// and one line, and fetches its schema through `tool_search` before it calls the tool.
+const CORE: &[&str] = &[
+    "run",
+    "run_tests",
+    "run_script",
+    "read",
+    "edit",
+    "find",
+    "search",
+    "submit_claim",
+    "plaza_tasks",
+    "plaza_board_read",
+    "plaza_send_message",
+    "plaza_message_seat",
+    "plaza_task_result",
+];
+
+/// The tool the harness serves itself: it returns the full schemas of the deferred tools that match its query.
+pub const TOOL_SEARCH: &str = "tool_search";
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
 const IN_VM: &[&str] = &[
-    "bash",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list",
+    "read",
+    "edit",
+    "find",
     "search",
+    "run",
+    "run_tests",
+    "run_script",
+    "symbols",
+    "definition",
+    "references",
+    "diagnostics",
+    "outline",
+    "spawn_helper",
+    "await_helper",
 ];
 
 /// Host tools offered only by tier (see [`permitted`]).
@@ -110,7 +150,6 @@ const GATED: &[&str] = &[
     "plaza_agent_control",
     "plaza_loop",
     "plaza_agents",
-    "plaza_money",
     "plaza_post_task",
     "plaza_tasks_post",
     "plaza_task_link",
@@ -131,24 +170,19 @@ const GATED: &[&str] = &[
 pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
-        "bash"
-        | "read_file"
-        | "write_file"
-        | "edit_file"
-        | "list"
+        "read"
+        | "edit"
+        | "find"
         | "search"
+        | "run"
+        | "run_tests"
         | "share_file"
         | "fetch_url"
         | "download"
         | "install_packages"
-        | "glob"
-        | "grep"
-        | "multi_edit"
-        | "bash_start"
-        | "bash_output"
-        | "bash_kill"
         | "todo_write"
         | "code_engine"
+        | "run_script"
         | "deliver_file"
         | "artifact_create"
         | "artifact_update"
@@ -157,7 +191,14 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "tool_package"
         | "checkpoint_diff"
         | "checkpoint_restore"
-        | "checkpoint_list" => Some(Runs::Guest),
+        | "checkpoint_list"
+        | "symbols"
+        | "definition"
+        | "references"
+        | "diagnostics"
+        | "outline"
+        | "spawn_helper"
+        | "await_helper" => Some(Runs::Guest),
         "transcript_search"
         | "submit_claim"
         | "plaza_tasks"
@@ -166,8 +207,10 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_board_comment"
         | "plaza_send_message"
         | "plaza_message_seat"
+        | "team_set"
+        | "thread_read"
+        | "thread_answer"
         | "plaza_agents"
-        | "plaza_money"
         | "plaza_post_task"
         | "plaza_tasks_post"
         | "plaza_task_link"
@@ -175,7 +218,6 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_cancel_task"
         | "plaza_task_result"
         | "plaza_get_file"
-        | "plaza_pay"
         | "plaza_verdict" => Some(Runs::Host),
         name if crate::skills::agent_tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
@@ -184,8 +226,12 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::environments::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::project_memory::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::curator::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::verifier::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
@@ -213,35 +259,164 @@ pub fn specs_for(app: &App, role: &str, project: Option<&str>) -> Vec<ToolSpec> 
     specs
 }
 
-/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
-pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
-    let mut specs = specs_for(
-        app,
-        &agent.role,
-        app.members.project_of(agent.cid).as_deref(),
-    );
-    specs.extend(crate::library::specs_for(app, agent.cid));
-    specs.extend(crate::mcp::specs_for_agent(app, agent));
+/// A session's tools section is kept this long at most, whatever its sources say.
+const SECTION_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// What a session's tools section is built from besides its sources: the role it runs as, the project it works on and
+/// the node it runs on (the MCP servers offered depend on the node).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SectionKey {
+    pub role: String,
+    pub project: Option<String>,
+    pub node: Option<String>,
+}
+
+/// A session's tools section, built from its sources: the tools it is offered except the library's (those are per agent)
+/// and its `## Skills` prompt section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    /// The role's tools: grants, plaza tools, connectors, with the maintenance and environment tools where they apply.
+    pub tools: Vec<ToolSpec>,
+    /// The MCP servers' tools the session may use on its node.
+    pub mcp: Vec<ToolSpec>,
+    /// The `## Skills` section of its system prompt, when it has skills.
+    pub skills: Option<String>,
+}
+
+/// The sections of the sessions, each built once per key and rebuilt when a source it was built from moves.
+pub struct Sections {
+    cache: apz_cache::Cache<SectionKey, Section>,
+}
+
+impl Default for Sections {
+    fn default() -> Self {
+        Sections::new()
+    }
+}
+
+impl Sections {
+    pub fn new() -> Sections {
+        Sections {
+            cache: apz_cache::Cache::new(SECTION_AGE),
+        }
+    }
+
+    /// The section for `key`: answered from the cache while `current` (the generation of its sources now) is the one it was
+    /// built at, else built by `build` (once for every caller that misses, see `apz_cache::Cache`).
+    pub fn get(
+        &self,
+        key: &SectionKey,
+        current: impl Fn() -> u64,
+        build: impl Fn() -> Section,
+    ) -> Arc<Section> {
+        self.cache
+            .get(key, current, || Ok::<_, String>(build()))
+            .expect("a section is built from its sources, which cannot fail")
+    }
+
+    /// How many sections were built (a test counts them).
+    #[cfg(test)]
+    pub fn builds(&self) -> u64 {
+        self.cache.stats().1
+    }
+}
+
+/// The generation of the sources `key`'s section is built from: the generations of the connectors, the vault, the MCP
+/// servers, the settings, the engines, the skills, the role and the project, and the laws. Each only moves up, so their sum
+/// moves with any of them.
+pub fn section_generation(gens: &Generations<String>, laws: &Laws, key: &SectionKey) -> u64 {
+    let mut keys = vec![
+        crate::sources::CONNECTORS.to_string(),
+        crate::sources::VAULT.to_string(),
+        crate::sources::MCP.to_string(),
+        crate::sources::SETTINGS.to_string(),
+        crate::sources::ENGINES.to_string(),
+        crate::skills::LIBRARY.to_string(),
+        crate::sources::role(&key.role),
+    ];
+    if let Some(project) = &key.project {
+        keys.push(crate::sources::project(project));
+    }
+    keys.iter().fold(laws.generation(), |sum, key| {
+        sum.wrapping_add(gens.get(key))
+    })
+}
+
+/// The section of the tools `agent` is offered (its role's, on its project and node), from the cache while its sources
+/// have not moved.
+pub fn section(app: &App, agent: &Agent) -> Arc<Section> {
+    let key = SectionKey {
+        role: agent.role.clone(),
+        project: crate::projects::project_of(app, agent.cid),
+        node: app.nodes.owner_of_cid(agent.cid).map(|n| n.id),
+    };
+    app.tool_sections.get(
+        &key,
+        || section_generation(&app.generations, app.laws, &key),
+        || build_section(app, &key),
+    )
+}
+
+/// Builds the section of `key` from the stores: the same specs `specs_for_agent` offered before the cache.
+fn build_section(app: &App, key: &SectionKey) -> Section {
+    let project = key.project.as_deref();
+    let mut tools = specs_for(app, &key.role, project);
     // A project's maintenance and environment tools are offered only where they apply: the maintenance tools on a
     // project in maintenance, the environment tools on one that has environments.
-    let project = app
-        .members
-        .project_of(agent.cid)
-        .and_then(|id| app.projects.get(&id));
-    let maintained = project.as_ref().is_some_and(|p| p.in_maintenance());
-    let has_envs = project
-        .as_ref()
-        .is_some_and(|p| !crate::environments::list(app, &p.id).is_empty());
-    specs.retain(|spec| {
+    let found = project.and_then(|id| app.projects.get(id));
+    let maintained = found.as_ref().is_some_and(|p| p.in_maintenance());
+    let has_envs = project.is_some_and(|id| !crate::environments::list(app, id).is_empty());
+    tools.retain(|spec| {
         (maintained || !crate::maintenance::TOOLS.contains(&spec.name.as_str()))
             && (has_envs || !crate::environments::TOOLS.contains(&spec.name.as_str()))
     });
     // The engines offered are the owner's enabled ones: the built-in ones in `engines_enabled`, then the
     // instances the owner added (`engine_instances.rs`).
     let enabled = enabled_engines(app);
-    for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
+    for spec in tools.iter_mut().filter(|spec| spec.name == "code_engine") {
         restrict_engines(&mut spec.input_schema, &enabled);
     }
+    Section {
+        tools,
+        mcp: crate::mcp::specs_for(app, &key.role, key.node.as_deref(), project),
+        skills: crate::skills::agent_tools::prompt_section(app, &key.role, project),
+    }
+}
+
+/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
+pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    with_library(app, agent, &section(app, agent))
+}
+
+/// The tools of `agent` from its `section`: the section's role tools, then the library tools it may use (per agent, so
+/// not cached), then the MCP tools.
+pub fn with_library(app: &App, agent: &Agent, section: &Section) -> Vec<ToolSpec> {
+    let mut specs = section.tools.clone();
+    specs.extend(crate::library::specs_for(app, agent.cid));
+    specs.extend(section.mcp.iter().cloned());
+    specs
+}
+
+/// The tools agent `agent` is offered, as its profile carries them: `specs_for_agent`, with every tool outside `CORE`
+/// deferred, and `tool_search` for the deferred ones.
+pub fn offered_to(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    let mut specs = specs_for_agent(app, agent);
+    for spec in &mut specs {
+        spec.deferred = !CORE.contains(&spec.name.as_str());
+    }
+    specs.push(ToolSpec {
+        deferred: false,
+        name: TOOL_SEARCH.to_string(),
+        description: "Fetch the full schemas of tools you were offered by name only. Give a query that matches their names or \
+            what they do; each match comes back with its input schema, and from then on you may call it. Call it before you \
+            call a deferred tool."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {"query": {"type": "string", "minLength": 1}},
+            "required": ["query"],
+        }),
+    });
     specs
 }
 
@@ -503,6 +678,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
     }
     if let Some(builtin) = BUILTIN.get(name) {
         return Some(ToolSpec {
+            deferred: false,
             name: name.to_string(),
             description: builtin.description.clone(),
             input_schema: builtin.input_schema.clone(),
@@ -519,58 +695,14 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::skills::agent_tools::spec(name))
         .or_else(|| crate::stations::tools::spec(name))?;
     Some(ToolSpec {
+        deferred: false,
         name: name.to_string(),
         description: description.to_string(),
         input_schema,
     })
 }
 
-/// The rules a `plaza_money` report ends with (the system prompt's "How money works", minus its last sentence).
-const HOW_MONEY_WORKS: &str = "How money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-     it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
-     worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
-     work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
-     at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-     nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
-     is only debited by what you send yourself (plaza_pay), up to 1000 credits a day.";
-
-/// The plain-text `plaza_money` report: the caller's wallet, an optional task's
-/// money (`(id, state, money)`), then the rules.
-fn money_report(
-    cid: u64,
-    wallet: &apz_plaza::treasury::WalletMoney,
-    task: Option<(&str, &str, &apz_plaza::treasury::TaskMoney)>,
-) -> String {
-    let mut lines = vec![format!(
-        "your wallet (cid:{cid}): balance {} credits; sent today {} of the {} daily cap; earned {} from task payments",
-        wallet.balance,
-        wallet.sent_today,
-        apz_plaza::treasury::TRANSFER_DAILY_CAP,
-        wallet.earned
-    )];
-    if let Some((id, state, money)) = task {
-        lines.push(format!("task {id}: state {state}"));
-        lines.push(format!("budget (minted into escrow): {}", money.minted));
-        lines.push(format!("escrow balance now: {}", money.escrow));
-        lines.push(format!("real spend charged so far: {}", money.spent));
-        if money.paid.is_empty() {
-            lines.push("paid to agents: none yet".to_string());
-        } else {
-            let paid: Vec<String> = money
-                .paid
-                .iter()
-                .map(|(cid, amount)| format!("cid:{cid} {amount}"))
-                .collect();
-            lines.push(format!("paid to agents: {}", paid.join(", ")));
-        }
-        lines.push(format!("refunded to the plaza: {}", money.refunded));
-    }
-    lines.push(String::new());
-    lines.push(HOW_MONEY_WORKS.to_string());
-    lines.join("\n")
-}
-
-/// Plaza task tools (posting, assignment, results, money); `None` when `name` is not one of them.
+/// Plaza task tools (posting, assignment, results); `None` when `name` is not one of them.
 fn host_tasks(
     app: &App,
     agent: &Agent,
@@ -590,27 +722,6 @@ fn host_tasks(
         "plaza_task_result" => Some((|| -> Result<String, String> {
             let task = task_arg(app, input)?;
             Ok(task_json(&task).to_string())
-        })()),
-        "plaza_money" => Some((|| -> Result<String, String> {
-            let wallet = app.plaza.treasury.wallet_money(agent.cid);
-            let Some(task) = input.get("task").and_then(Value::as_str) else {
-                return Ok(money_report(agent.cid, &wallet, None));
-            };
-            let record = app
-                .plaza
-                .tasks
-                .find(task)
-                .ok_or_else(|| format!("no task {task}"))?;
-            let json = task_json(&record);
-            let state = json["state"]
-                .as_str()
-                .map_or_else(|| json["state"].to_string(), str::to_string);
-            let money = app.plaza.treasury.task_money(task);
-            Ok(money_report(
-                agent.cid,
-                &wallet,
-                Some((task, &state, &money)),
-            ))
         })()),
         "plaza_post_task" => Some((|| -> Result<String, String> {
             let title = str_arg(input, "title")?;
@@ -652,17 +763,13 @@ fn host_tasks(
                     p.stage
                 ));
             }
-            // An unfunded task would stop at its first model call: give it a working default, the project's when it
-            // sets one.
-            let budget =
-                budget_arg_or(input, crate::project_settings::task_budget(app, Some(pid)))?;
             // The assignee works on the project: checked before the task exists, so a refusal posts nothing.
             if let Some(cid) = input.get("assignee").and_then(Value::as_u64) {
                 let target = app
                     .agents
                     .get(cid)
                     .ok_or_else(|| format!("no connected agent {cid}"))?;
-                crate::membership::may_take_task(app, &target, Some(pid))?;
+                crate::projects::may_take_task(app, &target, Some(pid))?;
             }
             let task = app
                 .plaza
@@ -675,7 +782,6 @@ fn host_tasks(
                         .map(str::trim)
                         .filter(|a| !a.is_empty())
                         .map(str::to_string),
-                    budget: Some(budget),
                     role,
                     after,
                     project: Some(project.clone()),
@@ -692,18 +798,13 @@ fn host_tasks(
             let project = str_arg(input, "project")?;
             own_project(app, agent, Some(project.to_string()))?;
             takes_tasks(app, project)?;
-            let tasks: Vec<crate::task_plan::Planned> =
-                serde_json::from_value(input.get("tasks").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| {
-                        format!("`tasks` must be a list of {{key, goal, acceptance?, role?, budget?, after?}}: {e}")
-                    })?;
-            let posted = crate::task_plan::post(
-                &app.projects,
-                &app.plaza.tasks,
-                project,
-                &tasks,
-                crate::project_settings::task_budget(app, Some(project)),
-            )?;
+            let tasks: Vec<crate::task_plan::Planned> = serde_json::from_value(
+                input.get("tasks").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|e| {
+                format!("`tasks` must be a list of {{key, goal, acceptance?, role?, after?}}: {e}")
+            })?;
+            let posted = crate::task_plan::post(&app.projects, &app.plaza.tasks, project, &tasks)?;
             for task in &posted {
                 app.work.note_poster(&task.id, agent.cid);
             }
@@ -739,31 +840,6 @@ fn host_tasks(
                 .withdraw()
                 .map_err(|e| format!("{e:?}"))?;
             Ok("cancelled".into())
-        })()),
-        "plaza_pay" => Some((|| -> Result<String, String> {
-            let to = u64_arg(input, "to")?;
-            let amount = input
-                .get("amount")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "missing integer `amount`".to_string())?;
-            let memo = str_arg(input, "memo")?;
-            // A payment over the owner's threshold is held: the treasury has no holds, so nothing moves
-            // until the owner approves it (approvals::decide -> payments::decided runs the transfer).
-            if crate::payments::held(amount, app.settings.get().payments.approve_over) {
-                let subject = format!("pay {amount} to {to}");
-                let detail = json!({"cid": agent.cid, "to": to, "amount": amount, "memo": memo});
-                let item = crate::approvals::submit(app, "payment", &subject, detail);
-                return Ok(format!(
-                    "awaiting owner approval ({}): paying {amount} to {to} is held until the owner decides",
-                    item.id
-                ));
-            }
-            let entry = app
-                .plaza
-                .treasury
-                .transfer(agent.cid, to, amount, memo)
-                .map_err(|e| format!("{e:?}"))?;
-            Ok(format!("paid {amount} to {to} (entry {entry})"))
         })()),
         _ => None,
     }
@@ -812,7 +888,7 @@ fn host_social(
                 from_req(json!({"agent_cid": agent.cid, "subject": subject, "body": text}))?;
             // The post is on the author's project's board (the orchestrator's on the whole board).
             let mut post = request.checked()?;
-            post.project = app.members.project_of(agent.cid);
+            post.project = crate::projects::project_of(app, agent.cid);
             let mut view = app.plaza.social.post(me, post).map_err(|e| e.to_string())?;
             if !files.is_empty() {
                 app.plaza
@@ -877,7 +953,7 @@ fn host_social(
                         "cid": a.cid,
                         "role": a.role,
                         "status": a.status,
-                        "project": app.members.project_of(a.cid),
+                        "project": crate::projects::project_of(app, a.cid),
                     })
                 })
                 .collect();
@@ -935,6 +1011,15 @@ fn host_call(
                 )
             }))
         }
+        "team_set" => crate::work_loop::team_set(app, agent, input),
+        "thread_read" => crate::work_loop::thread_read(app, agent.cid, str_arg(input, "thread")?),
+        "thread_answer" => crate::work_loop::thread_answer(
+            app,
+            agent.cid,
+            str_arg(input, "thread")?,
+            str_arg(input, "text")?,
+            input.get("close").and_then(Value::as_bool).unwrap_or(false),
+        ),
         "plaza_message_seat" => crate::work_loop::message_seat(
             app,
             agent.cid,
@@ -956,6 +1041,9 @@ fn host_call(
                 return Ok(reply);
             }
             app.work.verdict(app, task, work, pass, notes)
+        }
+        other if crate::journal::TOOLS.contains(&other) => {
+            crate::journal::run(app, agent, other, input)
         }
         other if crate::skills::agent_tools::TOOLS.contains(&other) => {
             crate::skills::agent_tools::run(app, agent, other, input)
@@ -979,6 +1067,11 @@ fn host_call(
             crate::stations::tools::run(app, agent, other, input)
         }
         "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
+        other if crate::project_memory::TOOLS.contains(&other) => {
+            crate::project_memory::run(app, agent, other, input)
+        }
+        other if crate::curator::TOOLS.contains(&other) => crate::curator::run(app, agent, input),
+        other if crate::verifier::TOOLS.contains(&other) => crate::verifier::run(app, agent, input),
         "plaza_project_draft" => crate::drafts::run(app, agent, input),
         other if crate::review_graph::tools::TOOLS.contains(&other) => {
             crate::review_graph::tools::run(app, agent, work, other, input)
@@ -1007,24 +1100,24 @@ fn host_call(
 /// The project a task `agent` posts goes to: `named`, else the agent's own. An agent on a project posts only to
 /// it; the orchestrator, which works on every project, names one.
 fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String, String> {
-    if crate::membership::plaza_wide(&agent.role) {
-        // In the conversation a project was started from, the task is that project's unless another is named.
-        let from_conversation = || {
+    if crate::settings::plaza_wide(&agent.role) {
+        // In the project chat a task's work is in, the task is that project's unless another is named (the main chat
+        // is no project's).
+        let from_chat = || {
             app.work
                 .current(agent.cid)
-                .and_then(|item| item.origin.conversation)
-                .and_then(|id| app.conversations.get(&id))
+                .and_then(|item| item.thread.strip_prefix("chat:").map(str::to_string))
+                .and_then(|id| app.chats.get(&id))
+                .filter(|c| c.kind == crate::chats::Kind::Project)
                 .and_then(|c| c.project)
         };
-        return named.or_else(from_conversation).ok_or_else(|| {
+        return named.or_else(from_chat).ok_or_else(|| {
             "a task belongs to a project: name it with `project` (plaza_projects lists them)"
                 .to_string()
         });
     }
-    let own = app
-        .members
-        .project_of(agent.cid)
-        .ok_or("you are on the bench: you post tasks only for your project")?;
+    let own = crate::projects::project_of(app, agent.cid)
+        .ok_or("you have no project: you post tasks only for your project")?;
     match named {
         Some(named) if named != own => Err(format!(
             "you work on project {own}: you post tasks only for it, not for {named}"
@@ -1033,7 +1126,7 @@ fn own_project(app: &App, agent: &Agent, named: Option<String>) -> Result<String
     }
 }
 
-/// Refuses tasks for an archived project: it is over, and its agents are back on the bench.
+/// Refuses tasks for an archived project: it is over, and its agents' work has ended.
 fn takes_tasks(app: &App, pid: &str) -> Result<(), String> {
     match app.projects.get(pid) {
         None => Err(format!("no project {pid}")),
@@ -1045,15 +1138,15 @@ fn takes_tasks(app: &App, pid: &str) -> Result<(), String> {
 
 /// Whether `from` may message `to`: both work now, on the same project, or one of them is the orchestrator.
 fn may_message(app: &App, from: &Agent, to: &Agent) -> Result<(), String> {
-    if let Some(why) = crate::membership::held(app, to) {
+    if let Some(why) = crate::projects::held(app, to) {
         return Err(format!("{} cannot be messaged now: {why}", to.label()));
     }
-    if crate::membership::plaza_wide(&from.role) || crate::membership::plaza_wide(&to.role) {
+    if crate::settings::plaza_wide(&from.role) || crate::settings::plaza_wide(&to.role) {
         return Ok(());
     }
     let (mine, theirs) = (
-        app.members.project_of(from.cid),
-        app.members.project_of(to.cid),
+        crate::projects::project_of(app, from.cid),
+        crate::projects::project_of(app, to.cid),
     );
     if mine == theirs {
         Ok(())
@@ -1071,7 +1164,7 @@ fn assign(app: &App, task: &Task, cid: u64) -> Result<(), String> {
         .agents
         .get(cid)
         .ok_or_else(|| format!("no connected agent {cid}"))?;
-    crate::membership::may_take_task(app, &target, task.project())?;
+    crate::projects::may_take_task(app, &target, task.project())?;
     task.claim(&agents::connected_agent(&target))
         .map_err(|e| e.to_string())?;
     let (prompt, origin) = crate::weft_hub::task_work(app, task, cid, task_text(task));
@@ -1101,7 +1194,6 @@ fn task_json(task: &Task) -> Value {
         "id": view.id,
         "goal": view.goal,
         "state": view.state,
-        "budget": view.budget,
         "role": view.role,
         "acceptance": view.acceptance,
         "project": view.project,
@@ -1152,23 +1244,6 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("missing integer `{key}`"))
-}
-
-/// A task's `budget` argument, through the one default and minimum in
-/// [`resolve_budget`]: absent (or null) → `default` (a project's `task_budget`), else the plaza's default; a number
-/// under the minimum, 0 included, or a value that is not a whole number → refused.
-pub fn budget_arg_or(input: &Value, default: Option<u64>) -> Result<u64, String> {
-    let requested = match input.get("budget") {
-        None | Some(Value::Null) => default,
-        Some(value) => Some(
-            value
-                .as_u64()
-                .ok_or("budget must be a whole number of credits")?,
-        ),
-    };
-    resolve_budget(requested).map_err(|refusal| {
-        format!("{refusal}. It is minted from the plaza's budget; your wallet is not debited.")
-    })
 }
 
 /// The optional `attachments` argument: at most 8 shared files the caller may read.
@@ -1257,21 +1332,10 @@ mod tests {
                 "{name} schema is not an object"
             );
         }
-        // The JSON spells the plaza's task budget floor out; it must be the floor the plaza enforces.
-        let floor = apz_plaza::tasks::MIN_TASK_BUDGET;
-        assert_eq!(
-            BUILTIN["plaza_post_task"].input_schema["properties"]["budget"]["minimum"],
-            floor
-        );
-        assert_eq!(
-            BUILTIN["plaza_tasks_post"].input_schema["properties"]["tasks"]["items"]["properties"]
-                ["budget"]["minimum"],
-            floor
-        );
-        assert_eq!(
-            serde_json::to_string(&build_spec("bash")).expect("bash spec serializes"),
-            r#"{"name":"bash","description":"Run a shell command in your VM and return its output.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}}"#
-        );
+        let run = build_spec("run").expect("the run spec");
+        assert_eq!(run.name, "run");
+        assert_eq!(run.description, BUILTIN["run"].description);
+        assert_eq!(run.input_schema, BUILTIN["run"].input_schema);
     }
 
     use super::*;
@@ -1518,6 +1582,8 @@ mod tests {
             assert!(has(ORCHESTRATOR_ROLE, "plaza_agent_control"));
             assert!(has(ORCHESTRATOR_ROLE, "plaza_loop"));
             assert!(has("planner", "plaza_project_advance"));
+            assert!(has("planner", "team_set"));
+            assert!(!has("builder", "team_set"));
             assert!(has(ORCHESTRATOR_ROLE, "plaza_project_approve"));
             assert!(!has("builder", "plaza_project_open"));
             assert!(!has("builder", "plaza_project_approve"));
@@ -1553,13 +1619,13 @@ mod tests {
             assert!(refusal("builder", "plaza_task_link").is_some());
             assert!(refusal(ORCHESTRATOR_ROLE, "plaza_task_link").is_none());
             assert!(refusal("planner", "plaza_tasks_post").is_some());
-            assert!(refusal("worker", "bash").is_some());
+            assert!(refusal("worker", "run").is_some());
         }
     }
 
     #[test]
     fn a_tool_spec_is_the_same_on_every_call_and_as_a_fresh_build() {
-        for name in ["bash", "read_file", "code_engine", "artifact_create"] {
+        for name in ["run", "read", "code_engine", "artifact_create"] {
             let first = spec(name).expect("a spec for each named tool");
             assert_eq!(first, spec(name).expect("the same spec again"));
             assert_eq!(
@@ -1571,13 +1637,16 @@ mod tests {
 
     #[test]
     fn every_role_gets_the_in_vm_tools() {
-        for role in ["worker", "reviewer", "mayor"] {
+        for role in ["worker", "reviewer", "planner"] {
             let offered = offered(role, &[]);
             for name in IN_VM {
                 assert!(offered.iter().any(|n| n == name), "{role} lacks {name}");
             }
         }
-        assert!(runs("bash") == Some(Runs::Guest));
+        assert!(runs("run") == Some(Runs::Guest));
+        // A script is offered to every role with its schema, and runs in the VM as a command does.
+        assert!(runs("run_script") == Some(Runs::Guest));
+        assert!(CORE.contains(&"run_script"));
     }
 
     #[test]
@@ -1646,33 +1715,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tool_task_takes_the_default_budget_and_refuses_below_the_minimum() {
-        use apz_plaza::tasks::DEFAULT_TASK_BUDGET;
-        let default = DEFAULT_TASK_BUDGET as u64;
-        assert_eq!(budget_arg_or(&json!({}), None), Ok(default));
-        assert_eq!(
-            budget_arg_or(&json!({}), Some(3000)),
-            Ok(3000),
-            "a project's default"
-        );
-        assert_eq!(budget_arg_or(&json!({"budget": 500}), Some(3000)), Ok(500));
-        assert_eq!(budget_arg_or(&json!({"budget": null}), None), Ok(default));
-        assert_eq!(budget_arg_or(&json!({"budget": 200}), None), Ok(200));
-        assert_eq!(budget_arg_or(&json!({"budget": 5000}), None), Ok(5000));
-        for low in [100, 0] {
-            let refusal =
-                budget_arg_or(&json!({"budget": low}), None).expect_err("below the minimum");
-            assert!(
-                refusal.contains("minimum of 200"),
-                "names the minimum: {refusal}"
-            );
-            assert!(refusal.contains("wallet is not debited"), "{refusal}");
-        }
-        assert!(budget_arg_or(&json!({"budget": -5}), None).is_err());
-        assert!(budget_arg_or(&json!({"budget": "lots"}), None).is_err());
-    }
-
     /// Agents never run anything on the host: the host-side tools are the
     /// plaza's data operations only (no processes, files or network).
     #[test]
@@ -1691,16 +1733,180 @@ mod tests {
             "plaza_cancel_task",
             "plaza_task_result",
             "plaza_get_file",
-            "plaza_pay",
             "plaza_verdict",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 15);
+        assert_eq!(host.len(), 14);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
         }
+    }
+
+    /// The sources a section is built from, as the tests move them.
+    struct Sources {
+        gens: Generations<String>,
+        laws: Laws,
+    }
+
+    impl Sources {
+        fn new() -> Sources {
+            Sources {
+                gens: Generations::new(),
+                laws: Laws::builtin(),
+            }
+        }
+    }
+
+    /// The section every test reads: builder on project `p1`, running on node `n1`.
+    fn section_key() -> SectionKey {
+        SectionKey {
+            role: "builder".into(),
+            project: Some("p1".into()),
+            node: Some("n1".into()),
+        }
+    }
+
+    fn empty_section() -> Section {
+        Section {
+            tools: Vec::new(),
+            mcp: Vec::new(),
+            skills: None,
+        }
+    }
+
+    /// Reads the section of `key` through `sections` now; true when it was built rather than answered from the cache.
+    fn builds_on_read(sections: &Sections, src: &Sources, key: &SectionKey) -> bool {
+        let before = sections.builds();
+        sections.get(
+            key,
+            || section_generation(&src.gens, &src.laws, key),
+            empty_section,
+        );
+        sections.builds() > before
+    }
+
+    /// A section read once is answered from the cache until a change to one of its sources; that change rebuilds it
+    /// once, and the read after it is answered from the new build.
+    fn a_change_rebuilds_the_section(change: impl FnOnce(&Sources)) {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        assert!(
+            builds_on_read(&sections, &src, &key),
+            "the first read builds"
+        );
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "nothing changed: no build"
+        );
+        change(&src);
+        assert!(
+            builds_on_read(&sections, &src, &key),
+            "the change rebuilds it"
+        );
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "the next read is cached"
+        );
+    }
+
+    #[test]
+    fn a_section_is_built_once_while_its_sources_do_not_move() {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        for _ in 0..3 {
+            sections.get(
+                &key,
+                || section_generation(&src.gens, &src.laws, &key),
+                empty_section,
+            );
+        }
+        assert_eq!(sections.builds(), 1);
+        // Another session's section is built apart.
+        let other = SectionKey {
+            role: "reviewer".into(),
+            ..section_key()
+        };
+        assert!(builds_on_read(&sections, &src, &other));
+    }
+
+    #[test]
+    fn a_change_to_the_role_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::role("builder"));
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_project_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::project("p1"));
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_connectors_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::CONNECTORS.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_vault_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::VAULT.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_mcp_servers_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::MCP.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_settings_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::SETTINGS.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_engines_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::ENGINES.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_a_skill_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::skills::LIBRARY.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_laws_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| src.laws.set_strict(true));
+    }
+
+    #[test]
+    fn a_change_to_what_a_section_is_not_built_from_leaves_it_cached() {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        assert!(builds_on_read(&sections, &src, &key));
+        src.gens.bump(&crate::sources::role("reviewer"));
+        src.gens.bump(&crate::sources::project("p2"));
+        src.gens.bump(&crate::skills::skill_key("pdf-forms"));
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "another role, project or skill leaves the section cached"
+        );
     }
 }

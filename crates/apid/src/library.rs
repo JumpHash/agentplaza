@@ -340,6 +340,7 @@ pub fn specs_for(app: &App, cid: u64) -> Vec<ToolSpec> {
         .offered(cid)
         .into_iter()
         .map(|e| ToolSpec {
+            deferred: false,
             name: format!("{PREFIX}{}", e.name),
             description: format!("{} (made by {}, v{})", e.description, e.author, e.version),
             input_schema: e.input_schema,

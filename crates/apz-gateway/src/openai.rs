@@ -1,7 +1,7 @@
 //! OpenAI Chat Completions: `openai`, `azure-openai` (v1 API) and every
 //! `openai-compatible` server. Streamed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Delta, Role, StopReason, Usage};
@@ -9,7 +9,9 @@ use serde_json::{Value, json};
 
 use crate::config::{Auth, ProviderKind};
 use crate::http::{self, Req};
-use crate::{Ctx, GatewayError, ModelInfo, parse_tool_input, replayable, tool_use_count};
+use crate::{
+    Ctx, GatewayError, ModelInfo, parse_tool_input, prompt_cache_key, replayable, tool_use_count,
+};
 
 pub(crate) const DEFAULT_BASE: &str = "https://api.openai.com/v1";
 /// The opaque kind of a turn's reasoning text (a JSON string).
@@ -91,6 +93,15 @@ fn body(ctx: &Ctx, req: &ChatRequest, model: &str, stream_options: bool) -> Valu
     if stream_options {
         body["stream_options"] = json!({"include_usage": true});
     }
+    // OpenAI's own API caches by prefix and takes a key to group the calls that share one (the compatible hosts do not
+    // know the field).
+    if let (true, false, Some(key)) = (
+        matches!(ctx.p.kind, ProviderKind::OpenAi),
+        compat,
+        prompt_cache_key(req),
+    ) {
+        body["prompt_cache_key"] = json!(key);
+    }
     if !req.tools.is_empty() {
         let tools: Vec<Value> = req
             .tools
@@ -134,7 +145,7 @@ fn messages(req: &ChatRequest, replay: bool, compat: bool) -> Vec<Value> {
             id.to_string()
         }
     };
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(system) = req.system_text() {
         out.push(json!({"role": "system", "content": system}));
     }
     for m in &req.messages {
@@ -292,6 +303,18 @@ struct Call {
     args: String,
 }
 
+/// Sends `BlockEnd` for each call that has not ended yet. A call ends with its answer's `finish_reason`, or with the
+/// stream if that never comes.
+fn end_calls(calls: &BTreeMap<u64, Call>, ended: &mut BTreeSet<u64>, sink: &mut dyn FnMut(Delta)) {
+    for &index in calls.keys() {
+        if ended.insert(index) {
+            sink(Delta::BlockEnd {
+                index: index as usize,
+            });
+        }
+    }
+}
+
 fn read_stream(
     body: impl Read,
     sink: &mut dyn FnMut(Delta),
@@ -300,6 +323,7 @@ fn read_stream(
 ) -> Result<ChatResponse, GatewayError> {
     let (mut text, mut thinking, mut model) = (String::new(), String::new(), String::new());
     let mut calls: BTreeMap<u64, Call> = BTreeMap::new();
+    let mut ended: BTreeSet<u64> = BTreeSet::new();
     let mut usage = Usage::default();
     let mut finish: Option<String> = None;
     let mut refused = false;
@@ -367,9 +391,8 @@ fn read_stream(
                 }
             }
             for (pos, tc) in d["tool_calls"].as_array().into_iter().flatten().enumerate() {
-                let call = calls
-                    .entry(tc["index"].as_u64().unwrap_or(pos as u64))
-                    .or_default();
+                let index = tc["index"].as_u64().unwrap_or(pos as u64);
+                let call = calls.entry(index).or_default();
                 if let Some(id) = tc["id"].as_str().filter(|s| !s.is_empty()) {
                     call.id = id.to_string();
                 }
@@ -377,19 +400,29 @@ fn read_stream(
                     if call.name.is_empty() {
                         sink(Delta::ToolUse {
                             name: name.to_string(),
+                            index: index as usize,
+                            id: call.id.clone(),
                         });
                     }
                     call.name = name.to_string();
                 }
-                call.args
-                    .push_str(tc["function"]["arguments"].as_str().unwrap_or(""));
+                let args = tc["function"]["arguments"].as_str().unwrap_or("");
+                if !args.is_empty() {
+                    call.args.push_str(args);
+                    sink(Delta::ToolInput {
+                        index: index as usize,
+                        json: args.to_string(),
+                    });
+                }
             }
             if let Some(reason) = choice["finish_reason"].as_str() {
                 finish = Some(reason.to_string());
+                end_calls(&calls, &mut ended, sink);
             }
         }
         Ok(true)
     })?;
+    end_calls(&calls, &mut ended, sink);
     if !done && finish.is_none() {
         return Err(GatewayError::Transport(
             "stream ended before the answer finished".into(),
@@ -467,10 +500,12 @@ mod tests {
     use super::*;
     use crate::ProviderConfig;
     use crate::testutil::{FakeServer, Reply, gateway, provider, request, sse_data};
-    use apz_proto::chat::{Message, ToolSpec};
+    use apz_proto::chat::{Message, SystemPart, ToolSpec};
 
     fn conversation() -> ChatRequest {
         ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             system: Some("sys".into()),
             messages: vec![
                 Message::user_text("hi"),
@@ -512,6 +547,7 @@ mod tests {
                 },
             ],
             tools: vec![ToolSpec {
+                deferred: false,
                 name: "bash".into(),
                 description: "d".into(),
                 input_schema: json!({"type": "object"}),
@@ -545,6 +581,44 @@ mod tests {
     ];
 
     #[test]
+    fn the_cached_parts_are_the_prompt_cache_key_and_the_parts_one_system_message() {
+        let server = FakeServer::start(vec![
+            Reply::sse(sse_data(STREAM)),
+            Reply::sse(sse_data(STREAM)),
+        ]);
+        let gw = gateway(vec![provider(
+            "o",
+            ProviderKind::OpenAi,
+            &server,
+            Auth::Env("OPENAI_API_KEY".into()),
+        )]);
+        // Two seats of one project: the shared part is cached, the seat's own is not.
+        let seat = |name: &str| ChatRequest {
+            system_parts: vec![
+                SystemPart {
+                    text: "plaza".into(),
+                    cache: true,
+                },
+                SystemPart {
+                    text: name.into(),
+                    cache: false,
+                },
+            ],
+            model: "o/gpt-6-astra".into(),
+            ..request("hi")
+        };
+        gw.complete(&seat("ada"), &mut |_| {}).unwrap();
+        gw.complete(&seat("bob"), &mut |_| {}).unwrap();
+        let (first, second) = (server.requests()[0].json(), server.requests()[1].json());
+        assert_eq!(
+            first["messages"][0],
+            json!({"role": "system", "content": "plaza\n\nada"})
+        );
+        assert!(first["prompt_cache_key"].is_string());
+        assert_eq!(first["prompt_cache_key"], second["prompt_cache_key"]);
+    }
+
+    #[test]
     fn openai_request_translation_and_stream_decoding() {
         let server = FakeServer::start(vec![Reply::sse(sse_data(STREAM))]);
         let gw = gateway(vec![provider(
@@ -557,6 +631,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "o/gpt-6-astra".into(),
                     ..conversation()
                 },
@@ -638,6 +714,62 @@ mod tests {
                 .filter(|d| matches!(d, Delta::ToolUse { .. }))
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn a_streamed_tool_call_opens_takes_its_input_and_ends_at_the_finish() {
+        let server = FakeServer::start(vec![Reply::sse(sse_data(STREAM))]);
+        let gw = gateway(vec![provider(
+            "o",
+            ProviderKind::OpenAi,
+            &server,
+            Auth::Env("OPENAI_API_KEY".into()),
+        )]);
+        let mut deltas = Vec::new();
+        gw.complete(
+            &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
+                model: "o/gpt-6-astra".into(),
+                ..conversation()
+            },
+            &mut |d| deltas.push(d),
+        )
+        .unwrap();
+        // The text and reasoning deltas are not part of the calls; the calls' deltas keep their order.
+        let calls: Vec<Delta> = deltas
+            .into_iter()
+            .filter(|d| !matches!(d, Delta::Text { .. } | Delta::Thinking { .. }))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                Delta::ToolUse {
+                    name: "bash".into(),
+                    index: 0,
+                    id: "call_a".into(),
+                },
+                Delta::ToolUse {
+                    name: "list".into(),
+                    index: 1,
+                    id: "call_b".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "{}".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "{\"command\":".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "\"ls\"}".into(),
+                },
+                Delta::BlockEnd { index: 0 },
+                Delta::BlockEnd { index: 1 },
+            ]
         );
     }
 
@@ -724,6 +856,8 @@ mod tests {
         p.extra_body = json!({"keep_alive": "5m"});
         let gw = gateway(vec![p]);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "ollama/qwen3:8b".into(),
             max_tokens: 64,
             effort: Some("high".into()),
@@ -777,6 +911,8 @@ mod tests {
             };
             let gw = gateway(vec![p]);
             let req = ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "meta/muse-spark-1.3@high".into(),
                 max_tokens: 2000,
                 effort: Some("low".into()),
@@ -824,6 +960,8 @@ mod tests {
             };
             let gw = gateway(vec![p]);
             let req = ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "xai/grok-4.7@low".into(),
                 max_tokens: 2000,
                 effort: Some("high".into()),
@@ -867,6 +1005,8 @@ mod tests {
         let first = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "ds/deepseek-flash".into(),
                     ..conversation()
                 },
@@ -876,6 +1016,8 @@ mod tests {
         assert_eq!(first.content[0], opaque("think"));
         // The next turn, with tools in use, sent to both providers.
         let turn = |model: &str| ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: model.into(),
             messages: vec![
                 Message::user_text("hi"),
@@ -919,6 +1061,8 @@ mod tests {
             provider("plain", ProviderKind::OpenAiCompatible, &server, Auth::None),
         ]);
         let turn = |model: &str| ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: model.into(),
             messages: vec![
                 Message::user_text("hi"),
@@ -986,6 +1130,8 @@ mod tests {
         let gw = gateway(vec![mi]);
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "mi/mistral-large".into(),
                 max_tokens: 300,
                 ..request("hi")
@@ -1021,6 +1167,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "mi/magistral".into(),
                     ..request("hi")
                 },
@@ -1064,6 +1212,8 @@ mod tests {
         let gw = gateway(vec![p]);
         gw.complete(
             &ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
                 model: "ds/deepseek-flash".into(),
                 ..request("hi")
             },
@@ -1104,8 +1254,11 @@ mod tests {
             .config();
         let gw = crate::Gateway::new(vec![p], |_: &str, _: &crate::SecretRead<'_>| None);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "ollama/qwen3:8b".into(),
             tools: vec![ToolSpec {
+                deferred: false,
                 name: "bash".into(),
                 description: "Run a shell command".into(),
                 input_schema: json!({"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}),
@@ -1135,6 +1288,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "az/my-deploy".into(),
                     max_tokens: 9,
                     ..request("hi")

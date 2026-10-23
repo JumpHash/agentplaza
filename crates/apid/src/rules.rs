@@ -232,7 +232,7 @@ fn announce_constitutional(
 }
 
 /// The request's JSON body as an object, or a 400 saying why it is not one.
-fn body_of(req: &Request) -> Result<Value, Response> {
+pub(crate) fn body_of(req: &Request) -> Result<Value, Response> {
     match req.json::<Value>() {
         Ok(body) if body.is_object() => Ok(body),
         Ok(_) => Err(Response::json(

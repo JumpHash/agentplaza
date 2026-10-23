@@ -8,17 +8,21 @@
 //! plain environment variables, the engine's home folder and its default model route.
 //!
 //! The built-in engines' on/off switch stays `engines_enabled` in the settings, so every check that reads it
-//! keeps working; their other fields, and the extra instances, live in `<state>/engines.json`. Versions
-//! the owner picks, and the extra instances' packages, are pinned when they are saved: the hub resolves the
-//! npm `dist.integrity`, the PyPI sha256, or hashes the release archive, and the VM refuses anything else.
+//! keeps working; their other fields, and the extra instances, live in plaza.db (table `engine_instance`, with
+//! its install, arguments, environment and registry details as child tables). The ACP registry's offline copy
+//! stays a file (`acp-registry.json`): a fetched cache, not state of record. Versions the owner picks, and the
+//! extra instances' packages, are pinned when they are saved: the hub resolves the npm `dist.integrity`, the PyPI
+//! sha256, or hashes the release archive, and the VM refuses anything else.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read};
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -137,34 +141,250 @@ const RESERVED_ENV: &[&str] = &[
 pub use apz_proto::wire::{EngineAsset as Asset, EngineInstall as Install};
 
 /// One engine instance's stored fields. A built-in engine's entry exists only once the owner changed one.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Stored {
     pub id: String,
     /// A built-in engine id, `acp:<registry id>` or `acp-local`.
     pub engine: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
     /// Extra instances only: a built-in engine's switch is `engines_enabled`.
     pub enabled: bool,
     /// The pinned install. None: the catalogue's pin (built-in engines).
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub install: Option<Install>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// The engine's home folder name under the VM's engines home; None: the engine's id.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub home: Option<String>,
     /// The model the engine runs when a call names none, `<provider>/<model>`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
     /// For registry instances: the registry entry's name, description and icon, as added.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub about: Option<Value>,
+    pub about: Option<About>,
+}
+
+/// A registry instance's entry as it was added: the registry's name, text, icon and links.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, apz_store::Table)]
+pub struct About {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub icon: Option<String>,
+    pub website: Option<String>,
+    pub repository: Option<String>,
+    pub version: Option<String>,
+}
+
+/// An instance as the store holds it (table `engine_instance`, keyed by its id; the list keeps its order). The
+/// install, the about and the arguments and environment are child tables; [`From`] and [`TryFrom`] convert at the
+/// boundary.
+#[derive(Debug, Clone, apz_store::Table)]
+#[table(name = "engine_instance")]
+struct InstanceRow {
+    #[table(key)]
+    id: String,
+    engine: String,
+    label: Option<String>,
+    accent: Option<String>,
+    enabled: bool,
+    #[table(child = "engine_install")]
+    install: Option<InstallRow>,
+    #[table(list = "engine_arg")]
+    args: Vec<String>,
+    #[table(map_value = "engine_env")]
+    env: BTreeMap<String, String>,
+    home: Option<String>,
+    route: Option<String>,
+    #[table(child = "engine_about")]
+    about: Option<About>,
+}
+
+/// Which install an [`InstallRow`] holds: each kind uses its own fields of the row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, apz_store::Column)]
+enum InstallKind {
+    Npm,
+    Pip,
+    Archive,
+    Command,
+}
+
+/// A pinned install as the store holds it: its kind and the fields that kind uses (the others are unset).
+#[derive(Debug, Clone, apz_store::Table)]
+struct InstallRow {
+    kind: InstallKind,
+    package: Option<String>,
+    version: Option<String>,
+    integrity: Option<String>,
+    file: Option<String>,
+    sha256: Option<String>,
+    command: Option<String>,
+    #[table(map = "engine_asset")]
+    assets: BTreeMap<String, AssetRow>,
+}
+
+/// One architecture's archive as the store holds it.
+#[derive(Debug, Clone, apz_store::Table)]
+struct AssetRow {
+    url: String,
+    sha256: String,
+    cmd: String,
+    #[table(list = "engine_asset_arg")]
+    args: Vec<String>,
+}
+
+/// The engines' table: `engine_instance` and its child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(InstanceRow)
+}
+
+impl From<&Stored> for InstanceRow {
+    fn from(s: &Stored) -> Self {
+        InstanceRow {
+            id: s.id.clone(),
+            engine: s.engine.clone(),
+            label: s.label.clone(),
+            accent: s.accent.clone(),
+            enabled: s.enabled,
+            install: s.install.as_ref().map(InstallRow::from),
+            args: s.args.clone(),
+            env: s.env.clone(),
+            home: s.home.clone(),
+            route: s.route.clone(),
+            about: s.about.clone(),
+        }
+    }
+}
+
+impl TryFrom<InstanceRow> for Stored {
+    type Error = StoreError;
+
+    fn try_from(row: InstanceRow) -> Result<Self, StoreError> {
+        Ok(Stored {
+            id: row.id,
+            engine: row.engine,
+            label: row.label,
+            accent: row.accent,
+            enabled: row.enabled,
+            install: row.install.map(Install::try_from).transpose()?,
+            args: row.args,
+            env: row.env,
+            home: row.home,
+            route: row.route,
+            about: row.about,
+        })
+    }
+}
+
+impl From<&Install> for InstallRow {
+    fn from(install: &Install) -> Self {
+        let blank = |kind: InstallKind| InstallRow {
+            kind,
+            package: None,
+            version: None,
+            integrity: None,
+            file: None,
+            sha256: None,
+            command: None,
+            assets: BTreeMap::new(),
+        };
+        match install {
+            Install::Npm {
+                package,
+                version,
+                integrity,
+            } => InstallRow {
+                package: Some(package.clone()),
+                version: Some(version.clone()),
+                integrity: Some(integrity.clone()),
+                ..blank(InstallKind::Npm)
+            },
+            Install::Pip {
+                package,
+                version,
+                file,
+                sha256,
+            } => InstallRow {
+                package: Some(package.clone()),
+                version: Some(version.clone()),
+                file: Some(file.clone()),
+                sha256: Some(sha256.clone()),
+                ..blank(InstallKind::Pip)
+            },
+            Install::Archive { version, assets } => InstallRow {
+                version: Some(version.clone()),
+                assets: assets
+                    .iter()
+                    .map(|(platform, asset)| (platform.clone(), AssetRow::from(asset)))
+                    .collect(),
+                ..blank(InstallKind::Archive)
+            },
+            Install::Command { command } => InstallRow {
+                command: Some(command.clone()),
+                ..blank(InstallKind::Command)
+            },
+        }
+    }
+}
+
+impl TryFrom<InstallRow> for Install {
+    type Error = StoreError;
+
+    fn try_from(row: InstallRow) -> Result<Self, StoreError> {
+        Ok(match row.kind {
+            InstallKind::Npm => Install::Npm {
+                package: need(row.package, "package")?,
+                version: need(row.version, "version")?,
+                integrity: need(row.integrity, "integrity")?,
+            },
+            InstallKind::Pip => Install::Pip {
+                package: need(row.package, "package")?,
+                version: need(row.version, "version")?,
+                file: need(row.file, "file")?,
+                sha256: need(row.sha256, "sha256")?,
+            },
+            InstallKind::Archive => Install::Archive {
+                version: need(row.version, "version")?,
+                assets: row
+                    .assets
+                    .into_iter()
+                    .map(|(platform, asset)| (platform, Asset::from(asset)))
+                    .collect(),
+            },
+            InstallKind::Command => Install::Command {
+                command: need(row.command, "command")?,
+            },
+        })
+    }
+}
+
+/// A field an install's kind needs: a stored install without it is refused at load.
+fn need<T>(value: Option<T>, field: &str) -> Result<T, StoreError> {
+    value.ok_or_else(|| StoreError::invalid(format!("an engine's install has no {field}")))
+}
+
+impl From<&Asset> for AssetRow {
+    fn from(a: &Asset) -> Self {
+        AssetRow {
+            url: a.url.clone(),
+            sha256: a.sha256.clone(),
+            cmd: a.cmd.clone(),
+            args: a.args.clone(),
+        }
+    }
+}
+
+impl From<AssetRow> for Asset {
+    fn from(row: AssetRow) -> Self {
+        Asset {
+            url: row.url,
+            sha256: row.sha256,
+            cmd: row.cmd,
+            args: row.args,
+        }
+    }
+}
+
+/// A registry field as text: the registry's string, or none.
+fn text_of(v: &Value) -> Option<String> {
+    v.as_str().map(str::to_string)
 }
 
 /// The owner's edit of an instance (`POST` and `PUT /v1/engines…`). Absent fields keep their value.
@@ -258,9 +478,11 @@ fn hex(bytes: &[u8]) -> String {
 /// How long a looked-up newest version of an npm engine is kept before it is looked up again.
 const LATEST_FOR: Duration = Duration::from_secs(3600);
 
-/// The engines store: `engines.json`, the cached registry, and the last check of each instance.
+/// The engines store: the instances (component `engines`), the cached registry, and the last check of each instance.
 pub struct Store {
-    path: PathBuf,
+    /// The hub's generations: a save of the instances bumps `engines`.
+    gens: std::sync::Arc<apz_cache::Generations<String>>,
+    /// The offline copy of the ACP registry (`acp-registry.json`), read when first asked for.
     registry_path: PathBuf,
     stored: Mutex<Vec<Stored>>,
     registry: Mutex<Option<(u64, Value)>>,
@@ -273,44 +495,61 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn load(state_dir: &std::path::Path) -> io::Result<Self> {
+    /// An empty store that fetches the registry over HTTPS, with the offline copy in `state_dir`. It reads nothing
+    /// yet: [`Store::load`] fills the instances at start.
+    pub fn new(state_dir: &Path) -> Self {
         Self::with_fetch(state_dir, Box::new(Web))
     }
 
-    pub fn with_fetch(state_dir: &std::path::Path, fetch: Box<dyn Fetch>) -> io::Result<Self> {
-        let path = state_dir.join("engines.json");
-        let stored = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(e) => return Err(e),
-        };
-        let registry_path = state_dir.join("acp-registry.json");
-        let registry = std::fs::read(&registry_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .and_then(|v| Some((v["fetched_ms"].as_u64()?, v["registry"].clone())));
-        Ok(Self {
-            path,
-            registry_path,
-            stored: Mutex::new(stored),
-            registry: Mutex::new(registry),
+    /// As [`Store::new`], with the fetcher the caller gives (the tests answer from memory).
+    pub fn with_fetch(state_dir: &Path, fetch: Box<dyn Fetch>) -> Self {
+        Self {
+            gens: Default::default(),
+            registry_path: state_dir.join("acp-registry.json"),
+            stored: Mutex::new(Vec::new()),
+            registry: Mutex::new(None),
             latest: Mutex::new(BTreeMap::new()),
             health: Mutex::new(BTreeMap::new()),
             write: Mutex::new(()),
             fetch,
-        })
+        }
+    }
+
+    /// Replaces the instances with what plaza.db holds (at start). A stored install that lacks a field its kind needs
+    /// fails the load, and the saver then keeps the component out of writes.
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let rows: Vec<InstanceRow> = apz_store::table::load_list(conn, def())?;
+        let stored = rows
+            .into_iter()
+            .map(Stored::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        *lock(&self.stored) = stored;
+        Ok(())
+    }
+
+    /// The instances as rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let rows: Vec<InstanceRow> = lock(&self.stored).iter().map(InstanceRow::from).collect();
+        RowSet::list(def(), rows.iter())
     }
 
     fn stored(&self, id: &str) -> Option<Stored> {
         lock(&self.stored).iter().find(|s| s.id == id).cloned()
     }
 
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(
+        mut self,
+        gens: std::sync::Arc<apz_cache::Generations<String>>,
+    ) -> Self {
+        self.gens = gens;
+        self
+    }
+
+    /// Replaces the instances in memory and counts the change; the saver writes them to plaza.db.
     fn save(&self, all: Vec<Stored>) -> Result<(), Failure> {
-        let bytes = serde_json::to_vec_pretty(&all).map_err(|e| (500, e.to_string()))?;
-        write_atomic(&self.path, &bytes, 0o600)
-            .map_err(|e| (500, format!("write engines.json: {e}")))?;
         *lock(&self.stored) = all;
+        crate::sources::bump(&self.gens, crate::sources::ENGINES);
         Ok(())
     }
 
@@ -380,12 +619,7 @@ impl Store {
             .label
             .clone()
             .or_else(|| b.map(|b| b.label.to_string()))
-            .or_else(|| {
-                s.about
-                    .as_ref()
-                    .and_then(|a| a["name"].as_str())
-                    .map(str::to_string)
-            })
+            .or_else(|| s.about.as_ref().and_then(|a| a.name.clone()))
             .unwrap_or_else(|| s.id.clone());
         json!({
             "id": s.id,
@@ -443,10 +677,14 @@ impl Store {
                 .ok_or_else(|| (400, format!("the ACP registry has no agent `{rid}`")))?;
             s.install = Some(self.pin_entry(&entry)?);
             s.args = entry_args(&entry);
-            s.about = Some(json!({
-                "name": entry["name"], "description": entry["description"], "icon": entry["icon"],
-                "website": entry["website"], "repository": entry["repository"], "version": entry["version"],
-            }));
+            s.about = Some(About {
+                name: text_of(&entry["name"]),
+                description: text_of(&entry["description"]),
+                icon: text_of(&entry["icon"]),
+                website: text_of(&entry["website"]),
+                repository: text_of(&entry["repository"]),
+                version: text_of(&entry["version"]),
+            });
         } else if builtin(&engine).is_some() {
             // A second instance of a built-in engine: the same package, its own settings.
             s.install = None;
@@ -649,11 +887,23 @@ impl Store {
         })
     }
 
+    /// The registry held in memory, or else the offline copy in `acp-registry.json` (read the first time it is asked for).
+    fn cached_registry(&self) -> Option<(u64, Value)> {
+        let mut held = lock(&self.registry);
+        if held.is_none() {
+            *held = std::fs::read(&self.registry_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|v| Some((v["fetched_ms"].as_u64()?, v["registry"].clone())));
+        }
+        held.clone()
+    }
+
     /// The registry, fetched again when older than [`REGISTRY_TTL_MS`] or when `refresh`; the last copy
     /// when the fetch fails (offline hubs keep working).
     pub fn registry(&self, refresh: bool) -> Result<(u64, Value), Failure> {
         let now = apz_plaza::now_ms();
-        let cached = lock(&self.registry).clone();
+        let cached = self.cached_registry();
         if let Some((at, reg)) = &cached
             && !refresh
             && now.saturating_sub(*at) < REGISTRY_TTL_MS
@@ -1286,13 +1536,14 @@ mod tests {
         dir
     }
 
+    /// A store whose registry fetches answer `docs`; its folder holds only the offline registry copy.
     fn store(name: &str, docs: &[(&str, Value)]) -> (PathBuf, Store) {
         let dir = scratch(name);
         let docs = docs
             .iter()
             .map(|(u, v)| (u.to_string(), v.to_string()))
             .collect();
-        let s = Store::with_fetch(&dir, Box::new(Fake(docs))).unwrap();
+        let s = Store::with_fetch(&dir, Box::new(Fake(docs)));
         (dir, s)
     }
 
@@ -1500,9 +1751,86 @@ mod tests {
             json!({"fetched_ms": 1, "registry": {"agents": [{"id": "a", "distribution": {"npx": {"package": "a"}}}]}}).to_string(),
         )
         .unwrap();
-        let s = Store::with_fetch(&dir, Box::new(Fake(BTreeMap::new()))).unwrap();
+        let s = Store::with_fetch(&dir, Box::new(Fake(BTreeMap::new())));
         let (at, reg) = s.registry(true).unwrap();
         assert_eq!(at, 1);
         assert_eq!(registry_view(at, &reg)["agents"][0]["runs_in_vm"], true);
+    }
+
+    #[test]
+    fn a_save_of_the_instances_moves_the_engines_source() {
+        let dir = scratch("gens");
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::new(&dir).with_generations(std::sync::Arc::clone(&gens));
+        store.save(Vec::new()).expect("save");
+        assert!(gens.get(&crate::sources::ENGINES.to_string()) > 0);
+        assert!(lock(&store.stored).is_empty());
+    }
+
+    #[test]
+    fn the_instances_round_trip_through_their_tables() {
+        let (_d, s) = store(
+            "rows",
+            &[
+                (
+                    REGISTRY_URL,
+                    json!({"agents": [{"id": "pi-acp", "name": "pi ACP", "version": "0.0.34",
+                        "description": "A pi agent", "distribution": {"npx": {"package": "pi-acp@0.0.34", "args": ["--x"]}}}]}),
+                ),
+                (
+                    "https://registry.npmjs.org/pi-acp/0.0.34",
+                    json!({"version": "0.0.34", "dist": {"integrity": "sha512-abc"}}),
+                ),
+            ],
+        );
+        s.add(
+            Edit {
+                id: Some("pi".into()),
+                engine: Some("acp:pi-acp".into()),
+                ..Default::default()
+            },
+            || s.registry(false).map(|(_, r)| r),
+        )
+        .unwrap();
+        s.add(
+            Edit {
+                id: Some("mine".into()),
+                engine: Some("acp-local".into()),
+                command: Some("my-agent".into()),
+                args: Some(vec!["--acp".into()]),
+                env: Some(BTreeMap::from([("CODEX_PROFILE".into(), "work".into())])),
+                label: Some(Some("Mine".into())),
+                accent: Some(Some("#112233".into())),
+                home: Some(Some("mine-home".into())),
+                route: Some(Some("anthropic/model".into())),
+                ..Default::default()
+            },
+            || Err((502, "offline".to_string())),
+        )
+        .unwrap();
+        s.edit(
+            "codex",
+            &Edit {
+                label: Some(Some("Codex work".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let before = lock(&s.stored).clone();
+        assert_eq!(before.len(), 3);
+
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &s.rows().unwrap()).unwrap();
+        let reloaded = Store::with_fetch(&scratch("rows-back"), Box::new(Fake(BTreeMap::new())));
+        reloaded.load(&conn).unwrap();
+        assert_eq!(*lock(&reloaded.stored), before);
+        assert_eq!(
+            lock(&reloaded.stored)[0]
+                .about
+                .as_ref()
+                .and_then(|a| a.description.as_deref()),
+            Some("A pi agent")
+        );
     }
 }

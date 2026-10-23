@@ -163,7 +163,6 @@ pub struct Worth {
 pub struct Effort {
     /// `s`, `m`, `l` or `xl`.
     pub size: String,
-    pub budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -282,7 +281,7 @@ pub enum Selection {
 /// The dialog open over the tab. Only one is open at a time.
 #[derive(Debug)]
 pub enum Dialog {
-    /// Do it: the note, and the budget for a proposal that has none of its own.
+    /// Do it: the note.
     Approve(Approving),
     /// Not this: the reason, optional.
     Decline(Declining),
@@ -300,10 +299,6 @@ pub struct Approving {
     pub title: String,
     /// The line under the title: what the dialog says the answer does.
     pub line: String,
-    /// The proposal names a connector or MCP the owner sets up, so it needs no budget.
-    pub known_tool: bool,
-    pub budget_hint: String,
-    pub budget: String,
     pub note: Content,
 }
 
@@ -354,7 +349,6 @@ pub enum Msg {
     ToggleSummary,
     OpenApprove(String),
     ApproveNote(text_editor::Action),
-    ApproveBudget(String),
     Approve,
     Later(String),
     OpenDecline(String),
@@ -527,12 +521,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                 id: p.id.clone(),
                 title: p.title.clone(),
                 line,
-                known_tool,
-                budget_hint: p
-                    .effort
-                    .budget
-                    .map_or("The project’s default".to_string(), |b| b.to_string()),
-                budget: String::new(),
                 note: Content::new(),
             }));
             Task::none()
@@ -540,12 +528,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         Msg::ApproveNote(action) => {
             if let Some(Dialog::Approve(a)) = state.dialog.as_mut() {
                 a.note.perform(action);
-            }
-            Task::none()
-        }
-        Msg::ApproveBudget(budget) => {
-            if let Some(Dialog::Approve(a)) = state.dialog.as_mut() {
-                a.budget = budget;
             }
             Task::none()
         }
@@ -557,10 +539,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             let note = a.note.text().trim().to_string();
             if !note.is_empty() {
                 body["note"] = json!(note);
-            }
-            // A budget is credits, at least 200; under that, the project's default stands.
-            if let Some(credits) = a.budget.trim().parse::<i64>().ok().filter(|c| *c >= 200) {
-                body["budget"] = json!(credits);
             }
             let path = format!("{root}/proposals/{}/approve", a.id);
             write(
@@ -1288,22 +1266,11 @@ fn dialog_view<'a>(state: &'a State, data: &'a Maintenance) -> Option<Element<'a
                 text(a.title.clone()).font(ui::SANS_SEMIBOLD).size(theme::TYPE_ITEM).color(pal.ink).into(),
                 ui::faint(a.line.clone()).into(),
             ];
-            if !a.known_tool {
-                body.push(field(
-                    "Budget (credits)",
-                    text_input(&a.budget_hint, &a.budget)
-                        .on_input(Msg::ApproveBudget)
-                        .padding(8)
-                        .style(theme::input)
-                        .into(),
-                    None,
-                ));
-            }
             body.push(field(
                 "Note",
                 text_editor(&a.note)
                     .style(crate::theme::editor)
-                    .placeholder("Anything the team should know (optional)")
+                    .placeholder("Anything the agents should know (optional)")
                     .size(13.0)
                     .height(Length::Fixed(60.0))
                     .on_action(Msg::ApproveNote)
@@ -1396,7 +1363,7 @@ fn dialog_view<'a>(state: &'a State, data: &'a Maintenance) -> Option<Element<'a
         Dialog::Sweeps(hours) => {
             let choices: Vec<Every> = EVERY_CHOICES.iter().map(|&h| Every(h)).collect();
             let watchers = if data.watchers.is_empty() {
-                "No agent watches it yet: add a planner or a researcher on the Team tab.".to_string()
+                "No agent watches it yet.".to_string()
             } else {
                 let labels: Vec<String> = data
                     .watchers

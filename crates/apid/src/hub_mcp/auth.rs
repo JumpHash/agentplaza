@@ -11,8 +11,10 @@ pub const PREFIX: &str = "apz_mcp_";
 /// The window the rate limit counts over.
 const WINDOW_MS: u64 = 60_000;
 
-/// What a token may do. Scopes are cumulative: `Govern` includes `Operate`, which includes `Observe`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// What a token may do. Scopes are cumulative: `Govern` includes `Operate`, which includes `Observe`. Stored as
+/// its lowercase name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, apz_store::Column)]
+#[column(rename_all = "lowercase")]
 pub enum Scope {
     Observe,
     Operate,
@@ -51,13 +53,17 @@ impl Scope {
     }
 }
 
-/// One token's record. The plaintext is shown once, at creation, and never stored.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One token's record: a row of `hub_mcp_token`, its allowlist a child table. Its digest is kept beside it, in
+/// `hub_mcp_token_digest` (see `store_db.rs`). The plaintext is shown once, at creation, and never stored.
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
+#[table(name = "hub_mcp_token")]
 pub struct TokenRecord {
+    #[table(key)]
     pub id: String,
     pub name: String,
     pub scope: Scope,
     /// Tool names this token may call. Empty means every tool its scope permits.
+    #[table(list)]
     pub allowlist: Vec<String>,
     pub created_ms: u64,
     pub expires_ms: Option<u64>,
@@ -108,79 +114,6 @@ pub trait TokenStore: Send + Sync {
     fn list(&self) -> Vec<TokenRecord>;
 }
 
-struct Row {
-    digest: String,
-    record: TokenRecord,
-}
-
-/// The in-memory store. It is lost at restart; the database table replaces it.
-#[derive(Default)]
-pub struct MemoryTokens {
-    rows: Mutex<Vec<Row>>,
-}
-
-impl TokenStore for MemoryTokens {
-    fn create(&self, new: NewToken, now: u64) -> Result<(String, TokenRecord), String> {
-        let token = mint()?;
-        let record = TokenRecord {
-            id: format!("mcp_{}", random_hex(6)?),
-            name: new.name,
-            scope: new.scope,
-            allowlist: new.allowlist,
-            created_ms: now,
-            expires_ms: new.expires_ms,
-            last_used_ms: None,
-            calls: 0,
-            revoked_at_ms: None,
-        };
-        lock(&self.rows).push(Row {
-            digest: digest(&token),
-            record: record.clone(),
-        });
-        Ok((token, record))
-    }
-
-    fn verify(&self, token: &str, now: u64) -> Result<TokenRecord, AuthError> {
-        let wanted = digest(token);
-        let rows = lock(&self.rows);
-        let row = rows
-            .iter()
-            .find(|row| row.digest == wanted)
-            .ok_or(AuthError::Invalid)?;
-        if row.record.revoked_at_ms.is_some() {
-            return Err(AuthError::Revoked);
-        }
-        if row.record.expires_ms.is_some_and(|at| now >= at) {
-            return Err(AuthError::Expired);
-        }
-        Ok(row.record.clone())
-    }
-
-    fn record_use(&self, id: &str, now: u64) {
-        if let Some(row) = lock(&self.rows).iter_mut().find(|row| row.record.id == id) {
-            row.record.last_used_ms = Some(now);
-            row.record.calls += 1;
-        }
-    }
-
-    fn revoke(&self, id: &str, now: u64) -> bool {
-        match lock(&self.rows).iter_mut().find(|row| row.record.id == id) {
-            Some(row) if row.record.revoked_at_ms.is_none() => {
-                row.record.revoked_at_ms = Some(now);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn list(&self) -> Vec<TokenRecord> {
-        lock(&self.rows)
-            .iter()
-            .map(|row| row.record.clone())
-            .collect()
-    }
-}
-
 /// The token a request presents in `Authorization: Bearer ...`, if any.
 pub fn bearer(req: &Request) -> Option<&str> {
     let value = req.header("authorization")?;
@@ -198,9 +131,9 @@ pub fn mint() -> Result<String, String> {
     Ok(format!("{PREFIX}{}", base32(&bytes)))
 }
 
-/// The digest a token is stored under.
-pub fn digest(token: &str) -> String {
-    sha256_hex(token.as_bytes())
+/// The digest a token is stored under: the sha256 of the token, as its bytes.
+pub fn digest(token: &str) -> Vec<u8> {
+    Sha256::digest(token.as_bytes()).to_vec()
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {

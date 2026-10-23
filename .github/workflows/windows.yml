@@ -200,10 +200,6 @@ jobs:
           path: target/guest/${{ env.GARCH }}
           key: ${{ steps.guest-key.outputs.key }}
           enableCrossOsArchive: true
-      - name: The relay binaries (both architectures, from the relay job)
-        if: inputs.package
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with: { path: relay, key: "mcp-relay-x86_64-aarch64-${{ github.sha }}", fail-on-cache-miss: true, enableCrossOsArchive: true }
       - name: The web console (from the console job)
         if: inputs.package
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -211,7 +207,6 @@ jobs:
       - name: Stage
         if: inputs.package
         env:
-          APZ_RELAY_DIR: relay
           # A hand-run package (no release job built the guest) may go without it.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: packaging/scripts/stage.sh ${{ env.TRIPLE }} "$CARGO_TARGET_DIR/${{ env.TRIPLE }}/release" stage "$VERSION"

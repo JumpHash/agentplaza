@@ -259,6 +259,8 @@ pub struct Store {
     key_file: PathBuf,
     /// `plaza.db`: the vault's tables and its audit table.
     db: Arc<Db>,
+    /// The hub's generations: a save of the document, a seal or an unseal bumps `vault`.
+    gens: Arc<apz_cache::Generations<String>>,
     inner: Mutex<Inner>,
     /// A test vault's own folder store. Dropping the vault closes the folder, so a restart opens it again.
     #[cfg(test)]
@@ -266,6 +268,12 @@ pub struct Store {
 }
 
 impl Store {
+    /// Counts this vault's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<apz_cache::Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
     /// The vault over `db` (`plaza.db`, which holds its tables) and the key file at `key_file`. The stored document
     /// is read now. Nothing is unlocked yet: call [`Store::boot`].
     pub fn open(key_file: &Path, db: Arc<Db>) -> Store {
@@ -297,6 +305,7 @@ impl Store {
         Store {
             key_file: key_file.to_path_buf(),
             db,
+            gens: Arc::default(),
             inner: Mutex::new(inner),
             #[cfg(test)]
             _files: None,
@@ -393,7 +402,9 @@ impl Store {
     /// Unseals with `unlock`, as `actor`. Failures are rate-limited and audited.
     pub fn unseal(&self, unlock: Unlock, actor: &str, now: u64) -> Result<(), VaultError> {
         let mut inner = self.lock();
-        self.unseal_in(&mut inner, unlock, actor, now)
+        let out = self.unseal_in(&mut inner, unlock, actor, now);
+        crate::sources::bump(&self.gens, crate::sources::VAULT);
+        out
     }
 
     fn unseal_in(
@@ -599,6 +610,7 @@ impl Store {
         let Some(keys) = inner.keys.clone() else {
             return Ok(());
         };
+        crate::sources::bump(&self.gens, crate::sources::VAULT);
         self.flush_uses(&mut inner, &keys, now, true);
         if let Some(doc) = &inner.doc
             && let Err(err) = self.save(doc)
@@ -1651,8 +1663,9 @@ impl Store {
             apz_store::RowSet::one(def(), doc).map_err(|e| VaultError::Storage(e.to_string()))?;
         self.db
             .write(move |conn| apz_store::table::replace(conn, def(), &rows))
-            .map(|_| ())
-            .map_err(|e| VaultError::Storage(e.to_string()))
+            .map_err(|e| VaultError::Storage(e.to_string()))?;
+        crate::sources::bump(&self.gens, crate::sources::VAULT);
+        Ok(())
     }
 
     /// Appends a record. A failed append is logged and marks the audit as not known to be ok.

@@ -17,9 +17,10 @@
    "budget": 2000,
    "variant": null,
    "tools": [
-    "bash",
-    "read_file",
-    "list",
+    "run",
+    "run_tests",
+    "read",
+    "find",
     "search",
     "transcript_search",
     "read_artifact",
@@ -82,11 +83,11 @@
    "budget": 2000,
    "variant": null,
    "tools": [
-    "bash",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list",
+    "run",
+    "run_tests",
+    "read",
+    "edit",
+    "find",
     "search",
     "fetch_url",
     "transcript_search",
@@ -108,34 +109,13 @@
    "tools": [
     "read_device",
     "actuate_device",
-    "bash",
-    "read_file",
+    "run",
+    "run_tests",
+    "read",
     "search",
     "transcript_search",
     "escalate",
     "submit_device_report"
-   ]
-  },
-  "finance": {
-   "role": "finance",
-   "slot": 4,
-   "title": "Finance",
-   "permits": [
-    "statutes/S-005"
-   ],
-   "toolsets": [
-    "python"
-   ],
-   "budget": 1000,
-   "variant": null,
-   "tools": [
-    "bash",
-    "read_file",
-    "search",
-    "read_audit",
-    "read_usage",
-    "file_detection",
-    "submit_finance_report"
    ]
   },
   "incident": {
@@ -176,47 +156,6 @@
     "submit_memory_change"
    ]
   },
-  "mayor": {
-   "role": "mayor",
-   "slot": 7,
-   "title": "Mayor",
-   "permits": [
-    "statutes/S-004"
-   ],
-   "toolsets": [],
-   "budget": 3000,
-   "variant": null,
-   "tools": [
-    "read_file",
-    "list",
-    "search",
-    "transcript_search",
-    "assign_task",
-    "spawn_agent",
-    "hibernate_agent",
-    "approve_plan",
-    "approve_merge",
-    "escalate",
-    "send_message"
-   ]
-  },
-  "mayor-office": {
-   "role": "mayor-office",
-   "slot": 8,
-   "title": "Mayor Office",
-   "permits": [
-    "statutes/S-005"
-   ],
-   "toolsets": [],
-   "budget": 800,
-   "variant": null,
-   "tools": [
-    "read_audit",
-    "search",
-    "send_message",
-    "submit_town_report"
-   ]
-  },
   "planner": {
    "role": "planner",
    "slot": 10,
@@ -230,12 +169,35 @@
    "budget": 1500,
    "variant": null,
    "tools": [
+    "run",
+    "run_tests",
+    "read",
+    "find",
+    "search",
+    "transcript_search",
+    "submit_plan"
+   ]
+  },
+  "curator": {
+   "role": "curator",
+   "slot": 17,
+   "title": "Curator",
+   "permits": [
+    "statutes/S-003"
+   ],
+   "toolsets": [
+    "git"
+   ],
+   "budget": 500,
+   "variant": null,
+   "tools": [
     "bash",
     "read_file",
     "list",
     "search",
-    "transcript_search",
-    "submit_plan"
+    "memory_search",
+    "memory_get",
+    "memory_land"
    ]
   },
   "qa": {
@@ -252,11 +214,11 @@
    "budget": 1500,
    "variant": null,
    "tools": [
-    "bash",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list",
+    "run",
+    "run_tests",
+    "read",
+    "edit",
+    "find",
     "search",
     "transcript_search",
     "read_artifact",
@@ -276,9 +238,10 @@
    "budget": 1000,
    "variant": null,
    "tools": [
-    "bash",
-    "read_file",
-    "list",
+    "run",
+    "run_tests",
+    "read",
+    "find",
     "search",
     "transcript_search",
     "read_artifact",
@@ -302,8 +265,8 @@
    "tools": [
     "fetch_url",
     "web_search",
-    "read_file",
-    "write_file",
+    "read",
+    "edit",
     "search",
     "transcript_search",
     "submit_research"
@@ -323,9 +286,10 @@
    "budget": 800,
    "variant": null,
    "tools": [
-    "bash",
-    "read_file",
-    "list",
+    "run",
+    "run_tests",
+    "read",
+    "find",
     "search",
     "transcript_search",
     "submit_review"
@@ -345,9 +309,10 @@
    "budget": 1200,
    "variant": null,
    "tools": [
-    "bash",
-    "read_file",
-    "list",
+    "run",
+    "run_tests",
+    "read",
+    "find",
     "search",
     "transcript_search",
     "read_artifact",
@@ -363,9 +328,9 @@
    "budget": 1500,
    "variant": null,
    "tools": [
-    "read_file",
-    "write_file",
-    "list",
+    "read",
+    "edit",
+    "find",
     "search",
     "submit_claim",
     "transcript_search"

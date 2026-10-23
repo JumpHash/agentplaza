@@ -77,6 +77,7 @@ pub fn run<S: Read + Write, W: Write>(
         role: None,
         keepalive: None,
         caps: Vec::new(),
+        kind: None,
     };
     send(lines, log, &hello)?;
     let echo = await_host(lines, log, "welcome", |message| match message {
@@ -219,6 +220,7 @@ pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
         HostMessage::Stop { .. } => "stop",
         HostMessage::Work { .. } => "work",
         HostMessage::ModelResult { .. } => "model_result",
+        HostMessage::ModelDelta { .. } => "model_delta",
         HostMessage::ToolDecision { .. } => "tool_decision",
         HostMessage::PermissionDecision { .. } => "permission_decision",
         HostMessage::ToolBatchDecision { .. } => "tool_batch_decision",
@@ -226,6 +228,7 @@ pub(crate) fn kind_of(message: &HostMessage) -> &'static str {
         HostMessage::Cancel { .. } => "cancel",
         HostMessage::Profile { .. } => "profile",
         HostMessage::Control { .. } => "control",
+        HostMessage::Exec { .. } => "exec",
     }
 }
 

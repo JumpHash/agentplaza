@@ -1,7 +1,7 @@
 //! The work-folder sync's shared rules and replies (`Op::Sync` carries the requests; see [`crate::SyncOp`]).
 //!
 //! The daemon and the hub both check names and sizes with these, so a path one side accepts the other accepts.
-//! Files are content-addressed: a file is named by the SHA-256 of its bytes, in lower-case hex.
+//! Files are content-addressed: a file is named by the BLAKE3 hash of its bytes, in lower-case hex.
 
 use serde::{Deserialize, Serialize};
 

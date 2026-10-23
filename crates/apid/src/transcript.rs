@@ -159,15 +159,6 @@ pub enum Entry {
         #[serde(skip_serializing_if = "Option::is_none")]
         cost_usd: Option<f64>,
     },
-    /// A model call the task's budget could not cover in full.
-    ModelChargeShortfall {
-        model: String,
-        task: Option<String>,
-        wanted: i64,
-        charged: i64,
-        available: i64,
-        error: Option<String>,
-    },
     /// A tool request from the model: its call id, the tool's name, and its input as the model sent it.
     ToolRequest {
         call: String,
@@ -182,23 +173,30 @@ pub enum Entry {
         #[table(content)]
         output: String,
     },
-    /// A tool's report: whether it worked, and its output (capped by the caller).
+    /// A tool's report: whether it worked, and its output (capped by the caller). A call a script made names the
+    /// `run_script` call it belongs to.
     ToolResult {
         call: String,
         ok: bool,
         #[table(content)]
         output: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
     },
     /// One item of an ACP engine's session feed (`{call, item, ...}`), as the feed keeps it.
     EngineUpdate(#[table(content)] Value),
     /// An error the hub recorded for the agent.
     Error { message: String },
-    /// The agent's context was compressed: its size before and after, the turns folded, and why.
+    /// The agent's context was compressed: its size before and after, the turns folded, why, and the
+    /// summary that stands in for them.
     Compressed {
         before: u64,
         after: u64,
         folded: u32,
         reason: String,
+        #[serde(default)]
+        #[table(content)]
+        summary: String,
     },
     /// An egress decision of the agent's VM, as the egress proxy reported it.
     Egress {
@@ -275,12 +273,6 @@ pub enum Entry {
         to: String,
         bytes: u64,
         ms: u64,
-    },
-    /// What the plaza paid a worker for a task, and what the task has spent.
-    Payment {
-        task: String,
-        amount: i64,
-        spent: i64,
     },
     /// The agent woke from sleep.
     Wake {},
@@ -556,7 +548,7 @@ impl Store {
     }
 
     /// The agent's entries on `thread` with `seq > after`, oldest first, at most `limit`: those of the work items
-    /// whose `work_start` names the thread (a conversation's or an editor session's turns, without the others').
+    /// whose `work_start` names the thread (a chat's or an editor session's turns, without the others').
     pub fn on_thread(&self, cid: u64, thread: &str, after: u64, limit: usize) -> Vec<StoredEntry> {
         let windows = self.windows();
         let Some(log) = windows.get(&cid) else {
@@ -711,7 +703,7 @@ mod tests {
             Entry::ModelRequest {
                 model: "m".into(),
                 messages: 3,
-                tools: json!(["read", "bash"]),
+                tools: json!(["read", "run"]),
                 last_user: "hi".into(),
             },
             Entry::ModelResponse {
@@ -727,14 +719,6 @@ mod tests {
                 },
                 cost_usd: None,
             },
-            Entry::ModelChargeShortfall {
-                model: "m".into(),
-                task: None,
-                wanted: 5,
-                charged: 2,
-                available: 2,
-                error: Some("short".into()),
-            },
             Entry::ToolRequest {
                 call: "c1".into(),
                 name: "read".into(),
@@ -749,6 +733,7 @@ mod tests {
                 call: "c1".into(),
                 ok: true,
                 output: "42".into(),
+                script: None,
             },
             Entry::EngineUpdate(
                 json!({"call": "e1", "item": "message", "message_id": null, "text": "hi"}),
@@ -761,6 +746,7 @@ mod tests {
                 after: 40,
                 folded: 3,
                 reason: "auto".into(),
+                summary: "Decisions: sessions, not named agents.".into(),
             },
             Entry::Egress {
                 host: "example.com".into(),
@@ -824,11 +810,6 @@ mod tests {
                 to: "node-b".into(),
                 bytes: 4096,
                 ms: 33,
-            },
-            Entry::Payment {
-                task: "t1".into(),
-                amount: 500,
-                spent: 1000,
             },
             Entry::Wake {},
             Entry::Sleep {
@@ -896,7 +877,7 @@ mod tests {
         let bus = Bus::default();
         store.attach(Arc::clone(db));
         let kinds = every_kind();
-        assert_eq!(kinds.len(), 35, "one sample for each of the 35 kinds");
+        assert_eq!(kinds.len(), 33, "one sample for each of the 33 kinds");
         for (i, entry) in kinds.iter().enumerate() {
             let work = 1 + (i as u64 % 3);
             store.record(&bus, 7, work, entry.clone());
@@ -912,7 +893,7 @@ mod tests {
             .iter()
             .map(|e| json_of(e)["kind"].as_str().unwrap().to_string())
             .collect();
-        assert_eq!(kinds_back.iter().collect::<HashSet<_>>().len(), 35);
+        assert_eq!(kinds_back.iter().collect::<HashSet<_>>().len(), 33);
     }
 
     #[test]
@@ -1201,6 +1182,7 @@ mod tests {
                     call: "c".into(),
                     ok: true,
                     output: big.clone(),
+                    script: None,
                 },
             );
         }
@@ -1215,6 +1197,7 @@ mod tests {
                     call: "c".into(),
                     ok: true,
                     output: big.clone(),
+                    script: None,
                 },
             })
             .collect();
@@ -1256,6 +1239,7 @@ mod tests {
                 call: "c".into(),
                 ok: true,
                 output: huge,
+                script: None,
             },
         );
         let kept = store.last(7, usize::MAX);

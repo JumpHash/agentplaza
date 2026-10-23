@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::upstream::Upstream;
 use crate::{agents, api, events, plaza, providers, scheduler, settings, spawned, transcript};
@@ -118,16 +117,17 @@ pub struct App {
     pub engine_feed: crate::engine_feed::Feed,
     /// Agent-made tools (the plaza's library).
     pub library: crate::library::Store,
-    /// The Library of deliverables: files agents handed in, in Garage or a local folder.
+    /// The Library of deliverables: files agents handed in, their bytes in the object store (`blobs`).
     pub deliverables: Arc<crate::deliverables::Store>,
     /// What agents found on the internet and judged, for every agent to use.
     pub toolbox: crate::toolbox::Store,
+    /// The hub's generations of its cached answers, by source (`sources.rs`, `skills`): a source's key moves with each
+    /// write of the source, and a cache answers only while the generation it was built from still holds (PLAN 30.4).
+    pub generations: Arc<apz_cache::Generations<String>>,
+    /// The sessions' tools sections, built from their sources and cached by them (`tools::Sections`).
+    pub tool_sections: crate::tools::Sections,
     /// Projects: every goal's flow from brief to delivery.
     pub projects: crate::projects::Store,
-    /// The project each agent works on; one with none is on the bench and does nothing (`membership`).
-    pub members: crate::membership::Members,
-    /// The owner's conversations with the orchestrator, each its own thread (`conversations`).
-    pub conversations: crate::conversations::Store,
     /// Each chat's context and tool calls, and one-message model choices (`context_track.rs`).
     pub context: crate::context_track::Tracker,
     /// Each project's overrides of the plaza's settings (`project_settings`).
@@ -142,24 +142,31 @@ pub struct App {
     pub maintenance: crate::maintenance::Store,
     /// Where each project runs.
     pub environments: crate::environments::Store,
-    /// The review graph's runs and recipes (review_graph), at `<state-dir>/review-graph.json`.
+    /// The review graph's runs and recipes (review_graph), kept in plaza.db; the change trees are in the object store.
     pub reviews: crate::review_graph::Reviews,
-    /// Postgres, the plaza's state of record (memory is the working copy).
-    pub db: Arc<crate::db::Db>,
     /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
     /// components' tables equal to it.
     pub store: Arc<apz_store::Store>,
+    /// The object store (apz-blobs, `<state-dir>/blobs`): the bytes of the Library, the artifacts, the skill files and
+    /// the stations' frames and sync content, each by its BLAKE3 hash (storage.rs).
+    pub blobs: Arc<apz_blobs::Blobs>,
     /// What each component last saved (store/saver.rs).
     pub saved: crate::store::saver::Ledger,
     /// The work engine's sessions (sessions.rs), the seats of tasks (seats.rs), the budgets (budgets.rs), the cards
     /// waiting for the owner (cards.rs), the chats (chats.rs) and the seats' threads (threads.rs).
     pub sessions: crate::sessions::Sessions,
     pub seats: crate::seats::Seats,
+    /// The recipe engine's runs and the owner's recipe versions (recipes/runs.rs).
+    pub recipe_runs: crate::recipes::runs::Runs,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
+    /// The VMs' workspace reports and the disk quotas' check (disk.rs).
+    pub disk: crate::disk::Disk,
     pub chats: crate::chats::Chats,
     pub threads: crate::threads::Threads,
-    /// The unfurl answers for the references clients show as chips (unfurl/mod.rs); the memory fallback when there is no Postgres.
+    /// The tasks' journals: notes and handovers (journal.rs, 9.2).
+    pub journal: crate::journal::Journals,
+    /// The unfurl answers for the references clients show as chips, kept in `plaza.db` (unfurl/mod.rs).
     pub unfurl: crate::unfurl::Cache,
     /// STOP ALL / resume.
     pub control: crate::control::Control,
@@ -167,6 +174,12 @@ pub struct App {
     pub custom_roles: crate::roles_custom::Store,
     /// The orchestrator's proposals for new agents.
     pub agent_proposals: crate::agent_proposals::Store,
+    /// The project memory: the entries read from each project's main, and the proposals agents made.
+    pub project_memory: crate::project_memory::Store,
+    /// The projects' curations: the finished tasks whose journals wait for the curator, and its runs (curator.rs).
+    pub curator: crate::curator::Store,
+    /// The projects' verifiers: when each last started (verifier.rs).
+    pub verifier: crate::verifier::Store,
     /// The hub's nodes, join codes and command queues.
     pub nodes: crate::nodes::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
@@ -175,6 +188,8 @@ pub struct App {
     pub prices: crate::prices::Catalog,
     /// Every model call's tokens, cache hits and cost.
     pub usage: crate::usage::Ledger,
+    /// The eval records of step sessions (`evals.rs`): written as sessions end, read by `/v1/evals`.
+    pub evals: crate::evals::Evals,
     /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
     pub metrics: crate::metrics::Metrics,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
@@ -193,6 +208,8 @@ pub struct App {
     pub settings: settings::Store,
     /// The owner's appearance: theme, skin, background and mode, and saved themes (appearance.rs).
     pub appearance: crate::appearance::Store,
+    /// The owner's standing rules, with their versions: part 2 of every session's prompt (standing_rules.rs).
+    pub standing_rules: crate::standing_rules::StandingRules,
     /// Agents' artifacts (artifacts/), their versions and data blobs.
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
@@ -208,6 +225,10 @@ pub struct App {
     pub models: crate::foundry::registry::Models,
     /// The Hugging Face import queue and the owner's token (foundry/hf_import.rs).
     pub hf: crate::foundry::hf_import::Imports,
+    /// The owner's egress credential rules (egress_inject.rs).
+    pub egress_rules: crate::egress_inject::Store,
+    /// The E2B templates and their builds (e2b_tpl.rs).
+    pub e2b_templates: crate::e2b_tpl::Templates,
     /// Operator-spawned agents and model overrides (plaza.db, the `spawned` table).
     pub spawned: spawned::Store,
     pub transcripts: transcript::Store,
@@ -233,84 +254,92 @@ impl App {
         let vault_env = env.clone();
         std::fs::create_dir_all(&config.state_dir)?;
         let token = write_token(&config.state_dir)?;
+        let generations: Arc<apz_cache::Generations<String>> = Arc::default();
         // The same file the token was just written to: noded and vsockd are told it, and every call
         // this app makes to them presents it.
         let internal = apz_http::auth::InternalToken::file(config.state_dir.join("internal.token"));
-        let snapshot = std::fs::read_to_string(config.state_dir.join("treasury.json")).ok();
-        let hub_auth =
-            crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
-                .map_err(std::io::Error::other)?;
+        let hub_auth = crate::hub_auth::Hub::new(&config.state_dir, &config.public_url, config.tls)
+            .map_err(std::io::Error::other)?;
         let foundry_dir = config.state_dir.join("foundry");
         // The store first: it takes the folder's lock, so a second hub on this folder stops here.
         let store = Arc::new(crate::store::open(&config.state_dir).map_err(std::io::Error::other)?);
-        let db = Arc::new(crate::db::Db::connect(&env));
-        let roster_db = db.enabled().then(|| Arc::clone(&db));
-        let hub_mcp_db = db.enabled().then(|| Arc::clone(&db));
-        let prompt_store: Arc<dyn crate::prompts::PromptStore> = if db.enabled() {
-            Arc::new(crate::prompts::store_db::DbPrompts::new(Arc::clone(&db)))
-        } else {
-            Arc::new(crate::prompts::store_mem::MemoryPrompts::open(
-                &config.state_dir,
-            ))
-        };
-        let vault = Arc::new(crate::vault::Store::open(
-            &config.vault_key,
-            Arc::clone(store.db(crate::store::PLAZA)),
-        ));
+        // The object store (apz-blobs): the bytes the Library, the artifacts, the skills and the stations keep, by hash.
+        let blobs = Arc::new(
+            apz_blobs::Blobs::open(&config.state_dir.join("blobs"))
+                .map_err(std::io::Error::other)?,
+        );
+        let prompt_store: Arc<dyn crate::prompts::PromptStore> = Arc::new(
+            crate::prompts::store::SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA))),
+        );
+        let vault = Arc::new(
+            crate::vault::Store::open(&config.vault_key, Arc::clone(store.db(crate::store::PLAZA)))
+                .with_generations(Arc::clone(&generations)),
+        );
         // The vendor bindings (Auggie's session) show in the console's vault screen from boot.
         crate::vendor_relay::register(&vault);
-        // The Library of deliverables, shared with the skill library's file store.
-        let library = Arc::new(crate::deliverables::Store::open(
-            &config.state_dir,
-            &env,
-            Arc::clone(&vault),
-        )?);
+        // The Library of deliverables, over the object store.
+        let library = Arc::new(crate::deliverables::Store::open(Arc::clone(&blobs)));
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
             bus: events::Bus::default(),
             laws: crate::laws::global(),
-            connectors: crate::connectors::Store::new(Arc::clone(&vault)),
+            connectors: crate::connectors::Store::new(Arc::clone(&vault))
+                .with_generations(Arc::clone(&generations)),
             approvals: crate::approvals::Store::default(),
             acp_sessions: crate::acp::store::Sessions::default(),
             engine_feed: crate::engine_feed::Feed::default(),
             library: crate::library::Store::open(&config.state_dir),
             deliverables: Arc::clone(&library),
             toolbox: crate::toolbox::Store::default(),
-            projects: Default::default(),
-            members: crate::membership::Members::load(config.state_dir.join("members.json")),
+            generations: Arc::clone(&generations),
+            tool_sections: crate::tools::Sections::new(),
+            projects: crate::projects::Store::default().with_generations(Arc::clone(&generations)),
             context: Default::default(),
-            conversations: crate::conversations::Store::default(),
             project_settings: Default::default(),
             harness: crate::harness_control::Store::default(),
             weft: crate::weft_hub::Weft::default(),
-            platforms: crate::platforms::Store::load(&config.state_dir),
+            platforms: crate::platforms::Store::new(),
             maintenance: Default::default(),
-            environments: Default::default(),
-            reviews: crate::review_graph::Reviews::load(&config.state_dir),
-            db: Arc::clone(&db),
+            environments: crate::environments::Store::default()
+                .with_generations(Arc::clone(&generations)),
+            reviews: crate::review_graph::Reviews::new(Arc::clone(&blobs)),
             store: Arc::clone(&store),
+            blobs: Arc::clone(&blobs),
             saved: crate::store::saver::Ledger::default(),
             sessions: Default::default(),
             seats: Default::default(),
+            recipe_runs: Default::default(),
             budgets: Default::default(),
             cards: Default::default(),
+            disk: Default::default(),
             chats: Default::default(),
             threads: Default::default(),
-            unfurl: crate::unfurl::Cache::default(),
+            journal: Default::default(),
+            unfurl: crate::unfurl::Cache::new(Arc::clone(store.db(crate::store::PLAZA))),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
-            custom_roles: crate::roles_custom::Store::default(),
+            custom_roles: crate::roles_custom::Store::default()
+                .with_generations(Arc::clone(&generations)),
             agent_proposals: crate::agent_proposals::Store::default(),
+            project_memory: crate::project_memory::Store::default(),
+            curator: crate::curator::Store::default(),
+            verifier: crate::verifier::Store::default(),
             nodes: crate::nodes::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
+            evals: crate::evals::Evals::new(Arc::clone(store.db(crate::store::PLAZA))),
             metrics: crate::metrics::Metrics::open(
                 Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
             ),
             foundry: crate::foundry::store::Foundry::new(foundry_dir),
-            mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
+            mcp: crate::mcp::Mcp::load(
+                &config.state_dir,
+                config.mcp_proxy_port,
+                Upstream::with_token(config.noded_port, internal.clone()),
+            )
+            .with_generations(Arc::clone(&generations)),
             hub_auth,
             hub_mcp: crate::hub_mcp::HubMcp::open(
                 crate::hub_mcp::default_origins(
@@ -319,55 +348,52 @@ impl App {
                     config.tls || !config.bind.is_loopback(),
                 ),
                 config.tls || !config.bind.is_loopback(),
-                hub_mcp_db,
+                Arc::clone(store.db(crate::store::PLAZA)),
             ),
             prompts: crate::prompts::Prompts::new(prompt_store),
             skills: {
-                // Skill files go to the Library's object store (the same Store the App holds) when Garage is configured.
-                let blobs: Arc<dyn crate::skills::Blobs> = if library.has_garage() {
-                    Arc::new(crate::skills::blobs::LibraryBlobs::new(Arc::clone(
-                        &library,
-                    )))
-                } else {
-                    Arc::new(crate::skills::blobs::FsBlobs::open(&config.state_dir))
-                };
-                crate::skills::Skills::new(
-                    if db.enabled() {
-                        Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(&db)))
-                            as Arc<dyn crate::skills::SkillStore>
-                    } else {
-                        Arc::new(crate::skills::store_mem::MemorySkills::open(
-                            &config.state_dir,
-                        ))
-                    },
-                    blobs,
+                // Skill files are kept in the object store, by BLAKE3 hash.
+                let skill_blobs: Arc<dyn crate::skills::Blobs> =
+                    Arc::new(crate::skills::blobs::StoreBlobs::new(Arc::clone(&blobs)));
+                crate::skills::Skills::with_generations(
+                    Arc::new(crate::skills::store_db::DbSkills::new(Arc::clone(
+                        store.db(crate::store::PLAZA),
+                    ))),
+                    skill_blobs,
+                    Arc::clone(&generations),
                 )
             },
-            settings: settings::Store::new(config.dev_models),
+            settings: settings::Store::new(config.dev_models)
+                .with_generations(Arc::clone(&generations)),
             appearance: crate::appearance::Store::new(),
-            artifacts: Arc::new(crate::artifacts::Store::load(
-                &config.state_dir,
-                Arc::clone(&library),
+            standing_rules: Default::default(),
+            artifacts: Arc::new(crate::artifacts::Store::new(
+                Arc::clone(store.db(crate::store::PLAZA)),
+                Arc::clone(&blobs),
             )),
-            shares: Arc::new(crate::shares::Store::load(&config.state_dir)),
+            shares: Arc::new(crate::shares::Store::open(
+                Arc::clone(store.db(crate::store::PLAZA)),
+                &config.state_dir,
+            )),
             providers: providers::Store::new(Arc::clone(&vault)),
-            engines: crate::engine_instances::Store::load(&config.state_dir)?,
-            usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
+            engines: crate::engine_instances::Store::new(&config.state_dir)
+                .with_generations(Arc::clone(&generations)),
+            usage_providers: crate::usage_providers::Store::default(),
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             spawned: spawned::Store::default(),
-            agents: agents::Roster::with_db(roster_db),
+            agents: agents::Roster::default(),
             models: crate::foundry::registry::Models::open(&config.state_dir),
-            hf: crate::foundry::hf_import::Imports::open(&config.state_dir),
+            hf: crate::foundry::hf_import::Imports::new(&config.state_dir),
+            egress_rules: Default::default(),
+            e2b_templates: Default::default(),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
-            plaza: plaza::Plaza::new(snapshot.as_deref()),
+            plaza: plaza::Plaza::new(),
             noded: Upstream::with_token(config.noded_port, internal.clone()),
             hub: Upstream::with_token(config.hub_port, internal),
             token,
             config,
         });
-        // The roster starts from the agents table before reconcile looks at the agents.
-        agents::load_roster(&app);
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
@@ -378,6 +404,7 @@ impl App {
         crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
         crate::metrics::spawn(Arc::clone(&app));
+        crate::storage::spawn_sweeper(Arc::clone(&app));
         crate::foundry::routes::spawn_tracker(Arc::clone(&app));
         // Model prices: refreshed when stale (at start, then hourly; the catalog decides).
         let prices_app = Arc::clone(&app);
@@ -388,15 +415,13 @@ impl App {
             }
         });
         let _ = app.me.set(Arc::downgrade(&app));
-        // A treasury.json that was refused is kept aside, not overwritten by the next save.
-        if snapshot.is_some() && !app.plaza.restored {
-            let path = app.config.state_dir.join("treasury.json");
-            let _ = std::fs::rename(&path, path.with_extension("json.rejected"));
-        }
         // The store is the state of record: every converted component loads from it.
         for problem in crate::store::saver::load(&app) {
             eprintln!("apid: store: {problem}");
         }
+        // The egress rules' consumers and the E2B builds the hub stopped during are set up from the loaded store.
+        crate::egress_inject::register_consumers(&app);
+        crate::e2b_tpl::recover(&app);
         // A VM's transcript entries are keyed by the session it works in.
         let sessions_of = Arc::downgrade(&app);
         app.transcripts.key_by_session(Box::new(move |cid| {
@@ -407,8 +432,16 @@ impl App {
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
         app.budgets
             .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
-        // Postgres, for the components not yet in the store.
-        crate::db::restore_all(&app);
+        restore_transcripts(&app);
+        // The house rules (the prompt library's AGENTS.md for the plaza) become the first standing rules, once: the
+        // standing rules replace them in every prompt (standing_rules.rs).
+        let house = app
+            .prompts
+            .bound_body("plaza")
+            .is_some_and(|house| app.standing_rules.absorb(&house, apz_plaza::now_ms()));
+        if house {
+            crate::store::saver::save_now(&app, "standing_rules");
+        }
         // The built-in skills join the skill library (one the library already holds is left alone).
         if let Err(why) = crate::skills::seed_builtins(&app.skills, "owner", apz_plaza::now_ms()) {
             eprintln!("apid: cannot seed the built-in skills: {why}");
@@ -438,9 +471,7 @@ impl App {
         crate::shares::relay::start(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
         app.models.revive(&app.agents);
-        crate::db::spawn_writer(Arc::clone(&app));
         crate::store::saver::spawn(Arc::clone(&app));
-        spawn_treasury_saver(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
         // A stop signal (SIGTERM, Ctrl-C) writes the state once more, in order, then exits (shutdown.rs).
         let stopping = app.handle();
@@ -451,9 +482,7 @@ impl App {
             eprintln!("apid: stopping: writing state");
             // The archives first: a snapshot that no longer holds what moved out is saved after its lines are.
             save_archives(&app);
-            save_treasury(&app);
             crate::store::saver::pass(&app);
-            crate::db::write_pass(&app);
             app.store.close();
             crate::weft_hub::stop(&app);
         });
@@ -551,9 +580,17 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Saves the Foundry (`<state>/foundry/state.json`) every three seconds whenever it changed. Its file is
-/// the copy at start when Postgres does not hold it yet; a component whose load failed is not written
-/// (db::Db::is_held).
+/// Loads the stored transcripts into the transcript store from `transcripts.db`, which then writes every record from
+/// now on there.
+fn restore_transcripts(app: &App) {
+    if let Err(e) =
+        crate::transcript::restore(&app.transcripts, app.store.db(crate::store::TRANSCRIPTS))
+    {
+        eprintln!("apid: transcripts not restored: {e}");
+    }
+}
+
+/// Every three seconds: the MCP runtimes' tick and the archive lines the task ledger moved out.
 fn spawn_component_savers(app: Arc<App>) {
     std::thread::spawn(move || {
         loop {
@@ -564,15 +601,11 @@ fn spawn_component_savers(app: Arc<App>) {
     });
 }
 
-/// Appends what the full task ledger and the full journal moved out ([`apz_plaza::tasks::TaskLedger::take_archived`],
-/// [`apz_plaza::treasury::Treasury::take_archived`]) to `<state-dir>/tasks-archive.jsonl` and
-/// `<state-dir>/treasury-archive.jsonl`, one JSON line each. Their sums stay in the treasury, so a line that cannot be
-/// written is logged and lost from the archive only.
+/// Appends what the full task ledger moved out ([`apz_plaza::tasks::TaskLedger::take_archived`]) to
+/// `<state-dir>/tasks-archive.jsonl`, one JSON line each. A line that cannot be written is logged and lost from the
+/// archive only.
 fn save_archives(app: &App) {
-    for (name, lines) in [
-        ("tasks-archive.jsonl", app.plaza.tasks.take_archived()),
-        ("treasury-archive.jsonl", app.plaza.treasury.take_archived()),
-    ] {
+    for (name, lines) in [("tasks-archive.jsonl", app.plaza.tasks.take_archived())] {
         if lines.is_empty() {
             continue;
         }
@@ -596,55 +629,6 @@ fn save_archives(app: &App) {
             );
         }
     }
-}
-
-/// Saves the treasury to `<state-dir>/treasury.json` every three seconds whenever
-/// its version has moved; the first tick always writes.
-fn spawn_treasury_saver(app: Arc<App>) {
-    std::thread::spawn(move || {
-        let mut saved = None;
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            let version = app.plaza.treasury.version();
-            if saved == Some(version) {
-                continue;
-            }
-            if save_treasury(&app) {
-                saved = Some(version);
-            }
-        }
-    });
-}
-
-/// One pass of the treasury save, run by the loop and by the stop. Returns whether the write landed; a failure is
-/// logged.
-fn save_treasury(app: &App) -> bool {
-    let path = app.config.state_dir.join("treasury.json");
-    match write_atomic(&path, &app.plaza.treasury.snapshot()) {
-        Ok(()) => true,
-        Err(err) => {
-            eprintln!("apid: cannot save {}: {err}", path.display());
-            false
-        }
-    }
-}
-
-/// Counts the temporary files this process has started, so no two writes share a temporary name.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Writes `text` to `path` through a temporary file and a rename, so a crash
-/// mid-write leaves the previous snapshot whole. The temporary name carries the process id and
-/// a counter, so the stop pass and a saver loop never write the same temporary file.
-pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let count = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut tmp_name = path
-        .file_name()
-        .unwrap_or(std::ffi::OsStr::new("snapshot"))
-        .to_os_string();
-    tmp_name.push(format!(".{}.{count}.tmp", std::process::id()));
-    let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
 }
 
 /// A fresh random token in `<state-dir>/internal.token`, mode 0600.

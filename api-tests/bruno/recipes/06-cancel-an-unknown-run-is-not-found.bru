@@ -1,0 +1,15 @@
+meta {
+  name: Cancelling an unknown recipe run is not found
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/recipe-runs/rr-0/cancel
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

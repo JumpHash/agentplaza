@@ -1,4 +1,4 @@
-//! Harness controls: what the orchestrator and the mayor (and the owner) can do to agents'
+//! Harness controls: what the orchestrator (and the owner) can do to agents'
 //! running work and routines — compress a long conversation, steer it with a note, give it
 //! more turns, change an agent's limits, and run loops (a prompt sent to an agent on a
 //! schedule until it says it is done or a run count is reached).
@@ -15,11 +15,13 @@ use crate::agents::Agent;
 use crate::scheduler::Origin;
 use crate::state::App;
 
-/// The host tools this module serves (offered to the orchestrator tier and the mayor roles).
+/// The host tools this module serves (offered to the orchestrator tier).
 pub const TOOLS: &[&str] = &["plaza_agent_control", "plaza_loop"];
 
-/// Compress a conversation past this many serialized bytes (about 60k tokens).
+/// Compress a conversation past this many serialized bytes (about 60k tokens), when the model's window is not known.
 pub const DEFAULT_COMPRESS_AT: u64 = 240_000;
+/// Compress a conversation once its last model call used this share of the model's context window (per cent).
+pub const DEFAULT_COMPACT_AT_PCT: u32 = 70;
 /// Turns kept verbatim when compressing.
 pub const DEFAULT_KEEP_RECENT: u32 = 6;
 /// What a looped prompt's result must contain for the loop to end itself.
@@ -27,11 +29,9 @@ pub const LOOP_DONE: &str = "LOOP DONE";
 /// The longest interval a loop can have: its run times (in milliseconds) must fit the store's integers.
 const MAX_EVERY_SECS: u64 = i64::MAX as u64 / 2_000;
 
-/// Who may use the controls: the orchestrator tier, the mayor and the mayor's office.
+/// Who may use the controls: the orchestrator tier.
 pub fn may_control(role: &str) -> bool {
     crate::settings::tier_of(role) == crate::settings::Tier::Orchestrator
-        || role == "mayor"
-        || role == "mayor-office"
 }
 
 /// Per-agent limits that override the plaza's defaults.
@@ -232,8 +232,8 @@ pub fn tick(app: &App) {
         .cloned()
         .collect();
     for l in due {
-        // An agent on the bench, or on a paused project, is not prompted: the loop waits until it works again.
-        if crate::membership::held_cid(app, l.cid).is_some() {
+        // An agent whose project is paused or over is not prompted: the loop waits until it works again.
+        if crate::projects::held_cid(app, l.cid).is_some() {
             continue;
         }
         // The agent is still busy with the previous run of this loop: wait for it.
@@ -424,7 +424,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     let obj = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
     Some(match name {
         "plaza_agent_control" => (
-            "Manage an agent's harness (orchestrator and mayor): compress its running work's conversation, steer it with a note, give it more turns, or set its limits (max_turns per work item, compress_at bytes, keep_recent turns).",
+            "Manage an agent's harness (orchestrator): compress its running work's conversation, steer it with a note, give it more turns, or set its limits (max_turns per work item, compress_at bytes, keep_recent turns).",
             obj(
                 json!({
                     "cid": {"type": "integer"},
@@ -439,7 +439,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             ),
         ),
         "plaza_loop" => (
-            "Run a prompt on an agent repeatedly (orchestrator and mayor): start (cid, prompt, every_minutes, max_runs — 0 runs until the agent's answer contains \"LOOP DONE\"), stop (id), or list.",
+            "Run a prompt on an agent repeatedly (orchestrator): start (cid, prompt, every_minutes, max_runs — 0 runs until the agent's answer contains \"LOOP DONE\"), stop (id), or list.",
             obj(
                 json!({
                     "action": {"type": "string", "enum": ["start", "stop", "list"]},
@@ -458,7 +458,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     if !may_control(&agent.role) {
-        return Err("only the orchestrator and the mayor manage harnesses".into());
+        return Err("only the orchestrator manages harnesses".into());
     }
     match name {
         "plaza_agent_control" => {
@@ -466,7 +466,6 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             if cid == agent.cid {
                 return Err("an agent may not control itself".into());
             }
-            same_project(app, agent, cid)?;
             act(app, cid, input, caller(agent))
         }
         "plaza_loop" => run_loop(app, agent, input),
@@ -482,7 +481,6 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
                 return Err("an agent may not loop itself".into());
             }
             loop_target(app, cid)?;
-            same_project(app, agent, cid)?;
             let prompt = input["prompt"]
                 .as_str()
                 .map(str::trim)
@@ -540,34 +538,19 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
 }
 
 /// Checks that a loop can run for agent `cid`: it is on a project, or it is the orchestrator. A loop for an agent on
-/// the bench would never run.
+/// no project would never run.
 fn loop_target(app: &App, cid: u64) -> Result<(), String> {
     let agent = app
         .agents
         .get(cid)
         .ok_or_else(|| format!("no agent {cid}"))?;
-    if !crate::membership::plaza_wide(&agent.role) && app.members.project_of(cid).is_none() {
+    if !crate::settings::plaza_wide(&agent.role) && crate::projects::project_of(app, cid).is_none()
+    {
         return Err(format!(
-            "agent {cid} is on the bench: a loop runs only for an agent on a project"
+            "agent {cid} has no project: a loop runs only for an agent on a project"
         ));
     }
     Ok(())
-}
-
-/// A mayor manages only its own project's agents; the orchestrator manages every project's.
-fn same_project(app: &App, agent: &Agent, cid: u64) -> Result<(), String> {
-    if crate::membership::plaza_wide(&agent.role)
-        || app
-            .members
-            .project_of(agent.cid)
-            .is_some_and(|own| app.members.project_of(cid).as_deref() == Some(own.as_str()))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "agent {cid} is not on your project: you manage only your project's agents"
-        ))
-    }
 }
 
 /// The role a tool call acts under.
@@ -889,7 +872,9 @@ mod tests {
                 .start_loop(5, &"x".repeat(4001), 60, 0, "owner", 0)
                 .is_err()
         );
-        let b = store.start_loop(6, "second", 120, 0, "mayor", 9).unwrap();
+        let b = store
+            .start_loop(6, "second", 120, 0, "orchestrator", 9)
+            .unwrap();
         assert_eq!(b.id, "l2");
         assert_eq!(store.stop_loop("l1").unwrap().state, "stopped");
         assert!(store.stop_loop("l99").is_err());

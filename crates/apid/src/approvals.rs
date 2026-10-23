@@ -22,6 +22,7 @@ use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::cards::{self, Card, Choice, NewCard};
 use crate::state::App;
 
 /// How many approvals the queue keeps; the oldest drop first.
@@ -92,7 +93,7 @@ pub struct Approval {
     pub created_ms: u64,
     pub state: State,
     pub reason: Option<String>,
-    /// What the decision is: `tool` (a held tool call), `payment` or `review` (a done
+    /// What the decision is: `tool` (a held tool call) or `review` (a done
     /// task no reviewer took in time; the approval passes it and the denial fails it).
     #[serde(default = "tool_kind")]
     pub kind: String,
@@ -447,7 +448,7 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
         ..
     } = &gate
     {
-        app.bus.publish("approval", item);
+        announce(app, item);
         record_pushed(app, cid);
     }
     gate
@@ -455,14 +456,221 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
 
 /// Queues a decision of `kind` about `subject` for the owner, whatever the agent's mode,
 /// publishes it, and returns it. The agent is `detail["cid"]`, or 0 when there is none.
-// Used by the payments work, which is not wired yet.
-#[allow(dead_code)]
 pub fn submit(app: &App, kind: &str, subject: &str, detail: Value) -> Approval {
     let cid = detail_cid(&detail);
     let item = app.approvals.submit(cid, kind, subject, detail);
-    app.bus.publish("approval", &item);
+    announce(app, &item);
     record_pushed(app, cid);
     item
+}
+
+/// The card an approval of `kind` gets, when its kind has one: a held tool call's (`tool_call`) and a review ruling's
+/// (`review`). The other kinds (payments, deploys, shares) are decided in the console's queue alone.
+fn card_kind(kind: &str) -> Option<cards::Kind> {
+    match kind {
+        "tool" => Some(cards::Kind::ToolCall),
+        "review" => Some(cards::Kind::Review),
+        _ => None,
+    }
+}
+
+/// The subject of an approval's card.
+fn card_subject(id: &str) -> String {
+    format!("approval:{id}")
+}
+
+/// Publishes a new approval and opens its card in the chat it belongs to, when its kind has one.
+pub fn announce(app: &App, item: &Approval) {
+    app.bus.publish("approval", item);
+    let now = now_ms();
+    let card = match card_kind(&item.kind) {
+        Some(cards::Kind::ToolCall) => tool_placed(app, item, now),
+        Some(cards::Kind::Review) => review_placed(app, item, now),
+        _ => return,
+    };
+    crate::work_loop::open_card(app, card, now);
+}
+
+/// The card a held tool call asks, shown in its session's task chat, else its project's, else the main chat.
+fn tool_placed(app: &App, item: &Approval, now: u64) -> NewCard {
+    let agent = app
+        .agents
+        .get(item.cid)
+        .map_or_else(|| format!("Agent {}", item.cid), |a| a.label());
+    let mut card = tool_content(item, &agent);
+    if let Some(session) = app.sessions.by_cid(item.cid) {
+        card.session = Some(session.id.clone());
+        if let Some(task) = &session.task {
+            card.chat = Some(crate::work_loop::task_chat(
+                app,
+                task,
+                &session.project,
+                now,
+            ));
+            card.project = Some(session.project.clone());
+            card.task = Some(task.clone());
+            return card;
+        }
+        if session.project != crate::work_loop::PLAZA {
+            card.chat = Some(crate::work_loop::project_chat(app, &session.project, now));
+            card.project = Some(session.project.clone());
+            return card;
+        }
+    }
+    card.chat = Some(app.chats.main(now).id);
+    card
+}
+
+/// The card a review ruling asks, shown in its task's chat.
+fn review_placed(app: &App, item: &Approval, now: u64) -> NewCard {
+    let mut card = review_content(item);
+    let task = card.task.clone().unwrap_or_default();
+    match app
+        .plaza
+        .tasks
+        .find(&task)
+        .and_then(|t| t.project().map(str::to_string))
+    {
+        Some(project) => {
+            card.chat = Some(crate::work_loop::task_chat(app, &task, &project, now));
+            card.project = Some(project);
+        }
+        None => card.chat = Some(app.chats.main(now).id),
+    }
+    card
+}
+
+/// What a held tool call's card says, before it is placed: approve it (it runs once, as asked) or deny it.
+fn tool_content(item: &Approval, agent: &str) -> NewCard {
+    NewCard {
+        kind: cards::Kind::ToolCall,
+        chat: None,
+        project: None,
+        task: None,
+        session: None,
+        subject: card_subject(&item.id),
+        title: format!("{agent} asks to run {}", item.tool),
+        body: Some(format!(
+            "Its permission mode is ask, so the call waits for you. Input: {}",
+            clip(&item.input.to_string(), 300)
+        )),
+        choices: vec![
+            Choice {
+                id: "approve".into(),
+                label: "Approve".into(),
+                detail: Some("the call runs once, as it was asked".into()),
+                takes_amount: false,
+            },
+            Choice {
+                id: "deny".into(),
+                label: "Deny".into(),
+                detail: Some("the agent is told, and the call does not run".into()),
+                takes_amount: false,
+            },
+        ],
+    }
+}
+
+/// What a review ruling's card says, before it is placed: pass the task, send it back to its builder (only a review
+/// run can take it back), or fail it.
+fn review_content(item: &Approval) -> NewCard {
+    let task = item
+        .detail
+        .get("task")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let text = ["verdict", "needs_you", "summary"]
+        .iter()
+        .filter_map(|key| item.detail.get(*key).and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let choice = |id: &str, label: &str, detail: &str| Choice {
+        id: id.into(),
+        label: label.into(),
+        detail: Some(detail.into()),
+        takes_amount: false,
+    };
+    let mut choices = vec![choice("pass", "Pass", "the work is accepted")];
+    if item.detail.get("run").is_some() {
+        choices.push(choice(
+            "rework",
+            "Send back",
+            "to its builder, with your notes",
+        ));
+    }
+    choices.push(choice(
+        "fail",
+        "Fail",
+        "the task fails; the planner decides what follows",
+    ));
+    NewCard {
+        kind: cards::Kind::Review,
+        chat: None,
+        project: None,
+        task: Some(task.clone()),
+        session: None,
+        subject: card_subject(&item.id),
+        title: format!("Task {task}'s review needs your ruling"),
+        body: (!text.is_empty()).then(|| clip(&text, 400)),
+        choices,
+    }
+}
+
+/// `text` cut to `max` characters, with an ellipsis when it was cut.
+pub(crate) fn clip(text: &str, max: usize) -> String {
+    let mut out: String = text.chars().take(max).collect();
+    if text.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+/// What a card's choice rules on its approval: whether it is approved, and the action a review ruling names. None for a
+/// choice the card does not offer.
+pub fn ruling(kind: cards::Kind, choice: &str) -> Option<(bool, Option<&'static str>)> {
+    match (kind, choice) {
+        (cards::Kind::ToolCall, "approve") | (cards::Kind::Review, "pass") => Some((true, None)),
+        (cards::Kind::ToolCall, "deny") | (cards::Kind::Review, "fail") => Some((false, None)),
+        (cards::Kind::Review, "rework") => Some((false, Some("rework"))),
+        _ => None,
+    }
+}
+
+/// Decides the approval a card asks about, as the card's choice rules: the same decision `POST /v1/approvals/{id}`
+/// makes. Returns the answer in words.
+pub fn card_answered(app: &App, card: &Card) -> String {
+    let choice = card.answer.as_deref().unwrap_or_default();
+    let (Some(id), Some((approve, action))) = (
+        card.subject.strip_prefix("approval:"),
+        ruling(card.kind, choice),
+    ) else {
+        return "recorded".into();
+    };
+    match decide_approval(app, id, approve, None, action) {
+        Ok(_) => format!("{choice}: approval {id} is decided"),
+        Err((_, why)) => why,
+    }
+}
+
+/// Withdraws the open card of each approval in `items`, which were decided or withdrawn elsewhere: the owner is not
+/// asked what is settled.
+pub fn withdraw_cards(app: &App, items: &[Approval]) {
+    for card in withdrawn_cards(&app.cards, items, now_ms()) {
+        app.bus.publish("card", &card);
+    }
+}
+
+/// The open cards of `items`' approvals, withdrawn; the cards withdrawn.
+fn withdrawn_cards(board: &cards::Cards, items: &[Approval], now: u64) -> Vec<Card> {
+    items
+        .iter()
+        .filter_map(|item| {
+            card_kind(&item.kind).map(|kind| board.withdraw(kind, &card_subject(&item.id), now))
+        })
+        .flatten()
+        .collect()
 }
 
 /// Records a newly queued approval for agent `cid`: the waiting count and the agent's state.
@@ -553,7 +761,7 @@ pub(crate) fn decide_approval(
             return Err((409, "this approval is already decided".to_string()));
         }
     };
-    // The decision is written before anything it starts (a payment, a review, a call's answer).
+    // The decision is written before anything it starts (a review, a call's answer).
     crate::store::saver::save_now(app, "approvals");
     app.metrics
         .registry
@@ -565,9 +773,9 @@ pub(crate) fn decide_approval(
         .record(now_ms().saturating_sub(item.created_ms) as f64);
     record_pending(app);
     app.bus.publish("approval", &item);
+    withdraw_cards(app, std::slice::from_ref(&item));
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {
-        "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),
         "artifact.share" => crate::shares::request::on_decided(app, &item),
@@ -888,11 +1096,11 @@ mod tests {
         let store = Store::default();
         store.set_mode(6, Mode::ReadOnly);
         let detail = json!({ "cid": 6, "amount": 900, "to": "bob" });
-        let item = store.submit(6, "payment", "pay 900 to bob", detail.clone());
+        let item = store.submit(6, "tool", "run ls", detail.clone());
         assert_eq!(item.state, State::Pending);
-        assert_eq!(item.kind, "payment");
-        assert_eq!(item.subject, "pay 900 to bob");
-        assert_eq!(item.tool, "pay 900 to bob");
+        assert_eq!(item.kind, "tool");
+        assert_eq!(item.subject, "run ls");
+        assert_eq!(item.tool, "run ls");
         assert_eq!(item.detail, detail);
         assert_eq!(item.input, detail);
         assert_eq!(item.cid, 6);
@@ -909,13 +1117,13 @@ mod tests {
     fn submit_holds_the_queue_cap() {
         let store = Store::default();
         for i in 0..(QUEUE_CAP + 5) {
-            store.submit(1, "payment", &format!("pay {i}"), json!({ "cid": 1 }));
+            store.submit(1, "tool", &format!("run {i}"), json!({ "cid": 1 }));
         }
         let list = store.list();
         assert_eq!(list.len(), QUEUE_CAP);
         // Newest first: the five oldest were dropped.
-        assert_eq!(list[0].subject, format!("pay {}", QUEUE_CAP + 4));
-        assert_eq!(list[QUEUE_CAP - 1].subject, "pay 5");
+        assert_eq!(list[0].subject, format!("run {}", QUEUE_CAP + 4));
+        assert_eq!(list[QUEUE_CAP - 1].subject, "run 5");
     }
 
     #[test]
@@ -1083,5 +1291,111 @@ mod tests {
         assert_eq!(tell_thread(&item), "op-5");
         item.thread = Some("acp-s9".into());
         assert_eq!(tell_thread(&item), "acp-s9");
+    }
+
+    fn held_item(id: &str, kind: &str, detail: Value) -> Approval {
+        Approval {
+            id: id.into(),
+            cid: 3,
+            tool: "write_thing".into(),
+            input: json!({ "path": "/x" }),
+            created_ms: 0,
+            state: State::Pending,
+            reason: None,
+            kind: kind.into(),
+            subject: "write_thing".into(),
+            detail,
+            thread: None,
+            waiting: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_tool_call_card_is_answered_into_a_decision_and_withdrawn_when_decided_elsewhere() {
+        let store = Store::default();
+        let board = cards::Cards::default();
+        store.set_mode(3, Mode::Ask);
+        let (_, created) = store.gate_plain(3, "write_thing", "write", &json!({ "path": "/x" }));
+        let item = created.expect("the held call queues its approval");
+        let card = board.open(tool_content(&item, "builder #3"), 1).0;
+        assert_eq!(card.kind, cards::Kind::ToolCall);
+        assert_eq!(card.subject, card_subject(&item.id));
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["approve", "deny"]
+        );
+
+        // Answering the card rules the approval, and the store decides it.
+        board.answer(&card.id, "approve", None, 2).unwrap();
+        let (approve, action) = ruling(card.kind, "approve").unwrap();
+        assert_eq!((approve, action), (true, None));
+        assert_eq!(
+            store.decide(&item.id, approve, None).unwrap().state,
+            State::Approved
+        );
+
+        // A second call decided through the approvals route: its card is withdrawn, not answered.
+        let (_, created) = store.gate_plain(3, "write_other", "write", &json!({}));
+        let other = created.expect("the second held call queues its approval");
+        let open = board.open(tool_content(&other, "builder #3"), 3).0;
+        let decided = store.decide(&other.id, false, None).unwrap();
+        let withdrawn = withdrawn_cards(&board, std::slice::from_ref(&decided), 4);
+        assert_eq!(
+            withdrawn.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            [open.id.as_str()]
+        );
+        assert_eq!(board.get(&open.id).unwrap().state, cards::State::Withdrawn);
+        assert!(board.list(true, None).is_empty());
+    }
+
+    #[test]
+    fn a_review_card_offers_send_back_only_when_a_review_run_can_take_it() {
+        let run = held_item(
+            "a9",
+            "review",
+            json!({ "task": "t7", "run": "r1", "verdict": "two checks failed", "summary": "built it" }),
+        );
+        let card = review_content(&run);
+        assert_eq!(card.task.as_deref(), Some("t7"));
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pass", "rework", "fail"]
+        );
+        assert_eq!(card.body.as_deref(), Some("two checks failed built it"));
+        assert_eq!(ruling(card.kind, "pass"), Some((true, None)));
+        assert_eq!(ruling(card.kind, "rework"), Some((false, Some("rework"))));
+        assert_eq!(ruling(card.kind, "fail"), Some((false, None)));
+
+        // A ruling from before the review graph has no run to send back.
+        let legacy = held_item("a10", "review", json!({ "task": "t8", "summary": "done" }));
+        let card = review_content(&legacy);
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pass", "fail"]
+        );
+        assert!(
+            !card.choices.iter().any(|c| c.id == "rework"),
+            "a card offers only the choices it has: none can send a legacy ruling back"
+        );
+    }
+
+    #[test]
+    fn only_tool_calls_and_review_rulings_have_cards() {
+        assert_eq!(card_kind("tool"), Some(cards::Kind::ToolCall));
+        assert_eq!(card_kind("review"), Some(cards::Kind::Review));
+        assert_eq!(card_kind("payment"), None);
+        let payment = held_item("a11", "payment", json!({}));
+        assert!(withdrawn_cards(&cards::Cards::default(), &[payment], 1).is_empty());
+        assert_eq!(clip("abcdef", 3), "abc…");
+        assert_eq!(clip("ab", 3), "ab");
     }
 }

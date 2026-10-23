@@ -1,0 +1,17 @@
+{
+  "name": "kotlin",
+  "version": 1,
+  "language": "kotlin",
+  "extensions": [
+    "kt",
+    "kts"
+  ],
+  "filenames": [],
+  "shebangs": [],
+  "source": {
+    "npm": "@tree-sitter-grammars/tree-sitter-kotlin",
+    "version": "1.1.0",
+    "wasm": "tree-sitter-kotlin.wasm"
+  },
+  "query": "symbols.scm"
+}

@@ -10,6 +10,11 @@
 //! agent left on it is stopped: its machine can be turned off, and the node stays out of service,
 //! online or not, until the owner resumes it.
 //!
+//! A VM moves only within its pool (plan 17.2): the machines that share its architecture, hypervisor and CPU
+//! baseline, since a snapshot does not translate across them. Where no other machine of its pool has room, a
+//! step session hands over (`work_loop::hand_over_for_pool`): it ends with a handover, and its step starts again
+//! in a new session on a machine with room.
+//!
 //! A resumed node (`POST /v1/nodes/{id}/resume`) takes agents again, and a rebalance follows once it
 //! reports: the idle agents are spread over the machines in service, each machine's share of them in
 //! proportion to its memory ([`plan`]). `POST /v1/nodes/rebalance` runs one at any time.
@@ -30,9 +35,10 @@ use serde_json::{Value, json};
 
 use crate::agents::Status;
 use crate::fleet;
-use crate::nodes::{self, Waiting};
+use crate::nodes::{self, Pool, Waiting};
 use crate::placement::{self, ADMIT_MIB};
 use crate::state::App;
+use crate::work_loop;
 
 /// How often the mover looks at the stopping nodes while one still runs agents.
 const PASS: Duration = Duration::from_secs(3);
@@ -234,8 +240,18 @@ fn leave(app: &App, cid: u64, role: &str, node: &str, now: bool) -> Result<Strin
         }
         return Err(Wait::Turn("finishing its turn first".into()));
     }
-    let Some(target) = placement::target_for(app, role, node) else {
-        return Err(Wait::Failed("no machine in service has room for it".into()));
+    let needs = placement::agent_volumes(app, cid, node).map_err(Wait::Failed)?;
+    let Some(target) = placement::target_for(app, role, node, &needs) else {
+        // No machine in its pool has room: a step session hands over, and its step starts again in a new session
+        // on a machine with room (plan 17.2). Any other agent waits for room, as before.
+        if work_loop::hand_over_for_pool(app, cid) {
+            return Err(Wait::Turn(
+                "its session hands over: its step starts again on another machine".into(),
+            ));
+        }
+        return Err(Wait::Failed(
+            "no machine in its pool has room for it, with its volumes".into(),
+        ));
     };
     placement::move_agent(app, cid, &target)
         .map(|moved| moved.to)
@@ -434,23 +450,47 @@ pub fn plan(hosts: &[Host], guests: &[Guest], max: usize) -> Vec<Planned> {
     planned
 }
 
-/// The rebalance [`plan`] for the plaza as it is: the nodes in service that report their memory, and
-/// every agent that is not offline.
+/// The moves of a rebalance, planned in each pool on its own (plan 17.2): a VM moves only within its pool, so
+/// the hosts of one pool are planned together with the agents on them, and the pools share `max`. A host with
+/// no pool is planned for nothing.
+pub fn plan_in_pools(
+    hosts: Vec<(Option<Pool>, Host)>,
+    guests: &[Guest],
+    max: usize,
+) -> Vec<Planned> {
+    let mut pools: BTreeMap<Pool, Vec<Host>> = BTreeMap::new();
+    for (pool, host) in hosts {
+        if let Some(pool) = pool {
+            pools.entry(pool).or_default().push(host);
+        }
+    }
+    let mut planned = Vec::new();
+    for members in pools.values() {
+        let room = max - planned.len();
+        planned.extend(plan(members, guests, room));
+    }
+    planned
+}
+
+/// The rebalance [`plan`] for the plaza as it is: the nodes in service that report their memory, planned in
+/// each pool (see [`plan_in_pools`]), and every agent that is not offline.
 pub fn plan_now(app: &App) -> Vec<Planned> {
     let stopped = app.nodes.stopped_ids();
     let at = Instant::now();
-    let hosts: Vec<Host> = fleet::reports(app)
+    let hosts: Vec<(Option<Pool>, Host)> = fleet::reports(app)
         .into_iter()
         .filter(|(node, _, _)| !stopped.contains(node))
         .filter_map(|(node, _, _)| {
             let (total, used) = placement::memory_of(app, &node)?;
-            Some(Host {
+            let pool = placement::pool_of(app, &node);
+            let host = Host {
                 free_mib: total
                     .saturating_sub(used)
                     .saturating_sub(placement::reserved_mib(&node, at)),
                 total_mib: total,
                 node,
-            })
+            };
+            Some((pool, host))
         })
         .collect();
     let agents = app
@@ -469,7 +509,7 @@ pub fn plan_now(app: &App) -> Vec<Planned> {
             awake: status != Status::Asleep,
         })
         .collect();
-    plan(&hosts, &guests, MAX_MOVES)
+    plan_in_pools(hosts, &guests, MAX_MOVES)
 }
 
 /// Routes: stop, resume and drain a node; rebalance the plaza.
@@ -758,5 +798,77 @@ mod tests {
             "{after:?}"
         );
         assert!(planned.iter().all(|step| step.from == "n1"), "{planned:?}");
+    }
+
+    #[test]
+    fn a_rebalance_plans_each_pool_on_its_own() {
+        let arm = Pool::of(
+            Some("aarch64"),
+            Some("kvm"),
+            Some("arm64 midr=0x41:0xd0c:0x3:1"),
+        )
+        .unwrap();
+        let x86 = Pool::of(
+            Some("x86_64"),
+            Some("kvm"),
+            Some("x86_64 vendor=GenuineIntel"),
+        )
+        .unwrap();
+        // Two arm64 machines, and an x86_64 one with all the room: the agents on n0 spread over the arm64 pool only.
+        let hosts = vec![
+            (Some(arm.clone()), host("n0", 8192, 4096)),
+            (Some(arm), host("n1", 8192, 8192)),
+            (Some(x86), host("x0", 8192, 8192)),
+        ];
+        let guests = [
+            guest(200, "n0", true, false),
+            guest(201, "n0", true, true),
+            guest(202, "n0", true, false),
+            guest(203, "n0", true, true),
+        ];
+        assert_eq!(
+            moves(&plan_in_pools(hosts, &guests, MAX_MOVES)),
+            [(201, "n0", "n1"), (203, "n0", "n1")]
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_pool_takes_no_rebalance() {
+        let hosts = vec![
+            (None, host("n0", 8192, 4096)),
+            (None, host("n1", 8192, 8192)),
+        ];
+        let guests = [guest(200, "n0", true, true), guest(201, "n0", true, true)];
+        assert!(plan_in_pools(hosts, &guests, MAX_MOVES).is_empty());
+    }
+
+    #[test]
+    fn a_stopped_node_moves_its_agents_only_within_their_pool() {
+        // n1 (arm64) is stopped; n2 is the other arm64 machine with less room, n3 an x86_64 one with all the room.
+        let arm = Pool::of(
+            Some("aarch64"),
+            Some("kvm"),
+            Some("arm64 midr=0x41:0xd0c:0x3:1"),
+        )
+        .unwrap();
+        let x86 = Pool::of(
+            Some("x86_64"),
+            Some("kvm"),
+            Some("x86_64 vendor=GenuineIntel"),
+        )
+        .unwrap();
+        let candidate = |node: &str, free_mib: u64, pool: &Pool| placement::Candidate {
+            node: node.into(),
+            free_mib,
+            running_vms: 0,
+            warm: false,
+            pool: Some(pool.clone()),
+            base: false,
+            disk_free_gib: None,
+            idle_cpus: None,
+        };
+        let fleet = vec![candidate("n2", 4096, &arm), candidate("n3", 16384, &x86)];
+        let movable = placement::in_pool(fleet, "n1", Some(&arm));
+        assert_eq!(placement::pick(&movable).as_deref(), Some("n2"));
     }
 }

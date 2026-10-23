@@ -40,7 +40,7 @@ pub struct Project {
     pub id: String,
     pub title: String,
     pub stage: String,
-    /// The plan waits for the owner's approval, not the mayor's.
+    /// The plan waits for the owner's approval, not the orchestrator's.
     #[serde(default)]
     pub owner_approval: bool,
     #[serde(default)]
@@ -275,7 +275,7 @@ pub fn upstream_of(id: &str, edges: &[[String; 2]]) -> Vec<String> {
         .collect()
 }
 
-/// Who can claim a task: `QA agent`, or `agent` when it names no role. Role labels are names (Finance, Incident), so
+/// Who can claim a task: `QA agent`, or `agent` when it names no role. Role labels are names (Incident, Release), so
 /// the wording never puts an article or a plural on them.
 pub fn claimant(role: Option<&str>) -> String {
     match role {
@@ -686,7 +686,7 @@ pub fn plan_cards(p: &Project) -> Vec<PlanCard> {
                         line: if p.owner_approval {
                             "Waits for your approval".into()
                         } else {
-                            "The mayor approves".into()
+                            "The orchestrator approves".into()
                         },
                     },
                 },
@@ -846,7 +846,7 @@ mod tests {
             "docs": [{ "kind": "brief", "title": "The brief", "file": "f1", "repo_path": null, "commit": null,
                        "summary": "s", "by_cid": 1, "at_ms": 0 }],
             "critiques": [{ "by_cid": 3, "verdict": "approve", "text": "ok", "revision": 1, "at_ms": 0 }],
-            "revision": 1, "approved_by": "Mayor", "tasks": ["t1", "t2"], "history": [], "created_ms": 0, "updated_ms": 0
+            "revision": 1, "approved_by": "Orchestrator", "tasks": ["t1", "t2"], "history": [], "created_ms": 0, "updated_ms": 0
         }))
         .expect("the hub's project reads")
     }
@@ -877,7 +877,7 @@ mod tests {
         );
         assert_eq!(WorkState::of("open", false, &t1, None), WorkState::Blocked);
         let tool = step("tool", Some("bash"), 0);
-        let asks = step("approval", Some("plaza_pay"), 0);
+        let asks = step("approval", Some("plaza_hire"), 0);
         assert_eq!(
             WorkState::of("claimed", false, &none, Some(&tool)),
             WorkState::Working
@@ -915,8 +915,8 @@ mod tests {
             "Running bash · 2m"
         );
         assert_eq!(
-            step_text(Some(&step("approval", Some("plaza_pay"), NOW)), NOW),
-            "Waits for you to approve plaza_pay · 0s"
+            step_text(Some(&step("approval", Some("plaza_hire"), NOW)), NOW),
+            "Waits for you to approve plaza_hire · 0s"
         );
         assert_eq!(step_text(None, NOW), "");
         assert_eq!(title_of("\n  First line \nsecond"), "First line");
@@ -964,14 +964,14 @@ mod tests {
             card_line(&claimed, WorkState::Working, &ctx),
             "QA #7 · Thinking · 5s"
         );
-        let asks = |_: u64| Some(step("approval", Some("plaza_pay"), NOW - 120_000));
+        let asks = |_: u64| Some(step("approval", Some("plaza_hire"), NOW - 120_000));
         let deciding = LineContext {
             step_of: &asks,
             ..ctx
         };
         assert_eq!(
             card_line(&claimed, WorkState::NeedsYou, &deciding),
-            "Approve plaza_pay · QA #7 · 2m"
+            "Approve plaza_hire · QA #7 · 2m"
         );
         let qa = GraphTask {
             role: Some("qa".into()),
@@ -1082,12 +1082,12 @@ mod tests {
                 SegState::Later
             ]
         );
-        let mayor = Project {
+        let orchestrated = Project {
             owner_approval: false,
             ..asking.clone()
         };
         assert_eq!(
-            flow_segments(Some(&mayor), &[], &no_steps)[4].state,
+            flow_segments(Some(&orchestrated), &[], &no_steps)[4].state,
             SegState::Later
         );
 
@@ -1105,7 +1105,7 @@ mod tests {
         };
         let deciding = |cid: u64| {
             Some(if cid == 7 {
-                step("approval", Some("plaza_pay"), 0)
+                step("approval", Some("plaza_hire"), 0)
             } else {
                 step("tool", Some("bash"), 0)
             })
@@ -1199,7 +1199,7 @@ mod tests {
         let cards = plan_cards(&p);
         assert!(cards.iter().all(|c| c.state == PlanState::Done));
         assert_eq!(cards[0].line, "The brief");
-        assert_eq!(cards[4].title, "Approved by Mayor");
+        assert_eq!(cards[4].title, "Approved by Orchestrator");
         let asking = Project {
             stage: "approval".into(),
             approved_by: None,

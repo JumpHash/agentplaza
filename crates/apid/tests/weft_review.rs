@@ -41,7 +41,7 @@ type Vms = Arc<Mutex<Vec<(u64, String)>>>;
 
 /// The roles the seats run: a builder and a reviewer.
 fn roles() -> Value {
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
@@ -573,7 +573,8 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
     let landed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(30),
-        |c| c["state"] == "landed",
+        // The landing's own sign-off record follows the landing itself.
+        |c| c["state"] == "landed" && has_record(c, "landed"),
     );
     assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
     assert!(
@@ -872,7 +873,8 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
     let landed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(30),
-        |c| c["state"] == "landed",
+        // The landing's own sign-off record follows the landing itself.
+        |c| c["state"] == "landed" && has_record(c, "landed"),
     );
     assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
     assert!(

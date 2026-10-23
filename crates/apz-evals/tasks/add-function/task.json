@@ -1,0 +1,4 @@
+{
+  "goal": "Add a public function mul(a, b) to src/lib.rs that returns the product of its arguments, with a unit test named mul_multiplies.",
+  "check": "grep -q 'pub fn mul(' src/lib.rs && grep -q 'fn mul_multiplies' src/lib.rs && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-add-function && /tmp/apz-add-function tests::mul_multiplies --exact"
+}

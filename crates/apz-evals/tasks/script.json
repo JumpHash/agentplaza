@@ -1,0 +1,347 @@
+{
+  "fix-test": {
+    "builder": [
+      {
+        "name": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "a - b",
+              "new": "a + b"
+            }
+          ]
+        }
+      },
+      {
+        "name": "run",
+        "input": {
+          "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-builder-check && /tmp/apz-builder-check"
+        }
+      },
+      {
+        "text": "Fixed add(): it subtracted instead of adding. The test passes. Handover: the operator in add() is the only change."
+      }
+    ],
+    "reviewer": [
+      {
+        "name": "run",
+        "input": {
+          "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
+        }
+      },
+      {
+        "name": "plaza_verdict",
+        "input": {
+          "pass": true,
+          "notes": "The test passes and only add() changed.",
+          "task": "$TASK"
+        }
+      },
+      {
+        "text": "Reviewed: pass."
+      }
+    ]
+  },
+  "add-function": {
+    "builder": [
+      {
+        "name": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "create": [
+            {
+              "path": "src/lib.rs",
+              "content": "pub fn sub(a: i32, b: i32) -> i32 {\n    a - b\n}\n\npub fn mul(a: i32, b: i32) -> i32 {\n    a * b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::{mul, sub};\n\n    #[test]\n    fn sub_subtracts() {\n        assert_eq!(sub(5, 3), 2);\n    }\n\n    #[test]\n    fn mul_multiplies() {\n        assert_eq!(mul(3, 4), 12);\n    }\n}\n"
+            }
+          ]
+        }
+      },
+      {
+        "name": "run",
+        "input": {
+          "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-builder-check && /tmp/apz-builder-check"
+        }
+      },
+      {
+        "text": "Added mul() and its test mul_multiplies. Handover: the new function sits after sub()."
+      }
+    ],
+    "reviewer": [
+      {
+        "name": "run",
+        "input": {
+          "command": "grep -q 'pub fn mul(' src/lib.rs && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check tests::mul_multiplies --exact"
+        }
+      },
+      {
+        "name": "plaza_verdict",
+        "input": {
+          "pass": true,
+          "notes": "mul() exists and its test passes.",
+          "task": "$TASK"
+        }
+      },
+      {
+        "text": "Reviewed: pass."
+      }
+    ]
+  },
+  "rename-symbol": {
+    "builder": [
+      {
+        "name": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "pub fn compute_total(",
+              "new": "pub fn sum_total("
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "use super::compute_total;",
+              "new": "use super::sum_total;"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "edits": [
+            {
+              "path": "src/lib.rs",
+              "old": "compute_total(&[1, 2, 3])",
+              "new": "sum_total(&[1, 2, 3])"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "edits": [
+            {
+              "path": "README.md",
+              "old": "compute_total",
+              "new": "sum_total"
+            }
+          ]
+        }
+      },
+      {
+        "name": "run",
+        "input": {
+          "command": "! grep -rq compute_total . && echo renamed"
+        }
+      },
+      {
+        "text": "Renamed compute_total to sum_total in src/lib.rs and README.md. Handover: nothing else refers to the old name."
+      }
+    ],
+    "reviewer": [
+      {
+        "name": "run",
+        "input": {
+          "command": "! grep -rq compute_total . && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
+        }
+      },
+      {
+        "name": "plaza_verdict",
+        "input": {
+          "pass": true,
+          "notes": "No reference to compute_total is left and the test passes.",
+          "task": "$TASK"
+        }
+      },
+      {
+        "text": "Reviewed: pass."
+      }
+    ]
+  },
+  "fix-typo": {
+    "builder": [
+      {
+        "name": "read",
+        "input": {
+          "files": [
+            {
+              "path": "README.md"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "edits": [
+            {
+              "path": "README.md",
+              "old": "recieve",
+              "new": "receive"
+            }
+          ]
+        }
+      },
+      {
+        "text": "Fixed the typo recieve, now receive, in README.md. Handover: nothing else changed."
+      }
+    ],
+    "reviewer": [
+      {
+        "name": "run",
+        "input": {
+          "command": "grep -q 'receive' README.md && ! grep -q 'recieve' README.md"
+        }
+      },
+      {
+        "name": "plaza_verdict",
+        "input": {
+          "pass": true,
+          "notes": "The typo is fixed and nothing else changed.",
+          "task": "$TASK"
+        }
+      },
+      {
+        "text": "Reviewed: pass."
+      }
+    ]
+  },
+  "answer-question": {
+    "builder": [
+      {
+        "name": "read",
+        "input": {
+          "files": [
+            {
+              "path": "QUESTION.md"
+            }
+          ]
+        }
+      },
+      {
+        "name": "read",
+        "input": {
+          "files": [
+            {
+              "path": "src/lib.rs"
+            }
+          ]
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "create": [
+            {
+              "path": "ANSWER.txt",
+              "content": "3\n"
+            }
+          ]
+        }
+      },
+      {
+        "text": "Answered in ANSWER.txt: list() returns three items. Handover: nothing else to do."
+      }
+    ],
+    "reviewer": [
+      {
+        "name": "run",
+        "input": {
+          "command": "[ \"$(tr -d ' \\n' < ANSWER.txt)\" = 3 ]"
+        }
+      },
+      {
+        "name": "plaza_verdict",
+        "input": {
+          "pass": true,
+          "notes": "ANSWER.txt holds the right count.",
+          "task": "$TASK"
+        }
+      },
+      {
+        "text": "Reviewed: pass."
+      }
+    ]
+  },
+  "survey": {
+    "builder": [
+      {
+        "name": "run",
+        "input": {
+          "command": "grep -rn TODO src | wc -l"
+        }
+      },
+      {
+        "name": "edit",
+        "input": {
+          "create": [
+            {
+              "path": "SURVEY.txt",
+              "content": "4\n"
+            }
+          ]
+        }
+      },
+      {
+        "text": "Counted 4 TODO lines in src/ and wrote 4 into SURVEY.txt. Handover: the count covers every file."
+      }
+    ],
+    "reviewer": [
+      {
+        "name": "run",
+        "input": {
+          "command": "grep -rn TODO src | wc -l"
+        }
+      },
+      {
+        "name": "plaza_verdict",
+        "input": {
+          "pass": true,
+          "notes": "The count matches the TODO lines.",
+          "task": "$TASK"
+        }
+      },
+      {
+        "text": "Reviewed: pass."
+      }
+    ]
+  }
+}

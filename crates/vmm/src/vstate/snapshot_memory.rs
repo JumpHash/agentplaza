@@ -648,6 +648,110 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// The mappings of `path` in this process, as (permissions, proportional set size, resident set
+    /// size) in bytes: `/proc/self/smaps` prints each mapping's header line, then its counters.
+    #[cfg(target_os = "linux")]
+    fn mappings_of(path: &Path) -> Vec<(String, u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+
+        // A mapping of the file names its inode in the header (the path there is not always spelled the
+        // way the file was opened).
+        let inode = fs::metadata(path).unwrap().ino();
+        let smaps = fs::read_to_string("/proc/self/smaps").unwrap();
+        let kib = |line: &str| -> u64 {
+            line.split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0)
+                * 1024
+        };
+        let mut found: Vec<(String, u64, u64)> = Vec::new();
+        let mut mine = false;
+        for line in smaps.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            // A header starts with its `start-end` range; a counter starts with its `Name:`. The device
+            // field has a colon too, so the name is what tells them apart.
+            if fields
+                .first()
+                .is_some_and(|range| range.contains('-') && !range.ends_with(':'))
+            {
+                // A header: `start-end perms offset dev inode [path]`.
+                mine = fields.len() > 5 && fields[4].parse::<u64>().ok() == Some(inode);
+                if mine {
+                    found.push((fields[1].to_string(), 0, 0));
+                }
+            } else if mine && let Some(last) = found.last_mut() {
+                if line.starts_with("Pss:") {
+                    last.1 = kib(line);
+                } else if line.starts_with("Rss:") {
+                    last.2 = kib(line);
+                }
+            }
+        }
+        found
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn restores_of_one_image_share_its_pages_and_never_write_it() {
+        const FORKS: usize = 10;
+        let page = host_page_size();
+        let source = memory(64);
+        for index in 0..64 {
+            fill_page(&source, index, 0x5A);
+        }
+        let regions = layout(&source);
+        let dir = scratch("share");
+        let path = dir.join("memory");
+        write_memory(&source, &regions, &create(&path), SnapshotKind::Full).unwrap();
+        drop(source);
+        let image = fs::metadata(&path).unwrap().len();
+
+        // Ten restores of one image, each reading every page: each mapping holds all of the image
+        // resident, but the kernel charges the shared pages once across the mappings.
+        let file = File::open(&path).unwrap();
+        let forks: Vec<GuestMemoryMmap> = (0..FORKS).map(|_| mapped(&file, &regions)).collect();
+        let mut read = vec![0u8; page];
+        for fork in &forks {
+            for index in 0..64 {
+                fork.read_slice(&mut read, GuestAddress((index * page) as u64))
+                    .unwrap();
+            }
+        }
+        let mappings = mappings_of(&path);
+        assert_eq!(mappings.len(), FORKS, "{mappings:?}");
+        assert!(
+            mappings.iter().all(|(perms, _, _)| perms == "rw-p"),
+            "every restore maps the image privately: {mappings:?}"
+        );
+        let resident: u64 = mappings.iter().map(|(_, _, rss)| rss).sum();
+        let proportional: u64 = mappings.iter().map(|(_, pss, _)| pss).sum();
+        assert!(
+            resident >= image * 9 * FORKS as u64 / 10,
+            "resident {resident}"
+        );
+        assert!(
+            proportional <= image * 3 / 2,
+            "ten forks charge about one image: {proportional} for a {image}-byte image"
+        );
+        assert_eq!(
+            fs::metadata(&path).unwrap().len(),
+            image,
+            "no copy was made"
+        );
+
+        // A fork that writes gets its own pages: the others and the image keep the old content.
+        fill_page(&forks[0], 3, 0xEE);
+        let mut byte = vec![0u8; page];
+        forks[1]
+            .read_slice(&mut byte, GuestAddress((3 * page) as u64))
+            .unwrap();
+        assert!(byte.iter().all(|&b| b == 0x5A));
+        let contents = fs::read(&path).unwrap();
+        assert!(page_of(&contents, 3).iter().all(|&b| b == 0x5A));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn map_private_refuses_a_short_file_and_unaligned_regions() {
         let page = usize_to_u64(host_page_size());

@@ -195,7 +195,7 @@ function breederCard(b: Breeder): HTMLElement {
     ),
     b.note ? h('p.lab-err', null, b.note) : null,
   );
-  return card(name, body, { actions: [h('a.btn.ghost.sm', { href: href('agents', a.cid) }, h('span', null, 'Agent page'))] });
+  return card(name, body, { actions: [h('a.btn.ghost.sm', { href: href('sessions', a.cid) }, h('span', null, 'Agent page'))] });
 }
 
 /** Every breeder's jobs in one table: each job links to its page. */

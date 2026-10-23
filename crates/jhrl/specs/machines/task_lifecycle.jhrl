@@ -39,7 +39,6 @@ machine TaskLifecycle "Three planned tasks 1 ← 2 ← 3 and one free id for a r
   var attempts: Map<Int, Int> = {for t in Ids yield t: 0}
   var live: Map<Int, Bool> = {for t in Ids yield t: false}
   var paid: Map<Int, Int> = {for t in Ids yield t: 0}
-  var released: Map<Int, Int> = {for t in Ids yield t: 0}
   var cs: Int = 0
 
   let out(t) = if st[t] == "closed" then outcome[t] else st[t]
@@ -100,12 +99,11 @@ machine TaskLifecycle "Three planned tasks 1 ← 2 ← 3 and one free id for a r
     paid' = paid with [t] = 1
   }
 
-  action Close(t in Ids) "Escrow is released (refunded) exactly once, and only with no run alive" {
+  action Close(t in Ids) "Settles a task once no run is alive; the outcome records how it ended" {
     when (st[t] == "accepted" and paid[t] == 1) or st[t] in {"failed", "cancelled", "superseded"}
     when not live[t]
     st' = st with [t] = "closed"
     outcome' = outcome with [t] = st[t]
-    released' = released with [t] = released[t] + 1
   }
 
   action Replan(t in Ids, n in Ids) "A change set replaces task t with a fresh task n (AP-061)" {
@@ -133,7 +131,6 @@ machine TaskLifecycle "Three planned tasks 1 ← 2 ← 3 and one free id for a r
   invariant "No run on a dead task"                all t in Ids: live[t] => st[t] in {"running", "blocked"}
   invariant "Paid only if accepted"                all t in Ids: paid[t] > 0 => out(t) == "accepted"
   invariant "Paid at most once"                    all t in Ids: paid[t] <= 1
-  invariant "Escrow is released exactly once"      all t in Ids: released[t] == (if st[t] == "closed" then 1 else 0)
   invariant "Accepted work is paid at close"       all t in Ids: (st[t] == "closed" and outcome[t] == "accepted") => paid[t] == 1
   invariant "Attempts are bounded"                 all t in Ids: attempts[t] <= MaxAttempts
   // Nobody waits on a task a change set replaced.

@@ -4,7 +4,7 @@
 //! (or the jobs agent's `register_from_job`) reads them, checks the inference contract and the
 //! bytes with tract (`inference::LoadedModel::load`), and records the model as `trained`. States
 //! go `trained -> shadow -> promoted -> retired`: only the owner promotes or retires. A promoted
-//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, no VM, wallet,
+//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, no VM,
 //! tools or chat. Retiring it removes the entry again.
 //!
 //! The job's model card has no inference contract yet, so the registry reads an object `serving`
@@ -700,7 +700,7 @@ fn free_cid(roster: &Roster, records: &BTreeMap<String, ModelRecord>) -> Result<
         })
 }
 
-/// The roster entry of a promoted model: no VM, no wallet, no tools, no chat.
+/// The roster entry of a promoted model: no VM, no tools, no chat.
 pub fn model_agent(cid: u64, now_ms: u64) -> Agent {
     Agent {
         cid,
@@ -1417,7 +1417,7 @@ mod tests {
             "no budget: refused"
         );
         let other =
-            law_refusal(9, "mayor", "foundry_submit_job", &eight).expect("only breeders submit");
+            law_refusal(9, "builder", "foundry_submit_job", &eight).expect("only breeders submit");
         assert!(other.contains("no law permits"), "{other}");
         let _ = fs::remove_dir_all(&root);
     }
@@ -1427,7 +1427,7 @@ mod tests {
         let root = scratch("laws-model-agent");
         let assign = law_refusal(
             3,
-            "mayor",
+            "builder",
             "plaza_assign",
             &json!({ "task": "t1", "agent": 10_000 }),
         )
@@ -1435,7 +1435,7 @@ mod tests {
         assert!(assign.contains("S-006f"), "{assign}");
         let message = law_refusal(
             3,
-            "mayor",
+            "builder",
             "plaza_send_message",
             &json!({ "to_cid": 10_500, "text": "hi" }),
         )
@@ -1443,7 +1443,7 @@ mod tests {
         assert!(message.contains("S-006g"), "{message}");
         let plain = law_refusal(
             3,
-            "mayor",
+            "builder",
             "plaza_assign",
             &json!({ "task": "t1", "agent": 42 }),
         );

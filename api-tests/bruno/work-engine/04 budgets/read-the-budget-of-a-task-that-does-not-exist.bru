@@ -1,0 +1,25 @@
+meta {
+  name: Read the budget of a task that does not exist: no cap
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/t999999/budget
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("it is an empty budget under its id", function () {
+    const b = res.getBody();
+    expect(b.owner).to.equal("t999999");
+    expect(b.cap).to.equal(null);
+    expect(b.spent).to.equal(0);
+  });
+}

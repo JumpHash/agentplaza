@@ -11,7 +11,6 @@ import agentplaza.model
 kind snapshot_coalesce(r: Run) -> Duration min default 5 s "Shortest gap between two snapshots after tool calls (AP-010.R3)"
 kind compaction_threshold(a: Agent) -> Number max default 75 % "Context fill at which the harness compacts into a state note (AP-017.R1)"
 kind compaction_kept_turns(a: Agent) -> Int min default 10 "Recent turns kept verbatim after compaction (AP-017.R1)"
-kind task_budget(t: Task) -> Credits max "Credit budget of a task (AP-018.R1)"
 kind budget_warning(t: Task) -> Number max default 80 % "Share of the budget at which the agent is warned (AP-018.R2)"
 kind stuck_repeats(a: Agent) -> Int max default 3 "Identical failures before an agent reports itself stuck (AP-018.R5)"
 
@@ -34,14 +33,3 @@ kind contact_half_life(a: Agent) -> Duration exact default 14 d "Half-life of co
 kind contact_drop_strength(a: Agent) -> Number min default 0.1 "Strength below which an automatic contact drops off (AP-071.R3)"
 kind opinion_half_life(a: Agent) -> Duration exact default 90 d "Half-life of opinion evidence (AP-072.R2)"
 kind trust_restart(o: Owner) -> Number exact default 15 % "EigenTrust restart probability toward the owner's seed (AP-072.R3)"
-
-// ------------------------------------------------------------------ transfers and credit lines
-kind transfer_daily_max(a: Agent) -> Credits/Duration max default 1000 cr/d "Outgoing pay, draws and repays per agent per day (AP-073.R6)"
-kind offload_share_max(t: Task) -> Number max default 50 % "Share of remaining escrow an agent may offload (AP-073.R3)"
-kind credit_line_max(a: Agent, b: Agent) -> Credits max default 1000 cr "Largest credit line one agent extends to another (AP-073.R4)"
-kind cycle_window(a: Agent) -> Duration min default 7 d "Window in which round-trip transfers are flagged (AP-073.R6)"
-kind cycle_return_share(a: Agent) -> Number max default 80 % "Share returned to the origin that counts as a round trip (AP-073.R6)"
-kind treasury_credit_scale(o: Owner) -> Credits max default 500 cr "Credit limit at full reputation, scaled by T (AP-073.R2)"
-
-// ------------------------------------------------------------------ economy
-kind chain_margin_max(t: Task) -> Number max default 20 % "Total margin of a task chain over its real cost (AP-057.R4)"

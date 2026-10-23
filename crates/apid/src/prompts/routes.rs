@@ -418,10 +418,10 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::prompts::store_mem::MemoryPrompts;
+    use crate::prompts::store::SqlitePrompts;
 
     fn library() -> Prompts {
-        Prompts::new(Arc::new(MemoryPrompts::in_memory()))
+        Prompts::new(Arc::new(SqlitePrompts::for_tests()))
     }
 
     fn json_of(r: &Response) -> Value {

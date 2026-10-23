@@ -7,33 +7,31 @@
 //!   choices are held to the plaza's model policy, so a project narrows it and never widens it.
 //! - **Effort and `max_tokens`:** the project's fill in before the plaza's (`internal::model_call`).
 //! - **Limits:** field by field, the agent's, then the project's, then the plaza's (`agents::profile`).
-//! - **A task's budget** when it names none (`task_budget`), and the **review timeout** of its tasks.
+//! - **A task's budget** when it names none (`task_budget`, in the project budget's unit), and the **review timeout** of
+//!   its tasks.
 //! - **The permission mode** of its agents that have none of their own (`approvals::gate`).
+//! - **The hooks** its agents run around their edits and commands (`hooks_of_agent`, pushed in each agent's profile), and
+//!   the change's land hooks before it joins the landing queue (`land_refusals`, in `work_loop`).
 //!
 //! The project's instructions and skills are the prompt and skills bound to `project:<id>`, beside `plaza` and
 //! `role:<role>`. Connectors and MCP servers take a `projects` list beside their roles.
-//!
-//! **The budget** is a `town_budget` account of the project's own (`apz_plaza::treasury`). Setting credits aside moves
-//! them from the plaza's budget as the owner's operation, the project's tasks are funded from it (and refunded to it),
-//! and when the project is over the rest goes back to the plaza.
 //!
 //! Kept in plaza.db (table `project_setting`: a row per project that has overrides, its role models a child table).
 //!
 //! GET   /v1/projects/{id}/settings            → the project's overrides
 //! PATCH /v1/projects/{id}/settings {…}        → the overrides (a field set to null goes back to the plaza's)
 //! GET   /v1/projects/{id}/settings/effective  → every setting the project's agents get, and where it comes from
-//! GET   /v1/projects/{id}/budget              → its budget: balance, and the plaza's
-//! POST  /v1/projects/{id}/budget {credits}    → sets more aside (or, negative, gives some back)
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_plaza::treasury::PLAZA_OWNER;
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+
+use apz_proto::hooks::{Action, ActionKind, Hook, Mode as HookMode, On, default_hooks, findings};
 
 use crate::agents::Agent;
 use crate::approvals::Mode;
@@ -64,7 +62,7 @@ pub struct ProjectSettings {
     pub compress_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_recent: Option<u32>,
-    /// A task's budget when it names none, in credits.
+    /// The amount a task reserves when it names none, in the project budget's unit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_budget: Option<u64>,
     /// The permission mode of the project's agents that have none of their own.
@@ -73,6 +71,20 @@ pub struct ProjectSettings {
     /// How long a finished task waits for a reviewer before the owner is asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_timeout_minutes: Option<u32>,
+    /// The most tasks of the project that run at once (its team's maximum); [`DEFAULT_TEAM_MAX`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_max: Option<u32>,
+    /// The team the planner aims for when the graph allows, never above the maximum; [`DEFAULT_TEAM_TARGET`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_target: Option<u32>,
+    /// The project's hooks: checks and formatters that run around its agents' edits and commands (`apz_proto::hooks`).
+    /// The JSON names them as a list under `hooks`; `"hooks": "defaults"` sets `hook_defaults` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
+    pub hooks: Vec<HookRow>,
+    /// Whether the project's hooks start from the defaults (`apz_proto::hooks::default_hooks`), before its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hook_defaults: bool,
 }
 
 /// Every project's overrides, by project id.
@@ -139,8 +151,57 @@ struct SettingsRow {
     task_budget: Option<u64>,
     permission_mode: Option<Mode>,
     review_timeout_minutes: Option<u32>,
+    team_max: Option<u32>,
+    team_target: Option<u32>,
+    hook_defaults: bool,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
+    #[table(child)]
+    hooks: Vec<HookRow>,
+}
+
+/// One hook of a project as its row: the action is a kind and, for a rule, the rule's id, and its paths and languages
+/// are child lists (the tables `project_setting_hooks` and its lists). The JSON is the hook's own
+/// ([`apz_proto::hooks::Hook`]), so the consoles and the wire see the hook, never its row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[serde(from = "Hook", into = "Hook")]
+pub struct HookRow {
+    on: On,
+    action: ActionKind,
+    rule_id: Option<String>,
+    mode: HookMode,
+    #[table(list)]
+    paths: Vec<String>,
+    #[table(list)]
+    languages: Vec<String>,
+}
+
+impl From<Hook> for HookRow {
+    fn from(hook: Hook) -> Self {
+        let (action, rule) = hook.action.split();
+        HookRow {
+            on: hook.on,
+            action,
+            rule_id: rule.map(str::to_string),
+            mode: hook.mode,
+            paths: hook.paths,
+            languages: hook.languages,
+        }
+    }
+}
+
+impl From<HookRow> for Hook {
+    fn from(row: HookRow) -> Self {
+        Hook {
+            on: row.on,
+            paths: row.paths,
+            languages: row.languages,
+            // A stored rule always has its id (the check names one); an empty id is reported as not in the catalogue.
+            action: Action::join(row.action, row.rule_id)
+                .unwrap_or(Action::Rule { id: String::new() }),
+            mode: row.mode,
+        }
+    }
 }
 
 impl SettingsRow {
@@ -156,7 +217,11 @@ impl SettingsRow {
             task_budget: settings.task_budget,
             permission_mode: settings.permission_mode,
             review_timeout_minutes: settings.review_timeout_minutes,
+            team_max: settings.team_max,
+            team_target: settings.team_target,
+            hook_defaults: settings.hook_defaults,
             role_models: settings.role_models.clone(),
+            hooks: settings.hooks.clone(),
         }
     }
 
@@ -172,6 +237,10 @@ impl SettingsRow {
             task_budget: self.task_budget,
             permission_mode: self.permission_mode,
             review_timeout_minutes: self.review_timeout_minutes,
+            team_max: self.team_max,
+            team_target: self.team_target,
+            hooks: self.hooks,
+            hook_defaults: self.hook_defaults,
         };
         (self.project, settings)
     }
@@ -194,7 +263,7 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         if !crate::roles_custom::exists(app, role) {
             return Err(format!("role_models: the plaza has no role {role}"));
         }
-        if crate::membership::plaza_wide(role) {
+        if crate::settings::plaza_wide(role) {
             return Err(format!(
                 "role_models: {role} works on every project, so a project sets no model for it"
             ));
@@ -230,15 +299,93 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
     {
         return Err("keep_recent must be 1 to 50".into());
     }
-    if let Some(budget) = settings.task_budget {
-        apz_plaza::tasks::resolve_budget(Some(budget)).map_err(|e| format!("task_budget: {e}"))?;
+    if settings.task_budget == Some(0) {
+        return Err("task_budget is at least 1 (unset it for the plaza's)".into());
     }
     if let Some(minutes) = settings.review_timeout_minutes
         && !(1..=10_080).contains(&minutes)
     {
         return Err("review_timeout_minutes must be 1 to 10080 (a week)".into());
     }
+    check_team(settings)?;
+    let hooks: Vec<Hook> = settings.hooks.iter().cloned().map(Hook::from).collect();
+    check_hooks(&hooks)
+}
+
+/// A project's team sizes are each 1 to [`TEAM_LIMIT`] (pure). The target is kept within the maximum where it is read
+/// ([`team_target`]), so the two need not be checked against each other.
+fn check_team(settings: &ProjectSettings) -> Result<(), String> {
+    if let Some(max) = settings.team_max
+        && !(1..=TEAM_LIMIT).contains(&max)
+    {
+        return Err(format!("team_max must be 1 to {TEAM_LIMIT}"));
+    }
+    if let Some(target) = settings.team_target
+        && !(1..=TEAM_LIMIT).contains(&target)
+    {
+        return Err(format!("team_target must be 1 to {TEAM_LIMIT}"));
+    }
     Ok(())
+}
+
+/// The most hooks a project declares (its defaults are not counted: they are the plaza's own list).
+const MAX_HOOKS: usize = 64;
+
+/// Checks a project's hooks: a rule the catalogue has, languages the hooks name, a format or a lint only on an edit,
+/// and paths that are not empty.
+fn check_hooks(hooks: &[Hook]) -> Result<(), String> {
+    if hooks.len() > MAX_HOOKS {
+        return Err(format!("hooks: at most {MAX_HOOKS} hooks a project"));
+    }
+    for hook in hooks {
+        let name = hook.action.name();
+        if let Action::Rule { id } = &hook.action
+            && !apz_proto::hooks::RULES.iter().any(|(known, _)| known == id)
+        {
+            return Err(format!("hooks: rule {id:?} is not in the catalogue"));
+        }
+        if matches!(hook.action, Action::Format | Action::Lint) && hook.on != On::Edit {
+            return Err(format!("hooks: {name} runs on edit only"));
+        }
+        if let Some(language) = hook
+            .languages
+            .iter()
+            .find(|l| !apz_proto::hooks::LANGUAGES.contains(&l.as_str()))
+        {
+            return Err(format!("hooks: unknown language {language:?}"));
+        }
+        if hook.paths.iter().any(|p| p.is_empty()) {
+            return Err("hooks: a path pattern must not be empty".into());
+        }
+    }
+    Ok(())
+}
+
+/// The hooks a project's agents run: its defaults when it takes them, then its own.
+pub fn effective_hooks(settings: &ProjectSettings) -> Vec<Hook> {
+    let mut hooks = if settings.hook_defaults {
+        default_hooks()
+    } else {
+        Vec::new()
+    };
+    hooks.extend(settings.hooks.iter().cloned().map(Hook::from));
+    hooks
+}
+
+/// The findings a change's landing refuses on, from the hooks of its project that run on `land`: each finding of a
+/// block-mode hook, on the lines the change's diff adds. Report-mode findings do not refuse, so they are not returned.
+pub fn land_refusals(hooks: &[Hook], diff: &str) -> Vec<String> {
+    let added = apz_proto::hooks::added_lines(diff);
+    hooks
+        .iter()
+        .filter(|hook| hook.on == On::Land && hook.mode == HookMode::Block)
+        .flat_map(|hook| {
+            let name = hook.action.name();
+            findings(&hook.action, &added)
+                .into_iter()
+                .map(move |line| format!("{name}: {line}"))
+        })
+        .collect()
 }
 
 /// `current` with `patch` applied: a field given replaces it, `null` unsets it (back to the plaza's), and `role_models`
@@ -252,7 +399,9 @@ pub fn merged(current: &ProjectSettings, patch: &Value) -> Result<ProjectSetting
         _ => Map::new(),
     };
     for (key, value) in patch {
-        if key == "role_models" && value.is_object() {
+        if key == "hooks" && value.as_str() == Some("defaults") {
+            base.insert("hook_defaults".into(), Value::Bool(true));
+        } else if key == "role_models" && value.is_object() {
             let mut roles = base
                 .remove("role_models")
                 .and_then(|v| v.as_object().cloned())
@@ -271,6 +420,13 @@ pub fn merged(current: &ProjectSettings, patch: &Value) -> Result<ProjectSetting
             base.insert(key.clone(), value.clone());
         }
     }
+    // `hooks` is a list in the JSON: a patch that names it "defaults" sets hook_defaults, and a null patch unsets it.
+    if let Some(value) = base.get("hooks")
+        && !value.is_array()
+        && !value.is_null()
+    {
+        return Err("hooks is a list of hooks, or \"defaults\"".into());
+    }
     serde_json::from_value(Value::Object(base)).map_err(|e| e.to_string())
 }
 
@@ -278,9 +434,7 @@ pub fn merged(current: &ProjectSettings, patch: &Value) -> Result<ProjectSetting
 
 /// The overrides of the project agent `cid` works on, if it works on one.
 pub fn of_agent(app: &App, cid: u64) -> Option<ProjectSettings> {
-    app.members
-        .project_of(cid)
-        .map(|project| app.project_settings.get(&project))
+    crate::projects::project_of(app, cid).map(|project| app.project_settings.get(&project))
 }
 
 /// The model agent `agent` runs, from the project's overrides (its role's, else the project's default); `None` when
@@ -294,9 +448,34 @@ pub fn model_for(app: &App, agent: &Agent) -> Option<String> {
         .or(settings.default_model)
 }
 
-/// The budget a task of project `pid` gets when it names none.
+/// The amount (in the project budget's unit) a task of project `pid` reserves when it names none.
 pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
     pid.and_then(|pid| app.project_settings.get(pid).task_budget)
+}
+
+/// The most tasks a project runs at once when it sets no maximum, and the team its planner aims for when it sets no
+/// target (PLAN 7.1, W25). The largest either may be set to is [`TEAM_LIMIT`].
+pub const DEFAULT_TEAM_MAX: u32 = 20;
+pub const DEFAULT_TEAM_TARGET: u32 = 10;
+pub const TEAM_LIMIT: u32 = 100;
+
+/// The most tasks of project `pid` run at once: its team's maximum.
+pub fn team_max(app: &App, pid: &str) -> usize {
+    app.project_settings
+        .get(pid)
+        .team_max
+        .unwrap_or(DEFAULT_TEAM_MAX)
+        .try_into()
+        .unwrap_or(usize::MAX)
+}
+
+/// The team the planner of project `pid` aims for: its target, never above its maximum.
+pub fn team_target(app: &App, pid: &str) -> u32 {
+    let settings = app.project_settings.get(pid);
+    settings
+        .team_target
+        .unwrap_or(DEFAULT_TEAM_TARGET)
+        .min(settings.team_max.unwrap_or(DEFAULT_TEAM_MAX))
 }
 
 /// How long a finished task of project `pid` waits for a reviewer, in milliseconds.
@@ -307,6 +486,11 @@ pub fn review_timeout_ms(app: &App, pid: Option<&str>) -> u64 {
     u64::from(minutes) * 60_000
 }
 
+/// The hooks agent `cid` runs: its project's effective hooks (none when it works on no project).
+pub fn hooks_of_agent(app: &App, cid: u64) -> Vec<Hook> {
+    of_agent(app, cid).map_or_else(Vec::new, |settings| effective_hooks(&settings))
+}
+
 /// The permission mode of agent `cid` when it has none of its own: its project's, else autonomous.
 pub fn permission_mode(app: &App, cid: u64) -> Mode {
     of_agent(app, cid)
@@ -314,39 +498,9 @@ pub fn permission_mode(app: &App, cid: u64) -> Mode {
         .unwrap_or_default()
 }
 
-// ---- The budget ---------------------------------------------------------------------------------------------------
-
-/// Sets `credits` of the plaza's budget aside for project `pid` (the owner's operation).
-pub fn fund(app: &App, pid: &str, credits: u64) -> Result<(), String> {
-    let amount = i64::try_from(credits).map_err(|_| "too many credits".to_string())?;
-    app.plaza
-        .treasury
-        .move_budget(PLAZA_OWNER, pid, amount)
-        .map(|_| ())
-        .map_err(|e| format!("the plaza's budget could not set {credits} credits aside: {e}"))
-}
-
-/// Gives the rest of project `pid`'s budget back to the plaza (it is over); nothing when it has none.
-pub fn return_rest(app: &App, pid: &str) {
-    if let Err(e) = app.plaza.treasury.return_town_budget(pid) {
-        eprintln!("apid: project {pid}'s budget not returned to the plaza: {e}");
-    }
-}
-
-/// Project `pid`'s budget as the API shows it.
-fn budget_view(app: &App, pid: &str) -> Value {
-    let treasury = &app.plaza.treasury;
-    json!({
-        "project": pid,
-        "own": treasury.has_town_budget(pid),
-        "balance": i64::try_from(treasury.town_budget_balance(pid)).unwrap_or(i64::MAX),
-        "plaza": i64::try_from(treasury.plaza_budget_balance()).unwrap_or(i64::MAX),
-    })
-}
-
 /// After a change to project `pid`'s overrides, its agents get their new profiles at once.
-fn push_members(app: &App, pid: &str) {
-    for cid in app.members.members(pid) {
+fn push_agents(app: &App, pid: &str) {
+    for cid in crate::projects::agents_of(app, pid) {
         if let Some(agent) = app.agents.get(cid)
             && agent.status != crate::agents::Status::Offline
         {
@@ -367,13 +521,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(
             RouteDoc::new("Show the settings a project's agents get, and where each comes from")
                 .errors(&[404]),
-        )
-        // GET /v1/projects/{id}/budget is the work engine's budget (work_routes.rs); this POST moves credits until
-        // the treasury goes (Engine 0.5).
-        .post("/v1/projects/{id}/budget", budget_route)
-        .doc(
-            RouteDoc::new("Set credits aside for a project, or give some back")
-                .errors(&[400, 404, 409]),
         )
 }
 
@@ -404,7 +551,7 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Err(e) = app.project_settings.set(id, next.clone()) {
         return Response::error(500, &format!("settings not saved: {e}"));
     }
-    push_members(app, id);
+    push_agents(app, id);
     if let Some(project) = app.projects.get(id) {
         app.bus.publish("project", &project);
     }
@@ -436,67 +583,28 @@ pub fn effective(app: &App, id: &str) -> Value {
     for (role, model) in &own.role_models {
         role_models.insert(role.clone(), json!({"value": model, "source": "project"}));
     }
+    let hooks = effective_hooks(&own);
     json!({
         "project": id,
         "settings": {
+            "hooks": pick((!hooks.is_empty()).then(|| json!(hooks)), json!([])),
             "default_model": pick(own.default_model.clone().map(Value::from), json!(plaza.default_model)),
             "effort": pick(own.effort.clone().map(Value::from), json!(plaza.effort)),
             "max_tokens": pick(own.max_tokens.map(Value::from), json!(plaza.max_tokens)),
             "max_turns": pick(own.max_turns.map(Value::from), json!(plaza.max_turns)),
             "compress_at": pick(own.compress_at.map(Value::from), json!(crate::harness_control::DEFAULT_COMPRESS_AT)),
             "keep_recent": pick(own.keep_recent.map(Value::from), json!(crate::harness_control::DEFAULT_KEEP_RECENT)),
-            "task_budget": pick(own.task_budget.map(Value::from), json!(apz_plaza::tasks::DEFAULT_TASK_BUDGET)),
+            "task_budget": match own.task_budget {
+                Some(budget) => json!({"value": budget, "source": "project"}),
+                None => json!({"value": null, "source": "default"}),
+            },
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
+            "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
+            "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },
         "role_models": role_models,
-        "budget": budget_view(app, id),
     })
-}
-
-#[derive(Deserialize)]
-struct BudgetBody {
-    credits: i64,
-}
-
-/// Body: `{credits}`: positive sets that much more aside from the plaza's budget, negative gives that much back.
-fn budget_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let Some(project) = app.projects.get(p.get("id")) else {
-        return Response::error(404, "no such project");
-    };
-    let body: BudgetBody = match req.json() {
-        Ok(body) => body,
-        Err(e) => return Response::error(400, &format!("bad body: {e}")),
-    };
-    // A delivered project in maintenance still funds the work the owner picks.
-    if project.archived || (project.stage == "delivered" && !project.in_maintenance()) {
-        return Response::error(
-            409,
-            &format!(
-                "project {} is over: its budget went back to the plaza",
-                project.id
-            ),
-        );
-    }
-    let moved = match body.credits {
-        0 => return Response::error(400, "credits is not 0"),
-        credits if credits > 0 => app
-            .plaza
-            .treasury
-            .move_budget(PLAZA_OWNER, &project.id, credits),
-        credits => {
-            app.plaza
-                .treasury
-                .move_budget(&project.id, PLAZA_OWNER, credits.saturating_neg())
-        }
-    };
-    match moved {
-        Ok(_) => {
-            app.bus.publish("project", &project);
-            Response::json(200, &budget_view(app, &project.id))
-        }
-        Err(e) => Response::error(409, &format!("the budget did not move: {e}")),
-    }
 }
 
 #[cfg(test)]
@@ -538,11 +646,43 @@ mod tests {
     }
 
     #[test]
+    fn a_team_is_sized_between_one_and_the_limit() {
+        let sized = |max: Option<u32>, target: Option<u32>| {
+            check_team(&ProjectSettings {
+                team_max: max,
+                team_target: target,
+                ..ProjectSettings::default()
+            })
+        };
+        assert!(sized(None, None).is_ok(), "unset, the defaults hold");
+        assert!(sized(Some(1), Some(1)).is_ok());
+        assert!(sized(Some(TEAM_LIMIT), Some(TEAM_LIMIT)).is_ok());
+        assert!(sized(Some(0), None).is_err());
+        assert!(sized(Some(TEAM_LIMIT + 1), None).is_err());
+        assert!(sized(None, Some(0)).is_err());
+        assert!(sized(None, Some(TEAM_LIMIT + 1)).is_err());
+        // The target above a lowered maximum is read as the maximum, so it is not refused here.
+        assert!(sized(Some(4), Some(10)).is_ok());
+    }
+
+    #[test]
+    fn a_team_patch_sets_and_unsets_its_sizes() {
+        let current = ProjectSettings {
+            team_max: Some(4),
+            ..ProjectSettings::default()
+        };
+        let next = merged(&current, &json!({"team_max": null, "team_target": 6})).expect("a patch");
+        assert_eq!((next.team_max, next.team_target), (None, Some(6)));
+    }
+
+    #[test]
     fn settings_come_back_from_their_table_and_an_empty_one_is_dropped() {
         let store = Store::default();
         let settings = ProjectSettings {
             task_budget: Some(3000),
             permission_mode: Some(Mode::ReadOnly),
+            team_max: Some(6),
+            team_target: Some(3),
             role_models: BTreeMap::from([("builder".into(), "anthropic/claude-sonnet-5-5".into())]),
             ..ProjectSettings::default()
         };
@@ -558,5 +698,114 @@ mod tests {
             store.rows().unwrap().tables["project_setting"].is_empty(),
             "a project with no overrides keeps no row"
         );
+    }
+
+    fn secret_hook(on: On, mode: HookMode) -> Hook {
+        Hook {
+            on,
+            paths: Vec::new(),
+            languages: Vec::new(),
+            action: Action::SecretScan,
+            mode,
+        }
+    }
+
+    #[test]
+    fn a_patch_takes_a_list_of_hooks_or_the_defaults() {
+        let current = ProjectSettings::default();
+        let next = merged(
+            &current,
+            &json!({"hooks": [{"on": "edit", "action": {"kind": "rule", "id": "conflict-markers"}, "paths": ["src/**"]}]}),
+        )
+        .expect("a list of hooks");
+        assert_eq!(next.hooks.len(), 1);
+        assert_eq!(next.hooks[0].on, On::Edit);
+        assert!(!next.hook_defaults);
+        let defaults = merged(&next, &json!({"hooks": "defaults"})).expect("the defaults");
+        assert!(defaults.hook_defaults);
+        assert_eq!(
+            defaults.hooks, next.hooks,
+            "the list stays when the defaults are named"
+        );
+        assert!(merged(&current, &json!({"hooks": "sometimes"})).is_err());
+        let unset = merged(&next, &json!({"hooks": null})).expect("unset");
+        assert!(unset.hooks.is_empty());
+    }
+
+    #[test]
+    fn a_hook_is_checked_before_it_is_kept() {
+        let rule = |id: &str| Hook {
+            action: Action::Rule { id: id.into() },
+            ..secret_hook(On::Edit, HookMode::Report)
+        };
+        assert!(check_hooks(&[rule("conflict-markers")]).is_ok());
+        assert!(check_hooks(&[rule("made-up")]).is_err(), "an unknown rule");
+        let mut klingon = secret_hook(On::Edit, HookMode::Report);
+        klingon.languages = vec!["klingon".into()];
+        assert!(check_hooks(&[klingon]).is_err(), "an unknown language");
+        let format_on_run = Hook {
+            action: Action::Format,
+            ..secret_hook(On::Run, HookMode::Report)
+        };
+        assert!(
+            check_hooks(&[format_on_run]).is_err(),
+            "a format runs on edit"
+        );
+        let mut blank = secret_hook(On::Run, HookMode::Block);
+        blank.paths = vec![String::new()];
+        assert!(check_hooks(&[blank]).is_err(), "an empty path");
+    }
+
+    #[test]
+    fn hooks_come_back_from_their_tables_and_the_defaults_come_first() {
+        let store = Store::default();
+        let settings = ProjectSettings {
+            hooks: vec![
+                Hook {
+                    on: On::Edit,
+                    paths: vec!["src/**".into()],
+                    languages: vec!["rust".into()],
+                    action: Action::Format,
+                    mode: HookMode::Report,
+                }
+                .into(),
+                Hook {
+                    on: On::Land,
+                    paths: Vec::new(),
+                    languages: Vec::new(),
+                    action: Action::Rule {
+                        id: "conflict-markers".into(),
+                    },
+                    mode: HookMode::Block,
+                }
+                .into(),
+            ],
+            hook_defaults: true,
+            ..ProjectSettings::default()
+        };
+        store.set("pr1", settings.clone()).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = Store::default();
+        loaded.load(&conn).unwrap();
+        assert_eq!(loaded.get("pr1"), settings);
+        let effective = effective_hooks(&settings);
+        assert_eq!(effective.len(), default_hooks().len() + 2);
+        assert_eq!(
+            effective[effective.len() - 1],
+            Hook::from(settings.hooks[1].clone())
+        );
+    }
+
+    #[test]
+    fn a_land_hook_refuses_on_the_lines_a_change_adds_only() {
+        let key = format!("sk-ant-{}", "a1".repeat(12));
+        let diff = format!("--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old {key}\n+fine\n+key = {key}\n");
+        let refused = land_refusals(&[secret_hook(On::Land, HookMode::Block)], &diff);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(!refused[0].contains(&key));
+        assert!(land_refusals(&[secret_hook(On::Land, HookMode::Report)], &diff).is_empty());
+        assert!(land_refusals(&[secret_hook(On::Edit, HookMode::Block)], &diff).is_empty());
     }
 }

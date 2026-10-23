@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     Space, button, checkbox, column, container, mouse_area, pick_list, row, text, text_editor,
@@ -22,8 +21,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::work_model as model;
-use super::{Id, ide};
+use super::{Id, budget, ide, task_seats};
 use crate::console::ui::{self, Tone};
+use crate::console::work_api::OwnerKind;
 use crate::console::{Ctx, client, events, rich, roles, scope};
 use crate::theme::{self};
 
@@ -66,8 +66,6 @@ pub struct TaskRecord {
     pub acceptance: Option<String>,
     #[serde(default)]
     pub role: Option<String>,
-    #[serde(default)]
-    pub budget: f64,
     #[serde(default)]
     pub agent_cid: Option<u64>,
     #[serde(default)]
@@ -184,7 +182,6 @@ struct Draft {
     details: text_editor::Content,
     acceptance: text_editor::Content,
     role: Pick,
-    budget: String,
     assignee: Pick,
     posting: bool,
 }
@@ -197,7 +194,6 @@ impl Draft {
             details: text_editor::Content::new(),
             acceptance: text_editor::Content::new(),
             role: Pick::any_role(),
-            budget: String::new(),
             assignee: Pick::scheduler(),
             posting: false,
         }
@@ -206,6 +202,9 @@ impl Draft {
 
 #[derive(Debug, Default)]
 pub struct State {
+    /// The open task's seats, and its budget (both empty while no task is open).
+    seats: task_seats::Panel,
+    budget: budget::Panel,
     pub error: Option<String>,
     selected: Option<String>,
     tasks: Vec<TaskRecord>,
@@ -260,7 +259,6 @@ pub enum Msg {
     FormDetails(text_editor::Action),
     FormAcceptance(text_editor::Action),
     FormRole(Pick),
-    FormBudget(String),
     FormAssignee(Pick),
     FormProject(scope::Pick),
     /// Moves the open task (from before projects) into a project, with the tasks linked to it.
@@ -280,6 +278,8 @@ pub enum Msg {
     Step(bool),
     /// A hub event: a task, work or transcript frame.
     Event(events::Event),
+    Seats(task_seats::Msg),
+    Budget(budget::Msg),
     /// A rich-content click (a chip, a link, an Open button) or a load of its cards and images.
     Rich(rich::Ev),
     /// "Ready only": the board shows only the tasks that can be claimed now.
@@ -290,6 +290,8 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Go(id) => Some(id.clone()),
+        Msg::Seats(m) => task_seats::go(m),
+        Msg::Budget(m) => budget::go(m),
         Msg::OpenIde(target) => Some(Id::Ide(Some(target.clone()))),
         Msg::Rich(rich::Ev::Action(action)) => action.route(),
         _ => None,
@@ -322,6 +324,8 @@ fn prefetch(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 /// load that follows reads that task and its timeline.
 pub fn opened(id: String) -> State {
     State {
+        seats: task_seats::Panel::new(&id),
+        budget: budget::Panel::new(OwnerKind::Task, &id),
         selected: Some(id),
         ..Default::default()
     }
@@ -329,11 +333,22 @@ pub fn opened(id: String) -> State {
 
 /// Loads the screen's data (called when it opens and on every poll tick).
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    fetch(ctx, state.selected.clone())
+    Task::batch([fetch(ctx, state.selected.clone()), panels(state, ctx)])
+}
+
+/// The open task's seats and budget, read with the page (none while no task is open).
+fn panels(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+    if state.selected.is_none() {
+        return Task::none();
+    }
+    Task::batch([
+        task_seats::load(&mut state.seats, ctx).map(Msg::Seats),
+        budget::load(&mut state.budget, ctx).map(Msg::Budget),
+    ])
 }
 
 /// The idle workers on `project`: a project's task goes only to its agents.
-fn idle_members<'a>(agents: &'a [AgentRecord], project: Option<&str>) -> Vec<&'a AgentRecord> {
+fn idle_agents<'a>(agents: &'a [AgentRecord], project: Option<&str>) -> Vec<&'a AgentRecord> {
     idle_workers(agents)
         .into_iter()
         .filter(|a| project.is_some() && a.project.as_deref() == project)
@@ -374,35 +389,45 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.kbd = clamp(state.kbd, visible(state).count());
             Task::none()
         }
-        Msg::Event(event) => match event.kind.as_str() {
-            "task" | "work" => reload(state, ctx),
-            "transcript" => {
-                let cid = event.data.get("cid").and_then(Value::as_u64);
-                if state.selected.is_some() {
-                    // On a task page the timeline is rebuilt from the assignee's transcript.
-                    let assignee = state
-                        .detail
-                        .as_ref()
-                        .and_then(|d| d.task.as_ref())
-                        .and_then(|t| t.agent_cid);
-                    if cid.is_some() && cid == assignee {
-                        reload(state, ctx)
+        Msg::Event(event) => {
+            // The seats and the budget follow their own frames (a task's, its sessions', its budget's and its cards').
+            let panels = Task::batch([
+                task_seats::update(&mut state.seats, task_seats::Msg::Event(event.clone()), ctx)
+                    .map(Msg::Seats),
+                budget::update(&mut state.budget, budget::Msg::Event(event.clone()), ctx)
+                    .map(Msg::Budget),
+            ]);
+            let own = match event.kind.as_str() {
+                "task" | "work" => reload(state, ctx),
+                "transcript" => {
+                    let cid = event.data.get("cid").and_then(Value::as_u64);
+                    if state.selected.is_some() {
+                        // On a task page the timeline is rebuilt from the assignee's transcript.
+                        let assignee = state
+                            .detail
+                            .as_ref()
+                            .and_then(|d| d.task.as_ref())
+                            .and_then(|t| t.agent_cid);
+                        if cid.is_some() && cid == assignee {
+                            reload(state, ctx)
+                        } else {
+                            Task::none()
+                        }
                     } else {
+                        // On the board the frame's one activity line replaces the card's.
+                        let line = serde_json::from_value::<EntryRecord>(event.data.clone())
+                            .ok()
+                            .and_then(|e| activity_of(&e));
+                        if let (Some(cid), Some(line)) = (cid, line) {
+                            state.activity.insert(cid, line);
+                        }
                         Task::none()
                     }
-                } else {
-                    // On the board the frame's one activity line replaces the card's.
-                    let line = serde_json::from_value::<EntryRecord>(event.data.clone())
-                        .ok()
-                        .and_then(|e| activity_of(&e));
-                    if let (Some(cid), Some(line)) = (cid, line) {
-                        state.activity.insert(cid, line);
-                    }
-                    Task::none()
                 }
-            }
-            _ => Task::none(),
-        },
+                _ => Task::none(),
+            };
+            Task::batch([panels, own])
+        }
         Msg::Loaded(Ok(snap)) => {
             state.error = None;
             if snap.detail.is_none() {
@@ -429,12 +454,18 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         }
         Msg::Open(id) => {
             state.selected = Some(id.clone());
+            state.seats = task_seats::Panel::new(&id);
+            state.budget = budget::Panel::new(OwnerKind::Task, &id);
             state.detail = None;
             state.note = None;
-            fetch(ctx, Some(id))
+            Task::batch([fetch(ctx, Some(id)), panels(state, ctx)])
         }
+        Msg::Seats(m) => task_seats::update(&mut state.seats, m, ctx).map(Msg::Seats),
+        Msg::Budget(m) => budget::update(&mut state.budget, m, ctx).map(Msg::Budget),
         Msg::Back => {
             state.selected = None;
+            state.seats = task_seats::Panel::default();
+            state.budget = budget::Panel::default();
             state.detail = None;
             state.note = None;
             fetch(ctx, None)
@@ -513,12 +544,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
             Task::none()
         }
-        Msg::FormBudget(v) => {
-            if let Some(d) = state.draft.as_mut() {
-                d.budget = v;
-            }
-            Task::none()
-        }
         Msg::FormAssignee(p) => {
             if let Some(d) = state.draft.as_mut() {
                 d.assignee = p;
@@ -581,26 +606,6 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     if d.posting || d.title.trim().is_empty() {
         return Task::none();
     }
-    // Empty leaves the budget to the hub's default; anything given must be a whole number of
-    // credits at or above the hub's minimum (the hub refuses the rest with its own 400).
-    let budget_text = d.budget.trim().to_string();
-    let budget = if budget_text.is_empty() {
-        None
-    } else {
-        match budget_text.parse::<i64>() {
-            Ok(credits) if credits >= MIN_TASK_BUDGET => Some(credits),
-            Ok(_) => {
-                state.error = Some(format!(
-                    "Budget must be at least {MIN_TASK_BUDGET} credits."
-                ));
-                return Task::none();
-            }
-            Err(_) => {
-                state.error = Some("Budget must be a whole number of credits.".into());
-                return Task::none();
-            }
-        }
-    };
     let title = d.title.trim().to_string();
     let details = d.details.text().trim().to_string();
     let acceptance = d.acceptance.text().trim().to_string();
@@ -610,9 +615,6 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Msg> {
         format!("{title}\n\n{details}")
     };
     let mut body = json!({ "goal": goal, "project": project });
-    if let Some(budget) = budget {
-        body["budget"] = json!(budget);
-    }
     if !acceptance.is_empty() {
         body["acceptance"] = json!(acceptance);
     }
@@ -849,10 +851,6 @@ fn clock(ms: i64) -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
-fn fmt_num(v: f64) -> String {
-    format!("{v}")
-}
-
 fn tool_of(e: &EntryRecord) -> String {
     str_field(&e.data, "tool")
         .or_else(|| str_field(&e.data, "name"))
@@ -864,9 +862,9 @@ fn str_field<'v>(v: &'v Value, key: &str) -> Option<&'v str> {
     v.get(key).and_then(Value::as_str)
 }
 
-/// The shell command of a bash tool request, or None for any other tool.
+/// The shell command of a run tool request, or None for any other tool.
 fn command_of(e: &EntryRecord) -> Option<String> {
-    if tool_of(e).to_lowercase() != "bash" {
+    if tool_of(e).to_lowercase() != "run" {
         return None;
     }
     e.data
@@ -1340,11 +1338,7 @@ fn task_card<'a>(state: &'a State, t: &'a TaskRecord, picked: bool) -> Element<'
             .into()
         }
         _ => {
-            let meta = meta_text(format!(
-                "budget {} · created {}",
-                fmt_num(t.budget),
-                ago(t.created_at)
-            ));
+            let meta = meta_text(format!("created {}", ago(t.created_at)));
             match waits_on(t) {
                 Some(waits) => column![waits, meta].spacing(6).width(Length::Fill).into(),
                 None => meta,
@@ -1452,7 +1446,7 @@ fn assignee_link<'a>(state: &'a State, cid: Option<u64>) -> Element<'a, Msg> {
 }
 
 /// The new-task dialog, as the web's `openCreate` sheet: the project and title side by side, then details, acceptance,
-/// role and budget, and the assignee (one of the project's idle agents). Its head closes; the foot creates the task.
+/// role, and the assignee (one of the project's idle agents). Its head closes; the foot creates the task.
 fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
     let Some(project) = d.project.as_ref() else {
         return ui::modal(
@@ -1491,14 +1485,9 @@ fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
     )
     .style(crate::theme::pick_list)
     .width(Length::Fill);
-    let budget_hint = format!("{DEFAULT_TASK_BUDGET} (hub default)");
-    let budget = text_input(&budget_hint, &d.budget)
-        .on_input(Msg::FormBudget)
-        .style(theme::input)
-        .padding(8.0);
     let mut assignee_options = vec![Pick::scheduler()];
     assignee_options.extend(
-        idle_members(&state.agents, Some(project.id.as_str()))
+        idle_agents(&state.agents, Some(project.id.as_str()))
             .into_iter()
             .map(|a| Pick {
                 key: a.cid.to_string(),
@@ -1520,11 +1509,7 @@ fn draft_modal<'a>(state: &'a State, d: &'a Draft) -> Element<'a, Msg> {
         .spacing(14),
         section("Details", details.into()),
         section("Acceptance", acceptance.into()),
-        row![
-            section("Role", role.into()),
-            section("Budget", budget.into())
-        ]
-        .spacing(14),
+        section("Role", role.into()),
         section("Assign to", assignee.into()),
     ]
     .spacing(14);
@@ -1552,7 +1537,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
     };
 
     let open = t.state == "open";
-    let assign_options: Vec<Pick> = idle_members(&state.agents, t.project.as_deref())
+    let assign_options: Vec<Pick> = idle_agents(&state.agents, t.project.as_deref())
         .into_iter()
         .map(|a| Pick {
             key: a.cid.to_string(),
@@ -1571,10 +1556,6 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
         ),
         kv("Role", ui::faint(role).into()),
         kv("Assignee", assignee_link(state, t.agent_cid)),
-        kv(
-            "Budget",
-            ui::sans(fmt_num(t.budget), 12.0, crate::theme::palette().ink).into()
-        ),
         kv("Created", ui::faint(ago(t.created_at)).into()),
         kv("Updated", ui::faint(ago(t.updated_at)).into()),
     ]
@@ -1648,7 +1629,7 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
             Some(Msg::OpenIde(review)),
         )
     });
-    // The open task's actions: assign to an idle member, and withdraw, in one row.
+    // The open task's actions: assign to an idle agent, and withdraw, in one row.
     let controls: Option<Element<'a, Msg>> = open.then(|| {
         row![
             pick_list(assign_options, None::<Pick>, Msg::Assign)
@@ -1703,6 +1684,8 @@ fn detail_page<'a>(state: &'a State) -> Element<'a, Msg> {
             rich::view(o, &rctx, &state.cards, &on_rich),
         ));
     }
+    main_parts.push(task_seats::view(&state.seats).map(Msg::Seats));
+    main_parts.push(budget::view(&state.budget).map(Msg::Budget));
 
     // The head: the id over the title, the review at the right (the web's `.view-head`).
     let title_line = column![

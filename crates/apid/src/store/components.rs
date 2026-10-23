@@ -54,12 +54,6 @@ pub fn all() -> Vec<Component> {
         },
         // batch C2
         Component {
-            name: "conversations",
-            def: crate::conversations::def,
-            rows: |app| app.conversations.rows(),
-            load: |app, conn| app.conversations.load(conn),
-        },
-        Component {
             name: "toolbox",
             def: crate::toolbox::def,
             rows: |app| app.toolbox.rows(),
@@ -134,6 +128,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.laws.load(conn),
         },
         Component {
+            name: "standing_rules",
+            def: crate::standing_rules::def,
+            rows: |app| app.standing_rules.rows(),
+            load: |app, conn| app.standing_rules.load(conn),
+        },
+        Component {
             name: "work",
             def: crate::scheduler::def,
             rows: |app| app.work.rows(),
@@ -156,6 +156,24 @@ pub fn all() -> Vec<Component> {
             def: crate::agent_proposals::def,
             rows: |app| app.agent_proposals.rows(),
             load: |app, conn| app.agent_proposals.load(conn),
+        },
+        Component {
+            name: "memory_entries",
+            def: crate::project_memory::entry_def,
+            rows: |app| app.project_memory.entry_rows(),
+            load: |app, conn| app.project_memory.load_entries(conn),
+        },
+        Component {
+            name: "memory_proposals",
+            def: crate::project_memory::proposal_def,
+            rows: |app| app.project_memory.proposal_rows(),
+            load: |app, conn| app.project_memory.load_proposals(conn),
+        },
+        Component {
+            name: "memory_curations",
+            def: crate::curator::def,
+            rows: |app| app.curator.rows(),
+            load: |app, conn| app.curator.load(conn),
         },
         Component {
             name: "nodes",
@@ -200,6 +218,12 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.models.rows(),
             load: |app, conn| app.models.load(conn),
         },
+        Component {
+            name: "mcp",
+            def: crate::mcp::config::def,
+            rows: |app| app.mcp.store.rows(),
+            load: |app, conn| app.mcp.store.load(conn),
+        },
         // The work engine's records (phase 0).
         Component {
             name: "sessions",
@@ -212,6 +236,18 @@ pub fn all() -> Vec<Component> {
             def: crate::seats::def,
             rows: |app| app.seats.rows(),
             load: |app, conn| app.seats.load(conn),
+        },
+        Component {
+            name: "recipe_runs",
+            def: crate::recipes::runs::def,
+            rows: |app| app.recipe_runs.rows(),
+            load: |app, conn| app.recipe_runs.load(conn),
+        },
+        Component {
+            name: "recipe_versions",
+            def: crate::recipes::runs::versions_def,
+            rows: |app| app.recipe_runs.version_rows(),
+            load: |app, conn| app.recipe_runs.load_versions(conn),
         },
         Component {
             name: "budgets",
@@ -238,6 +274,18 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.threads.load(conn),
         },
         Component {
+            name: "journal",
+            def: crate::journal::def,
+            rows: |app| app.journal.rows(),
+            load: |app, conn| app.journal.load(conn),
+        },
+        Component {
+            name: "decisions",
+            def: crate::decisions::def,
+            rows: |app| app.providers.decisions.rows(),
+            load: |app, conn| app.providers.decisions.load(conn),
+        },
+        Component {
             name: "provider_listings",
             def: crate::provider_listings::def,
             rows: |app| {
@@ -246,6 +294,61 @@ pub fn all() -> Vec<Component> {
                     .rows(&app.providers.gateway().providers())
             },
             load: |app, conn| app.providers.listings.load(conn),
+        },
+        // The engine 0.11 records (state files of the hub folder, now in plaza.db).
+        Component {
+            name: "engines",
+            def: crate::engine_instances::def,
+            rows: |app| app.engines.rows(),
+            load: |app, conn| app.engines.load(conn),
+        },
+        Component {
+            name: "review_graph",
+            def: crate::review_graph::def,
+            rows: |app| app.reviews.rows(),
+            load: |app, conn| app.reviews.load(conn),
+        },
+        Component {
+            name: "usage_providers",
+            def: crate::usage_providers::def,
+            rows: |app| app.usage_providers.rows(),
+            load: |app, conn| app.usage_providers.load(conn),
+        },
+        Component {
+            name: "hub_config",
+            def: crate::hub_auth::def,
+            rows: |app| app.hub_auth.rows(),
+            load: |app, conn| app.hub_auth.load(conn),
+        },
+        Component {
+            name: "platforms",
+            def: crate::platforms::def,
+            rows: |app| app.platforms.rows(),
+            load: |app, conn| app.platforms.load(conn),
+        },
+        Component {
+            name: "hf_imports",
+            def: crate::foundry::hf_import::def,
+            rows: |app| app.hf.rows(),
+            load: |app, conn| app.hf.load(conn),
+        },
+        Component {
+            name: "egress_rules",
+            def: crate::egress_inject::def,
+            rows: |app| app.egress_rules.rows(),
+            load: |app, conn| app.egress_rules.load(conn),
+        },
+        Component {
+            name: "e2b_sandboxes",
+            def: crate::e2b::def,
+            rows: |app| crate::e2b::sandboxes(app).rows(),
+            load: |app, conn| crate::e2b::sandboxes(app).load(conn),
+        },
+        Component {
+            name: "e2b_templates",
+            def: crate::e2b_tpl::def,
+            rows: |app| app.e2b_templates.rows(),
+            load: |app, conn| app.e2b_templates.load(conn),
         },
     ]
 }
@@ -260,5 +363,36 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("usage calls", crate::usage::call_def),
         ("usage hours", crate::usage::hour_def),
         ("usage works", crate::usage::work_def),
+        ("ide audit", crate::ide::audit_def),
+        ("station audit", crate::stations::audit::def),
+        ("station recordings", crate::stations::recordings::def),
+        (
+            "station recording events",
+            crate::stations::recordings::event_def,
+        ),
+        (
+            "station recording frames",
+            crate::stations::recordings::frame_def,
+        ),
+        ("station sync files", crate::stations::sync::def),
+        ("eval runs", crate::evals::def),
+        ("unfurl cache", crate::unfurl::def),
+        ("prompt", crate::prompts::store::def),
+        ("prompt version", crate::prompts::store::version_def),
+        ("prompt event", crate::prompts::store::event_def),
+        ("hub mcp token", crate::hub_mcp::store_db::token_def),
+        ("hub mcp token digest", crate::hub_mcp::store_db::digest_def),
+        ("hub mcp call", crate::hub_mcp::store_db::call_def),
+        ("hub mcp settings", crate::hub_mcp::store_db::settings_def),
+        ("share", crate::shares::def),
+        ("share event", crate::shares::event_def),
+        ("skill", crate::skills::store_db::def),
+        ("skill version", crate::skills::store_db::version_def),
+        ("skill file", crate::skills::store_db::file_def),
+        ("skill finding", crate::skills::store_db::finding_def),
+        ("skill event", crate::skills::store_db::event_def),
+        ("artifact", crate::artifacts::def),
+        ("artifact version", crate::artifacts::version_def),
+        ("artifact blob", crate::artifacts::blob_def),
     ]
 }

@@ -142,7 +142,7 @@ impl MachineCtx {
                         let ExprKind::Set(items) = &e.kind else {
                             return err(
                                 e.span,
-                                "`values` takes a set of names, like {mayor, owner}",
+                                "`values` takes a set of names, like {orchestrator, owner}",
                             );
                         };
                         let mut set = BTreeSet::new();

@@ -228,7 +228,7 @@ size.
 - `<state>/maintenance.json`: each project's settings, map, signals, proposals and sweeps. The ingest address is kept
   only as its hash.
 - `<state>/environments.json`: each project's environments and their deploys.
-- With `APZ_DATABASE_URL` set, both are also kept in Postgres, as the plaza's other components are.
+- Both are also kept in SQLite, as the plaza's other components are.
 - Secrets and deploy hooks: the vault, bound to each environment.
 - Files you drop: the project's repository in Weft. Attachments stay in the hub's file store until a message carries
   them.

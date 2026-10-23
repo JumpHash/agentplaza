@@ -4,13 +4,19 @@ version = "0.1.0"
 description = "Foundry trainer runtime: single, tight (torchrun) and loose (DiLoCo) training with ONNX export"
 requires-python = ">=3.11"
 dependencies = [
-  "torch>=2.5",
   "numpy>=1.26",
   "onnx>=1.16",
   "onnxruntime>=1.18",
 ]
 
+# torch comes with exactly one of these extras, each a different build: `uv sync --extra cuda` on an NVIDIA
+# node, `--extra rocm` on AMD, `--extra xpu` on Intel, `--extra cpu` otherwise. On macOS every extra takes the PyPI
+# wheel, which has MPS, so the Mac's environment is any one of them.
 [project.optional-dependencies]
+cpu = ["torch>=2.5"]
+cuda = ["torch>=2.5"]
+rocm = ["torch>=2.5"]
+xpu = ["torch>=2.5"]
 search = ["optuna>=3.6"]
 
 [dependency-groups]
@@ -18,14 +24,43 @@ dev = ["pytest>=8"]
 
 [tool.uv]
 package = false
+# One environment holds one torch build, so the extras that pick different builds exclude each other.
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cuda" },
+    { extra = "rocm" },
+    { extra = "xpu" },
+  ],
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm6.2"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true
+
 [tool.uv.sources]
-torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform != 'darwin'" },
+  { index = "pytorch-cu124", extra = "cuda", marker = "sys_platform != 'darwin'" },
+  { index = "pytorch-rocm", extra = "rocm", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-xpu", extra = "xpu", marker = "sys_platform != 'darwin'" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

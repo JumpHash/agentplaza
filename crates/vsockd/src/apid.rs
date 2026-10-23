@@ -127,7 +127,20 @@ impl Apid {
         vm: u32,
         caps: &[String],
     ) -> Result<HelloReply, String> {
-        let body = hello_body(role, vm, caps);
+        self.hello_as(cid, role, vm, caps, None)
+    }
+
+    /// [`Apid::hello`] for a session of `kind` (a base build's VM is `base`, see `KIND_BASE`): apid registers no agent
+    /// for it and answers with no profile.
+    pub fn hello_as(
+        &self,
+        cid: u32,
+        role: &str,
+        vm: u32,
+        caps: &[String],
+        kind: Option<&str>,
+    ) -> Result<HelloReply, String> {
+        let body = hello_body(role, vm, caps, kind);
         let reply = self.post(
             &format!("/internal/v1/agents/{cid}/hello"),
             &body,
@@ -460,12 +473,15 @@ pub struct HelloReply {
 
 /// The body of an agent's hello to apid. `caps` are added only when the harness sent some, so a
 /// harness from before v4 produces the body it always did.
-fn hello_body(role: &str, vm: u32, caps: &[String]) -> String {
-    if caps.is_empty() {
-        json!({ "role": role, "vm": vm }).to_string()
-    } else {
-        json!({ "role": role, "vm": vm, "caps": caps }).to_string()
+fn hello_body(role: &str, vm: u32, caps: &[String], kind: Option<&str>) -> String {
+    let mut body = json!({ "role": role, "vm": vm });
+    if !caps.is_empty() {
+        body["caps"] = json!(caps);
     }
+    if let Some(kind) = kind {
+        body["kind"] = json!(kind);
+    }
+    body.to_string()
 }
 
 /// The reply that unblocks a guest whose forward failed: a model call fails
@@ -516,11 +532,11 @@ mod tests {
         // Compared as JSON: the key order depends on serde_json's features in the build.
         let parsed = |body: String| serde_json::from_str::<serde_json::Value>(&body).unwrap();
         assert_eq!(
-            parsed(hello_body("builder", 0, &[])),
+            parsed(hello_body("builder", 0, &[], None)),
             serde_json::json!({"role": "builder", "vm": 0})
         );
         assert_eq!(
-            parsed(hello_body("builder", 0, &["acp".to_string()])),
+            parsed(hello_body("builder", 0, &["acp".to_string()], None)),
             serde_json::json!({"role": "builder", "vm": 0, "caps": ["acp"]})
         );
     }

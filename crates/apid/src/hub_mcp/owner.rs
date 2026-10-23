@@ -3,13 +3,13 @@
 //! only the owner reaches these handlers. A token's value is in the answer to its creation, and nowhere else.
 
 use apz_http::{Request, Response, RouteDoc, Router};
+use apz_store::Db;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::audit::CallRecord;
 use super::auth::{NewToken, Scope, TokenRecord};
-use super::{AuthMode, Bind, HubMcp, Settings, tools};
-use crate::db::Db;
+use super::{AuthMode, Bind, HubMcp, Settings, store_db, tools};
 use crate::state::App;
 
 const DAY_MS: u64 = 86_400_000;
@@ -26,7 +26,7 @@ pub struct Ctx<'a> {
 fn ctx(app: &App) -> Ctx<'_> {
     Ctx {
         hub: &app.hub_mcp,
-        db: &app.db,
+        db: app.store.db(crate::store::PLAZA),
         public_url: &app.config.public_url,
     }
 }
@@ -95,7 +95,6 @@ pub fn status(ctx: &Ctx) -> Response {
             "effective_origins": ctx.hub.effective_origins(),
             "url": format!("{}/mcp", ctx.public_url.trim_end_matches('/')),
             "tokens": live,
-            "stored": ctx.db.enabled(),
         }),
     )
 }
@@ -173,9 +172,7 @@ pub fn apply_settings(ctx: &Ctx, body: SettingsBody) -> Response {
         auth_mode,
         open_scope,
     };
-    if ctx.db.enabled()
-        && let Err(err) = ctx.db.hub_mcp_settings_put(&next)
-    {
+    if let Err(err) = store_db::save_settings(ctx.db, &next) {
         return Response::error(500, &format!("the settings are not saved: {err}"));
     }
     ctx.hub.apply(&next);
@@ -331,21 +328,23 @@ fn call_json(call: &CallRecord) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use super::*;
-    use crate::hub_mcp::audit::MemoryAudit;
-    use crate::hub_mcp::auth::{AuthError, MemoryTokens};
+    use crate::hub_mcp::auth::AuthError;
+    use crate::hub_mcp::store_db::{DbAudit, DbTokens, test_store};
 
     const T0: u64 = 1_800_000_000_000;
     const URL: &str = "https://hub.test";
 
-    fn hub() -> HubMcp {
+    /// The server over the plaza database of `store`.
+    fn hub(store: &apz_store::Store) -> HubMcp {
+        let db = Arc::clone(store.db(crate::store::PLAZA));
         HubMcp::new(
             false,
             vec![],
-            Box::new(MemoryTokens::default()),
-            Box::new(MemoryAudit::default()),
+            Box::new(DbTokens::new(Arc::clone(&db))),
+            Box::new(DbAudit::new(db)),
             Box::new(|| T0),
         )
         .listening(true, Vec::new())
@@ -400,8 +399,9 @@ mod tests {
 
     #[test]
     fn the_token_is_shown_once_and_never_listed() {
-        let (hub, db) = (hub(), Db::connect(&BTreeMap::new()));
-        let ctx = test_ctx(&hub, &db);
+        let (_dir, store) = test_store("hub-mcp-owner");
+        let hub = hub(&store);
+        let ctx = test_ctx(&hub, store.db(crate::store::PLAZA));
         let created = issue(&ctx, token_body("laptop", "operate", &[], Some(30)), T0);
         assert_eq!(created.status, 201);
         let token = body(&created)["token"]
@@ -440,8 +440,9 @@ mod tests {
 
     #[test]
     fn bad_input_is_refused_and_mints_nothing() {
-        let (hub, db) = (hub(), Db::connect(&BTreeMap::new()));
-        let ctx = test_ctx(&hub, &db);
+        let (_dir, store) = test_store("hub-mcp-owner");
+        let hub = hub(&store);
+        let ctx = test_ctx(&hub, store.db(crate::store::PLAZA));
         assert_eq!(
             issue(&ctx, token_body("x", "root", &[], None), T0).status,
             400
@@ -468,8 +469,9 @@ mod tests {
 
     #[test]
     fn settings_switch_the_server_and_bad_settings_change_nothing() {
-        let (hub, db) = (hub(), Db::connect(&BTreeMap::new()));
-        let ctx = test_ctx(&hub, &db);
+        let (_dir, store) = test_store("hub-mcp-owner");
+        let hub = hub(&store);
+        let ctx = test_ctx(&hub, store.db(crate::store::PLAZA));
         assert!(!hub.enabled());
         let on = SettingsBody {
             enabled: true,
@@ -515,8 +517,9 @@ mod tests {
 
     #[test]
     fn the_call_log_filters_by_token_and_tool() {
-        let (hub, db) = (hub(), Db::connect(&BTreeMap::new()));
-        let ctx = test_ctx(&hub, &db);
+        let (_dir, store) = test_store("hub-mcp-owner");
+        let hub = hub(&store);
+        let ctx = test_ctx(&hub, store.db(crate::store::PLAZA));
         let (_, record) = hub
             .tokens
             .create(

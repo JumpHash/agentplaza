@@ -21,10 +21,12 @@
 //! models) lives in `apid`.
 
 mod collect;
+pub mod cpu_baseline;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
 pub mod mac_sandbox;
+mod mcp_vm;
 pub mod metrics;
 pub mod migrate;
 pub mod registry;
@@ -166,6 +168,8 @@ pub struct Node {
     workstations: workstation::Store,
     /// The exports and imports of sleeping VMs in flight (migrate.rs).
     migrations: migrate::Migrations,
+    /// The MCP servers this node runs in microVMs (mcp_vm.rs).
+    mcp: mcp_vm::McpVms,
 }
 
 /// `GET /v1/machine`.
@@ -198,6 +202,14 @@ pub struct MachineView {
     pub memory_mib: u64,
     /// The size of the state directory's filesystem, in GiB; null when unknown.
     pub storage_gib: Option<u64>,
+    /// The free space on that filesystem now, in GiB; null when unknown.
+    pub storage_free_gib: Option<u64>,
+    /// Whether the state directory's filesystem clones files (reflinks, `vmm::clonefile`).
+    pub clones: bool,
+    /// The CPU baseline a pool is keyed by (`cpu_baseline`); null where the platform has none to read.
+    pub cpu_baseline: Option<String>,
+    /// The warm templates this node holds, by key (the bases of plan 16.1 that a node keeps).
+    pub bases: Vec<String>,
     pub vsock_mode: &'static str,
     /// The launch backends this node can run a workstation VM under: `plaza`, and `qemu` when QEMU and its firmware are here.
     pub workstation_backends: Vec<&'static str>,
@@ -246,6 +258,7 @@ impl Node {
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
             migrations: migrate::Migrations::new(),
+            mcp: mcp_vm::McpVms::kvm(),
         }
     }
 
@@ -275,6 +288,14 @@ impl Node {
             cpus: host_cpus(),
             memory_mib: self.probed.memory_mib,
             storage_gib: self.probed.storage_gib,
+            storage_free_gib: storage_free_gib(&apz_os::dirs::state()),
+            clones: self.probed.clones,
+            cpu_baseline: self.probed.cpu_baseline.clone(),
+            bases: self
+                .registry
+                .templates()
+                .map(|templates| templates.list().into_iter().map(|view| view.key).collect())
+                .unwrap_or_default(),
             vsock_mode: "uds-muxer",
             workstation_backends: self.workstations.backends(),
             started_at_ms: self.started_at_ms,
@@ -522,6 +543,10 @@ struct Probed {
     cpu: Cpu,
     memory_mib: u64,
     storage_gib: Option<u64>,
+    /// Whether the state directory's filesystem clones files.
+    clones: bool,
+    /// The CPU baseline (`cpu_baseline`), read once at start.
+    cpu_baseline: Option<String>,
     facts: MachineFacts,
 }
 
@@ -565,6 +590,8 @@ fn probe_host(state_dir: &Path) -> Probed {
             cpu: probe_cpu(None),
             memory_mib: host_memory_mib(),
             storage_gib: storage_gib(state_dir),
+            clones: vmm::clonefile::reflink_supported(state_dir),
+            cpu_baseline: cpu_baseline::host(),
             facts,
         };
     }
@@ -597,6 +624,8 @@ fn probe_host(state_dir: &Path) -> Probed {
         cpu: probe_cpu(tree.as_deref()),
         memory_mib,
         storage_gib: storage_gib(state_dir),
+        clones: vmm::clonefile::reflink_supported(state_dir),
+        cpu_baseline: cpu_baseline::host(),
         facts: probe_machine_facts(None),
     }
 }
@@ -962,20 +991,31 @@ fn parse_reg_string(output: &str, name: &str) -> Option<String> {
 /// The total size in GiB of the filesystem holding `dir` (`/` when `dir` does not exist), from
 /// `df -Pk`. None on Windows or when `df` fails.
 fn storage_gib(dir: &Path) -> Option<u64> {
+    df_gib(dir, 1)
+}
+
+/// The free space in GiB of the filesystem holding `dir` now (see [`storage_gib`]).
+fn storage_free_gib(dir: &Path) -> Option<u64> {
+    df_gib(dir, 3)
+}
+
+/// One column of `df -Pk` for the filesystem holding `dir`, in GiB.
+fn df_gib(dir: &Path, column: usize) -> Option<u64> {
     if cfg!(target_os = "windows") {
         return None;
     }
     let target = if dir.exists() { dir } else { Path::new("/") };
-    parse_df_gib(&command_stdout("df", &["-Pk", target.to_str()?])?)
+    parse_df_gib(&command_stdout("df", &["-Pk", target.to_str()?])?, column)
 }
 
-/// The total of a `df -Pk` table: the second column (1024-byte blocks) of its first data line.
-fn parse_df_gib(output: &str) -> Option<u64> {
+/// The GiB in `column` of a `df -Pk` table's first data line (1024-byte blocks: column 1 is the total,
+/// column 3 the available space).
+fn parse_df_gib(output: &str, column: usize) -> Option<u64> {
     let kib: u64 = output
         .lines()
         .nth(1)?
         .split_whitespace()
-        .nth(1)?
+        .nth(column)?
         .parse()
         .ok()?;
     Some(kib / (1024 * 1024))
@@ -1081,10 +1121,22 @@ pub struct Accelerator {
 
 /// The trainer runtime this node can run jobs in (see `train`). `runtime` is null when none
 /// applies; `ok` is false when the runtime is missing something, and `detail` says what.
+/// `trainer_env` is the torch build the trainer's environment holds (`ok` does not depend on it).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Trainer {
     pub runtime: Option<&'static str>,
     pub ok: bool,
+    pub detail: String,
+    pub trainer_env: TrainerEnv,
+}
+
+/// The torch build in the trainer's environment, and whether it serves this machine's accelerators. `torch` is
+/// `cuda`, `rocm`, `xpu`, `cpu` or `default` (the PyPI wheel: macOS's, with MPS), null when there is no torch.
+/// `detail` says what matches, or the `uv sync` that installs the right build.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TrainerEnv {
+    pub torch: Option<&'static str>,
+    pub matches: bool,
     pub detail: String,
 }
 
@@ -1657,8 +1709,9 @@ mod tests {
     #[test]
     fn df_table_gives_the_total_in_gib() {
         let out = "Filesystem     1024-blocks       Used Available Capacity Mounted on\n/dev/sda2      1953514584 1000000000 900000000      53% /\n";
-        assert_eq!(parse_df_gib(out), Some(1863));
-        assert_eq!(parse_df_gib("Filesystem\n"), None);
+        assert_eq!(parse_df_gib(out, 1), Some(1863), "the total");
+        assert_eq!(parse_df_gib(out, 3), Some(858), "the available space");
+        assert_eq!(parse_df_gib("Filesystem\n", 1), None);
     }
 }
 
@@ -1959,6 +2012,23 @@ fn router() -> Router<Node> {
         )
         .post("/v1/runs/{id}/vms/{index}/fork", |node, request, params| {
             fork_vm(node, params.get("id"), params.get("index"), &request.body)
+        })
+        // MCP servers in microVMs (mcp_vm.rs): whether this node can run one, a run per server, and a
+        // server's kept workspace.
+        .get("/v1/mcp-vm", |node, _, _| {
+            mcp_vm::availability_answer(node.registry(), &node.mcp)
+        })
+        .post("/v1/mcp-runs", |node, request, _| {
+            mcp_vm::create_run(node.registry(), &node.mcp, &request.body)
+        })
+        .get("/v1/mcp-runs/{id}", |node, _, params| {
+            mcp_vm::get_run(&node.mcp, params.get("id"))
+        })
+        .delete("/v1/mcp-runs/{id}", |node, _, params| {
+            mcp_vm::delete_run(&node.mcp, params.get("id"))
+        })
+        .delete("/v1/mcp-storage/{server}", |node, _, params| {
+            mcp_vm::delete_storage(node.registry(), &node.mcp, params.get("server"))
         })
         // Trainer jobs: a native run per job, under the OS sandbox; see `train`.
         .get("/v1/train", |_, _, _| train::list())

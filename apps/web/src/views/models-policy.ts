@@ -8,7 +8,7 @@ import { attempt, badge, button, dot, empty, field, input, select, textarea, toa
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import { modelPicker } from '../ui/model-picker';
-import { tierChoices } from './agent-detail';
+import { tierChoices } from '../ui/tier-choices';
 import { CONTRIBUTOR_NOTE } from './models-providers';
 
 type Tier = 'orchestrator' | 'worker';
@@ -362,7 +362,7 @@ function build(root: HTMLElement, actions: HTMLElement, settings: Settings, mode
             h(
               'table.mdl-table',
               null,
-              h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Input (credits / 1M)'), h('th', null, 'Output (credits / 1M)'))),
+              h('thead', null, h('tr', null, h('th', null, 'Model'), h('th', null, 'Input (USD / 1M)'), h('th', null, 'Output (USD / 1M)'))),
               h('tbody', null, priceRows),
             ),
           )

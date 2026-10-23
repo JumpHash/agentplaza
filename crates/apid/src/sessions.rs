@@ -1,7 +1,7 @@
 //! Sessions (PLAN 4.3, 5.1): the work engine's unit of work. A session is one fresh context working one recipe step
 //! of one task (a `step` session), a project's planner or the main orchestrator (`long`, compacting as it goes), or a
 //! helper a session started (`helper`). It runs in a fork: a VM of its own, started for it (from today's templates
-//! until phase 3's bases), whose CID is the session's while it lives. A session has no name, no wallet and no memory
+//! until phase 3's bases), whose CID is the session's while it lives. A session has no name and no memory
 //! of its own: what it learns goes into its task's journal and, through the curator, into project memory.
 //!
 //! The records live in memory, indexed by id and by CID; the hub's saver keeps them in `plaza.db` (table `session`).
@@ -389,6 +389,17 @@ impl Sessions {
         Some(id)
     }
 
+    /// Adds `usage` to the session `id` (a helper's, which runs in its parent's VM). Returns whether it exists.
+    pub fn add_usage_to(&self, id: &str, usage: &Usage) -> bool {
+        match self.lock().by_id.get_mut(id) {
+            Some(session) => {
+                session.usage.add(usage);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The sessions' rows, for the hub's store.
     pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
         let inner = self.lock();
@@ -477,6 +488,34 @@ mod tests {
         assert!(
             sessions.by_cid(300).is_none(),
             "an ended session leaves the CID index"
+        );
+    }
+
+    #[test]
+    fn a_helpers_usage_lands_on_its_own_session_by_id() {
+        let sessions = Sessions::default();
+        sessions.create(step("t1"), 1);
+        let helper = sessions.create(
+            NewSession {
+                kind: Kind::Helper,
+                parent: Some("s1".into()),
+                ..step("t1")
+            },
+            2,
+        );
+        let usage = Usage {
+            tokens_in: 7,
+            model_calls: 1,
+            ..Usage::default()
+        };
+        assert!(sessions.add_usage_to(&helper.id, &usage));
+        assert!(!sessions.add_usage_to("s9", &usage), "no such session");
+        let got = sessions.get(&helper.id).unwrap();
+        assert_eq!((got.usage.tokens_in, got.usage.model_calls), (7, 1));
+        assert_eq!(
+            sessions.get("s1").unwrap().usage,
+            Usage::default(),
+            "the parent's usage is its own"
         );
     }
 

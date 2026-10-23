@@ -23,7 +23,7 @@ pub struct AgentRow {
     pub task: Option<String>,
     pub last_seen_ms: u64,
     pub tokens: u64,
-    /// The project it works on (None: on the bench, or the orchestrator).
+    /// The project its live session is on (None: no live session, or the orchestrator).
     pub project: Option<String>,
     /// The orchestrator: it works on every project.
     pub orchestrator: bool,
@@ -80,27 +80,20 @@ pub struct ProjectRow {
     pub stage: String,
     pub repo: Option<String>,
     pub tasks: Vec<String>,
-    pub members: BTreeSet<u64>,
+    /// Its lead agent (the orchestrator of a project it opened): listed under it while it works on no project.
+    pub agents: BTreeSet<u64>,
 }
 
-/// Reads one project; the agents are its lead (the orchestrator of a project it opened) and the `by_cid` of its
-/// documents, critiques and history.
+/// Reads one project; its lead (the orchestrator of a project it opened) is its agent on no project.
 pub fn parse_project(v: &Value) -> Option<ProjectRow> {
     let id = v.get("id")?.as_str()?.to_string();
-    let mut members = BTreeSet::new();
+    let mut agents = BTreeSet::new();
     if let Some(lead) = v
         .get("lead_cid")
         .and_then(Value::as_u64)
         .filter(|c| *c != 0)
     {
-        members.insert(lead);
-    }
-    for key in ["docs", "critiques", "history"] {
-        for item in v.get(key).and_then(Value::as_array).into_iter().flatten() {
-            if let Some(cid) = item.get("by_cid").and_then(Value::as_u64) {
-                members.insert(cid);
-            }
-        }
+        agents.insert(lead);
     }
     let tasks = v
         .get("tasks")
@@ -119,12 +112,12 @@ pub fn parse_project(v: &Value) -> Option<ProjectRow> {
             .map(str::to_string),
         id,
         tasks,
-        members,
+        agents,
     })
 }
 
-/// The sidebar in project mode (the IDE opened under a project): that project's group alone, with its agents (its
-/// members, and the orchestrator, which works on every project) and its repo. Empty until the project is listed.
+/// The sidebar in project mode (the IDE opened under a project): that project's group alone, with its agents (the ones
+/// working on it, and the orchestrator, which works on every project) and its repo. Empty until the project is listed.
 pub fn project_group(
     agents: &[AgentRow],
     projects: &[ProjectRow],
@@ -212,9 +205,9 @@ impl Group {
 
 /// The sidebar's groups: each project that has an agent or a repo, in the order given; then the workstations (after
 /// the projects, as the web IDE has them); then the agents no project names, under "Other agents". An agent is under
-/// the project it works on, and only that one; an agent on none, under a project that names it (its documents,
-/// critiques and history). `repos` are (workspace id, repo name) pairs; a repo no project owns goes under
-/// "Repositories", last. `stations` are the workstations' workspace ids.
+/// the project it works on, and only that one; an agent on none, under the project it leads. `repos` are (workspace
+/// id, repo name) pairs; a repo no project owns goes under "Repositories", last. `stations` are the workstations'
+/// workspace ids.
 pub fn groups(
     agents: &[AgentRow],
     projects: &[ProjectRow],
@@ -225,11 +218,11 @@ pub fn groups(
     let mut placed_repos: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
     for project in projects {
-        let members: Vec<u64> = agents
+        let listed: Vec<u64> = agents
             .iter()
             .filter(|a| match &a.project {
                 Some(p) => *p == project.id,
-                None => project.members.contains(&a.cid),
+                None => project.agents.contains(&a.cid),
             })
             .map(|a| a.cid)
             .filter(|cid| !placed.contains(cid))
@@ -241,10 +234,10 @@ pub fn groups(
                 owned.push(id.clone());
             }
         }
-        if members.is_empty() && owned.is_empty() {
+        if listed.is_empty() && owned.is_empty() {
             continue;
         }
-        placed.extend(members.iter().copied());
+        placed.extend(listed.iter().copied());
         out.push(Group {
             key: format!("project:{}", project.id),
             title: if project.title.is_empty() {
@@ -253,7 +246,7 @@ pub fn groups(
                 project.title.clone()
             },
             project: Some(project.id.clone()),
-            agents: members,
+            agents: listed,
             repos: owned,
             stations: Vec::new(),
         });
@@ -449,7 +442,7 @@ fn calls_of(entry: &Value) -> Vec<String> {
         .collect()
 }
 
-/// "3 steps · bash, edit_file": the step line's text. A run of one reads "1 step".
+/// "3 steps · run, edit": the step line's text. A run of one reads "1 step".
 /// One tool call in a run of steps, as the web's chat lists it: its name, the argument that names what it acted on,
 /// its outcome ("running", "ok", "failed" or "denied") and how long it took.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -470,22 +463,28 @@ fn clip_line(s: &str) -> String {
 fn detail_of(input: Option<&Value>) -> String {
     match input {
         Some(Value::String(s)) => clip_line(s),
-        Some(v @ Value::Object(_)) => [
-            "path",
-            "file_path",
-            "file",
-            "command",
-            "query",
-            "pattern",
-            "url",
-            "title",
-            "name",
-        ]
-        .iter()
-        .map(|key| text_of(v, key))
-        .find(|s| !s.is_empty())
-        .map(clip_line)
-        .unwrap_or_default(),
+        Some(v @ Value::Object(_)) => {
+            let direct = [
+                "path",
+                "file_path",
+                "file",
+                "command",
+                "query",
+                "pattern",
+                "url",
+                "title",
+                "name",
+            ]
+            .iter()
+            .map(|key| text_of(v, key))
+            .find(|s| !s.is_empty());
+            // The edit tools name their file in the first entry of their list.
+            let listed = ["files", "create", "edits"].iter().find_map(|key| {
+                let path = text_of(v.get(key)?.as_array()?.first()?, "path");
+                (!path.is_empty()).then_some(path)
+            });
+            direct.or(listed).map(clip_line).unwrap_or_default()
+        }
         _ => String::new(),
     }
 }
@@ -583,7 +582,7 @@ pub fn step_label(step: &StepRow) -> String {
     if n.contains("board") && (n.contains("post") || n.contains("write")) {
         return "Posted to board".into();
     }
-    if n == "bash"
+    if n == "run"
         || n == "shell"
         || n.contains("command")
         || n.contains("exec")
@@ -1178,48 +1177,52 @@ mod tests {
             a.orchestrator = orchestrator;
             a
         };
-        // Agent 1 works on p2 though it wrote p1's brief; agent 2, on no project, wrote p1's;
-        // agent 9, the orchestrator, leads p2.
+        // Agent 1 works on p2; agent 2 works on no project, though it wrote p1's brief; agent 9, the
+        // orchestrator, leads p2.
         let agents = vec![
             agent(1, Some("p2"), false),
             agent(2, None, false),
             agent(9, None, true),
         ];
-        let p1 = parse_project(
-            &json!({ "id": "p1", "title": "One", "docs": [{ "by_cid": 1 }, { "by_cid": 2 }] }),
-        )
-        .expect("p1");
+        let p1 = parse_project(&json!({ "id": "p1", "title": "One", "docs": [{ "by_cid": 2 }] }))
+            .expect("p1");
         let p2 =
             parse_project(&json!({ "id": "p2", "title": "Two", "repo": "two", "lead_cid": 9 }))
                 .expect("p2");
         let projects = vec![p1, p2];
         let repos = vec![("repo:two@main".to_string(), "two".to_string())];
         let g = groups(&agents, &projects, &repos, &[]);
-        assert_eq!(g[0].agents, vec![2], "p1: its author on no project");
+        assert_eq!(
+            g[0].agents,
+            vec![1, 9],
+            "p2: its agent, and its lead on no project"
+        );
+        assert_eq!(g[0].repos, vec!["repo:two@main".to_string()]);
+        assert_eq!(g[1].key, "other");
         assert_eq!(
             g[1].agents,
-            vec![1, 9],
-            "p2: its member (not under p1, whose brief it wrote), and its lead"
+            vec![2],
+            "an author of p1's brief is under no project"
         );
         let mode = project_group(&agents, &projects, &repos, "p2");
         assert_eq!(mode.len(), 1);
-        assert_eq!(
-            mode[0].agents,
-            vec![1, 9],
-            "its member and the orchestrator"
-        );
+        assert_eq!(mode[0].agents, vec![1, 9], "its agent and the orchestrator");
         assert_eq!(mode[0].repos, vec!["repo:two@main".to_string()]);
         assert!(project_group(&agents, &projects, &repos, "p9").is_empty());
     }
 
     #[test]
-    fn a_project_lists_its_authors_its_repo_and_its_tasks() {
+    fn a_project_lists_its_lead_its_repo_and_its_tasks() {
         let v = json!({
-            "id": "p1", "title": "Plaza", "stage": "build", "repo": "plaza", "tasks": ["t1", "t2"],
+            "id": "p1", "title": "Plaza", "stage": "build", "repo": "plaza", "tasks": ["t1", "t2"], "lead_cid": 7,
             "docs": [{"by_cid": 3}], "critiques": [{"by_cid": 5}], "history": [{"by_cid": 3}, {"by": "owner"}]
         });
         let row = parse_project(&v).expect("a project");
-        assert_eq!(row.members.iter().copied().collect::<Vec<_>>(), vec![3, 5]);
+        assert_eq!(
+            row.agents.iter().copied().collect::<Vec<_>>(),
+            vec![7],
+            "its authors may work elsewhere now"
+        );
         assert_eq!(row.repo.as_deref(), Some("plaza"));
         assert_eq!(row.tasks.len(), 2);
     }
@@ -1233,9 +1236,9 @@ mod step_tests {
     #[test]
     fn a_run_of_steps_is_labelled_by_its_last_step_and_the_outcome_of_all() {
         let entries = vec![
-            json!({"kind": "tool_request", "at_ms": 0, "data": {"id": "a", "name": "read_file", "input": {"path": "src/main.rs"}}}),
+            json!({"kind": "tool_request", "at_ms": 0, "data": {"id": "a", "name": "read", "input": {"files": [{"path": "src/main.rs"}]}}}),
             json!({"kind": "tool_result", "at_ms": 420, "data": {"id": "a"}}),
-            json!({"kind": "tool_request", "at_ms": 500, "data": {"id": "b", "name": "bash", "input": {"command": "cargo test\nmore"}}}),
+            json!({"kind": "tool_request", "at_ms": 500, "data": {"id": "b", "name": "run", "input": {"command": "cargo test\nmore"}}}),
             json!({"kind": "tool_result", "at_ms": 2600, "data": {"id": "b", "is_error": true}}),
         ];
         let steps = steps_of(&entries);

@@ -87,7 +87,7 @@ pub fn items(st: &State) -> Vec<Item> {
             run: Msg::Right(RightTab::Tasks),
         });
     }
-    let commands: [(&str, &str, Msg); 14] = [
+    let commands: [(&str, &str, Msg); 13] = [
         ("Show the chat", "Centre", Msg::Centre(Centre::Chat)),
         ("Show the terminal", "Centre", Msg::Centre(Centre::Terminal)),
         ("Show the editor", "Centre", Msg::Centre(Centre::Editor)),
@@ -109,7 +109,6 @@ pub fn items(st: &State) -> Vec<Item> {
         ),
         ("Refresh the workspace", "Command", Msg::RefreshAll),
         ("Show only changed files", "Command", Msg::ChangedOnly),
-        ("New agent", "Command", Msg::NewAgent),
     ];
     for (label, detail, run) in commands {
         out.push(Item {

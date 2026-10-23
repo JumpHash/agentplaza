@@ -75,8 +75,7 @@ pub const MAX_POSTED_BY: usize = 64;
 
 /// The most posts a board *response* carries. The board itself may hold
 /// [`MAX_POSTS`]; the endpoint returns the newest [`BOARD_LIMIT`] of them, so a
-/// response is bounded — the bounding `treasury::JOURNAL_LIMIT` gives the
-/// journal, with the same `total`/`limit`/`truncated` line beside it.
+/// response is bounded, with a `total`/`limit`/`truncated` line beside it.
 pub const BOARD_LIMIT: usize = 256;
 
 /// The `posted_by` a post gets when its caller names no driver: the contract's
@@ -489,7 +488,7 @@ impl Social {
     ///
     /// The author's connectedness is the caller's to have established — the
     /// HTTP edge checks the register before it gets here, exactly as the claim
-    /// and the bid do — and the post's own caps were checked when it was built
+    /// does — and the post's own caps were checked when it was built
     /// ([`PostRequest::checked`]).
     pub fn post(
         &self,

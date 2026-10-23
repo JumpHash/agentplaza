@@ -1,105 +1,54 @@
 {
-  "bash": {
-    "description": "Run a shell command in your VM and return its output.",
+  "read": {
+    "description": "Read files in your VM: several files, or line ranges of them, in one call. A file over 400 lines without a range returns its outline and its first 200 lines. A cut result says `continue`: read it from there. Reading a file again that has not changed says so without its content.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "command": {
-          "type": "string"
-        },
-        "timeout_s": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "required": [
-        "command"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "read_file": {
-    "description": "Read a file in your VM. Lines come numbered (like cat -n); for long files pass offset (0-based line) and limit to read a window.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "offset": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "limit": {
-          "type": "integer",
-          "minimum": 1
-        }
-      },
-      "required": [
-        "path"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "write_file": {
-    "description": "Write a file in your VM, replacing its contents.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "content": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "path",
-        "content"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "edit_file": {
-    "description": "Replace an exact string in a file in your VM. `old` must match exactly once unless replace_all is true; include enough surrounding lines to make it unique.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "old": {
-          "type": "string"
-        },
-        "new": {
-          "type": "string"
-        },
-        "replace_all": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "path",
-        "old",
-        "new"
-      ],
-      "additionalProperties": false
-    }
-  },
-  "multi_edit": {
-    "description": "Apply several exact-string edits to one file in order, all or nothing.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        },
-        "edits": {
+        "files": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 32,
           "items": {
             "type": "object",
             "properties": {
+              "path": {
+                "type": "string"
+              },
+              "start": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "edit": {
+    "description": "Edit files in your VM. `edits` replace exact text: `old` must occur once unless replace_all is true, so include enough surrounding lines to make it unique. `create` writes whole files. The edits to one file apply together or not at all; the result says per file what changed or why it failed. Files you edit need no re-read.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "edits": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
               "old": {
                 "type": "string"
               },
@@ -111,39 +60,63 @@
               }
             },
             "required": [
+              "path",
               "old",
               "new"
-            ]
+            ],
+            "additionalProperties": false
+          }
+        },
+        "create": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "additionalProperties": false
           }
         }
       },
-      "required": [
-        "path",
-        "edits"
-      ],
       "additionalProperties": false
     }
   },
-  "glob": {
-    "description": "Find files by glob pattern (e.g. **/*.rs, src/**/test_*.py), newest first.",
+  "find": {
+    "description": "Find files in your VM by a glob (`**/*.rs`, `src/*.toml`) over their paths, by a regular expression over their contents, or both. Honours .gitignore. Results are sorted by path; a cut result says `continue` with `after` set to resume it.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "pattern": {
+        "glob": {
+          "type": "string"
+        },
+        "content": {
           "type": "string"
         },
         "path": {
           "type": "string"
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "after": {
+          "type": "string"
         }
       },
-      "required": [
-        "pattern"
-      ],
       "additionalProperties": false
     }
   },
-  "grep": {
-    "description": "Search file contents with a regular expression (ripgrep-like). output_mode: files_with_matches (default), content (matching lines with numbers), or count. Filter files with glob; add context lines; case_insensitive; head_limit caps results.",
+  "search": {
+    "description": "Search the contents of files in your VM for a regular expression, with lines of context around each match. `glob` limits the files searched. A cut result says `continue` with `after` set to resume it.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -156,25 +129,17 @@
         "glob": {
           "type": "string"
         },
-        "output_mode": {
-          "type": "string",
-          "enum": [
-            "files_with_matches",
-            "content",
-            "count"
-          ]
-        },
         "context": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 10
+          "maximum": 20
         },
-        "case_insensitive": {
-          "type": "boolean"
-        },
-        "head_limit": {
+        "max": {
           "type": "integer",
           "minimum": 1
+        },
+        "after": {
+          "type": "string"
         }
       },
       "required": [
@@ -183,13 +148,23 @@
       "additionalProperties": false
     }
   },
-  "bash_start": {
-    "description": "Start a long-running shell command in the background (a dev server, a build, a watcher); returns its id at once.",
+  "run": {
+    "description": "Run a shell command in your VM and return its output. Your shell keeps its directory and exported variables from one call to the next. `background: true` starts a command that keeps running and returns a job id at once; when it ends, its end is reported in a later result.",
     "input_schema": {
       "type": "object",
       "properties": {
         "command": {
           "type": "string"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "background": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -198,38 +173,40 @@
       "additionalProperties": false
     }
   },
-  "bash_output": {
-    "description": "Read what a background command printed since you last looked, and whether it is still running. wait_s waits up to that long for more output.",
+  "run_tests": {
+    "description": "Run this workspace's tests and return the failures, parsed: each with its name, file and line, and message. The runner is picked from the workspace's files (cargo test or nextest, go test, pytest, jest or vitest). `filter` narrows the run; `command` replaces the runner.",
     "input_schema": {
       "type": "object",
       "properties": {
-        "id": {
+        "command": {
           "type": "string"
         },
-        "wait_s": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 60
+        "filter": {
+          "type": "string"
         }
       },
-      "required": [
-        "id"
-      ],
       "additionalProperties": false
     }
   },
-  "bash_kill": {
-    "description": "Stop a background command.",
+  "run_script": {
+    "description": "Run a short script in your workspace that calls your tools as functions, and return only the value it sets with result(value). Write it in python, typescript or javascript. Each tool you were offered is a function named as the tool is: it takes its input as one object and returns the tool's text output. A call that is refused or fails raises PlazaError in the script, which the script may catch. A deferred tool needs its schema first: the script may call tool_search. Python: read({\"files\": [{\"path\": \"a.txt\"}]}). TypeScript and JavaScript: await read({ files: [{ path: \"a.txt\" }] }). Use it for work that would take many calls, such as reading ten files and summarising them: each call the script makes is decided as your own calls are, and only the value comes back to you (up to 16 KiB). A script makes at most 50 calls and is stopped after timeout_s seconds (default 120, at most 600).",
     "input_schema": {
       "type": "object",
       "properties": {
-        "id": {
+        "language": {
+          "type": "string",
+          "enum": ["python", "typescript", "javascript"]
+        },
+        "code": {
           "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
         }
       },
-      "required": [
-        "id"
-      ],
+      "required": ["language", "code"],
       "additionalProperties": false
     }
   },
@@ -642,37 +619,6 @@
       "additionalProperties": false
     }
   },
-  "list": {
-    "description": "List the entries of a directory in your VM.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [],
-      "additionalProperties": false
-    }
-  },
-  "search": {
-    "description": "Search files in your VM for a pattern.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "pattern": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "pattern"
-      ],
-      "additionalProperties": false
-    }
-  },
   "transcript_search": {
     "description": "Search your own past transcript entries for a word or phrase.",
     "input_schema": {
@@ -813,21 +759,8 @@
       "additionalProperties": false
     }
   },
-  "plaza_money": {
-    "description": "Your wallet, and any task's money: budget, escrow, spend, payouts, refunds.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "task": {
-          "type": "string"
-        }
-      },
-      "required": [],
-      "additionalProperties": false
-    }
-  },
   "plaza_post_task": {
-    "description": "Create a plaza task; optionally assign it to an agent at once. Its budget (credits) is minted from the plaza's budget into the task's own escrow — it never touches your wallet or your daily transfer cap. The escrow pays the worker's model calls and tool steps (work stops when it runs out), so size it to the job (default 2000, minimum 200; a substantial build or media job may need 5000+). Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved. `after` names the ids of tasks it runs after: it is handed out once they are all done (so it cannot be assigned before). To post a plan's whole list, use plaza_tasks_post.",
+    "description": "Create a plaza task; optionally assign it to an agent at once. Give `acceptance`: criteria a reviewer can check. For a project's work give `project`; tasks can be posted only once its plan is approved. `after` names the ids of tasks it runs after: it is handed out once they are all done (so it cannot be assigned before). To post a plan's whole list, use plaza_tasks_post.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -842,10 +775,6 @@
         },
         "assignee": {
           "type": "integer"
-        },
-        "budget": {
-          "type": "integer",
-          "minimum": 200
         },
         "acceptance": {
           "type": "string"
@@ -869,7 +798,7 @@
     }
   },
   "plaza_tasks_post": {
-    "description": "Post a project's whole task list at once, once its plan is approved: each task with its key from the plan's tasks list, its goal, acceptance, role and budget, and `after`: the keys of the tasks of this list it runs after (or ids of tasks posted before). Every task is created or none is, and each goes to a worker as soon as everything it runs after is done. Answers with each key's task id.",
+    "description": "Post a project's whole task list at once, once its plan is approved: each task with its key from the plan's tasks list, its goal, acceptance and role, and `after`: the keys of the tasks of this list it runs after (or ids of tasks posted before). Every task is created or none is, and each goes to a worker as soon as everything it runs after is done. Answers with each key's task id.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -894,10 +823,6 @@
               },
               "role": {
                 "type": "string"
-              },
-              "budget": {
-                "type": "integer",
-                "minimum": 200
               },
               "after": {
                 "type": "array",
@@ -994,30 +919,6 @@
       "additionalProperties": false
     }
   },
-  "plaza_pay": {
-    "description": "Pay another agent credits from your earnings, with a memo.",
-    "input_schema": {
-      "type": "object",
-      "properties": {
-        "to": {
-          "type": "integer"
-        },
-        "amount": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "memo": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "to",
-        "amount",
-        "memo"
-      ],
-      "additionalProperties": false
-    }
-  },
   "plaza_connector_propose": {
     "description": "Propose a new external-service connector for the plaza (no code: a description). Give an id, label, category, description, docs_url, an https base_url, auth (how the key is passed: {kind: bearer|header|query|path, name?}), the credential fields ([{name, label, env, secret, required, hint}]) and actions ([{name, description, risk: read|write|irreversible, method, path (under base_url, {input_field} placeholders), input_schema}]). The owner reviews it; once approved and keyed, its actions become tools.",
     "input_schema": {
@@ -1080,7 +981,7 @@
     }
   },
   "plaza_verdict": {
-    "description": "Rule on a task you were asked to verify: pass pays the worker and completes the task; fail fails it.",
+    "description": "Rule on a task you were asked to verify: pass completes the task; fail fails it.",
     "input_schema": {
       "type": "object",
       "properties": {
@@ -1099,6 +1000,101 @@
         "pass",
         "notes"
       ],
+      "additionalProperties": false
+    }
+  },
+  "journal_note": {
+    "description": "Note a decision (with its reason), a dead end (with why it failed) or an open question (with its thread) in your task's journal, so the next session of the task knows it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "dead_end",
+            "open_question"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string",
+          "description": "A decision's reason (required for a decision)."
+        },
+        "why": {
+          "type": "string",
+          "description": "Why a dead end failed (required for a dead end)."
+        },
+        "thread": {
+          "type": "string",
+          "description": "The thread an open question was asked in, if any."
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "journal_read": {
+    "description": "Read a task's journal: its decisions, dead ends and open questions, and its latest handover. Name a task in your project, or read your own.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "The task's id; yours when omitted."
+        },
+        "query": {
+          "type": "string",
+          "description": "Only the notes whose text or reason holds this, ignoring case."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "handover_write": {
+    "description": "Write your handover before you end your turn: where the task stands, what is done, what is next, what to check first. The next session of the task starts from it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "stands": {
+          "type": "string",
+          "description": "Where the task stands now."
+        },
+        "done": {
+          "type": "string",
+          "description": "What is done."
+        },
+        "next": {
+          "type": "string",
+          "description": "The next step."
+        },
+        "check_first": {
+          "type": "string",
+          "description": "What the next session should check first."
+        }
+      },
+      "required": [
+        "stands",
+        "next"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "brief": {
+    "description": "Read a task's brief: its goal, its spec and acceptance, and the tasks it runs after. Name a task in your project, or read your own.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "The task's id; yours when omitted."
+        }
+      },
       "additionalProperties": false
     }
   },
@@ -1195,6 +1191,30 @@
       "additionalProperties": false
     }
   },
+  "thread_read": {
+    "description": "Read a seat thread of your task: its subject, state and every message, each with the seat it came from and the seat it went to. Read a thread before you answer it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thread": {"type": "string", "description": "the thread's id, `th<n>`"}
+      },
+      "required": ["thread"],
+      "additionalProperties": false
+    }
+  },
+  "thread_answer": {
+    "description": "Answer a seat thread of your task: the message goes to the seat that last wrote to it, in the same thread. Set `close` when the answer settles the question.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thread": {"type": "string", "description": "the thread's id, `th<n>`"},
+        "text": {"type": "string", "minLength": 1},
+        "close": {"type": "boolean", "description": "close the thread with this answer"}
+      },
+      "required": ["thread", "text"],
+      "additionalProperties": false
+    }
+  },
   "plaza_message_seat": {
     "description": "Send a message to a seat, not to an agent: `reviewer` or `builder` (a seat of your own task), `T12/reviewer` (a seat of another task), or `planner` (your project's planner). The session filling the seat now reads it next; with none, it waits and is the first thing the seat's next session reads. To answer a message, send to the seat it came from with its `thread`. Messages that go back and forth without either seat producing an output are reported to the planner.",
     "input_schema": {
@@ -1225,6 +1245,448 @@
         "text"
       ],
       "additionalProperties": false
+    }
+  },
+  "team_set": {
+    "description": "Set your project's team: `max` is the most tasks of the project that run at once (the owner's ceiling, 1 to 100, default 20), `target` the team you aim for when the graph allows (at most `max`, default 10). Widen it when the ready work is independent, narrow it when the work is coupled. A lower max starts no new task until the team is back under it; running tasks go on.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "target": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "symbols": {
+    "description": "Find code symbols. With `path`: the symbols of that file, nested by their parents. With `query`: the definitions whose names contain it, across the lanes. A language server answers when one is installed in this VM for the file's language; otherwise Weft's tree-sitter index of the lane's revision does, and the answer names which.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace (the lane's repo directory first)."
+        },
+        "query": {
+          "type": "string",
+          "description": "Part of a symbol's name."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "definition": {
+    "description": "Find where the symbol at a position is defined. A language server answers when one is installed for the file's language; otherwise Weft's index answers for the name at that position.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based line of the symbol."
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based column of the symbol, counted in UTF-16 units."
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "column"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "references": {
+    "description": "Find the uses of the symbol at a position, its definition included. Answered the same way as definition.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace."
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based line of the symbol."
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The one-based column of the symbol, counted in UTF-16 units."
+        }
+      },
+      "required": [
+        "path",
+        "line",
+        "column"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "diagnostics": {
+    "description": "Check files for problems. A language server's diagnostics when one is installed for the file's language; otherwise whether Weft's parser finds a syntax error. Without `paths`, checks the files the lanes have changed.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Files, relative to the workspace."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "outline": {
+    "description": "The outline of one file: its symbols as a tree. Answered the same way as symbols with a path.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "A file, relative to the workspace (the lane's repo directory first)."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "memory_anchored": {
+    "description": "The project memory entries anchored to the given paths or symbols: the harness asks for them when a session reads or edits a file, and shows them to the session. A path is about the entries whose anchors are that path or a symbol under it; a symbol is an anchor by its id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"type": "string"}
+        },
+        "symbols": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "memory_search": {
+    "description": "Search your project's memory: its entries (decisions with their reasons, conventions, pitfalls, how-tos, maps, the glossary, facts the code does not show). Give words (`text`), a `type`, or an `anchor` (a Weft symbol id such as sym:apid::placement::move_claimed, or a path) to find the entries about it. Hits come one line each; read one with memory_get.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "words every hit's title or text contains"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "convention",
+            "pitfall",
+            "howto",
+            "map",
+            "glossary",
+            "fact",
+            "reference"
+          ]
+        },
+        "anchor": {
+          "type": "string",
+          "description": "a symbol id or a path an entry is anchored to"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "memory_get": {
+    "description": "Read one entry of your project's memory in full: its type, status, anchors, links, when it was last verified, and its text.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "the entry's id, e.g. P-0017"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "memory_propose": {
+    "description": "Propose an entry for your project's memory: a decision and its reason, a convention, a pitfall you hit, a how-to, a map of the code, a glossary term, or a fact the code does not show. Write one fact per entry, so a session with no context can use it. The proposal is stored for the project's curator; nothing lands in the memory from it by itself. Do not propose what the code, its history or Weft already records.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "decision",
+            "convention",
+            "pitfall",
+            "howto",
+            "map",
+            "glossary",
+            "fact",
+            "reference"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "the entry: one fact, in a few sentences"
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "description": "the symbol ids or paths it is about"
+        },
+        "why": {
+          "type": "string",
+          "description": "why it is worth keeping, and what you saw"
+        }
+      },
+      "required": [
+        "type",
+        "text",
+        "why"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "memory_record_decision": {
+    "description": "Record a decision of your project and its reason in the project's memory, as the planner. It lands at once as a decision entry and the project's chat is told. Set owner when the owner made the decision in the project's chat: the owner is then asked to keep it or retire it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "the decision, in a few sentences"
+        },
+        "reason": {
+          "type": "string",
+          "description": "why it was decided"
+        },
+        "anchors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "description": "the symbol ids or paths it is about"
+        },
+        "owner": {
+          "type": "boolean",
+          "description": "true when the owner made this decision in the project's chat"
+        }
+      },
+      "required": [
+        "text",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "memory_verify": {
+    "description": "Answer as the project's verifier, once: check each flagged memory entry against the code as it is now. confirm an entry that is still true; rewrite one that is not, with its replacement (one fact); retire one that is no longer true. The answer lands on the project's main as one change. An entry you do not name stays flagged.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "verdicts": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string", "description": "the flagged entry's id, such as P-0017"},
+              "action": {"type": "string", "enum": ["confirm", "rewrite", "retire"]},
+              "text": {"type": "string", "description": "a rewrite's replacement entry: one fact, in a few sentences"},
+              "anchors": {"type": "array", "maxItems": 20, "items": {"type": "string"}, "description": "a rewrite's anchors; none keeps the old entry's"},
+              "why": {"type": "string"}
+            },
+            "required": ["id", "action"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["verdicts"],
+      "additionalProperties": false
+    }
+  },
+  "memory_land": {
+    "description": "Answer as the project's curator, once: land the memory entries you accept (one fact each, typed; a proposal you accept names its id), reject the proposals you do not keep with why, and name the contradictions you found between entries. The entries land on the project's main as one change; the owner is asked about each contradiction.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "decision",
+                  "convention",
+                  "pitfall",
+                  "howto",
+                  "map",
+                  "glossary",
+                  "fact",
+                  "reference"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "the entry: one fact, in a few sentences"
+              },
+              "anchors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "description": "the symbol ids or paths it is about"
+              },
+              "links": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "the ids of related entries, such as D-0042"
+              },
+              "proposal": {
+                "type": "string",
+                "description": "the id of the proposal this entry accepts, such as mp3"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "proposal": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "proposal",
+              "why"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "contradictions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "the ids of the entries that contradict each other"
+              },
+              "why": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "ids",
+              "why"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "spawn_helper": {
+    "description": "Start a helper for one bounded job, in this VM, alongside you. It has its own conversation and reads what its job needs; with edits it works in its own git worktree on the branch helper/<id>. It returns at once with the helper's id; await_helper gives its report. Its report is its final answer, capped (max_report_tokens, 2000 by default), not its transcript. A helper cannot start helpers. A helper still running when your work item ends is stopped. To keep an edit, merge its branch into your tree with run (git merge or git cherry-pick); its report names the branch and its diff stat.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The job, in full: what to find or change, and what to report."
+        },
+        "edits": {
+          "type": "boolean",
+          "description": "Whether the helper may edit, run and test, in its own worktree and branch. Without it the helper only reads."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model the helper runs on: only the one your step allows, which is the default."
+        },
+        "max_report_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8000,
+          "description": "The report's size in tokens (2000 by default)."
+        }
+      },
+      "required": [
+        "job"
+      ]
+    }
+  },
+  "await_helper": {
+    "description": "Wait for a helper started with spawn_helper and get its report. It returns the report as soon as the helper ends, or 'still running' when the wait (timeout_s, 300 by default, at most 3600) ends first. A helper that edited names its branch and diff stat: merge what you keep with run.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The helper's id, as spawn_helper returned it (h1, h2, …)."
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "id"
+      ]
     }
   }
 }

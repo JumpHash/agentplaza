@@ -15,7 +15,7 @@ headers {
 }
 
 body:json {
-  {"goal": "t-tasks A: write the notes", "acceptance": "every merged change is listed", "budget": 400, "role": "writer", "project": "{{tsk_pid}}"}
+  {"goal": "t-tasks A: write the notes", "acceptance": "every merged change is listed", "role": "writer", "project": "{{tsk_pid}}"}
 }
 
 assert {
@@ -24,7 +24,6 @@ assert {
   res.body.ready: eq true
   res.body.outcome: isNull
   res.body.agent_cid: isNull
-  res.body.budget: eq 400
   res.body.role: eq "writer"
   res.responseTime: lt {{budgetMs}}
 }

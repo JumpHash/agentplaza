@@ -33,13 +33,18 @@ use crate::cmd;
 use crate::cmd::stations::control;
 use crate::ctx::{Client, Config, seg};
 
-// The Machines, Workstations and Chat tabs' modules sit beside this file (the tui module lists its own modules).
+// The Sessions, Inbox, Machines, Workstations and Chat tabs' modules sit beside this file (the tui module lists its own
+// modules).
 #[path = "chat.rs"]
 mod chat;
+#[path = "inbox.rs"]
+mod inbox;
 #[path = "machines.rs"]
 mod machines;
 #[path = "providers.rs"]
 mod providers;
+#[path = "sessions.rs"]
+mod sessions;
 #[path = "workstations.rs"]
 mod workstations;
 
@@ -49,16 +54,16 @@ const FRAME: Duration = Duration::from_millis(50);
 const POLL_EVERY: Duration = Duration::from_secs(3);
 /// How many recent recordings the Workstations tab lists for the selected workstation.
 const RECENT_RECORDINGS: u32 = 5;
-/// How long Start may take: it opens the project, posts its tasks and asks the nodes for the new agents.
-const START_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The tabs, in the order of the tab bar.
+/// The tabs, in the order of the tab bar. Each has the key that shows it (`key`): the digits for the first eight,
+/// then `w` (Workstations), `c` (Chat), `m` (Providers) and `i` (Inbox).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Overview,
-    Agents,
+    Sessions,
     Tasks,
     Approvals,
+    Inbox,
     Board,
     Nodes,
     Machines,
@@ -69,11 +74,12 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 12] = [
         Tab::Overview,
-        Tab::Agents,
+        Tab::Sessions,
         Tab::Tasks,
         Tab::Approvals,
+        Tab::Inbox,
         Tab::Board,
         Tab::Nodes,
         Tab::Machines,
@@ -83,34 +89,50 @@ impl Tab {
         Tab::Providers,
     ];
 
-    /// The tab a key shows: 1 to 8 for the first eight tabs, then `w` for the Workstations, `c` for the Chat and `m`
-    /// for the Providers (the models).
+    /// The tab a key shows (see `key`).
     pub fn from_key(key: char) -> Option<Tab> {
         match key {
-            '1'..='8' => Tab::ALL.get(usize::from(key as u8 - b'1')).copied(),
+            '1' => Some(Tab::Overview),
+            '2' => Some(Tab::Sessions),
+            '3' => Some(Tab::Tasks),
+            '4' => Some(Tab::Approvals),
+            '5' => Some(Tab::Board),
+            '6' => Some(Tab::Nodes),
+            '7' => Some(Tab::Machines),
+            '8' => Some(Tab::Workspace),
             'w' => Some(Tab::Workstations),
             'c' => Some(Tab::Chat),
             'm' => Some(Tab::Providers),
+            'i' => Some(Tab::Inbox),
             _ => None,
         }
     }
 
     /// The key that shows this tab (see `from_key`).
     pub fn key(self) -> char {
-        match self.index() {
-            i @ 0..=7 => char::from(b'1' + i as u8),
-            8 => 'w',
-            9 => 'c',
-            _ => 'm',
+        match self {
+            Tab::Overview => '1',
+            Tab::Sessions => '2',
+            Tab::Tasks => '3',
+            Tab::Approvals => '4',
+            Tab::Board => '5',
+            Tab::Nodes => '6',
+            Tab::Machines => '7',
+            Tab::Workspace => '8',
+            Tab::Workstations => 'w',
+            Tab::Chat => 'c',
+            Tab::Providers => 'm',
+            Tab::Inbox => 'i',
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
-            Tab::Agents => "Agents",
+            Tab::Sessions => "Sessions",
             Tab::Tasks => "Tasks",
             Tab::Approvals => "Approvals",
+            Tab::Inbox => "Inbox",
             Tab::Board => "Board",
             Tab::Nodes => "Nodes",
             Tab::Machines => "Machines",
@@ -124,10 +146,11 @@ impl Tab {
     /// The hub endpoint this tab reads.
     pub fn path(self) -> &'static str {
         match self {
-            Tab::Agents => "/v1/agents",
+            Tab::Sessions => "/v1/sessions",
             Tab::Overview => "/v1/overview",
             Tab::Tasks => "/v1/tasks",
             Tab::Approvals => "/v1/approvals",
+            Tab::Inbox => inbox::PATH,
             Tab::Board => "/v1/board",
             Tab::Nodes => "/v1/nodes",
             Tab::Machines => "/v1/machines",
@@ -288,11 +311,11 @@ pub enum Confirm {
     Deny(String),
     /// Stop the running work of an agent (the workspace's Ctrl+C in a note).
     CancelWork(u64),
-    /// Start the project a conversation drafted, at the draft revision on screen (the Chat tab's `S`).
-    Start {
-        conversation: String,
-        revision: u64,
-        title: String,
+    /// Answer a card with one of its choices (the Inbox tab's Enter), with the amount it takes, if any.
+    Answer {
+        card: String,
+        choice: String,
+        amount: Option<String>,
     },
 }
 
@@ -304,11 +327,14 @@ impl Confirm {
             Confirm::CancelWork(cid) => format!("Stop agent {cid}'s work now?"),
             Confirm::Approve(id) => format!("Approve {}?", short(id)),
             Confirm::Deny(id) => format!("Deny {}?", short(id)),
-            Confirm::Start {
-                conversation,
-                revision,
-                title,
-            } => format!("Start project \"{title}\" from {conversation}'s draft r{revision}?"),
+            Confirm::Answer {
+                card,
+                choice,
+                amount,
+            } => match amount {
+                Some(amount) => format!("Answer {card} with {choice} for {amount}?"),
+                None => format!("Answer {card} with {choice}?"),
+            },
         }
     }
 }
@@ -332,8 +358,8 @@ enum Msg {
     Done(String, Result<Value, String>),
     /// An answer to a request of the workspace tab.
     Workspace(Got),
-    /// A conversation the Chat tab read, by its id.
-    Conversation(String, Result<Value, String>),
+    /// A chat the Chat tab read, by its id.
+    Chat(String, Result<Value, String>),
     /// The engines' update dry run the Providers tab asked for.
     Plan(Result<Value, String>),
 }
@@ -359,8 +385,10 @@ pub struct App {
     pub selected: usize,
     /// Agent details open under the table.
     pub detail: bool,
-    /// A message being typed to an agent: its cid and the text so far.
-    pub draft: Option<(i64, String)>,
+    /// The Inbox tab's button in focus: the index of the selected card's choice.
+    pub button: usize,
+    /// An amount typed in the footer for a card's choice that takes one (the Inbox tab).
+    pub amount: Option<inbox::Amount>,
     pub confirm: Option<Confirm>,
     /// The first-start setup or the tour, while it runs (it takes every key).
     pub onboarding: Option<Onboarding>,
@@ -376,9 +404,9 @@ pub struct App {
     desk_seq: u64,
     /// The Workspace tab's state (the agents by project, the chat, the board).
     pub ws: Workspace,
-    /// The project the Agents and Tasks tabs show: None for all of them (`p` and `P` switch it).
+    /// The project the Sessions and Tasks tabs show: None for all of them (`p` and `P` switch it).
     pub scope: Option<String>,
-    /// The Chat tab's state: the conversations' views and the answers being written.
+    /// The Chat tab's state: the chats' views as the hub last sent them.
     pub chat: chat::ChatTab,
     /// A message to the orchestrator being written in the footer (the Chat tab's `t` and `n`).
     pub compose: Option<chat::Compose>,
@@ -422,7 +450,8 @@ impl App {
             link: false,
             selected: 0,
             detail: false,
-            draft: None,
+            button: 0,
+            amount: None,
             confirm: None,
             onboarding: None,
             cmdk: None,
@@ -556,13 +585,16 @@ impl App {
         self.array("/v1/projects")
     }
 
-    /// The agents the Agents tab lists: every one, or the selected project's.
-    pub fn shown_agents(&self) -> Vec<&Value> {
+    /// The sessions the Sessions tab lists: every one, or the selected project's, the live ones first.
+    pub fn shown_sessions(&self) -> Vec<&Value> {
         let scope = self.scope.as_deref();
-        self.agents()
+        let mut shown: Vec<&Value> = self
+            .array("/v1/sessions")
             .iter()
-            .filter(|a| scope::agent_in(a, scope))
-            .collect()
+            .filter(|s| scope::session_in(s, scope))
+            .collect();
+        shown.sort_by_key(|s| !cmd::sessions::is_live(s));
+        shown
     }
 
     /// The tasks the Tasks tab lists: every one, or the selected project's.
@@ -606,7 +638,7 @@ impl App {
     fn rows(&self) -> usize {
         match self.tab {
             Tab::Overview => 0,
-            Tab::Agents => self.shown_agents().len(),
+            Tab::Sessions => self.shown_sessions().len(),
             Tab::Tasks => self.shown_tasks().len(),
             Tab::Approvals => self.array("/v1/approvals").len(),
             Tab::Board => self.wrapped("/v1/board", "posts").len(),
@@ -615,6 +647,7 @@ impl App {
             Tab::Workstations => self.array("/v1/stations").len(),
             Tab::Workspace => 0,
             Tab::Chat => self.array(chat::PATH).len(),
+            Tab::Inbox => self.array(inbox::PATH).len(),
             Tab::Providers => 0,
         }
     }
@@ -695,13 +728,9 @@ impl App {
                 Msg::Event(kind, data) => {
                     match kind.as_str() {
                         "project" => self.fetch_projects(),
-                        "delta" => self.chat.on_delta(&data),
-                        "owner_conversation" => {
-                            self.chat.on_view(data.clone());
-                            // The list's summary changed with it.
-                            if self.tab == Tab::Chat {
-                                let _ = self.watch.send(chat::PATH);
-                            }
+                        // A message in a chat: the list's summary changed with it, and the chat on screen is read again.
+                        "chat" if self.tab == Tab::Chat => {
+                            let _ = self.watch.send(chat::PATH);
                         }
                         _ => {}
                     }
@@ -723,8 +752,8 @@ impl App {
                     let effects = self.ws.receive(got);
                     self.on_workspace(effects);
                 }
-                Msg::Conversation(_, Ok(view)) => self.chat.on_view(view),
-                Msg::Conversation(id, Err(e)) => self.notice = Some(format!("{id}: {e}")),
+                Msg::Chat(_, Ok(view)) => self.chat.on_view(view),
+                Msg::Chat(id, Err(e)) => self.notice = Some(format!("{id}: {e}")),
                 Msg::Plan(result) => {
                     if let Some(note) = self.providers.on_plan(result) {
                         self.notice = Some(note);
@@ -749,7 +778,7 @@ impl App {
             }
         }
         self.follow_selected_station();
-        self.follow_conversation();
+        self.follow_chat();
         if roster_changed && self.tab == Tab::Workspace {
             let effects = self.ws.sync();
             self.execute(effects);
@@ -773,8 +802,8 @@ impl App {
         }
     }
 
-    /// Reads the conversation the Chat tab selects when its view is missing or older than the list says.
-    fn follow_conversation(&mut self) {
+    /// Reads the chat the Chat tab selects when its view is missing or older than the list says.
+    fn follow_chat(&mut self) {
         if self.tab != Tab::Chat {
             return;
         }
@@ -789,8 +818,8 @@ impl App {
         let client = self.client.clone();
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let result = client.get(&format!("{}/{}", chat::PATH, seg(&id)));
-            let _ = tx.send(Msg::Conversation(id, result));
+            let result = client.get(&format!("{}/{}?limit=200", chat::PATH, seg(&id)));
+            let _ = tx.send(Msg::Chat(id, result));
         });
     }
 
@@ -809,11 +838,11 @@ impl App {
         });
     }
 
-    /// Steps the project the Agents and Tasks tabs show through All projects and each open project.
+    /// Steps the project the Sessions and Tasks tabs show through All projects and each open project.
     fn step_scope(&mut self, delta: isize) {
         let choices = scope::choices(self.projects());
         self.scope = scope::step(self.scope.as_deref(), &choices, delta);
-        if matches!(self.tab, Tab::Agents | Tab::Tasks) {
+        if matches!(self.tab, Tab::Sessions | Tab::Tasks) {
             self.selected = 0;
             self.detail = false;
         }
@@ -829,7 +858,7 @@ impl App {
         if self.tab == Tab::Workspace {
             self.execute(effects);
         } else {
-            // The context bar of the Chat tab's conversation is kept current by the same events.
+            // The agents' context bars are kept current by the same events, off the Workspace too.
             let context: Vec<Effect> = effects
                 .into_iter()
                 .filter(|e| matches!(e, Effect::Context(_)))
@@ -850,12 +879,10 @@ impl App {
         }
     }
 
-    /// The chat on screen whose context the context bar shows: the Workspace's selected agent, or the Chat tab's
-    /// conversation.
+    /// The agent whose context the context bar shows: the Workspace's selected one.
     fn shown_owner(&self) -> Option<context_bar::Owner> {
         match self.tab {
             Tab::Workspace => self.ws.selected_cid().map(context_bar::Owner::Agent),
-            Tab::Chat => chat::selected(self).map(|(owner, _)| owner),
             _ => None,
         }
     }
@@ -881,8 +908,9 @@ impl App {
         screens::tab_bar(frame, tabs, self);
         match self.tab {
             Tab::Overview => screens::overview(frame, body, self),
-            Tab::Agents => screens::agents(frame, body, self),
+            Tab::Sessions => sessions::render(frame, body, self),
             Tab::Tasks => screens::tasks(frame, body, self),
+            Tab::Inbox => inbox::render(frame, body, self),
             Tab::Approvals => screens::approvals(frame, body, self),
             Tab::Board => screens::board(frame, body, self),
             Tab::Nodes => screens::nodes(frame, body, self),
@@ -924,7 +952,7 @@ impl App {
             return false;
         }
         // The command palette takes the keys while it is open. Ctrl+K opens it only where no other
-        // screen takes the keys (the setup, a takeover, a draft, a question, a typing workspace).
+        // screen takes the keys (the setup, a takeover, an amount, a question, a typing workspace).
         if let Some(open) = self.cmdk.as_mut() {
             match open.on_key(key) {
                 cmdk::Step::Stay => {}
@@ -940,7 +968,7 @@ impl App {
             && key.code == KeyCode::Char('k')
             && self.onboarding.is_none()
             && self.desk.is_none()
-            && self.draft.is_none()
+            && self.amount.is_none()
             && self.compose.is_none()
             && self.confirm.is_none()
             && !(self.tab == Tab::Workspace && self.ws.captures_keys())
@@ -955,10 +983,10 @@ impl App {
             && !typing
             && self.desk.is_none()
         {
-            if self.draft.is_none() && self.compose.is_none() {
+            if self.amount.is_none() && self.compose.is_none() {
                 return true;
             }
-            self.draft = None;
+            self.amount = None;
             self.compose = None;
             return false;
         }
@@ -972,8 +1000,8 @@ impl App {
             self.on_desk_key(key);
             return false;
         }
-        if self.draft.is_some() {
-            self.on_draft_key(key.code);
+        if self.amount.is_some() {
+            self.on_amount_key(key.code);
             return false;
         }
         if self.compose.is_some() {
@@ -994,16 +1022,6 @@ impl App {
             self.providers_act(action);
             return false;
         }
-        if self.tab == Tab::Chat
-            && let Some(ws_key) = workspace_key(key)
-        {
-            // The context bar's `i` and `M` (and the picker's keys while it is open) on the conversation.
-            let shown = chat::selected(self);
-            if let Some(effects) = self.ws.context_key(ws_key, shown) {
-                self.execute(effects);
-                return false;
-            }
-        }
         if self.tab == Tab::Workspace
             && let Some(ws_key) = workspace_key(key)
             && let Some(effects) = self.ws.key(ws_key)
@@ -1019,22 +1037,24 @@ impl App {
                 }
             }
             KeyCode::Char('w') => self.select_tab(Tab::Workstations),
+            KeyCode::Char('i') => self.select_tab(Tab::Inbox),
             KeyCode::Char('c') => self.select_tab(Tab::Chat),
             KeyCode::Char('m') => self.select_tab(Tab::Providers),
             KeyCode::Char('p') => self.step_scope(1),
             KeyCode::Char('P') => self.step_scope(-1),
             KeyCode::Char('n') => self.start_compose(true),
-            KeyCode::Char('S') => self.ask_start(),
             KeyCode::Tab => self.select_tab(self.tab.next()),
             KeyCode::BackTab => self.select_tab(self.tab.prev()),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
-            KeyCode::Enter => {
-                if self.tab == Tab::Agents && self.rows() > 0 {
-                    self.detail = !self.detail;
-                }
-            }
-            KeyCode::Char('t') => self.start_draft(),
+            KeyCode::Enter => match self.tab {
+                Tab::Sessions if self.rows() > 0 => self.detail = !self.detail,
+                Tab::Inbox => self.ask_answer(),
+                _ => {}
+            },
+            KeyCode::Left => self.move_button(-1),
+            KeyCode::Right => self.move_button(1),
+            KeyCode::Char('t') => self.start_compose(false),
             KeyCode::Char('T') => self.open_desk(),
             KeyCode::Char('?') => self.begin(Stage::Tour(0)),
             KeyCode::Char('a') => self.ask_decision(true),
@@ -1064,15 +1084,9 @@ impl App {
     fn run_command(&mut self, action: cmdk::Action) -> bool {
         match action {
             cmdk::Action::GoTo(tab) => self.select_tab(tab),
-            cmdk::Action::NewConversation => {
+            cmdk::Action::NewChat => {
                 self.select_tab(Tab::Chat);
                 self.start_compose(true);
-            }
-            cmdk::Action::MessageAgent => {
-                if self.tab != Tab::Agents {
-                    self.select_tab(Tab::Agents);
-                }
-                self.start_draft();
             }
             cmdk::Action::NextProject => self.step_scope(1),
             cmdk::Action::PreviousProject => self.step_scope(-1),
@@ -1096,6 +1110,7 @@ impl App {
         self.tab = tab;
         self.selected = 0;
         self.detail = false;
+        self.button = 0;
         let _ = self.watch.send(tab.path());
         if tab == Tab::Workspace {
             let effects = self.ws.enter();
@@ -1149,38 +1164,11 @@ impl App {
         }
         let next = self.selected as isize + delta;
         self.selected = next.clamp(0, rows as isize - 1) as usize;
+        // Another row has its own buttons: the focus goes back to the first one.
+        self.button = 0;
     }
 
-    fn selected_agent_cid(&self) -> Option<i64> {
-        self.shown_agents()
-            .get(self.selected)
-            .and_then(|a| a.get("cid"))
-            .and_then(Value::as_i64)
-    }
-
-    fn start_draft(&mut self) {
-        if self.tab == Tab::Chat {
-            self.start_compose(false);
-            return;
-        }
-        if self.tab != Tab::Agents {
-            return;
-        }
-        if let Some(cid) = self.selected_agent_cid() {
-            self.draft = Some((cid, String::new()));
-        }
-    }
-
-    /// The id of the conversation the Chat tab selects.
-    fn selected_conversation(&self) -> Option<String> {
-        self.array(chat::PATH)
-            .get(self.selected)
-            .and_then(|c| c.get("id"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    }
-
-    /// Opens the footer's composer on the Chat tab: for a new conversation, or for the selected one.
+    /// Opens the footer's composer on the Chat tab: for a new chat, or for the selected one.
     fn start_compose(&mut self, new: bool) {
         if self.tab != Tab::Chat {
             return;
@@ -1189,13 +1177,22 @@ impl App {
             self.compose = Some(chat::Compose::New(String::new()));
             return;
         }
-        match self.selected_conversation() {
+        match chat::selected(self) {
             Some(id) => self.compose = Some(chat::Compose::To(id, String::new())),
-            None => self.notice = Some("no conversation yet: n opens one".to_string()),
+            None => self.notice = Some("no chat yet: n opens one".to_string()),
         }
     }
 
-    /// The composer takes the keys: Enter sends the text (the first message of a new conversation, which lists first),
+    /// The project a new chat opens with: the one the switcher shows, else the first open project.
+    fn new_chat_project(&self) -> Option<String> {
+        self.scope.clone().or_else(|| {
+            scope::choices(self.projects())
+                .first()
+                .map(|id| id.to_string())
+        })
+    }
+
+    /// The composer takes the keys: Enter sends the text (the first message of a new chat, which lists first),
     /// Esc drops it.
     fn on_compose_key(&mut self, code: KeyCode) {
         let Some(mut compose) = self.compose.take() else {
@@ -1218,13 +1215,25 @@ impl App {
                             )
                         });
                     }
-                    chat::Compose::New(_) => {
-                        // The newest conversation lists first: it is the one selected once it is open.
-                        self.selected = 0;
-                        self.run_job("new conversation".to_string(), move |c| {
-                            c.post(chat::PATH, &json!({ "text": text }))
-                        });
-                    }
+                    chat::Compose::New(_) => match self.new_chat_project() {
+                        Some(project) => {
+                            // The newest chat lists first: it is the one selected once it is open.
+                            self.selected = 0;
+                            self.run_job("new chat".to_string(), move |c| {
+                                let opened = c.post(chat::PATH, &json!({ "project": project }))?;
+                                let id =
+                                    opened.get("id").and_then(Value::as_str).unwrap_or_default();
+                                c.post(
+                                    &format!("{}/{}/messages", chat::PATH, seg(id)),
+                                    &json!({ "text": text }),
+                                )
+                            });
+                        }
+                        None => {
+                            self.compose = Some(chat::Compose::New(text));
+                            self.notice = Some("no open project to start a chat in".to_string());
+                        }
+                    },
                 }
             }
             KeyCode::Backspace => {
@@ -1241,72 +1250,86 @@ impl App {
         }
     }
 
-    /// Asks to start the selected conversation's draft at the revision on screen; a draft something still stops, or
-    /// one started already, says so instead.
-    fn ask_start(&mut self) {
-        if self.tab != Tab::Chat {
+    /// Asks to answer the focused card's focused button: a choice that takes an amount has its amount typed in the footer
+    /// first, and any other is asked about at once.
+    fn ask_answer(&mut self) {
+        if self.tab != Tab::Inbox {
             return;
         }
-        let Some(id) = self.selected_conversation() else {
+        let Some(card) = self.array(inbox::PATH).get(self.selected) else {
             return;
         };
-        let view = self.chat.views.get(&id);
-        let Some(draft) = view.and_then(|v| v.get("draft")).filter(|d| d.is_object()) else {
-            self.notice = Some(format!("{id} has no project draft yet"));
+        let Some(choice) = inbox::choices_of(card).get(self.button).copied() else {
             return;
         };
-        if let Some(project) = view.and_then(|v| v.get("project")).and_then(Value::as_str) {
-            self.notice = Some(format!("{id} started project {project} already"));
-            return;
-        }
-        if !cmd::chat::startable(draft) {
-            let problems: Vec<&str> = draft
-                .get("problems")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
-            self.notice = Some(format!(
-                "the draft cannot start yet: {}",
-                problems.join("; ")
-            ));
-            return;
-        }
-        self.confirm = Some(Confirm::Start {
-            conversation: id,
-            revision: draft.get("revision").and_then(Value::as_u64).unwrap_or(0),
-            title: draft
-                .get("title")
+        let text = |value: &Value, key: &str| {
+            value
+                .get(key)
                 .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        });
+                .unwrap_or_default()
+                .to_string()
+        };
+        let (card_id, choice_id) = (text(card, "id"), text(choice, "id"));
+        if choice.get("takes_amount").and_then(Value::as_bool) == Some(true) {
+            self.amount = Some(inbox::Amount {
+                card: card_id,
+                choice: choice_id,
+                text: String::new(),
+            });
+        } else {
+            self.confirm = Some(Confirm::Answer {
+                card: card_id,
+                choice: choice_id,
+                amount: None,
+            });
+        }
     }
 
-    fn on_draft_key(&mut self, code: KeyCode) {
-        let Some((cid, mut text)) = self.draft.take() else {
+    /// Moves the focus between the buttons of the selected card.
+    fn move_button(&mut self, delta: isize) {
+        if self.tab != Tab::Inbox {
+            return;
+        }
+        let count = match self.array(inbox::PATH).get(self.selected) {
+            Some(card) => inbox::choices_of(card).len(),
+            None => 0,
+        };
+        if count == 0 {
+            return;
+        }
+        self.button = (self.button as isize + delta).clamp(0, count as isize - 1) as usize;
+    }
+
+    /// The footer's amount takes the keys: Enter asks to answer with it (once it has text), Esc drops it.
+    fn on_amount_key(&mut self, code: KeyCode) {
+        let Some(mut amount) = self.amount.take() else {
             return;
         };
         match code {
             KeyCode::Esc => {}
             KeyCode::Enter => {
-                let text = text.trim().to_string();
-                if !text.is_empty() {
-                    self.run_job(format!("message to agent {cid}"), move |c| {
-                        c.post(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))
-                    });
+                let text = amount.text.trim().to_string();
+                if text.is_empty() {
+                    self.amount = Some(amount);
+                    return;
                 }
+                self.confirm = Some(Confirm::Answer {
+                    card: amount.card,
+                    choice: amount.choice,
+                    amount: Some(text),
+                });
             }
             KeyCode::Backspace => {
-                text.pop();
-                self.draft = Some((cid, text));
+                amount.text.pop();
+                self.amount = Some(amount);
             }
             KeyCode::Char(c) => {
-                text.push(c);
-                self.draft = Some((cid, text));
+                if amount.text.chars().count() < workspace::COMPOSE_MAX {
+                    amount.text.push(c);
+                }
+                self.amount = Some(amount);
             }
-            _ => self.draft = Some((cid, text)),
+            _ => self.amount = Some(amount),
         }
     }
 
@@ -1449,17 +1472,12 @@ impl App {
                 .run_job(format!("stop agent {cid}'s work"), move |c| {
                     c.post(&format!("/v1/agents/{cid}/cancel"), &json!({}))
                 }),
-            Confirm::Start {
-                conversation,
-                revision,
-                ..
-            } => self.run_job(format!("start {conversation}"), move |c| {
-                let mut client = c.clone();
-                client.timeout = START_TIMEOUT;
-                client.post(
-                    &format!("{}/{}/start", chat::PATH, seg(&conversation)),
-                    &json!({ "revision": revision }),
-                )
+            Confirm::Answer {
+                card,
+                choice,
+                amount,
+            } => self.run_job(format!("answer {card}"), move |c| {
+                crate::cmd::inbox::answer_card(c, &card, &choice, amount.as_deref())
             }),
         }
     }
@@ -1845,7 +1863,7 @@ mod tests {
 
     #[test]
     fn tabs_cycle_both_ways() {
-        assert_eq!(Tab::ALL.len(), 11);
+        assert_eq!(Tab::ALL.len(), 12);
         assert_eq!(Tab::Overview.prev(), Tab::Providers);
         assert_eq!(Tab::Workspace.next(), Tab::Workstations);
         assert_eq!(Tab::Workstations.next(), Tab::Chat);
@@ -1855,6 +1873,7 @@ mod tests {
         assert_eq!(Tab::Nodes.next(), Tab::Machines);
         assert_eq!(Tab::Workstations.path(), "/v1/stations");
         assert_eq!(Tab::Overview.next().next(), Tab::Tasks);
+        assert_eq!(Tab::Approvals.next(), Tab::Inbox);
         assert_eq!(Tab::Overview.next().prev(), Tab::Overview);
     }
 
@@ -1868,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn the_switcher_filters_the_agents_and_tasks_tabs() {
+    fn the_switcher_filters_the_sessions_and_tasks_tabs() {
         let mut app = offline_app();
         app.data.insert(
             "/v1/projects",
@@ -1878,8 +1897,11 @@ mod tests {
             ]),
         );
         app.data.insert(
-            "/v1/agents",
-            json!([{ "cid": 8, "project": null }, { "cid": 7, "project": "pr3" }]),
+            "/v1/sessions",
+            json!([
+                { "id": "s8", "state": "running", "project": null },
+                { "id": "s7", "state": "running", "project": "pr3" }
+            ]),
         );
         app.data.insert(
             "/v1/tasks",
@@ -1889,7 +1911,7 @@ mod tests {
                 { "id": "t9", "project": null }
             ]}),
         );
-        app.select_tab(Tab::Agents);
+        app.select_tab(Tab::Sessions);
         app.selected = 1;
         press(&mut app, KeyCode::Char('p'));
         assert_eq!(
@@ -1898,43 +1920,61 @@ mod tests {
             "the archived pr2 is not offered"
         );
         assert_eq!(app.selected, 0, "the selection starts over");
-        assert_eq!(app.selected_agent_cid(), Some(7));
+        let shown: Vec<&Value> = app.shown_sessions();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0]["id"], "s7");
         assert_eq!(app.rows(), 1);
         let tasks: Vec<&Value> = app.shown_tasks().iter().map(|t| &t["id"]).collect();
         assert_eq!(tasks, [&json!("t1"), &json!("t9")]);
         press(&mut app, KeyCode::Char('p'));
         assert_eq!(app.scope, None, "past the last project is All again");
-        assert_eq!(app.shown_agents().len(), 2);
+        assert_eq!(app.shown_sessions().len(), 2);
         press(&mut app, KeyCode::Char('P'));
         assert_eq!(app.scope.as_deref(), Some("pr3"), "P steps back");
     }
 
     #[test]
-    fn the_chat_tab_writes_to_a_conversation_and_asks_before_it_starts_one() {
+    fn the_live_sessions_are_listed_first() {
+        let mut app = offline_app();
+        app.data.insert(
+            "/v1/sessions",
+            json!([
+                { "id": "s3", "state": "ended", "project": null },
+                { "id": "s2", "state": "paused", "project": null },
+                { "id": "s1", "state": "failed", "project": null }
+            ]),
+        );
+        let order: Vec<&str> = app
+            .shown_sessions()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            order,
+            ["s2", "s3", "s1"],
+            "the paused one is live: first, then the rest as they came"
+        );
+    }
+
+    #[test]
+    fn the_chat_tab_writes_to_a_chat_and_opens_a_new_one_in_the_project_shown() {
         let mut app = offline_app();
         press(&mut app, KeyCode::Char('c'));
         assert_eq!(app.tab, Tab::Chat);
         press(&mut app, KeyCode::Char('t'));
         assert!(app.compose.is_none());
-        assert_eq!(
-            app.notice.as_deref(),
-            Some("no conversation yet: n opens one")
-        );
+        assert_eq!(app.notice.as_deref(), Some("no chat yet: n opens one"));
         app.data.insert(
             chat::PATH,
-            json!([{ "id": "conv-3", "title": "Release 0.9", "updated_ms": 5, "pending": 0 }]),
+            json!([{ "id": "chat-pr3", "kind": "project", "project": "pr3", "title": "Release 0.9", "updated_ms": 5 }]),
         );
-        app.chat.on_view(json!({
-            "id": "conv-3", "cid": 3, "updated_ms": 5, "messages": [],
-            "draft": { "revision": 2, "title": "Release 0.9", "problems": [] }
-        }));
         press(&mut app, KeyCode::Char('t'));
         for c in "go q".chars() {
             assert!(!press(&mut app, KeyCode::Char(c)), "q is text while typing");
         }
         assert_eq!(
             app.compose,
-            Some(chat::Compose::To("conv-3".into(), "go q".into()))
+            Some(chat::Compose::To("chat-pr3".into(), "go q".into()))
         );
         press(&mut app, KeyCode::Esc);
         assert!(app.compose.is_none(), "Esc drops the text");
@@ -1942,28 +1982,100 @@ mod tests {
         assert_eq!(app.compose, Some(chat::Compose::New(String::new())));
         press(&mut app, KeyCode::Enter);
         assert!(app.compose.is_some(), "an empty message is not sent");
+        press(&mut app, KeyCode::Char('h'));
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.compose,
+            Some(chat::Compose::New("hi".into())),
+            "with no project to open a chat in, the text waits"
+        );
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("no open project to start a chat in")
+        );
         press(&mut app, KeyCode::Esc);
-        press(&mut app, KeyCode::Char('S'));
+        app.scope = Some("pr3".into());
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Char('o'));
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.compose.is_none(),
+            "with a project shown, the first message is sent"
+        );
+    }
+
+    #[test]
+    fn the_inbox_asks_before_it_answers_and_types_an_amount_for_a_choice_that_takes_one() {
+        let mut app = offline_app();
+        app.data.insert(
+            inbox::PATH,
+            json!([{ "id": "c7", "kind": "budget", "title": "Raise pr3?", "body": "", "project": "pr3", "task": null,
+                "choices": [
+                    { "id": "start", "label": "Start", "takes_amount": false },
+                    { "id": "raise", "label": "Raise", "takes_amount": true }
+                ] }]),
+        );
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.tab, Tab::Inbox);
+        press(&mut app, KeyCode::Enter);
         assert_eq!(
             app.confirm,
-            Some(Confirm::Start {
-                conversation: "conv-3".into(),
-                revision: 2,
-                title: "Release 0.9".into()
+            Some(Confirm::Answer {
+                card: "c7".into(),
+                choice: "start".into(),
+                amount: None
             })
         );
         press(&mut app, KeyCode::Char('n'));
         assert!(app.confirm.is_none(), "n answers the question");
-        // A draft something still stops is not asked about.
-        app.chat.on_view(json!({
-            "id": "conv-3", "cid": 3, "updated_ms": 6, "messages": [],
-            "draft": { "revision": 3, "title": "Release 0.9", "problems": ["the draft has no tasks yet"] }
-        }));
-        press(&mut app, KeyCode::Char('S'));
-        assert!(app.confirm.is_none());
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.button, 1, "the focus stops at the last button");
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            app.confirm.is_none(),
+            "a choice that takes an amount asks for it first"
+        );
         assert_eq!(
-            app.notice.as_deref(),
-            Some("the draft cannot start yet: the draft has no tasks yet")
+            app.amount,
+            Some(inbox::Amount {
+                card: "c7".into(),
+                choice: "raise".into(),
+                text: String::new()
+            })
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(app.amount.is_some(), "an empty amount is not sent");
+        for c in "12.5".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.tab, Tab::Inbox, "the digits are the amount's, not tabs");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.confirm,
+            Some(Confirm::Answer {
+                card: "c7".into(),
+                choice: "raise".into(),
+                amount: Some("12.5".into())
+            })
+        );
+        assert!(app.amount.is_none());
+        press(&mut app, KeyCode::Char('n'));
+        app.data.insert(
+            inbox::PATH,
+            json!([
+                { "id": "c7", "title": "Raise?", "choices": [{ "id": "a" }, { "id": "b" }] },
+                { "id": "c8", "title": "Start?", "choices": [{ "id": "go" }] }
+            ]),
+        );
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.button, 1);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(
+            (app.selected, app.button),
+            (1, 0),
+            "another card's focus starts over"
         );
     }
 
@@ -1973,11 +2085,14 @@ mod tests {
             assert_eq!(Tab::from_key(tab.key()), Some(tab), "{tab:?}");
         }
         assert_eq!(Tab::Chat.key(), 'c');
+        assert_eq!(Tab::Inbox.key(), 'i');
+        assert_eq!(Tab::Sessions.key(), '2');
+        assert_eq!(Tab::Sessions.path(), "/v1/sessions");
         assert_eq!(Tab::Providers.key(), 'm');
         assert_eq!(Tab::from_key('m'), Some(Tab::Providers));
         assert_eq!(Tab::Providers.path(), "/v1/providers");
         assert_eq!(Tab::Workstations.key(), 'w');
-        assert_eq!(Tab::Chat.path(), "/v1/owner/conversations");
+        assert_eq!(Tab::Chat.path(), "/v1/chats");
     }
 
     #[test]

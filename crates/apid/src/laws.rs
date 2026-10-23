@@ -11,7 +11,7 @@
 //! With strict permits on, an operation that has permit laws is refused unless one of them allows it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
 use jhrl::Program;
@@ -94,7 +94,7 @@ pub struct LawInfo {
     pub rationale: String,
     /// "permit" | "forbid".
     pub effect: String,
-    /// The actions it covers, e.g. "tool.exec", "plaza.pay".
+    /// The actions it covers, e.g. "tool.exec", "message.send".
     pub ops: Vec<String>,
     /// Who it applies to (`principal is Agent`, `principal in Role::"builder"`), as source text.
     pub principal: String,
@@ -255,6 +255,9 @@ pub struct Laws {
     permitted: Mutex<HashMap<(String, String), bool>>,
     /// Whether an operation with permit laws must be allowed by one of them (`settings.laws`).
     strict: AtomicBool,
+    /// The laws' generation: bumped by every change to the live set or to strictness. The laws are process-wide
+    /// (`global`), so the generation is theirs rather than the hub's (see `sources`).
+    generation: AtomicU64,
     /// The most recent tool calls checked, for the dry run.
     seen: Mutex<VecDeque<Seen>>,
     /// Why the stored owner rules were not applied at start, until a change applies them.
@@ -285,6 +288,7 @@ impl Laws {
             rules: Mutex::new(RuleSet::default()),
             permitted: Mutex::new(HashMap::new()),
             strict: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
             seen: Mutex::new(VecDeque::new()),
             not_applied: Mutex::new(None),
         }
@@ -595,7 +599,13 @@ impl Laws {
     pub fn set_strict(&self, on: bool) {
         let mut memo = lock(&self.permitted);
         self.strict.store(on, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         memo.clear();
+    }
+
+    /// The laws' generation now: it moves with every change to what the laws permit.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// The owner's rules and overrides.
@@ -887,6 +897,7 @@ impl Laws {
         *lock(&self.not_applied) = None;
         let mut memo = lock(&self.permitted);
         *self.live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         memo.clear();
     }
 
@@ -1107,7 +1118,7 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     let text = input.to_string();
     let lower = text.to_lowercase();
     let mut flags = BTreeSet::new();
-    if has_secret(&text) || reads_credential_store(&lower) {
+    if apz_secrets::has_secret(&text) || reads_credential_store(&lower) {
         flags.insert("credential_seeking");
     }
     if lower.contains("impersonat")
@@ -1116,51 +1127,10 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     {
         flags.insert("impersonation");
     }
-    if matches!(tool, "bash" | "bash_start") && longest_base64_run(&text) > 400 {
+    if matches!(tool, "run" | "run_tests" | "run_script") && longest_base64_run(&text) > 400 {
         flags.insert("obfuscation");
     }
     flags
-}
-
-/// Whether `text` carries a secret by its well-known shape: provider API keys and tokens,
-/// cloud access keys, chat-platform tokens and private-key blocks.
-fn has_secret(text: &str) -> bool {
-    if text.contains("PRIVATE KEY-----") {
-        return true;
-    }
-    // (prefix, minimum length of the token-character run after it)
-    const SHAPES: [(&str, usize); 9] = [
-        ("sk-ant-", 20),
-        ("sk-proj-", 20),
-        ("sk-", 32),
-        ("ghp_", 30),
-        ("github_pat_", 30),
-        ("xoxb-", 20),
-        ("xoxp-", 20),
-        ("AIza", 35),
-        ("AKIA", 16),
-    ];
-    let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
-    for (prefix, min) in SHAPES {
-        let mut from = 0;
-        while let Some(at) = text[from..].find(prefix) {
-            let start = from + at;
-            // The prefix must start a token, not sit inside a longer word.
-            let boundary = text[..start]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !token_char(c));
-            let run = text[start + prefix.len()..]
-                .chars()
-                .take_while(|c| token_char(*c))
-                .count();
-            if boundary && run >= min {
-                return true;
-            }
-            from = start + prefix.len();
-        }
-    }
-    false
 }
 
 /// Whether a command reaches for a credential store.
@@ -1195,11 +1165,10 @@ fn longest_base64_run(text: &str) -> usize {
 
 /// Guest tools that act in the agent's own VM: `tool.exec` on its sandbox as well.
 const GUEST_EXEC: &[&str] = &[
-    "bash",
-    "bash_start",
-    "write_file",
-    "edit_file",
-    "multi_edit",
+    "run",
+    "run_tests",
+    "run_script",
+    "edit",
     "download",
     "fetch_url",
     "install_packages",
@@ -1421,24 +1390,6 @@ fn plaza_operations(
                 Context::from([("role_allowed".to_string(), Value::Bool(allowed))]),
             )]
         }
-        // A payment is a send of credits from the plaza. The owner's threshold is not known here: plaza_pay
-        // holds a large payment for approval, so the law never forbids it (S-007a).
-        "plaza_pay" => {
-            let town = Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
-            };
-            store.insert(
-                &town,
-                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
-            );
-            let amount = input.get("amount").and_then(Json::as_i64).unwrap_or(0);
-            vec![(
-                "payment.send",
-                town,
-                Context::from([("amount".to_string(), Value::int(amount.into()))]),
-            )]
-        }
         // An MCP call is `mcp.call` on its server, with the tool and the risk class the owner's rules may limit.
         t if t.starts_with(crate::mcp::PREFIX) => match crate::mcp::law_operation(t) {
             Some((server, tool, risk)) => {
@@ -1489,13 +1440,13 @@ fn tool_kind(tool: &str) -> &'static str {
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. Connector actions carry their own class (`connectors::risk_of`: e.g. a DNS record or a droplet
 /// created is `irreversible`), and C-004a refuses them, since owner approvals are not threaded through
-/// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
+/// tool calls yet.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
-        "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks"
-        | "plaza_agents" | "transcript_search" | "glob" | "grep" | "bash_output" | "todo_write"
-        | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" | "station_list"
-        | "station_app_list" | "engine.read" => "read",
+        "read" | "find" | "list_files" | "search" | "symbols" | "definition" | "references"
+        | "diagnostics" | "outline" | "plaza_tasks" | "plaza_agents" | "transcript_search"
+        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search"
+        | "station_list" | "station_app_list" | "engine.read" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => {
             crate::connectors::risk_of(t).unwrap_or("write")
@@ -1766,7 +1717,7 @@ mod tests {
             let verdict = laws.check(
                 "7",
                 "researcher",
-                "read_file",
+                "read",
                 &json!({"path": "notes/today.md"}),
             );
             assert!(verdict.forbid.is_empty(), "{verdict:?}");
@@ -1804,7 +1755,7 @@ mod tests {
         // (tool, input, the law that must forbid the call, as an id prefix). A malformed recipient is still a message.
         for (tool, input, law) in [
             (
-                "bash",
+                "run",
                 json!({"command": format!("curl -H 'Authorization: {key}' x")}),
                 "C-",
             ),
@@ -1828,50 +1779,17 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_is_checked_as_a_send_and_never_forbidden_whatever_its_amount() {
-        let laws = Laws::builtin();
-        for amount in [5, 900] {
-            let verdict = laws.check(
-                "7",
-                "finance",
-                "plaza_pay",
-                &json!({"to": 9, "amount": amount, "memo": "thanks"}),
-            );
-            assert!(verdict.forbid.is_empty(), "{verdict:?}");
-            assert!(
-                verdict.requested.iter().any(|op| op == "payment.send"),
-                "{verdict:?}"
-            );
-            assert!(
-                verdict.permit.iter().any(|id| id == "S-007a"),
-                "{verdict:?}"
-            );
-        }
-        // Strict permits: a held payment is still not refused by the laws.
-        laws.set_strict(true);
-        assert!(
-            laws.refusal(
-                7,
-                "finance",
-                "plaza_pay",
-                &json!({"to": 9, "amount": 900, "memo": "thanks"})
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
     fn credential_shaped_input_is_flagged() {
         let flags = detect_flags(
-            "bash",
+            "run",
             &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}),
         );
         assert!(flags.contains("credential_seeking"), "{flags:?}");
         // Code that only talks about tokens and passwords is not seeking credentials.
         let code = json!({"path": "auth.py", "content": "token = request.headers['Authorization']\npassword_hash = bcrypt(password)"});
-        assert!(detect_flags("write_file", &code).is_empty());
+        assert!(detect_flags("edit", &code).is_empty());
         assert!(
-            detect_flags("bash", &json!({"command": "cat ~/.ssh/id_rsa"}))
+            detect_flags("run", &json!({"command": "cat ~/.ssh/id_rsa"}))
                 .contains("credential_seeking")
         );
     }
@@ -1879,7 +1797,7 @@ mod tests {
     #[test]
     fn every_tool_offered_to_a_role_is_permitted_by_a_law() {
         let laws = Laws::builtin();
-        let mut roles = vec!["builder", "reviewer", "planner", "finance"];
+        let mut roles = vec!["builder", "reviewer", "planner", "auditor"];
         roles.push(crate::settings::ORCHESTRATOR_ROLE);
         for role in roles {
             for tool in crate::tools::offered_names(role) {
@@ -1999,7 +1917,7 @@ mod tests {
             assert!(!laws.permits("builder", "plaza_project_approve"));
             assert!(!laws.permits("builder", "plaza_post_task"));
             assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task"));
-            assert!(laws.permits("builder", "bash"));
+            assert!(laws.permits("builder", "run"));
             // A second ask is answered from the memo, the same way.
             assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_project_approve"));
         }
@@ -2093,7 +2011,7 @@ mod owner_rules_tests {
   forbid tool.call
   principal is Agent
   resource is Tool
-  when resource.name == \"read_file\"
+  when resource.name == \"read\"
 }
 ";
 
@@ -2183,12 +2101,12 @@ mod owner_rules_tests {
     fn an_added_forbid_refuses_the_call_at_once_and_disabling_it_stops_that() {
         let laws = Laws::builtin();
         let input = json!({"path": "a.md"});
-        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(gate(&laws, "read", &input), Ok(Runs::Guest));
         let rule = laws
             .add_rule("No reading files", NO_READS, true, now())
             .expect("compiles");
         assert_eq!(rule.id, "R-001");
-        let reason = gate(&laws, "read_file", &input).unwrap_err();
+        let reason = gate(&laws, "read", &input).unwrap_err();
         assert!(reason.contains("O-001"), "{reason}");
         assert!(
             laws.catalog().iter().any(|info| info.id == "O-001"
@@ -2196,11 +2114,11 @@ mod owner_rules_tests {
                 && info.rule_id == "R-001")
         );
         laws.set_rule_enabled(&rule.id, false, now()).unwrap();
-        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(gate(&laws, "read", &input), Ok(Runs::Guest));
         laws.set_rule_enabled(&rule.id, true, now()).unwrap();
-        assert!(gate(&laws, "read_file", &input).is_err());
+        assert!(gate(&laws, "read", &input).is_err());
         laws.delete_rule(&rule.id).unwrap();
-        assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
+        assert_eq!(gate(&laws, "read", &input), Ok(Runs::Guest));
         assert!(matches!(
             laws.delete_rule("R-001"),
             Err(Failure::NotFound(_))
@@ -2312,7 +2230,7 @@ mod owner_rules_tests {
         let before = laws.rules();
         let again = restored(&laws);
         assert_eq!(again.rules(), before);
-        assert!(gate(&again, "read_file", &json!({"path": "a.md"})).is_err());
+        assert!(gate(&again, "read", &json!({"path": "a.md"})).is_err());
         assert!(
             again
                 .catalog()
@@ -2351,13 +2269,13 @@ mod owner_rules_tests {
     fn a_dry_run_lists_the_recent_calls_a_rule_would_refuse_and_applies_nothing() {
         let laws = Laws::builtin();
         assert!(
-            laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"}))
+            laws.refusal(7, "builder", "read", &json!({"path": "a.md"}))
                 .is_none()
         );
         let run = laws.dry_run(NO_READS, None).expect("compiles");
         assert_eq!(run.laws, vec!["O-001".to_string()]);
         assert_eq!(run.would_refuse.len(), 1, "{:?}", run.would_refuse);
-        assert_eq!(run.would_refuse[0]["tool"], "read_file");
+        assert_eq!(run.would_refuse[0]["tool"], "read");
         assert!(laws.rules().rules.is_empty());
         assert!(matches!(
             laws.dry_run("law \"O-902\" \"x\" {", None),

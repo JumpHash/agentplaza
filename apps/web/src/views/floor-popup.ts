@@ -86,7 +86,7 @@ export function machineCard(
       h(
         'div.machine-agent-names',
         null,
-        ...names.slice(0, FLEET_CARD_AGENTS).map(({ cid, name }) => h('a', { href: href('agents', cid) }, name)),
+        ...names.slice(0, FLEET_CARD_AGENTS).map(({ cid, name }) => h('a', { href: href('sessions', cid) }, name)),
         names.length > FLEET_CARD_AGENTS ? h('span', null, `+${names.length - FLEET_CARD_AGENTS} more`) : null,
       ),
     ),

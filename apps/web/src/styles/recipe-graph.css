@@ -1,0 +1,27 @@
+/* The recipe graph editor: the page's blocks, the side panel with a step's fields and the edges, and the save line. The
+   graph's cards and curves are the Work screen's (styles/proto/work.css, the wk- classes). */
+
+.rg { display: grid; gap: var(--gap); min-width: 0; }
+.rg-head { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.rg-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; color: var(--ink-3); font-size: var(--fs-sm); }
+.rg-meta code { font: 400 12px var(--font-mono); }
+.rg-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--gap); align-items: start; min-width: 0; }
+.rg-block, .rg-side, .rg-foot { display: grid; gap: 10px; min-width: 0; }
+.rg-block h2 { margin: 0; font: 600 11px var(--font); letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+.rg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.rg-sp { flex: 1 1 auto; }
+.rg-form { display: grid; gap: 10px; min-width: 0; }
+.rg-fixed { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.rg-note, .rg-hint { color: var(--ink-3); font-size: var(--fs-sm); }
+.rg-edges { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.rg-edges li { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.rg-edges li > span { display: grid; min-width: 0; font-size: var(--fs-sm); }
+.rg-when { color: var(--ink-3); font-size: var(--fs-xs); }
+.rg-edge-label { fill: var(--ink-2); font: 400 11px var(--font); paint-order: stroke; stroke: var(--sheet); stroke-width: 3px; }
+.rg-error { margin: 0; padding: 8px 10px; border: 1px solid var(--crit); color: var(--crit); background: var(--crit-soft); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rg-toml-box summary { cursor: pointer; color: var(--ink-3); font-size: var(--fs-sm); }
+.rg-toml { margin: 8px 0 0; padding: 12px 14px; max-height: 50vh; overflow: auto; background: var(--paper); border: 1px solid var(--rule); font: var(--type-code); white-space: pre; }
+
+@media (max-width: 900px) {
+  .rg-main { grid-template-columns: minmax(0, 1fr); }
+}

@@ -29,7 +29,6 @@ mod http;
 mod mock;
 mod openai;
 mod responses;
-pub mod s3;
 mod sigv4;
 #[cfg(test)]
 mod testutil;
@@ -42,6 +41,7 @@ use std::time::{Duration, Instant};
 use apz_proto::chat::{Block, ChatRequest, ChatResponse, Delta, Message};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 pub use config::{Auth, Preset, ProviderConfig, ProviderKind, lists_training_model, presets};
 pub use decisions::{
@@ -322,6 +322,8 @@ impl Gateway {
         let req = match &name.effort {
             Some(effort) if req.effort.as_ref() != Some(effort) => {
                 pinned = ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     effort: Some(effort.clone()),
                     ..req.clone()
                 };
@@ -463,6 +465,8 @@ impl Gateway {
             },
         };
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: format!("{provider_id}/{model}"),
             system: None,
             messages: vec![Message::user_text("Reply with the single word: ok")],
@@ -781,6 +785,24 @@ pub(crate) fn own_meta<'m>(meta: &'m Option<Value>, tag: &str) -> Option<&'m Val
 }
 
 /// The number of tool calls already in a conversation (for synthesized ids).
+/// The `prompt_cache_key` a provider that takes one is sent: a digest of the system parts marked `cache`, which every
+/// call of a project shares, so their calls share the key and its cache. `None` when no part is cached.
+pub(crate) fn prompt_cache_key(req: &ChatRequest) -> Option<String> {
+    let mut digest = Sha256::new();
+    let mut cached = false;
+    for part in req.system_parts.iter().filter(|part| part.cache) {
+        digest.update(part.text.as_bytes());
+        digest.update([0]);
+        cached = true;
+    }
+    cached.then(|| {
+        digest.finalize()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    })
+}
+
 pub(crate) fn tool_use_count(messages: &[Message]) -> usize {
     messages
         .iter()
@@ -846,6 +868,8 @@ mod tests {
             .secrets(source)
             .build();
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "claude/m".to_string(),
             ..crate::testutil::request("hi")
         };
@@ -865,6 +889,8 @@ mod tests {
             .env(|_| Some("PROCESS-VALUE-4417".to_string()))
             .build();
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "claude/m".to_string(),
             ..crate::testutil::request("hi")
         };
@@ -881,6 +907,8 @@ mod tests {
             .secrets(source)
             .build();
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "claude/m".to_string(),
             ..crate::testutil::request("hi")
         };
@@ -1051,6 +1079,8 @@ mod tests {
             Auth::None,
         )]);
         let req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "o/m".into(),
             ..request("hi")
         };
@@ -1089,6 +1119,8 @@ mod tests {
         let err = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "o/gpt-6-luna".into(),
                     ..request("hi")
                 },
@@ -1107,6 +1139,8 @@ mod tests {
         let missing = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "g/gemini-3-pro".into(),
                     ..request("hi")
                 },
@@ -1120,6 +1154,8 @@ mod tests {
         assert!(matches!(
             gw.complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "nope/m".into(),
                     ..request("hi")
                 },

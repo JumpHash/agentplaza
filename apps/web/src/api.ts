@@ -129,9 +129,9 @@ export interface Agent {
   cid: number; role: string; role_label: string; tier: Tier; status: AgentStatus;
   /** Where the model comes from: the agent's own override, its project's settings, the plaza's role model, the default. */
   model: string; model_override: string | null; model_source: 'agent' | 'project' | 'role' | 'default';
-  /** The project it works on (null: on the bench, or the orchestrator, which works on every project), since when, and
-   * why it does not work now (on the bench, or its project paused), if it does not. */
-  project?: string | null; joined_ms?: number | null; held?: string | null;
+  /** The project of its live session (null: no live session, or the orchestrator, which works on every project), and why
+   * its work waits now (its project is paused or over), if it does. */
+  project?: string | null; held?: string | null;
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
   usage: Usage; work: WorkItem | null; queue: number;
   kind: string;
@@ -281,7 +281,7 @@ export interface ForkResult { forks: ForkedAgent[]; checkpoint: VmCheckpoint }
 export interface VmRestoreResult { ok: boolean; safety: VmCheckpoint }
 
 export interface Task {
-  id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
+  id: string; state: string; goal: string; acceptance: string | null; role: string | null;
   assignee_id: string | null; agent_cid: number | null; note: string | null; outcome: string | null;
   created_at: number; updated_at: number;
   /** The project it is for, or null. */
@@ -340,38 +340,7 @@ export interface ProjectSettings {
 }
 /** A setting the project's agents get, and where it comes from. */
 export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
-/** A project's budget: its own `town_budget` account (once credits are set aside), and the plaza's. */
-export interface ProjectBudget { project: string; own: boolean; balance: number; plaza: number }
-export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: ProjectBudget }
-/** An agent that holds tasks of a project from before membership, with those tasks. */
-export type SuggestedMember = Agent & { tasks: string[] };
-/** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
- * work ended), or a plaza notice (a project started, a task ended). */
-export interface OwnerMessage {
-  from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped';
-  /** The files the owner attached (api-projects.ts `attach`). */
-  attachments?: { id: string; name: string; size: number; type: string }[];
-}
-export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
-/** One role on a draft's team: `count` agents, of which `bench` (guest CIDs) come from the bench and the rest are spawned. */
-export interface DraftSeat { role: string; count: number; bench?: number[]; model?: string }
-export interface ProjectDraft {
-  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[]; team: DraftSeat[];
-  budget?: number; settings?: ProjectSettings; updated_by: 'owner' | 'orchestrator'; updated_ms: number; started_ms?: number;
-  /** What still stops Start. */
-  problems: string[];
-}
-export interface OwnerConversation {
-  id: string; title: string; cid: number; messages: OwnerMessage[]; works: number[]; created_ms: number; updated_ms: number;
-  archived: boolean; project?: string; draft?: ProjectDraft; draft_seen: number; thread: string;
-  /** The owner's messages still waiting for an answer, by work item. */
-  pending: number[];
-}
-export interface OwnerConversationSummary {
-  id: string; title: string; cid: number; created_ms: number; updated_ms: number; archived: boolean; project: string | null;
-  draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
-}
-export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[]; joined: number[]; spawned: { role: string; count: number }[] }
+export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue> }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface LawInfo {
@@ -391,6 +360,10 @@ export interface LawRules { rules: LawRule[]; overrides: LawOverride[]; strict_p
 export interface Diagnostic { file: string; line: number; column: number; message: string }
 export interface WouldRefuse { cid: number; role: string; tool: string; at_ms: number; laws: string[] }
 export interface LawCheck { ok: boolean; diagnostics: Diagnostic[]; laws: string[]; would_refuse: WouldRefuse[] }
+/** One saved version of the owner's standing rules (9.8). */
+export interface StandingVersion { version: number; author: string; at_ms: number }
+/** The owner's standing rules: the text in force (the newest version's), its version and its history, oldest first. */
+export interface StandingRules { text: string; version: number | null; author: string | null; updated_ms: number | null; versions: StandingVersion[]; saved?: boolean }
 export interface RoleDef {
   id: string; title: string; purpose: string; responsibilities: string[]; deliverables: string[]; collaboration: string;
   boundaries: string[]; tools: string[]; budget: number; model: string; prompt: string; created_by: string; created_ms: number;
@@ -405,23 +378,6 @@ export interface BoardComment { id: string; post: string; agent_cid: number | nu
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[]; owner?: boolean; project?: string | null; mentions?: string[] }
 /** The board as the list endpoint answers it: the posts (newest first), and whether its deliveries are paused. */
 export interface BoardView { posts: BoardPost[]; total: number; limit: number; truncated: boolean; unread: { agent_cid: number; count: number }[]; project: string | null; paused: boolean; paused_all: boolean; paused_projects: string[] }
-export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
-export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
-/** One leg of a journal entry: a debit is negative, a credit positive. `account` is the account id. */
-export interface Posting { account: number; amount: number; kind: string; owner_ref: string }
-/** A posted entry. `amount` is the size of the movement; `postings` say where it went. Newest first by `id`. */
-export interface JournalEntry { id: number; kind: string; amount: number; created_at: number; memo: string; posted_by: string; postings: Posting[]; task_id: string | null; root_task: string | null }
-export interface JournalPage { entries: JournalEntry[]; total: number; limit: number; truncated: boolean; next_before: number | null }
-export interface JournalQuery { before?: number; limit?: number; kind?: string; wallet?: number; task?: string }
-/** One bucket of the series: the flows inside [at_ms, end_ms) and the balances at its end. */
-export interface TreasuryPoint {
-  at_ms: number; end_ms: number; entries: number;
-  minted: number; escrowed: number; paid: number; refunded: number; fined: number; spent: number;
-  by_kind: Record<string, number>;
-  plaza_budget_end: number; circulating_end: number; treasury_end: number;
-}
-export interface TreasurySeries { from_ms: number; to_ms: number; bucket_ms: number; points: TreasuryPoint[] }
-export interface Wallet { cid: number; balance: number }
 export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
@@ -431,7 +387,7 @@ export interface ProcessUsage { name: string; pid: number; cpu_percent: number; 
 /** An agent VM's process, and its guest memory as the balloon reports it. */
 export interface VmUsage extends ProcessUsage { run: string; vm: number; cid: number | null; role: string | null; usable_mib: number | null; guest_used_mib: number | null }
 export interface PlazaUsage {
-  /** apid, the hub (vsockd), noded, garage — whichever run on this machine. */
+  /** apid, the hub (vsockd), noded — whichever run on this machine. */
   services: ProcessUsage[];
   vms: VmUsage[];
   total: { cpu_percent: number; rss_mib: number; services_cpu_percent: number; services_rss_mib: number; vms_cpu_percent: number; vms_rss_mib: number };
@@ -481,9 +437,7 @@ export type UnfurlCard = { kind: string; url?: string | null } & Record<string, 
 /** A deliverable in the Library: a file an agent handed in with deliver_file. */
 export interface Deliverable {
   id: string; name: string; title: string; description: string | null; content_type: string; size: number;
-  author_cid: number; author: string; task: string | null; created_ms: number; sha256: string;
-  /** Where it is stored: "garage" (S3) or "local". */
-  store: string;
+  author_cid: number; author: string; task: string | null; created_ms: number; hash: string;
   /** A deliverable the owner asked for, or a file an agent shared. */
   kind: 'deliverable' | 'shared';
   /** public: every agent (and the board); private: its author, the agents in `allowed`, and the owner. */
@@ -557,8 +511,6 @@ export type Takeover = 'agent_waits' | 'release_lease' | 'keep_working_pointer_p
 export interface StationSettings {
   takeover: Takeover; record: boolean; retention_days: number; record_fps: number;
   record_takeovers: boolean; work_folder: string; snapshot_reset: boolean;
-  /** What an hour of a lease costs the lease's task, in plaza credits (1 credit is $0.001); 0 is free. */
-  rate_per_hour: number;
 }
 export type LeaseKind = 'shared' | 'pixel';
 export type LeaseState = 'queued' | 'opening' | 'active';
@@ -672,11 +624,11 @@ export const api = {
   saveSettings: (s: Settings) => put<Settings>('/v1/settings', s),
 
   agents: readable<Agent[]>('/v1/agents'),
-  /** A project's agents, or the bench (`bench`: the agents that could join a project and are on none). */
+  /** The agents whose live session is on `project`. */
   agentsOf: (project: string) => get<Agent[]>(`/v1/agents${query({ project })}`),
   agent: (cid: number) => get<Agent>(`/v1/agents/${cid}`),
-  /** Spawns `count` agents of `role`; with a `project`, they join it at their first hello. */
-  spawnAgents: (role: string, count: number, model?: string, project?: string) => post<unknown>('/v1/agents', { role, count, model, project }),
+  /** Spawns `count` agents of `role`, on `node` when one is named. */
+  spawnAgents: (role: string, count: number, model?: string, node?: string) => post<unknown>('/v1/agents', { role, count, model, node }),
   setAgentModel: (cid: number, model: string | null) => patch<Agent>(`/v1/agents/${cid}`, { model }),
   killAgent: (cid: number) => del<unknown>(`/v1/agents/${cid}`),
   /** `attachments`: ids from api-projects.ts `attach`, which the agent may read from this turn on. */
@@ -693,7 +645,7 @@ export const api = {
   tasksWhere: readableAt((q: { project?: string; ready?: boolean }) => `/v1/tasks${query({ project: q.project, ready: q.ready === undefined ? undefined : String(q.ready) })}`, (r: { tasks: Task[] }) => r.tasks),
   task: readableAt<[string], Task>((id) => `/v1/tasks/${id}`),
   /** Every task belongs to a project. */
-  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; budget?: number; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
+  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
   /** Moves a task from before projects into one, with the tasks linked to it. */
   moveTask: (id: string, project: string) => post<{ project: string; moved: Task[] }>(`/v1/tasks/${encodeURIComponent(id)}/move`, { project }),
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
@@ -710,16 +662,6 @@ export const api = {
     post<{ project: string | null; on: boolean; changed: boolean; paused: boolean; paused_all: boolean; paused_projects: string[] }>('/v1/board/pause', { on, project }),
   /** The thread as a download: Markdown or JSON, for a project or the whole board. */
   boardExportUrl: (format: 'md' | 'json', project?: string) => `/v1/board/export${query({ format, project })}`,
-  treasury: () => get<Treasury>('/v1/treasury'),
-  /** Entries newest first. Pass the previous page's `next_before` to load older ones. */
-  treasuryJournal: (q: JournalQuery = {}) =>
-    get<JournalPage>(`/v1/treasury/journal${query({ before: q.before, limit: q.limit, kind: q.kind, wallet: q.wallet, task: q.task })}`),
-  /** Flows per bucket over [from, to) in unix ms, empty buckets included. Day buckets above 2000 buckets are refused. */
-  treasurySeries: (from: number, to: number, bucket: 'hour' | 'day') => get<TreasurySeries>(`/v1/treasury/series${query({ from, to, bucket })}`),
-  treasuryWallets: () => get<Wallet[]>('/v1/treasury/wallets'),
-  mintBudget: (amount: number) => post<unknown>('/v1/treasury/mint', { amount }),
-  fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
-
 
   machine: () => get<Machine>('/v1/machine'),
   machines: readable<MachineNode[]>('/v1/machines'),
@@ -739,29 +681,10 @@ export const api = {
   pauseProject: (id: string) => post<Project>(`/v1/projects/${id}/pause`),
   resumeProject: (id: string) => post<Project>(`/v1/projects/${id}/resume`),
   archiveProject: (id: string) => post<Project>(`/v1/projects/${id}/archive`),
-  projectMembers: (id: string) => get<Agent[]>(`/v1/projects/${id}/members`),
-  addMember: (id: string, cid: number) => post<Agent>(`/v1/projects/${id}/members`, { cid }),
-  removeMember: (id: string, cid: number) => del<unknown>(`/v1/projects/${id}/members/${cid}`),
-  suggestedMembers: (id: string) => get<SuggestedMember[]>(`/v1/projects/${id}/suggested-members`),
   projectSettings: (id: string) => get<ProjectSettings>(`/v1/projects/${id}/settings`),
   /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
   patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),
   effectiveSettings: (id: string) => get<EffectiveSettings>(`/v1/projects/${id}/settings/effective`),
-  projectBudget: (id: string) => get<ProjectBudget>(`/v1/projects/${id}/budget`),
-  /** Positive sets credits aside from the plaza's budget; negative gives some back. */
-  moveProjectBudget: (id: string, credits: number) => post<ProjectBudget>(`/v1/projects/${id}/budget`, { credits }),
-  ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
-  ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
-  /** Starts a conversation with the orchestrator, `text` its first message. */
-  openConversation: (text: string, attachments: string[] = []) => post<OwnerConversation>('/v1/owner/conversations', attachments.length ? { text, attachments } : { text }),
-  sayInConversation: (id: string, text: string, attachments: string[] = []) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, attachments.length ? { text, attachments } : { text }),
-  patchConversation: (id: string, change: { title?: string; archived?: boolean }) => patch<OwnerConversation>(`/v1/owner/conversations/${id}`, change),
-  conversationTranscript: (id: string, after = 0, limit = 1000) => get<Entry[]>(`/v1/owner/conversations/${id}/transcript${query({ after, limit })}`),
-  conversationDraft: (id: string) => get<ProjectDraft>(`/v1/owner/conversations/${id}/draft`),
-  editDraft: (id: string, edit: Partial<Omit<ProjectDraft, 'problems' | 'updated_by' | 'updated_ms' | 'started_ms'>> & { revision: number }) =>
-    patch<OwnerConversation>(`/v1/owner/conversations/${id}/draft`, edit),
-  /** Starts the drafted project at `revision`, the one the owner looked at. */
-  startDraft: (id: string, revision: number) => post<OwnerConversation & { started: StartedProject }>(`/v1/owner/conversations/${id}/start`, { revision }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
   loops: () => get<HarnessLoop[]>('/v1/loops'),
   startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
@@ -775,6 +698,9 @@ export const api = {
   setLawRuleEnabled: (id: string, enabled: boolean) => post<LawRule>(`/v1/laws/rules/${id}/${enabled ? 'enable' : 'disable'}`),
   deleteLawRule: (id: string) => del<{ deleted: string }>(`/v1/laws/rules/${id}`),
   checkLaw: (source: string, id?: string) => post<LawCheck>('/v1/laws/check', id ? { source, id } : { source }),
+  /** The standing rules every session's prompt and every engine's instruction file carries (`/v1/rules/standing`). */
+  standingRules: () => get<StandingRules>('/v1/rules/standing'),
+  saveStandingRules: (text: string) => put<StandingRules>('/v1/rules/standing', { text }),
   /** Switching a constitutional law off needs `confirm` set to its exact id (the API answers 409 without it). */
   setLawOverride: (law: string, disabled: boolean, reason: string, confirm?: string) => put<{ law: string; override: LawOverride | null }>(`/v1/laws/overrides/${law}`, { disabled, reason, confirm }),
   plazaState: () => get<PlazaState>('/v1/plaza/state'),
@@ -992,8 +918,8 @@ export interface JoinCode { id: string; label: string; created_ms: number; expir
 
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used' | 'withdrawn';
 /**
- * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call) or "payment" (a held
- * payment). For a tool call `subject` is the tool and `detail` its input.
+ * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call), "review", "deploy" or
+ * "artifact.share". For a tool call `subject` is the tool and `detail` its input.
  */
 export interface Approval {
   id: string; cid: number; tool: string; input: unknown; created_ms: number; state: ApprovalState; reason: string | null;
@@ -1511,10 +1437,10 @@ export interface SkillSummary {
 }
 /** The editable parts of a skill (PUT /v1/skills/{id}): its title and tags. */
 export interface SkillMeta { title: string; tags: string[] }
-export interface SkillFile { path: string; sha256: string; size: number; executable: boolean }
+export interface SkillFile { path: string; hash: string; size: number; executable: boolean }
 export interface SkillVersionMeta {
   version: number; note: string; author: string; created_ms: number; score: number; errors: number; warnings: number;
-  infos: number; rules_version: number; sha256: string; file_count: number; total_bytes: number; source_commit: string | null;
+  infos: number; rules_version: number; hash: string; file_count: number; total_bytes: number; source_commit: string | null;
 }
 /** A whole version. `stale` when scored under an older rule set; `recheck` is then today's report. */
 export interface SkillVersion extends SkillVersionMeta {
@@ -1529,8 +1455,8 @@ export type SkillAction = 'create' | 'version' | 'publish' | 'unpublish' | 'edit
 export interface SkillEvent { id: number; skill_id: string; action: SkillAction; version: number | null; actor: string; at_ms: number }
 export interface SkillRule { id: string; severity: SkillSeverity; title: string; why: string }
 export interface SkillRules { rules_version: number; rules: SkillRule[]; template: string }
-/** A file to save: new bytes (base64), or an unchanged file by its sha256. */
-export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { sha256: string });
+/** A file to save: new bytes (base64), or an unchanged file by its hash. */
+export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { hash: string });
 /** An import preview (15 minutes): the skills found, each checked. `exists` names a live skill with the same name. */
 export interface SkillPreview {
   preview_id: string; source: SkillSource; expires_ms: number;

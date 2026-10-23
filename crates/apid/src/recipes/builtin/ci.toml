@@ -1,0 +1,38 @@
+# The CI recipe (PLAN 21.3): the checks of a change, each in a test fork. Lint and the build start together; the
+# selected tests run once the build is green. The gate reads every result (4.5 runs them).
+id = "ci"
+name = "Checks"
+version = 1
+inputs = ["change"]
+outputs = ["checks"]
+triggers = ["change.sealed"]
+
+[[steps]]
+id = "lint"
+engine = "check"
+gate = ["passed"]
+
+[[steps]]
+id = "build"
+engine = "check"
+gate = ["passed"]
+
+[[steps]]
+id = "tests"
+engine = "check"
+gate = ["passed", "tests green"]
+
+[[steps]]
+id = "audit"
+engine = "check"
+gate = ["passed"]
+
+[[steps]]
+id = "scan"
+engine = "check"
+gate = ["passed", "no findings"]
+
+[[edges]]
+from = "build"
+to = "tests"
+when = "passed"

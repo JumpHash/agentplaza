@@ -1,0 +1,17 @@
+meta {
+  name: Refuse a session state the hub does not know
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/sessions?state=sleeping
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

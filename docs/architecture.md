@@ -16,7 +16,6 @@ this page disagree, fix one of them in the same change. The
 | `dispatchd` | `crates/dispatchd` | — | The fleet dispatcher, a separate binary: each pass reads the task ledger and the fleet, claims open tasks whose role has a connected agent and a permitted workflow, drives that agent through the workflow, and finishes the task with its artifacts (`--once` runs one pass). |
 | `apz-workstation` | `crates/apz-workstation` | — (dials the hub) | The daemon on a machine agents operate through the hub: joins with a station code, holds the link open, serves files, terminals, runs, the screen, input and STOP ALL. See "Workstations". |
 | `apz-link` | `crates/apz-link` | — | Joins a machine to a hub with a join code and carries the hub's commands to its node (`agentplaza node join`). |
-| `mcp-relay` | `crates/mcp-relay` | — (container) | The pipe between an MCP server's container and the hub's egress proxy. |
 | `vmctl` | `crates/vmctl` | — | Spawns N microVMs from the command line. |
 
 Library crates the daemons share: `apz-proto` (wire and chat types, no I/O),
@@ -43,7 +42,7 @@ without the flag (tests, development) keeps an open API and says so in its log.
 | console | where | notes |
 |---|---|---|
 | web | `apps/web` | TypeScript, esbuild; CI builds `dist/` once per commit (it is not committed). Served by `apid`. CSP; text is set with `textContent`, or with `innerHTML` only for a fixed template or values passed through `esc()`. Each such site is listed in the innerHTML test in `apps/web/test/tests.ts`. |
-| desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. "Start locally" and "Host a hub" set up the container for Postgres 17. |
+| desktop | `apps/desktop` | Native app (iced + wgpu), at parity with the web console. |
 | CLI and terminal screen | `apps/cli` | The `agentplaza` command: every console feature as a command, `agentplaza chat` to talk a project into being with the orchestrator, `agentplaza tui` for the plaza live in a terminal, `agentplaza node` to join a machine. |
 
 All three use the same `apid` API. The **Machines** screen's 3D (the grid of machines and each machine's own view)
@@ -300,15 +299,12 @@ them: `POST /v1/unfurl` (a batch) and `GET /v1/unfurl` (one).
 
 Two directions, both off until the owner turns them on.
 
-- **MCP servers the plaza uses.** The owner adds a server (a container image for
-  stdio, or an https URL) under `/v1/mcp/servers`. Each tool it offers is a plaza
-  tool named `mcp__<id>__<tool>`, offered to the agents whose role and node pass
-  the server's access rule. The hub makes every call; agents never hold a server's
-  credentials, which resolve through the vault for the calling agent. A stdio server
-  is a container on the hub's host with no route out: its only network path is
-  the egress proxy (port 19128 by default, `--mcp-proxy-port`), reached through the
-  `mcp-relay` container. The owner's configuration starts it; an agent cannot pick
-  its command.
+- **MCP servers the plaza uses.** The owner adds a server (a pinned npm, PyPI or binary package for stdio, or an https
+  URL) under `/v1/mcp/servers`. Each tool it offers is a plaza tool named `mcp__<id>__<tool>`, offered to the agents
+  whose role and node pass the server's access rule. The hub makes every call; agents never hold a server's
+  credentials, which resolve through the vault for the calling agent. A stdio server runs under the OS sandbox with no
+  route out: its only network path is the hub's egress proxy (port 19128 by default, `--mcp-proxy-port`), with a
+  credential per server. The owner's configuration starts it; an agent cannot pick its command.
 - **The hub as an MCP server.** `POST /mcp` speaks JSON-RPC 2.0 over Streamable HTTP
   (JSON-response form), for clients such as Claude Code. Each request in `secure`
   mode (the default) carries a bearer token (`apz_mcp_...`) with one of three
@@ -754,21 +750,15 @@ Guest driver: `scripts/mk-initrd.sh` puts the guest's `virtio_balloon` (with the
 ## State
 
 `apid --state-dir DIR` (default: the platform's state directory, see `apz-os`)
-holds the files that are not in the database: `providers.json`, `settings.json`,
-`vault.json` and `vault-audit.jsonl` (the vault), `hub.json` (the owner token's
-hash, the public URL and the name; mode 0600), `owner-token` (mode 0600: the one
-copy of the owner token, written on first start and read on this machine by the
+holds the state of record in `plaza.db`, `transcripts.db` and `metrics.db`, and the files that are keys or exports:
+`owner-token` (mode 0600: the one copy of the owner token, written on first start and read on this machine by the
 desktop app and the CLI; never logged), `internal.token`, `egress-ca.pem` and `egress-ca.key` (the
-egress CA, created on first use; the key is mode 0600), `egress-inject.json` (the owner's egress credential rules),
-`e2b-keys.json` and `e2b-sandboxes.json` (the E2B keys, stored as hashes, and the sandboxes; mode 0600),
-`members.json` (the project each agent works on), and `tls/` when the hub serves HTTPS. `settings.json` also holds the sleep and checkpoint settings: `idle_sleep_min`,
+egress CA, created on first use; the key is mode 0600), `e2b-keys.json` (the E2B keys, stored as hashes; mode 0600),
+`tasks-archive.jsonl` (the tasks the ledger moved out), `blobs/` (the object store), and `tls/` when the hub serves HTTPS. `settings.json` also holds the sleep and checkpoint settings: `idle_sleep_min`,
 `sleep_never_roles` and `vm_auto_checkpoints`.
 
-**Plaza state.** With `APZ_DATABASE_URL` set (Postgres 17, the schema migrated on
-start), the plaza's components, transcripts, infractions and the IDE audit are
-kept in the database. Without it, the components stay in their files under the
-state directory, and transcripts, infractions and the IDE audit go to files there.
-The desktop app's "Start locally" sets up the database container.
+**Plaza state.** The hub keeps its state in SQLite files in the state folder (`plaza.db`, `transcripts.db`,
+`metrics.db`). No database server is needed.
 
 **VM snapshots (node).** `noded` keeps them under `--snapshot-dir` (default `<persist-dir>/snapshots`; a node with
 neither refuses snapshot operations), one directory per guest CID, plus the warm templates:
@@ -788,8 +778,8 @@ described in [`design/egress-credentials.md`](design/egress-credentials.md), and
 The plaza measures itself. `apz-metrics` is the core: series, histograms, compressed points, rollups, queries, alert
 rules, forecasts and traces, with no I/O. `apz-metrics-view` is the Metrics view's model. The hub composes every tab
 as a list of typed panels, and both consoles draw the same panels, so neither decides what a tab shows. `apid`
-(`crates/apid/src/metrics`) records the hub's own numbers, ingests the nodes' batches, stores them in day-partitioned
-Postgres tables, raises alerts and serves `/v1/metrics/*`. `noded` (`crates/noded/src/metrics.rs`) samples its machine
+(`crates/apid/src/metrics`) records the hub's own numbers, ingests the nodes' batches, stores them in
+`metrics.db`, raises alerts and serves `/v1/metrics/*`. `noded` (`crates/noded/src/metrics.rs`) samples its machine
 and its VMs and sends each batch with the node's heartbeat. Only the owner reads metrics, and agents never reach them.
 The scopes, the tables and their retention, the API, the budgets, the alerts, the traces and the outside endpoints are
 in [`design/metrics.md`](design/metrics.md).
@@ -805,5 +795,4 @@ runs it daily as a systemd user timer.
 Tests: each crate keeps the tests that pin a behaviour a user or another
 crate depends on — protocol shapes, policy decisions, provider translations,
 security boundaries, one end-to-end path per feature. No tests of private
-helpers or of the standard library. Database tests run against a throwaway
-Postgres 17 container (`scripts/test-db.sh`), never the live `APZ_DATABASE_URL`.
+helpers or of the standard library. Database tests need no database server: they use throwaway SQLite files, never the owner's state folder.

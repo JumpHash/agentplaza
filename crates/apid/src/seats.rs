@@ -1,19 +1,21 @@
-//! Seats (PLAN 4.2, 7.2) and the built-in `change` recipe (Engine 0.4).
+//! Seats (PLAN 4.2, 7.2) and the change recipe's runs (Engine 0.4, 4.1).
 //!
-//! A seat is a role in a task: `builder`, `reviewer`, … A task's recipe decides its seats; each seat serves one step
-//! and is filled by one session at a time. Messages are addressed to seats, not sessions (threads.rs), so direct talk
-//! survives sessions ending. Seats replace the bench and project membership: a session belongs to its task's project
-//! by construction.
+//! A seat is a step of a task's recipe: `builder`, `reviewer`, … A task's recipe (the built-in `change` recipe, or a
+//! project's copy) gives its seats: one per step, named by the step's seat. Each seat serves its step and is filled by
+//! one session at a time. Messages are addressed to seats, not sessions (threads.rs), so direct talk survives sessions
+//! ending. A session belongs to its task's project by construction.
 //!
-//! The minimal `change` recipe runs every task until the recipe engine (phase 4) brings its own: the builder's step,
-//! then a review by a reviewer whose model differs from the builder's (W27), then done; a review that fails sends the
-//! task back to the builder with the findings, at most [`CHANGE_ROUNDS`] times before the task fails and the planner is
-//! told.
+//! What a step's outcome does to the task is decided by the recipe's walk (recipes/graph.rs): the caller passes the
+//! walk's moves to [`Seats::ended`], and the seats follow them: a step that is ready starts, a loop rewinds to its builder
+//! with what the review said, and the run's end or failure ends the task. A crashed session is the seat's own business:
+//! it goes again, at most [`ATTEMPTS`] times.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
+
+use crate::recipes::{Move, Recipe, model::Model};
 
 /// Where a seat is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -41,52 +43,8 @@ pub enum ModelPolicy {
     Differ,
 }
 
-/// One step of a built-in recipe.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Step {
-    pub id: &'static str,
-    pub seat: &'static str,
-    pub role: &'static str,
-    pub model_policy: ModelPolicy,
-}
-
-/// A built-in recipe: its steps in order, and how many times a failed later step may send the task back to the first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct Recipe {
-    pub id: &'static str,
-    pub steps: &'static [Step],
-    pub rounds: u32,
-}
-
-/// How many times a review may send a change back to its builder.
-pub const CHANGE_ROUNDS: u32 = 3;
 /// How many sessions a seat may go through for one round (a session that failed to start or died).
 pub const ATTEMPTS: u32 = 3;
-
-/// The minimal change recipe: build, then a review on another model.
-pub const CHANGE: Recipe = Recipe {
-    id: "change",
-    steps: &[
-        Step {
-            id: "build",
-            seat: "builder",
-            role: "builder",
-            model_policy: ModelPolicy::Any,
-        },
-        Step {
-            id: "review",
-            seat: "reviewer",
-            role: "reviewer",
-            model_policy: ModelPolicy::Differ,
-        },
-    ],
-    rounds: CHANGE_ROUNDS,
-};
-
-/// The built-in recipe named `id`.
-pub fn recipe(id: &str) -> Option<&'static Recipe> {
-    [&CHANGE].into_iter().find(|r| r.id == id)
-}
 
 /// One seat of a task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
@@ -96,7 +54,9 @@ pub struct Seat {
     pub task: String,
     #[table(key)]
     pub name: String,
+    /// The recipe the task runs (its id).
     pub recipe: String,
+    /// The recipe step the seat serves.
     pub step: String,
     pub role: String,
     pub model_policy: ModelPolicy,
@@ -141,25 +101,40 @@ impl Seats {
         self.seats.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Gives `task` the seats of `recipe`, the first step's ready. A task that has seats keeps them.
-    pub fn open(&self, task: &str, recipe: &Recipe, now_ms: u64) -> Vec<Seat> {
+    /// Gives `task` the seats of `recipe`, one per step, the steps that start the recipe ready. A task that has seats
+    /// keeps them. Errors when a step's seat cannot be run yet (a fan-out, or a model that is pinned).
+    pub fn open(&self, task: &str, recipe: &Recipe, now_ms: u64) -> Result<Vec<Seat>, String> {
         let mut seats = self.lock();
         if seats.keys().any(|(t, _)| t == task) {
-            return seats.values().filter(|s| s.task == task).cloned().collect();
+            return Ok(seats.values().filter(|s| s.task == task).cloned().collect());
         }
         let mut out = Vec::new();
-        for (i, step) in recipe.steps.iter().enumerate() {
+        for step in &recipe.steps {
+            let Some(role) = &step.role else {
+                return Err(format!("step {} has no role: its engine runs it", step.id));
+            };
+            if step.fan_out != crate::recipes::model::Fan::Count(1) {
+                return Err(format!(
+                    "step {}: a seat runs one item (fan-out comes later)",
+                    step.id
+                ));
+            }
+            let model_policy = match &step.model {
+                Model::Name(m) if m == "any" => ModelPolicy::Any,
+                Model::Name(m) if m == "differ" => ModelPolicy::Differ,
+                _ => return Err(format!("step {}: a seat's model is any or differ", step.id)),
+            };
             let seat = Seat {
                 task: task.to_string(),
-                name: step.seat.to_string(),
-                recipe: recipe.id.to_string(),
-                step: step.id.to_string(),
-                role: step.role.to_string(),
-                model_policy: step.model_policy,
-                state: if i == 0 {
-                    SeatState::Ready
-                } else {
+                name: step.seat_name().to_string(),
+                recipe: recipe.id.clone(),
+                step: step.id.clone(),
+                role: role.clone(),
+                model_policy,
+                state: if recipe.has_forward_edge_into(&step.id) {
                     SeatState::Waiting
+                } else {
+                    SeatState::Ready
                 },
                 session: None,
                 last_model: None,
@@ -171,7 +146,7 @@ impl Seats {
             seats.insert((task.to_string(), seat.name.clone()), seat.clone());
             out.push(seat);
         }
-        out
+        Ok(out)
     }
 
     pub fn get(&self, task: &str, name: &str) -> Option<Seat> {
@@ -184,12 +159,7 @@ impl Seats {
     pub fn of_task(&self, task: &str) -> Vec<Seat> {
         let seats = self.lock();
         let mut out: Vec<Seat> = seats.values().filter(|s| s.task == task).cloned().collect();
-        let order = |s: &Seat| {
-            recipe(&s.recipe)
-                .and_then(|r| r.steps.iter().position(|st| st.id == s.step))
-                .unwrap_or(usize::MAX)
-        };
-        out.sort_by_key(order);
+        out.sort_by_key(|s| s.step.clone());
         out
     }
 
@@ -232,9 +202,10 @@ impl Seats {
         Some(seat.clone())
     }
 
-    /// The session of a seat ended. `passed`: its step's gate held (the builder said done; the reviewer passed it).
-    /// `crashed`: the session died or never started (another attempt, not a failed step). `said` is what it reported
-    /// (a failed review's findings go to the builder's next session).
+    /// The session of a seat ended. `crashed`: the session died or never started (another attempt, not a failed step);
+    /// otherwise `passed` says whether the step passed and `moves` are what the recipe's walk did with that (the
+    /// seats follow them). `said` is what the session reported (a failed review's findings go to the builder's next
+    /// session).
     pub fn ended(
         &self,
         task: &str,
@@ -243,12 +214,11 @@ impl Seats {
         crashed: bool,
         said: &str,
         now_ms: u64,
+        moves: &[Move],
     ) -> Option<Next> {
         let mut seats = self.lock();
         let key = (task.to_string(), name.to_string());
         let seat = seats.get(&key)?.clone();
-        let recipe = recipe(&seat.recipe)?;
-        let index = recipe.steps.iter().position(|s| s.id == seat.step)?;
         let set =
             |seats: &mut BTreeMap<(String, String), Seat>, name: &str, f: &dyn Fn(&mut Seat)| {
                 if let Some(s) = seats.get_mut(&(task.to_string(), name.to_string())) {
@@ -267,50 +237,61 @@ impl Seats {
             set(&mut seats, name, &|s| s.state = SeatState::Ready);
             return Some(Next::Retry(name.to_string()));
         }
-        if passed {
-            set(&mut seats, name, &|s| s.state = SeatState::Done);
-            return match recipe.steps.get(index + 1) {
-                Some(next) => {
-                    set(&mut seats, next.seat, &|s| {
-                        s.state = SeatState::Ready;
-                        s.attempts = 0;
-                    });
-                    Some(Next::Ready(next.seat.to_string()))
-                }
-                None => Some(Next::Done),
-            };
-        }
-        // The step failed. The first step failing is the task failing; a later step sends it back to the first.
-        if index == 0 {
-            set(&mut seats, name, &|s| s.state = SeatState::Failed);
-            return Some(Next::Failed(format!(
-                "the {} step failed: {said}",
-                seat.step
-            )));
-        }
-        let first = recipe.steps[0].seat;
-        let round = seats
-            .get(&(task.to_string(), first.to_string()))
-            .map_or(1, |s| s.round);
-        if round >= recipe.rounds {
-            set(&mut seats, name, &|s| s.state = SeatState::Failed);
-            return Some(Next::Failed(format!(
-                "the {} step failed {} times; last: {said}",
-                seat.step, recipe.rounds
-            )));
-        }
         set(&mut seats, name, &|s| {
-            s.state = SeatState::Waiting;
-            s.attempts = 0;
+            s.state = if passed {
+                SeatState::Done
+            } else {
+                SeatState::Failed
+            }
         });
-        let said = said.to_string();
-        set(&mut seats, first, &|s| {
-            s.state = SeatState::Ready;
-            s.attempts = 0;
-            s.round += 1;
-            s.returned_with = Some(said.clone());
-        });
-        Some(Next::Back(first.to_string()))
+        let seat_of = |seats: &BTreeMap<(String, String), Seat>, step: &str| {
+            seats
+                .values()
+                .find(|s| s.task == task && s.step == step)
+                .map(|s| s.name.clone())
+        };
+        let mut next: Option<Next> = None;
+        for m in moves {
+            match m {
+                Move::Ready(step) => {
+                    if let Some(to) = seat_of(&seats, step) {
+                        set(&mut seats, &to, &|s| {
+                            s.state = SeatState::Ready;
+                            s.attempts = 0;
+                        });
+                        next.get_or_insert(Next::Ready(to));
+                    }
+                }
+                Move::Rewind(step) => {
+                    if let Some(to) = seat_of(&seats, step) {
+                        let said = said.to_string();
+                        set(&mut seats, &to, &|s| {
+                            s.state = SeatState::Ready;
+                            s.attempts = 0;
+                            s.round += 1;
+                            s.returned_with = Some(said.clone());
+                        });
+                        next = Some(Next::Back(to));
+                    }
+                }
+                Move::Reset(step) => {
+                    if let Some(to) = seat_of(&seats, step) {
+                        set(&mut seats, &to, &|s| {
+                            s.state = SeatState::Waiting;
+                            s.attempts = 0;
+                        });
+                    }
+                }
+                Move::Done => {
+                    next.get_or_insert(Next::Done);
+                }
+                Move::Failed(why) => {
+                    set(&mut seats, name, &|s| s.state = SeatState::Failed);
+                    return Some(Next::Failed(why.clone()));
+                }
+            }
+        }
+        next
     }
 
     /// Drops every seat of `task` (it ended).
@@ -352,11 +333,27 @@ pub fn def() -> &'static apz_store::TableDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recipes::runs::{RunState, Runs};
+    use crate::recipes::{Report, graph::Walk, model::builtin_named};
+
+    /// The change recipe and a walk of it, as a task's run keeps them.
+    fn change() -> (Recipe, Walk) {
+        let recipe = builtin_named("change").unwrap();
+        let (walk, _) = Walk::start(&recipe, &BTreeMap::new());
+        (recipe, walk)
+    }
+
+    /// The moves of a step's outcome in the walk.
+    fn settle(walk: &mut Walk, recipe: &Recipe, step: &str, passed: bool) -> Vec<Move> {
+        walk.started(step);
+        walk.settle(recipe, step, &Report::verdict(passed))
+    }
 
     #[test]
     fn a_change_goes_build_review_done() {
+        let (recipe, mut walk) = change();
         let seats = Seats::default();
-        let opened = seats.open("t1", &CHANGE, 1);
+        let opened = seats.open("t1", &recipe, 1).unwrap();
         assert_eq!(opened.len(), 2);
         assert_eq!(
             seats
@@ -367,8 +364,9 @@ mod tests {
             ["builder"]
         );
         seats.fill("t1", "builder", "s1", Some("a/m1"), 2).unwrap();
+        let moves = settle(&mut walk, &recipe, "build", true);
         assert_eq!(
-            seats.ended("t1", "builder", true, false, "done", 3),
+            seats.ended("t1", "builder", true, false, "done", 3, &moves),
             Some(Next::Ready("reviewer".into()))
         );
         assert_eq!(
@@ -376,26 +374,31 @@ mod tests {
             vec!["a/m1".to_string()]
         );
         seats.fill("t1", "reviewer", "s2", Some("b/m2"), 4).unwrap();
+        let moves = settle(&mut walk, &recipe, "review", true);
         assert_eq!(
-            seats.ended("t1", "reviewer", true, false, "looks right", 5),
+            seats.ended("t1", "reviewer", true, false, "looks right", 5, &moves),
             Some(Next::Done)
         );
     }
 
     #[test]
     fn a_failed_review_sends_it_back_with_the_findings_a_bounded_number_of_times() {
+        let (recipe, mut walk) = change();
         let seats = Seats::default();
-        seats.open("t1", &CHANGE, 1);
-        for round in 1..CHANGE_ROUNDS {
+        seats.open("t1", &recipe, 1).unwrap();
+        // The change recipe's loop allows two rounds back: three reviews in all.
+        for round in 1..=2 {
             seats
                 .fill("t1", "builder", &format!("b{round}"), Some("a/m1"), 2)
                 .unwrap();
+            let moves = settle(&mut walk, &recipe, "build", true);
             seats
-                .ended("t1", "builder", true, false, "done", 3)
+                .ended("t1", "builder", true, false, "done", 3, &moves)
                 .unwrap();
             seats
                 .fill("t1", "reviewer", &format!("r{round}"), Some("b/m2"), 4)
                 .unwrap();
+            let moves = settle(&mut walk, &recipe, "review", false);
             let next = seats.ended(
                 "t1",
                 "reviewer",
@@ -403,6 +406,7 @@ mod tests {
                 false,
                 "the date filter is ignored",
                 5,
+                &moves,
             );
             assert_eq!(next, Some(Next::Back("builder".into())));
             let builder = seats.get("t1", "builder").unwrap();
@@ -411,42 +415,87 @@ mod tests {
                 Some("the date filter is ignored")
             );
             assert_eq!(builder.round, round + 1);
+            assert_eq!(
+                seats.get("t1", "reviewer").unwrap().state,
+                SeatState::Waiting
+            );
         }
         seats.fill("t1", "builder", "bn", Some("a/m1"), 2).unwrap();
+        let moves = settle(&mut walk, &recipe, "build", true);
         seats
-            .ended("t1", "builder", true, false, "done", 3)
+            .ended("t1", "builder", true, false, "done", 3, &moves)
             .unwrap();
         seats.fill("t1", "reviewer", "rn", Some("b/m2"), 4).unwrap();
+        let moves = settle(&mut walk, &recipe, "review", false);
         assert!(matches!(
-            seats.ended("t1", "reviewer", false, false, "still wrong", 5),
+            seats.ended("t1", "reviewer", false, false, "still wrong", 5, &moves),
             Some(Next::Failed(_))
         ));
+        assert_eq!(
+            seats.get("t1", "reviewer").unwrap().state,
+            SeatState::Failed
+        );
     }
 
     #[test]
     fn a_crashed_session_is_retried_then_the_seat_fails() {
+        let (recipe, _) = change();
         let seats = Seats::default();
-        seats.open("t1", &CHANGE, 1);
+        seats.open("t1", &recipe, 1).unwrap();
         for i in 1..ATTEMPTS {
             seats
                 .fill("t1", "builder", &format!("s{i}"), None, 2)
                 .unwrap();
             assert_eq!(
-                seats.ended("t1", "builder", false, true, "", 3),
+                seats.ended("t1", "builder", false, true, "", 3, &[]),
                 Some(Next::Retry("builder".into()))
             );
         }
         seats.fill("t1", "builder", "sx", None, 2).unwrap();
         assert!(matches!(
-            seats.ended("t1", "builder", false, true, "", 3),
+            seats.ended("t1", "builder", false, true, "", 3, &[]),
             Some(Next::Failed(_))
         ));
     }
 
     #[test]
-    fn seats_round_trip_and_a_filled_seat_is_ready_after_a_restart() {
+    fn a_run_that_fails_fails_the_task_with_the_walk_s_reason() {
+        let (recipe, mut walk) = change();
         let seats = Seats::default();
-        seats.open("t1", &CHANGE, 1);
+        seats.open("t1", &recipe, 1).unwrap();
+        seats.fill("t1", "builder", "s1", None, 2).unwrap();
+        let moves = settle(&mut walk, &recipe, "build", false);
+        let next = seats.ended("t1", "builder", false, false, "stuck", 3, &moves);
+        assert_eq!(next, Some(Next::Failed("the build step failed".into())));
+        assert_eq!(seats.get("t1", "builder").unwrap().state, SeatState::Failed);
+    }
+
+    #[test]
+    fn a_recipe_s_steps_with_an_unrunnable_model_or_fan_out_are_refused() {
+        let mut recipe = change();
+        recipe.0.steps[0].fan_out = crate::recipes::model::Fan::Count(2);
+        let seats = Seats::default();
+        assert!(
+            seats
+                .open("t1", &recipe.0, 1)
+                .unwrap_err()
+                .contains("one item")
+        );
+        let mut recipe = change();
+        recipe.0.steps[1].model = Model::Name("provider/pinned".into());
+        assert!(
+            Seats::default()
+                .open("t2", &recipe.0, 1)
+                .unwrap_err()
+                .contains("any or differ")
+        );
+    }
+
+    #[test]
+    fn seats_round_trip_and_a_filled_seat_is_ready_after_a_restart() {
+        let (recipe, _) = change();
+        let seats = Seats::default();
+        seats.open("t1", &recipe, 1).unwrap();
         seats.fill("t1", "builder", "s1", Some("a/m1"), 2).unwrap();
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(&def().ddl()).unwrap();
@@ -459,5 +508,118 @@ mod tests {
             (SeatState::Ready, None)
         );
         assert_eq!(builder.last_model.as_deref(), Some("a/m1"));
+    }
+
+    /// A project's recipe file: a review that must also be green, with one loop back to the builder.
+    const GATED: &str = r#"
+id = "gated"
+version = 1
+scope = "project"
+[[steps]]
+id = "build"
+seat = "builder"
+role = "builder"
+model = "any"
+[[steps]]
+id = "check"
+seat = "checker"
+role = "reviewer"
+model = "differ"
+gate = ["passed", "tests green"]
+[[edges]]
+from = "build"
+to = "check"
+when = "passed"
+[[edges]]
+from = "check"
+to = "build"
+when = "failed"
+max = 1
+"#;
+
+    /// Runs one step the way the work loop does when a fake session reports: the run settles the step, the seats follow.
+    fn report(seats: &Seats, runs: &Runs, task: &str, seat: &str, r: &Report) -> Option<Next> {
+        let step = seats.get(task, seat).unwrap().step;
+        runs.task_step_started(task, &step, 0);
+        let moves = runs.settle_task(task, &step, r, 0);
+        seats.ended(
+            task,
+            seat,
+            r.passed,
+            false,
+            "what the checker said",
+            0,
+            &moves,
+        )
+    }
+
+    #[test]
+    fn a_recipe_file_with_a_gate_and_a_bounded_loop_runs_to_its_outcome() {
+        let recipe = Recipe::parse(GATED).unwrap();
+        let runs = Runs::default();
+        let (run, _) = runs.start(&recipe, "project", "task", Some("t7"), None, None, 1);
+        let seats = Seats::default();
+        seats.open("t7", &recipe, 1).unwrap();
+
+        // First round: the checker says it passed, but its tests are not green: the gate fails and the loop sends the
+        // change back to the builder.
+        seats.fill("t7", "builder", "b1", Some("a/m1"), 2).unwrap();
+        assert_eq!(
+            report(&seats, &runs, "t7", "builder", &Report::verdict(true)),
+            Some(Next::Ready("checker".into()))
+        );
+        seats.fill("t7", "checker", "c1", Some("b/m2"), 3).unwrap();
+        let red = Report {
+            passed: true,
+            tests: Some(false),
+            ..Report::default()
+        };
+        assert_eq!(
+            report(&seats, &runs, "t7", "checker", &red),
+            Some(Next::Back("builder".into()))
+        );
+        assert_eq!(seats.get("t7", "builder").unwrap().round, 2);
+
+        // Second round: green, and the run passes.
+        seats.fill("t7", "builder", "b2", Some("a/m1"), 4).unwrap();
+        assert_eq!(
+            report(&seats, &runs, "t7", "builder", &Report::verdict(true)),
+            Some(Next::Ready("checker".into()))
+        );
+        seats.fill("t7", "checker", "c2", Some("b/m2"), 5).unwrap();
+        let green = Report {
+            passed: true,
+            tests: Some(true),
+            ..Report::default()
+        };
+        assert_eq!(
+            report(&seats, &runs, "t7", "checker", &green),
+            Some(Next::Done)
+        );
+        let view = runs.view(&run).unwrap();
+        assert_eq!(view.run.state, crate::recipes::runs::RunState::Passed);
+        assert_eq!(view.run.recipe, "gated");
+
+        // The same file with a checker that never goes green: after its one loop, the run fails the task.
+        let runs = Runs::default();
+        let (run, _) = runs.start(&recipe, "project", "task", Some("t8"), None, None, 1);
+        seats.open("t8", &recipe, 1).unwrap();
+        for round in 0..2 {
+            seats
+                .fill("t8", "builder", &format!("b{round}"), None, 2)
+                .unwrap();
+            report(&seats, &runs, "t8", "builder", &Report::verdict(true));
+            seats
+                .fill("t8", "checker", &format!("c{round}"), None, 3)
+                .unwrap();
+            let next = report(&seats, &runs, "t8", "checker", &red);
+            if round == 0 {
+                assert_eq!(next, Some(Next::Back("builder".into())));
+            } else {
+                assert!(matches!(next, Some(Next::Failed(_))), "{next:?}");
+            }
+        }
+        assert_eq!(runs.active_of_task("t8"), None);
+        assert_eq!(runs.view(&run).unwrap().run.state, RunState::Failed);
     }
 }

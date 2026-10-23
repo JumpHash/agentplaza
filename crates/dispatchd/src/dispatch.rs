@@ -653,33 +653,11 @@ mod tests {
     const GRANTS: &[(&str, &[&str])] = &[
         (
             "builder",
-            &[
-                "bash",
-                "read_file",
-                "write_file",
-                "edit_file",
-                "list",
-                "search",
-            ],
+            &["run", "run_tests", "read", "edit", "find", "search"],
         ),
         ("librarian", &["read_memory", "search", "transcript_search"]),
-        ("architect", &["bash", "read_file", "list", "search"]),
-        (
-            "mayor",
-            &[
-                "read_file",
-                "list",
-                "search",
-                "transcript_search",
-                "assign_task",
-                "spawn_agent",
-                "hibernate_agent",
-                "approve_plan",
-                "approve_merge",
-                "escalate",
-                "send_message",
-            ],
-        ),
+        ("architect", &["run", "run_tests", "read", "find", "search"]),
+        ("auditor", &["read_audit", "read_usage", "search"]),
         (
             "legal-gov-judge",
             &["read_case_record", "search_precedent", "issue_ruling"],
@@ -712,8 +690,8 @@ mod tests {
         assert_eq!(
             dispatcher.operator.sequence(),
             vec![
-                (300, "write_file".to_string()),
-                (300, "read_file".to_string()),
+                (300, "edit".to_string()),
+                (300, "read".to_string()),
                 (310, "search".to_string()),
             ]
         );
@@ -738,7 +716,7 @@ mod tests {
     #[test]
     fn a_role_without_a_write_grant_runs_the_read_only_script() {
         let ledger =
-            FakeLedger::with_task(task("t1", "open", Some("mayor"))).with_agent(320, "mayor");
+            FakeLedger::with_task(task("t1", "open", Some("auditor"))).with_agent(320, "auditor");
         let operator = FakeOperator::default()
             .with_agent(320, FakeAgent::default().with_file("design.md", "do it\n"));
         let (mut dispatcher, _log) = dispatcher_with_roles(ledger, operator, GRANTS);
@@ -748,7 +726,7 @@ mod tests {
         assert_eq!(
             dispatcher.operator.sequence(),
             vec![(320, "search".to_string())],
-            "a mayor may not write, so it does not"
+            "an auditor may not write, so it does not"
         );
         assert!(
             dispatcher
@@ -826,7 +804,7 @@ mod tests {
             let ledger = FakeLedger::with_task(task("t1", "open", Some("builder")))
                 .with_agent(300, "builder");
             let operator = FakeOperator::answering(Tell::Refused {
-                reason: "role builder does not grant write_file".to_string(),
+                reason: "role builder does not grant edit".to_string(),
             });
             let (mut dispatcher, log) = dispatcher(ledger, operator);
 
@@ -848,13 +826,12 @@ mod tests {
             assert_eq!(finishes[0].1, Outcome::Failed);
             assert_eq!(
                 finishes[0].2,
-                "tool write_file refused: role builder does not grant write_file"
+                "tool edit refused: role builder does not grant edit"
             );
             drop(finishes);
             assert_eq!(dispatcher.ledger.task("t1").state, "failed");
             assert!(
-                log.text()
-                    .contains("finished failed: tool write_file refused:"),
+                log.text().contains("finished failed: tool edit refused:"),
                 "{}",
                 log.text()
             );
@@ -867,7 +844,7 @@ mod tests {
             let operator = FakeOperator::default().with_agent(
                 300,
                 FakeAgent::failing(DriveError::Refused {
-                    name: "write_file".to_string(),
+                    name: "edit".to_string(),
                     output: "denied: path \"../escape.txt\" contains \"..\"".to_string(),
                 }),
             );
@@ -880,13 +857,12 @@ mod tests {
             assert_eq!(finishes[0].1, Outcome::Failed);
             assert_eq!(
                 finishes[0].2,
-                "tool write_file refused: denied: path \"../escape.txt\" contains \"..\""
+                "tool edit refused: denied: path \"../escape.txt\" contains \"..\""
             );
             drop(finishes);
             assert_eq!(dispatcher.ledger.task("t1").state, "failed");
             assert!(
-                log.text()
-                    .contains("finished failed: tool write_file refused:"),
+                log.text().contains("finished failed: tool edit refused:"),
                 "log: {}",
                 log.text()
             );
@@ -919,10 +895,7 @@ mod tests {
         // The agent was driven by the builder's script, on its own CID.
         assert_eq!(
             dispatcher.operator.sequence(),
-            vec![
-                (300, "write_file".to_string()),
-                (300, "read_file".to_string()),
-            ]
+            vec![(300, "edit".to_string()), (300, "read".to_string()),]
         );
 
         // The task ended `done`, with a note naming its artifact and the calls
@@ -988,11 +961,11 @@ mod tests {
         assert_eq!(
             dispatcher.operator.sequence(),
             vec![
-                (300, "write_file".to_string()),
-                (300, "read_file".to_string()),
+                (300, "edit".to_string()),
+                (300, "read".to_string()),
                 (310, "search".to_string()),
-                (320, "write_file".to_string()),
-                (320, "read_file".to_string()),
+                (320, "edit".to_string()),
+                (320, "read".to_string()),
             ]
         );
         assert_eq!(
@@ -1025,7 +998,7 @@ mod tests {
                 (
                     "t2",
                     Outcome::Done,
-                    "read-only: search \"do\" matched 1 line(s) in 1 file(s) scanned; \
+                    "read-only: search \"do\" matched 1 line(s) in 1 file(s); \
                      first: handbook.md:1: do the plaza's work (1 tool call(s))"
                 ),
                 ("t3", Outcome::Done, "artifacts: notes.txt (2 tool call(s))"),
@@ -1150,7 +1123,7 @@ mod tests {
         assert_eq!(finishes[0].1, Outcome::Failed);
         assert_eq!(
             finishes[0].2,
-            "tool write_file unavailable: cannot connect to http://127.0.0.1:19080: refused (after 3 attempt(s))"
+            "tool edit unavailable: cannot connect to http://127.0.0.1:19080: refused (after 3 attempt(s))"
         );
         drop(finishes);
         assert_eq!(dispatcher.ledger.task("t1").state, "failed");
@@ -1165,7 +1138,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("finished failed: tool write_file unavailable"),
+            text.contains("finished failed: tool edit unavailable"),
             "{text}"
         );
     }
@@ -1240,9 +1213,9 @@ mod tests {
         assert_eq!(
             operator.sequence(),
             vec![
-                (300, "write_file".to_string()),
-                (300, "write_file".to_string()),
-                (300, "read_file".to_string()),
+                (300, "edit".to_string()),
+                (300, "edit".to_string()),
+                (300, "read".to_string()),
             ]
         );
         assert_eq!(ledger.task("t1").state, "done");
@@ -1337,7 +1310,7 @@ mod tests {
             assert_eq!(finishes[0].1, Outcome::Failed);
             assert_eq!(
                 finishes[0].2,
-                "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
+                "tool edit unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
             );
             drop(finishes);
             assert_eq!(dispatcher.ledger.task("t1").state, "failed");
@@ -1345,9 +1318,8 @@ mod tests {
             // first pass's, before the VM was replaced.
             assert_eq!(dispatcher.operator.calls.borrow().len(), calls_before);
             assert!(
-                log.text().contains(
-                    "tool write_file unavailable: the agent of cid 300 is no longer builder"
-                ),
+                log.text()
+                    .contains("tool edit unavailable: the agent of cid 300 is no longer builder"),
                 "{}",
                 log.text()
             );
@@ -1375,7 +1347,7 @@ mod tests {
             let finishes = dispatcher.ledger.finishes.borrow();
             assert_eq!(
                 finishes[0].2,
-                "tool write_file unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
+                "tool edit unavailable: the agent of cid 300 is no longer builder (after 3 attempt(s))"
             );
             drop(finishes);
             assert_eq!(dispatcher.ledger.task("t1").state, "failed");

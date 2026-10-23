@@ -122,7 +122,7 @@ export function buildFrame(inp: FrameInputs): Frame {
   );
 
   // The navigator: the body from the sidebar, with its drag edge.
-  const side = h('aside.ide-threads', { 'aria-label': 'Tasks, conversations and agents' }, inp.side, inp.sideEdge);
+  const side = h('aside.ide-threads', { 'aria-label': 'Tasks, chats and agents' }, inp.side, inp.sideEdge);
 
   // The centre's head: the dot, the title, the view toggle and the pop-out to the agent page.
   const seg = Object.fromEntries(VIEWS.map((v) => [v, segButton(v)])) as Record<CentreView, HTMLButtonElement>;

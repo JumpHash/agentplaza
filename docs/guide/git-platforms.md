@@ -80,5 +80,5 @@ forgets an authorization and its tokens (its connections stop exporting until an
 ## Where things are kept
 
 - Client secrets, the GitHub App's private key and every token are vault entries (binding `hub:git-platforms`).
-- The record of apps, authorizations and your choices is `<state>/platforms.json`; it holds no secret.
+- The record of apps, authorizations and your choices is kept in `plaza.db`; it holds no secret.
 - Exports are one-way: nothing the platform changes comes back without your adopting it.

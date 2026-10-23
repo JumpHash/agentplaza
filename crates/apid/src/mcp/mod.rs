@@ -1,9 +1,9 @@
 //! MCP servers: outside tools the hub runs for agents (docs/design/mcp.md).
 //!
-//! The owner adds a server (a container image for stdio, or an https URL). Each tool it offers becomes a
-//! plaza tool, named `mcp__<id>__<tool>` on the wire, for the agents whose role and node pass the server's
-//! `access`. Every call is made by the hub: agents never hold a server's credentials, and no server runs on
-//! the host.
+//! The owner adds a server (a pinned package for stdio, or an https URL). Each tool it offers becomes a plaza
+//! tool, named `mcp__<id>__<tool>` on the wire, for the agents whose role and node pass the server's `access`.
+//! Every call is made by the hub: agents never hold a server's credentials. A stdio server runs under the OS
+//! sandbox, with the network only through the hub's egress proxy (docs/design/mcp.md).
 //!
 //! Secrets resolve through the vault with binding `mcp:<id>`, on behalf of the calling agent (or the owner
 //! for a test). A server whose secret is not in scope for its caller does not start.
@@ -15,12 +15,13 @@ pub mod egress;
 #[cfg(test)]
 pub mod fixture;
 pub mod http;
-pub mod relay;
 pub mod routes;
 pub mod runtime;
+pub mod runtimes;
 pub mod stdio;
 #[cfg(test)]
 mod tests;
+pub mod vm;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -37,6 +38,7 @@ use sha2::{Digest, Sha256};
 use crate::agents::Agent;
 use crate::deliverables::Upload;
 use crate::state::App;
+use crate::upstream::Upstream;
 use client::ToolInfo;
 use config::{McpServer, Risk};
 use runtime::{Ctx, Runtime};
@@ -124,15 +126,28 @@ pub struct Mcp {
 }
 
 impl Mcp {
-    /// Loads `<state-dir>/mcp.json` (the database's copy replaces it at start when it holds one). The egress proxy
-    /// listens on `port` and keeps the relay binary under `state_dir`.
-    pub fn load(state_dir: &Path, port: u16) -> Mcp {
+    /// Counts the server store's changes in `gens` (the hub's generations).
+    pub fn with_generations(
+        mut self,
+        gens: std::sync::Arc<apz_cache::Generations<String>>,
+    ) -> Self {
+        self.store = self.store.with_generations(gens);
+        self
+    }
+
+    /// An empty MCP state: the store fills from the database at start. Stdio servers run under the OS sandbox, with
+    /// their directories and the runtimes under `state_dir`, and reach the network through the egress proxy on
+    /// loopback `port`.
+    pub fn load(state_dir: &Path, port: u16, noded: Upstream) -> Mcp {
         Mcp {
-            store: config::Store::load(state_dir.join(config::FILE)),
-            runtime: Runtime::with_egress(
-                Arc::new(stdio::DockerLauncher),
-                egress::Egress::new(state_dir.to_path_buf(), port),
-            ),
+            store: config::Store::default(),
+            runtime: Runtime::new(
+                state_dir.to_path_buf(),
+                Arc::new(runtimes::HttpFetch),
+                Arc::new(stdio::SandboxLauncher),
+                Some(egress::Egress::new(port)),
+            )
+            .with_vm(Arc::new(vm::VmLauncher::new(noded))),
         }
     }
 }
@@ -235,10 +250,9 @@ pub fn forget_risks(server: &str) {
 /// The risk a tool's annotations give, before any owner override (destructive is irreversible, read-only
 /// is read, anything else is write).
 pub fn auto_risk(tool: &ToolInfo) -> Risk {
-    let hint = |key: &str| tool.annotations.get(key).and_then(Value::as_bool) == Some(true);
-    if hint("destructiveHint") {
+    if tool.annotations.destructive_hint == Some(true) {
         Risk::Irreversible
-    } else if hint("readOnlyHint") {
+    } else if tool.annotations.read_only_hint == Some(true) {
         Risk::Read
     } else {
         Risk::Write
@@ -263,24 +277,27 @@ pub fn allowed(server: &McpServer, role: &str, node: Option<&str>, project: Opti
         && node.is_some_and(|n| server.access.nodes.admits(n))
         && match project {
             Some(project) => server.access.projects.admits(project),
-            None => server.access.projects == crate::mcp::config::Pick::All,
+            None => server.access.projects.all,
         }
 }
 
-/// The tool specs an agent is offered: each allowed tool of each server the agent may use, that the laws
-/// permit. Irreversible tools are withheld by C-004a until an owner approval is threaded through calls.
-pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
-    let node = app.nodes.owner_of_cid(agent.cid).map(|n| n.id);
+/// The tool specs a session of `role` on `node`, working on `project`, is offered: each allowed tool of each server it may
+/// use, that the laws permit. Irreversible tools are withheld by C-004a until an owner approval is threaded through calls.
+pub fn specs_for(
+    app: &App,
+    role: &str,
+    node: Option<&str>,
+    project: Option<&str>,
+) -> Vec<ToolSpec> {
     let laws = crate::laws::global();
     let mut specs = Vec::new();
     for server in app.mcp.store.list() {
-        let project = app.members.project_of(agent.cid);
-        if !allowed(&server, &agent.role, node.as_deref(), project.as_deref()) {
+        if !allowed(&server, role, node, project) {
             continue;
         }
         let tools = app.mcp.store.tools_of(&server.id);
         for (tool, name) in tools.iter().zip(wire_names(&server.id, &tools)) {
-            if !server.tools.allow.admits(&tool.name) || !laws.permits(&agent.role, &name) {
+            if !server.tools.allow.admits(&tool.name) || !laws.permits(role, &name) {
                 continue;
             }
             let note = match risk_for(&server, tool) {
@@ -288,6 +305,7 @@ pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
                 _ => "",
             };
             specs.push(ToolSpec {
+                deferred: false,
                 name,
                 description: format!("[MCP {}] {}{note}", server.name, tool.description),
                 input_schema: tool.input_schema.clone(),
@@ -319,7 +337,7 @@ pub fn call_for_agent(
         .owner_of_cid(agent.cid)
         .map(|n| n.id)
         .ok_or("your node is not known")?;
-    let project = app.members.project_of(agent.cid);
+    let project = crate::projects::project_of(app, agent.cid);
     if !allowed(&server, &agent.role, Some(&node), project.as_deref()) {
         return Err(format!(
             "{name} is not available to the {} role on this node and project",
@@ -446,13 +464,8 @@ pub fn law_operation(name: &str) -> Option<(String, String, &'static str)> {
     lookup(name).map(|e| (e.server, e.tool, e.risk))
 }
 
-/// The background work of the MCP store: saves the file when it changed (unless the database holds it), and
-/// stops the instances that sat idle. Run every three seconds from `state::App::start`.
+/// The background work of the MCP runtime: stops the instances that sat idle. Run every three seconds from
+/// `state::App::start` (the store itself is saved by the saver, with the other components).
 pub fn tick(app: &App) {
-    if !app.db.is_held("mcp")
-        && let Err(err) = app.mcp.store.save_if_changed()
-    {
-        eprintln!("apid: cannot save mcp.json: {err}");
-    }
     app.mcp.runtime.reap_idle(apz_plaza::now_ms());
 }

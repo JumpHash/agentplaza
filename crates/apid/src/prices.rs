@@ -1,5 +1,5 @@
 //! Model prices: what one million tokens of each model costs, so the plaza can show what its
-//! agents spend. The catalog is fetched from two public lists and kept in Postgres ("prices"),
+//! agents spend. The catalog is fetched from two public lists and kept in plaza.db ("prices"),
 //! so a hub without internet still has the last prices it saw:
 //!
 //! - OpenRouter's model list (`https://openrouter.ai/api/v1/models`): every OpenRouter model id
@@ -8,7 +8,7 @@
 //!   providers' own model ids (Anthropic, OpenAI, DeepSeek, …), with per-token input, output,
 //!   cache-read (`cache_read_input_token_cost`) and cache-write (`cache_creation_input_token_cost`).
 //!
-//! The owner's manual prices (`settings.prices`, credits per million tokens; 1 credit = $0.001) win over both.
+//! The owner's manual prices (`settings.prices`, US dollars per million tokens) win over both.
 //! Lookup order for a plaza model id such as `anthropic/claude-opus-5-5`: manual price, then the
 //! built-in vendor prices ([`VENDOR`], Meta's Muse models), then the OpenRouter id as is, then
 //! LiteLLM by the full id, then LiteLLM by the part after the first `/`; ids compare
@@ -34,8 +34,6 @@ pub const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/models";
 pub const LITELLM_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 /// How old the catalog may get before it is fetched again.
-/// What one plaza credit is worth (`settings::Price` is in credits per million tokens).
-pub const USD_PER_CREDIT: f64 = 0.001;
 pub const MAX_AGE_MS: u64 = 24 * 60 * 60 * 1000;
 /// A catalog with a failed list is fetched again after this long instead of [`MAX_AGE_MS`].
 const RETRY_MS: u64 = 60 * 60 * 1000;
@@ -989,8 +987,7 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// The price of `model`: `manual` (settings.prices: credits per million tokens, converted at
-    /// [`USD_PER_CREDIT`]) first, then the
+    /// The price of `model`: `manual` (settings.prices: dollars per million tokens) first, then the
     /// fetched lists in the order the module docs give.
     pub fn lookup(
         &self,
@@ -1004,8 +1001,8 @@ impl Catalog {
         {
             return Some(Priced {
                 price: ModelPrice {
-                    input: price.input * USD_PER_CREDIT,
-                    output: price.output * USD_PER_CREDIT,
+                    input: price.input,
+                    output: price.output,
                     cache_read: None,
                     cache_write: None,
                 },
@@ -1599,15 +1596,15 @@ mod tests {
             assert_eq!(catalog.lookup("openai/unknown-model", &none), None);
         }
 
-        // Manual prices win and have no cache prices.
+        // Manual prices win and have no cache prices. They are dollars per million tokens.
         {
             let catalog = catalog();
             let mut manual = BTreeMap::new();
             manual.insert(
                 "Anthropic/Claude-Opus-5-5".to_string(),
                 crate::settings::Price {
-                    input: 1000.0,
-                    output: 2000.0,
+                    input: 1.0,
+                    output: 2.0,
                 },
             );
             let priced = catalog

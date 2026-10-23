@@ -112,10 +112,18 @@ pub(crate) fn support() -> Support {
 
 pub(crate) fn command(spec: &Spec) -> Result<Command, SandboxError> {
     let prepared = crate::prepare(spec)?;
-    if kernel_abi().is_none() {
+    let Some(abi) = kernel_abi() else {
         return Err(SandboxError::Unsupported(
             "Landlock is not available: needs Linux 5.13+ with Landlock enabled at boot".to_owned(),
         ));
+    };
+    // Below ABI 4 the ruleset would drop the port rule without a word, and the child would reach the whole network.
+    if matches!(prepared.network, Network::LoopbackPort(_)) && abi < ABI::V4 {
+        return Err(SandboxError::Unsupported(format!(
+            "LoopbackPort needs Landlock ABI 4 (Linux 6.7): this kernel's Landlock is ABI {}, which cannot \
+             filter TCP ports, so the child would reach the whole network",
+            abi as i32
+        )));
     }
     let ruleset = build_ruleset(&prepared)?;
 
@@ -224,4 +232,35 @@ fn allow(
 
 fn landlock_error(err: impl std::fmt::Display) -> SandboxError {
     SandboxError::Io(io::Error::other(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Limits;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_loopback_port_needs_landlock_abi_4_and_is_refused_below_it() {
+        let workdir = std::env::temp_dir().join(format!("apz-sbx-lo-{}", std::process::id()));
+        let spec = Spec {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_owned(), "true".to_owned()],
+            env: vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())],
+            workdir: workdir.clone(),
+            read_only: vec![],
+            read_write: vec![],
+            network: Network::LoopbackPort(8080),
+            limits: Limits::default(),
+        };
+        match kernel_abi() {
+            Some(abi) if abi >= ABI::V4 => assert!(command(&spec).is_ok()),
+            Some(_) => assert!(matches!(
+                command(&spec),
+                Err(SandboxError::Unsupported(why)) if why.contains("ABI 4")
+            )),
+            None => assert!(command(&spec).is_err()),
+        }
+        let _ = std::fs::remove_dir_all(&workdir);
+    }
 }
