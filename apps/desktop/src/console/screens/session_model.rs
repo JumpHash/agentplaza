@@ -664,7 +664,7 @@ mod tests {
             &json!({ "name": "run", "input": { "cmd": "ls" } }),
         );
         assert_eq!(call.label, "Tool call");
-        assert_eq!(call.text, "bash {\"cmd\":\"ls\"}");
+        assert_eq!(call.text, "run {\"cmd\":\"ls\"}");
         assert!(call.mono && !call.alert);
         let ok = transcript_line("tool_result", &json!({ "ok": true, "output": "a\nb" }));
         assert_eq!((ok.label.as_str(), ok.alert), ("Tool result", false));

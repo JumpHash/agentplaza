@@ -92,9 +92,20 @@ fn installed_servers_answer_the_fixture_and_the_others_say_they_are_absent() {
             case.path,
             case.definition_line
         );
-        let refs = pool
-            .references(&root, &file, at)
-            .unwrap_or_else(|e| panic!("{}: references: {e}", case.path));
+        // A server answers references from its index, which it builds in the background (sourcekit-lsp does): on a
+        // busy machine the first answers can come before it is built, so the test asks again for a while.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let refs = loop {
+            let refs = pool
+                .references(&root, &file, at)
+                .unwrap_or_else(|e| panic!("{}: references: {e}", case.path));
+            if refs.iter().any(|r| r.range.start.line as usize + 1 == line)
+                || std::time::Instant::now() >= deadline
+            {
+                break refs;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        };
         assert!(
             refs.iter().any(|r| r.range.start.line as usize + 1 == line),
             "{}: the call on line {line} is a reference (got {refs:?})",
