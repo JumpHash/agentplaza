@@ -182,6 +182,8 @@ pub struct App {
     pub verifier: crate::verifier::Store,
     /// The hub's nodes, join codes and command queues.
     pub nodes: crate::nodes::Store,
+    /// The test lab: its runs and their reservations (test_lab.rs).
+    pub test_lab: crate::test_lab::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
     pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
@@ -325,6 +327,7 @@ impl App {
             curator: crate::curator::Store::default(),
             verifier: crate::verifier::Store::default(),
             nodes: crate::nodes::Store::default(),
+            test_lab: crate::test_lab::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
