@@ -659,6 +659,37 @@ impl Reviews {
         v
     }
 
+    /// The review runs of a change (a lane), oldest round first: a backport's review is the change's.
+    pub fn runs_of_change(&self, change: &str) -> Vec<Run> {
+        let book = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<Run> = book
+            .runs
+            .values()
+            .filter(|r| r.change == change)
+            .cloned()
+            .collect();
+        v.sort_by_key(|r| r.round);
+        v
+    }
+
+    /// Stores a run as the review chain stores one (the flows that wait for a review are tested with a run of theirs).
+    #[cfg(test)]
+    pub fn put_run(&self, run: Run) {
+        self.with(|b| {
+            b.runs.insert(run.id.clone(), run);
+        });
+    }
+
+    /// Moves a stored run to `state` (the review's outcome, in the flows' tests).
+    #[cfg(test)]
+    pub fn settle_run(&self, id: &str, state: RunState) {
+        self.with(|b| {
+            if let Some(run) = b.runs.get_mut(id) {
+                run.state = state;
+            }
+        });
+    }
+
     /// How many confirmed findings of kind `kind` the project's runs hold (a pitfall is a kind confirmed twice).
     pub fn confirmed_of_kind(&self, project: &str, kind: &str) -> usize {
         let book = self.book.lock().unwrap_or_else(|p| p.into_inner());

@@ -34,6 +34,8 @@
 //! [[targets]]                   # a build target: the platform a release builds (20.5)
 //! name = "linux-x86_64"
 //! platform = "linux-x86_64"
+//! command = ["cargo", "build", "--release"]
+//! output = "target/release/app"  # the file the command leaves: the artifact's bytes
 //! ```
 
 use std::collections::{BTreeMap, HashSet};
@@ -172,6 +174,12 @@ pub struct Target {
     pub kind: Option<TargetKind>,
     #[serde(default)]
     pub platform: Option<targets::Platform>,
+    /// The command that builds a platform target, run in a fork of the project's base on the pool that builds it (20.5).
+    #[serde(default)]
+    pub command: Option<Argv>,
+    /// The file the command leaves, relative to the workspace: its bytes are the target's artifact.
+    #[serde(default)]
+    pub output: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -234,6 +242,19 @@ impl Stack {
                     "{FILE}: target {} names neither a kind nor a platform",
                     target.name
                 ));
+            }
+            if target.platform.is_some() {
+                let built = target.command.as_ref().is_some_and(|c| !c.is_empty());
+                let output = target.output.as_deref().unwrap_or("");
+                let relative = !output.is_empty()
+                    && !output.starts_with('/')
+                    && !output.split('/').any(|part| part == "..");
+                if !built || !relative {
+                    return Err(format!(
+                        "{FILE}: target {} builds a platform, so it names its command and the output it leaves (a relative path)",
+                        target.name
+                    ));
+                }
             }
         }
         let commands = self
@@ -367,7 +388,10 @@ kind = "preview"
             parse("[[targets]]\nname = \"w\"\n").is_err(),
             "a target names a kind or a platform"
         );
-        assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"linux-x86_64\"\n").is_ok());
+        assert!(
+            parse("[[targets]]\nname = \"l\"\nplatform = \"linux-x86_64\"\ncommand = [\"cargo\", \"build\"]\noutput = \"target/app\"\n").is_ok()
+        );
+        assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"linux-x86_64\"\n").is_err());
         assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"solaris-sparc\"\n").is_err());
     }
 

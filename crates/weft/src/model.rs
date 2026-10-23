@@ -434,6 +434,16 @@ pub struct ReleaseCandidate {
     pub digest: Hash,
     #[serde(default)]
     pub number: Option<u32>,
+    /// The declared targets no pool could build (20.5): the candidate is cut without them, each with its reason.
+    #[serde(default)]
+    pub not_run: Vec<NotRunTarget>,
+}
+
+/// A declared target a candidate did not build, and why.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotRunTarget {
+    pub target: String,
+    pub reason: String,
 }
 
 /// `release.qualify`, `release.publish`, `release.promote` and `release.yank` (hub-signed): one move of a release's

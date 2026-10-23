@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use weft::keys::KeyPair;
 
 use super::entity::{ReleaseArtifact, ReleaseState};
-use super::flow::{self, Builder, Built, Ledger};
+use super::flow::{self, Builder, Built, Ledger, Outcome};
 use super::signing::{self, Format};
 use super::tests::{World, cut, lab};
 use crate::recipes::runs::RunState;
@@ -17,14 +17,14 @@ use crate::recipes::runs::RunState;
 struct BytesBuilder(Vec<u8>);
 
 impl Builder for BytesBuilder {
-    fn build(&self, _release: &super::entity::Release, _target: &str) -> Result<Built, String> {
-        Ok(Built {
+    fn build(&self, _release: &super::entity::Release, _target: &str) -> Result<Outcome, String> {
+        Ok(Outcome::Built(Built {
             bytes: self.0.clone(),
             pool: "fake-pool".into(),
             base: "fake-base".into(),
             builder: "fake-builder".into(),
             command: "cargo build --release".into(),
-        })
+        }))
     }
 }
 

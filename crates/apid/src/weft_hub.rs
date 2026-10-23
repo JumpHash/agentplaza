@@ -133,6 +133,15 @@ impl Weft {
     pub fn lane_of(&self, task: &str) -> Option<String> {
         self.lanes.lock().ok()?.get(task).cloned()
     }
+
+    /// Binds `task` to `change`, the lane that carries its work when the lane was opened outside `open_lane` (a backport
+    /// opened on a release line).
+    pub fn bind_lane(&self, task: &str, change: &str) {
+        self.lanes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(task.to_string(), change.to_string());
+    }
 }
 
 // ── start ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -447,6 +456,7 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
     let (Some(repo), Some(change)) = (body["repo"].as_str(), body["change"].as_str()) else {
         return;
     };
+    let reference = body["ref"].as_str().unwrap_or_default().to_string();
     let app = Arc::clone(app);
     let (repo, change) = (repo.to_string(), change.to_string());
     std::thread::spawn(move || {
@@ -467,17 +477,15 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
                     .owner_verdict(&app, task, true, &format!("{change} landed"));
             }
             crate::review_graph::post_land(&app, &repo, &change, task);
-            // A project that releases continuously cuts a release's draft on each landing (22.3).
-            if let Some(project) = app
-                .plaza
-                .tasks
-                .find(task)
-                .and_then(|t| t.project().map(str::to_string))
-                && app.project_settings.get(&project).release_continuous
-                && let Err(e) = crate::releases::routes::continuous(&app, &project, &change)
-            {
-                eprintln!("apid: release of {project} after {change}: {e}");
-            }
+        }
+        // A project that releases continuously cuts a release's draft holding each landing on main (22.3): a change
+        // with a task or without one (an owner's file drop) alike.
+        if reference == "main"
+            && let Some(project) = crate::github_modes::project_of(&app, &repo).map(|p| p.id)
+            && app.project_settings.get(&project).release_continuous
+            && let Err(e) = crate::releases::routes::continuous(&app, &project, &change)
+        {
+            eprintln!("apid: release of {project} after {change}: {e}");
         }
         // The landing changed main: the projects on the repo read their memory again.
         crate::project_memory::landed(&app, &repo, &change);

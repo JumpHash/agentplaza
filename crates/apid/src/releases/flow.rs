@@ -5,7 +5,7 @@
 //!
 //! The flow takes its three dependencies as [`Deps`]: Weft (a [`Ledger`]), the recipe runs and the entity store. The
 //! hub's own Weft client is the production ledger; the tests give the flow a Weft of their own. A build is a [`Builder`]:
-//! production has no build pool to place a target on until 7.5, so [`NoPools`] refuses; the tests build with a fake.
+//! production places each target on a pool (`builder::Pools`, 7.5); the tests build with a fake.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +16,8 @@ use weft::hash::Hash;
 use super::attest;
 use super::channels;
 use super::entity::{
-    Release, ReleaseArtifact, ReleaseChange, ReleasePromotion, ReleaseState, ReleaseVerdict, Store,
+    Release, ReleaseArtifact, ReleaseChange, ReleaseNotRun, ReleasePromotion, ReleaseState,
+    ReleaseVerdict, Store,
 };
 use super::lanes;
 use super::sbom;
@@ -89,20 +90,15 @@ pub struct Built {
     pub command: String,
 }
 
-/// Builds one target of a release. The production builder is [`NoPools`].
-pub trait Builder {
-    fn build(&self, release: &Release, target: &str) -> Result<Built, String>;
+/// A target's build: built, or not run because no pool in service can build it (7.5), with the reason.
+pub enum Outcome {
+    Built(Built),
+    NotRun(String),
 }
 
-/// The builder of a deployment whose placement (7.5) has no pool for a target yet: every build is refused.
-pub struct NoPools;
-
-impl Builder for NoPools {
-    fn build(&self, _release: &Release, target: &str) -> Result<Built, String> {
-        Err(format!(
-            "no build pool can build {target} yet (placing targets on pools is 7.5)"
-        ))
-    }
+/// Builds one target of a release. Production is `builder::Pools`; the tests give fakes.
+pub trait Builder {
+    fn build(&self, release: &Release, target: &str) -> Result<Outcome, String>;
 }
 
 /// The dependencies of the flow.
@@ -370,6 +366,7 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
         run: None,
         changes,
         artifacts: Vec::new(),
+        not_run: Vec::new(),
         verdicts: Vec::new(),
         promotions: Vec::new(),
         sync: Vec::new(),
@@ -426,8 +423,22 @@ pub fn candidate(
     };
     d.runs.started(&run, "build", now());
     let mut artifacts = Vec::new();
+    let mut not_run = Vec::new();
     for target in &targets {
-        match build_one(d, &rel, builder, target, &run) {
+        let built = match builder.build(&rel, target) {
+            Ok(Outcome::Built(built)) => build_one(d, &rel, built, target, &run),
+            Ok(Outcome::NotRun(reason)) => {
+                // Not run is recorded and the release is cut without it: the item of the run passes.
+                not_run.push(ReleaseNotRun {
+                    target: target.clone(),
+                    reason,
+                });
+                d.runs.settle(&run, "build", &Report::verdict(true), now());
+                continue;
+            }
+            Err(e) => Err(format!("{}: {e}", label(target))),
+        };
+        match built {
             Ok(row) => {
                 artifacts.push(row);
                 d.runs.settle(&run, "build", &Report::verdict(true), now());
@@ -438,17 +449,38 @@ pub fn candidate(
             }
         }
     }
+    if artifacts.is_empty() {
+        d.runs.started(&run, "candidate", now());
+        d.runs
+            .settle(&run, "candidate", &Report::verdict(false), now());
+        let reasons: Vec<String> = not_run
+            .iter()
+            .map(|n| format!("{}: {}", n.target, n.reason))
+            .collect();
+        return Err(format!(
+            "no target of {} can be built: {}",
+            rel.version,
+            reasons.join("; ")
+        ));
+    }
     let ids: Vec<String> = artifacts.iter().map(|a| a.artifact.clone()).collect();
     let digest = d.weft.post(
         &format!("/repos/{}/releases/{}/digest", rel.repo, rel.version),
         &json!({ "artifacts": ids }),
     )?["digest"]
         .clone();
+    let skipped: Vec<Value> = not_run
+        .iter()
+        .map(|n| json!({ "target": n.target, "reason": n.reason }))
+        .collect();
     d.weft.statement(
         "release.candidate",
-        json!({ "repo": rel.repo, "version": rel.version, "artifacts": ids, "digest": digest, "number": number }),
+        json!({ "repo": rel.repo, "version": rel.version, "artifacts": ids, "digest": digest, "number": number, "not_run": skipped }),
     )?;
-    d.releases.update(id, |r| r.artifacts = artifacts.clone());
+    d.releases.update(id, |r| {
+        r.artifacts = artifacts.clone();
+        r.not_run = not_run.clone();
+    });
     d.runs.started(&run, "candidate", now());
     d.runs
         .settle(&run, "candidate", &Report::verdict(true), now());
@@ -460,13 +492,10 @@ pub fn candidate(
 fn build_one(
     d: &Deps,
     rel: &Release,
-    builder: &dyn Builder,
+    built: Built,
     target: &str,
     run: &str,
 ) -> Result<ReleaseArtifact, String> {
-    let built = builder
-        .build(rel, target)
-        .map_err(|e| format!("{}: {e}", label(target)))?;
     let signed = signing::sign_platform(d.signing, built.bytes)
         .map_err(|e| format!("{}: {e}", label(target)))?;
     let sha = signing::sha256_hex(&signed.bytes);
@@ -479,12 +508,13 @@ fn build_one(
             "built_from": rel.from, "builder": built.builder, "command": built.command,
         }),
     )?;
-    let components = components(d, rel, target)?;
+    let (components, unknown) = components(d, rel, target)?;
     let bom = serde_json::to_string_pretty(&sbom::document(
         &rel.project,
         &rel.version,
         &sha,
         &components,
+        unknown.as_deref(),
     ))
     .unwrap_or_default();
     let statement = attest::statement(&attest::Built {
@@ -515,26 +545,42 @@ fn build_one(
     })
 }
 
-/// The components of a target's build: the lock file of its ecosystem at the revision the release is cut from. A
-/// target whose ecosystem has no reader, or whose revision has no lock file, has no SBOM and cannot be a candidate.
-fn components(d: &Deps, rel: &Release, target: &str) -> Result<Vec<sbom::Component>, String> {
-    let (kind, lock) = sbom::lock_file_of(target)?;
+/// The components of a target's build: read from the lock file of its ecosystem at the revision the release is cut from
+/// (`sbom::source`). Where there is no lock file, or it does not read, the components are empty and the reason is
+/// returned: the SBOM says its dependencies are unknown, and the candidate is still cut (9.3).
+fn components(
+    d: &Deps,
+    rel: &Release,
+    target: &str,
+) -> Result<(Vec<sbom::Component>, Option<String>), String> {
+    let ecosystem = sbom::ecosystem_of(target);
     let files = d.weft.read(&format!("/revisions/{}/files", rel.from))?;
-    let listed = files["files"]
+    let root: Vec<String> = files["files"]
         .as_array()
         .into_iter()
         .flatten()
-        .any(|f| f["path"] == lock);
-    if !listed {
-        return Err(format!(
-            "{target}: {lock} is not in the revision the release is cut from"
+        .filter_map(|f| f["path"].as_str())
+        .filter(|p| !p.contains('/'))
+        .map(str::to_string)
+        .collect();
+    let Some((lock, format)) = sbom::source(ecosystem, &root) else {
+        return Ok((
+            Vec::new(),
+            Some(format!(
+                "no lock file for {ecosystem} is in the revision the release is cut from"
+            )),
         ));
-    }
+    };
     let bytes = d
         .weft
         .bytes(&format!("/revisions/{}/file?path={lock}", rel.from))?;
-    let text = String::from_utf8(bytes).map_err(|_| format!("{lock} is not UTF-8"))?;
-    sbom::components(kind, &text)
+    let read = String::from_utf8(bytes)
+        .map_err(|_| format!("{lock} is not UTF-8"))
+        .and_then(|text| sbom::components(format, &text));
+    match read {
+        Ok(components) => Ok((components, None)),
+        Err(why) => Ok((Vec::new(), Some(format!("{lock} does not read: {why}")))),
+    }
 }
 
 fn label(target: &str) -> &str {

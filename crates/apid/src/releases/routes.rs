@@ -19,13 +19,16 @@
 //! | `GET /v1/release-channels` | the built-in channels, their qualification depth and store tracks |
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_plaza::ConnectedAgent;
+use apz_plaza::tasks::CreateTask;
 use serde_json::{Value, json};
 use weft::keys::KeyPair;
 
+use super::builder::Pools;
 use super::channels;
 use super::entity::Release;
-use super::flow::{self, Builder, Cut, Deps, NoPools};
-use super::lanes::{self, Agents};
+use super::flow::{self, Builder, Cut, Deps};
+use super::lanes::{self, Agents, Chain};
 use super::signing::{Notary, Signing, StandInNotary};
 use crate::state::App;
 
@@ -66,6 +69,46 @@ struct AppAgents<'a>(&'a App);
 impl Agents for AppAgents<'_> {
     fn sign(&self, worker: u64, kind: &str, body: Value) -> Result<Value, String> {
         crate::weft_hub::sign_as_agent(self.0, worker, kind, body)
+    }
+}
+
+/// The production review chain of a backport (4.2): a plaza task claimed by its worker and bound to the change on the
+/// line, which `review_graph::start` reviews like any landing change.
+struct AppChain<'a>(&'a App);
+
+impl Chain for AppChain<'_> {
+    fn task(&self, project: &str, title: &str, worker: u64) -> Result<String, String> {
+        let request = CreateTask {
+            goal: title.to_string(),
+            acceptance: None,
+            role: None,
+            after: Vec::new(),
+            project: Some(project.to_string()),
+        };
+        let task = self
+            .0
+            .plaza
+            .tasks
+            .create(&request)
+            .map_err(|e| format!("no task for the backport: {e:?}"))?;
+        // The worker writes the change; it has no VM of its own here, so the claim names only its CID.
+        let agent = ConnectedAgent {
+            cid: worker,
+            role: None,
+            run: String::new(),
+            vm: 0,
+        };
+        task.claim(&agent)
+            .map_err(|e| format!("the backport's task was not claimed: {e:?}"))?;
+        Ok(task.id().to_string())
+    }
+
+    fn bind(&self, task: &str, change: &str) {
+        self.0.weft.bind_lane(task, change);
+    }
+
+    fn review(&self, task: &str) -> Option<String> {
+        crate::review_graph::start(self.0, task)
     }
 }
 
@@ -146,7 +189,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     Err(e) => return refusal(&e),
                 };
                 if v["stage"].as_str() == Some("candidate") {
-                    return answer(flow::candidate(&d, &drafted.id, &NoPools, cut.number));
+                    return answer(flow::candidate(
+                        &d,
+                        &drafted.id,
+                        &Pools { app },
+                        cut.number,
+                    ));
                 }
                 match flow::get(&d, &drafted.id) {
                     Ok(r) => Response::json(201, &r),
@@ -182,7 +230,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 answer(flow::candidate(
                     &deps(app),
                     p.get("id"),
-                    &NoPools as &dyn Builder,
+                    &Pools { app } as &dyn Builder,
                     number,
                 ))
             },
@@ -287,7 +335,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
                         "a backport names its change, its release line and the worker that writes it",
                     );
                 };
-                match lanes::backport(&deps(app), &AppAgents(app), project, line, fix, worker) {
+                match lanes::backport(
+                    &deps(app),
+                    &AppAgents(app),
+                    &AppChain(app),
+                    project,
+                    line,
+                    fix,
+                    worker,
+                ) {
                     Ok(backport) => Response::json(201, &backport),
                     Err(e) => refusal(&e),
                 }
@@ -305,7 +361,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 if project_missing(app, p.get("id")) {
                     return Response::error(404, "no such project");
                 }
-                match lanes::land_backport(&deps(app), p.get("id"), p.get("change")) {
+                match lanes::land_backport(&deps(app), p.get("change")) {
                     Ok(landing) => Response::json(200, &landing),
                     Err(e) => refusal(&e),
                 }
