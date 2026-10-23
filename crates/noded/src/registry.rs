@@ -192,6 +192,10 @@ pub struct CreateRun {
     /// `/data/<name>`, by name. A VM with volumes boots cold: warm templates carry none.
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// The session kind the run's guests open (`plaza.kind=`): `base` for a base build's VM (PLAN 16.4), which says
+    /// hello as a session with no model and takes the hub's exec items. None for an agent.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// The longest role name a run may carry.
@@ -244,6 +248,14 @@ impl CreateRun {
                 "balloon_usable_mib must be between 1 and memory_mib ({})",
                 self.memory_mib
             ));
+        }
+        if let Some(kind) = &self.kind {
+            if kind != "base" {
+                return Err(format!("kind must be base, not {kind:?}"));
+            }
+            if self.role.is_some() || self.sandbox {
+                return Err("a base is a session with no role and no sandbox".to_string());
+            }
         }
         if self.sandbox {
             if self.role.is_some() {
@@ -304,7 +316,11 @@ impl CreateRun {
             Some(role) => format!("{CONSOLE}{beats} loglevel=4 {}", agent_flags(role, index)),
             None => {
                 let keepalive = if keepalive { " plaza.keepalive=1" } else { "" };
-                format!("{CONSOLE}{beats} plaza.harness=1{keepalive} plaza.vm={index}")
+                let kind = self
+                    .kind
+                    .as_deref()
+                    .map_or(String::new(), |kind| format!(" plaza.kind={kind}"));
+                format!("{CONSOLE}{beats} plaza.harness=1{keepalive}{kind} plaza.vm={index}")
             }
         }
     }
@@ -2975,6 +2991,7 @@ impl Registry {
             // the fork boots the same daemon.
             sandbox: meta.sandbox,
             volumes: meta.volumes.iter().map(|v| v.name.clone()).collect(),
+            kind: None,
         };
         let spec = VmSpec {
             kernel: self.images.kernel.clone(),
@@ -4326,6 +4343,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             })
             .expect("the run exists even when its VMs cannot boot");
 
@@ -4705,6 +4723,7 @@ mod tests {
             sandbox: false,
             balloon_usable_mib: None,
             volumes: Vec::new(),
+            kind: None,
         };
         assert_eq!(
             request(None, None).vm_cmdline(0, false),
@@ -4720,6 +4739,40 @@ mod tests {
             "{roled}"
         );
         assert!(request(None, Some("Bad Role")).checked().is_err());
+    }
+
+    /// A base build's VM says its kind on the command line, as a keepalive session with no role; any other kind, and a
+    /// base with a role or a sandbox, is refused before a run exists.
+    #[test]
+    fn a_base_build_vm_names_its_kind_and_no_other_kind_is_accepted() {
+        let base = CreateRun {
+            n: 1,
+            vcpus: 2,
+            memory_mib: 4096,
+            beats: None,
+            vsock_cid: None,
+            role: None,
+            keepalive: Some(true),
+            sandbox: false,
+            balloon_usable_mib: None,
+            volumes: vec!["git-objects".into()],
+            kind: Some("base".into()),
+        };
+        assert_eq!(
+            base.vm_cmdline(0, true),
+            "console=ttyS0 plaza.harness=1 plaza.keepalive=1 plaza.kind=base plaza.vm=0"
+        );
+        assert!(base.checked().is_ok());
+        let engine = CreateRun {
+            kind: Some("engine".into()),
+            ..base.clone()
+        };
+        assert!(engine.checked().is_err());
+        let roled = CreateRun {
+            role: Some("builder".into()),
+            ..base
+        };
+        assert!(roled.checked().is_err());
     }
 
     /// The run range must hold one full-size run: a request of [`MAX_VMS`] VMs
@@ -4756,6 +4809,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             };
 
             let (vms, named) = request(2, 2, 512)
@@ -4796,6 +4850,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             };
 
             // A CID inside the valid range is accepted, base + n - 1 included.
@@ -4940,6 +4995,7 @@ mod tests {
                     sandbox: false,
                     balloon_usable_mib: None,
                     volumes: Vec::new(),
+                    kind: None,
                 })
                 .err()
                 .expect("the workspace copies cannot be prepared");
@@ -4977,6 +5033,7 @@ mod tests {
                         sandbox: false,
                         balloon_usable_mib: None,
                         volumes: Vec::new(),
+                        kind: None,
                     })
                     .expect("the run exists even when its VMs cannot boot");
                 assert_eq!(run.view(Detail::Summary).state, "failed");
@@ -5022,6 +5079,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             })
             .err()
             .expect("the run range is full");
@@ -5059,6 +5117,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             })
             .expect("a pinned run does not need the run range");
 
@@ -5395,6 +5454,7 @@ mod sandbox_tests {
             balloon_usable_mib: None,
             sandbox: true,
             volumes: Vec::new(),
+            kind: None,
         }
     }
 

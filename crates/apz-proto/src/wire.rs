@@ -40,6 +40,8 @@
 //! The guest's identity is never taken from a line: the hub binds every
 //! session to the CID its socket path names.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -72,6 +74,9 @@ pub enum GuestMessage {
         /// v4: the features this harness has (see [`CAP_ACP`]). An older harness omits it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         caps: Vec<String>,
+        /// v8: the kind of session the hello opens: [`KIND_BASE`] for a base build's VM. None for an agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// v1: the guest asks the host to run a diagnostic tool.
     ToolCall {
@@ -144,6 +149,14 @@ pub enum GuestMessage {
         session: String,
         seq: u64,
         update: Value,
+    },
+    /// v8: the answer to a [`HostMessage::Exec`] `id`. `ok` is whether the command exited 0 (a background command:
+    /// whether it started). `exit_code` is None when it was killed, timed out or never started. `output` is capped.
+    ExecResult {
+        id: u64,
+        ok: bool,
+        exit_code: Option<i32>,
+        output: String,
     },
     /// v3: the work item is over.
     WorkDone {
@@ -362,6 +375,19 @@ pub enum HostMessage {
     /// v5: the policy the guest decides its allowed calls by (see [`PolicySnapshot`]). Pushed after the profile at
     /// hello and whenever what it allows changes; not an answer to a line.
     Policy { policy: PolicySnapshot },
+    /// v8: a base build's command (base_recipe.rs), run as the session's user in `cwd` with `env` added to the VM's.
+    /// A foreground command runs to its end or `timeout_s` and is answered with [`GuestMessage::ExecResult`]. A
+    /// `background` one is started, answered at once, and left running (a language server, a build daemon).
+    Exec {
+        id: u64,
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        env: BTreeMap<String, String>,
+        cwd: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
+        timeout_s: u64,
+    },
     /// v3: abort work item `work` after the current step.
     Cancel { work: u64, reason: String },
     /// v3: replace the agent's profile (model, tools, limits).
@@ -499,6 +525,9 @@ pub struct PolicySnapshot {
 /// The `caps` entry a harness with ACP engine support sends in its hello. The hub answers an ACP
 /// engine's held call with `pending` only to a harness that sent it.
 pub const CAP_ACP: &str = "acp";
+/// The `kind` of a hello from a base build's VM (`plaza.kind=base`): a session with no model, which takes
+/// [`HostMessage::Exec`] items and answers each with a [`GuestMessage::ExecResult`].
+pub const KIND_BASE: &str = "base";
 /// What the host tells a guest in its welcome about the world outside the VM (see
 /// [`HostMessage::Welcome`]'s `host`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -602,6 +631,7 @@ mod tests {
             role: None,
             keepalive: None,
             caps: Vec::new(),
+            kind: None,
         };
         assert_eq!(
             hello.to_line().unwrap(),
@@ -629,6 +659,7 @@ mod tests {
             role: None,
             keepalive: Some(true),
             caps: Vec::new(),
+            kind: None,
         };
         assert_eq!(
             keepalive.to_line().unwrap(),
@@ -813,6 +844,7 @@ mod tests {
             role: Some("builder".into()),
             keepalive: Some(true),
             caps: vec![CAP_ACP.to_string()],
+            kind: None,
         };
         let line = acp.to_line().unwrap();
         assert_eq!(
@@ -1027,6 +1059,74 @@ mod tests {
             GuestMessage::from_line(old).unwrap(),
             GuestMessage::ToolReport { script: None, .. }
         ));
+    }
+
+    #[test]
+    fn v8_exec_lines_round_trip_and_a_base_hello_says_its_kind() {
+        let exec = HostMessage::Exec {
+            id: 7,
+            argv: vec!["cargo".into(), "build".into()],
+            env: BTreeMap::from([("RUSTC_WRAPPER".to_string(), "sccache".to_string())]),
+            cwd: "/workspace".into(),
+            background: false,
+            timeout_s: 1800,
+        };
+        let line = exec.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"exec","id":7,"argv":["cargo","build"],"env":{"RUSTC_WRAPPER":"sccache"},"cwd":"/workspace","timeout_s":1800}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), exec);
+        // A background command with no environment says so, and its line carries no env key.
+        let daemon = HostMessage::Exec {
+            id: 8,
+            argv: vec!["rust-analyzer".into()],
+            env: BTreeMap::new(),
+            cwd: "/workspace".into(),
+            background: true,
+            timeout_s: 0,
+        };
+        let line = daemon.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"exec","id":8,"argv":["rust-analyzer"],"cwd":"/workspace","background":true,"timeout_s":0}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), daemon);
+
+        let done = GuestMessage::ExecResult {
+            id: 7,
+            ok: false,
+            exit_code: Some(101),
+            output: "error[E0432]".into(),
+        };
+        let line = done.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"exec_result","id":7,"ok":false,"exit_code":101,"output":"error[E0432]"}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), done);
+        let killed = GuestMessage::ExecResult {
+            id: 9,
+            ok: false,
+            exit_code: None,
+            output: "[timed out]".into(),
+        };
+        assert!(killed.to_line().unwrap().contains(r#""exit_code":null"#));
+
+        let hello = GuestMessage::Hello {
+            vm: 0,
+            guest_cid: 500,
+            role: None,
+            keepalive: Some(true),
+            caps: vec![CAP_ACP.to_string()],
+            kind: Some(KIND_BASE.to_string()),
+        };
+        let line = hello.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"hello","vm":0,"guest_cid":500,"keepalive":true,"caps":["acp"],"kind":"base"}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), hello);
     }
 
     #[test]

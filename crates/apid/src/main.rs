@@ -27,6 +27,7 @@ mod artifacts;
 mod autoscale;
 mod base_builds;
 mod base_recipe;
+mod base_vm;
 mod budgets;
 mod cards;
 mod chats;

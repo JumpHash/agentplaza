@@ -185,6 +185,7 @@ pub fn read_host<S: Duplex, W: Write>(
     shared: &Shared<'_, S, W>,
     inbox: Sender<Inbound>,
     operator: Sender<OperatorCall>,
+    exec: Sender<HostMessage>,
 ) {
     if let Err(err) = lines.get_ref().set_read_timeout(Some(POLL)) {
         let _ = inbox.send(Inbound::Failed(err));
@@ -213,6 +214,12 @@ pub fn read_host<S: Duplex, W: Write>(
                     received: Instant::now(),
                 };
                 if operator.send(queued).is_err() {
+                    return;
+                }
+            }
+            // A base build's command runs on the exec worker, in the order the hub sent it (see `exec`).
+            Ok(message @ HostMessage::Exec { .. }) => {
+                if exec.send(message).is_err() {
                     return;
                 }
             }
@@ -307,7 +314,13 @@ mod tests {
             host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();
             host.send("not json").unwrap();
         });
-        read_host(&mut guest, &shared, inbox_tx, operator_tx);
+        read_host(
+            &mut guest,
+            &shared,
+            inbox_tx,
+            operator_tx,
+            mpsc::channel().0,
+        );
         hub.join().unwrap();
         drop(shared);
 
@@ -414,7 +427,13 @@ mod tests {
                 .unwrap();
             host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();
         });
-        read_host(&mut guest, &shared, inbox_tx, operator_tx);
+        read_host(
+            &mut guest,
+            &shared,
+            inbox_tx,
+            operator_tx,
+            mpsc::channel().0,
+        );
         hub.join().unwrap();
 
         assert!(matches!(

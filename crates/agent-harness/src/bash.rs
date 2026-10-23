@@ -274,13 +274,43 @@ pub(crate) fn execute(
     timeout_s: u64,
     privilege: Privilege,
 ) -> Result<String, String> {
-    let root = dir;
+    let builder = command(program, args, dir, privilege)?;
+    let Captured {
+        status,
+        timed_out,
+        output,
+    } = capture(builder, timeout_s)?;
+    if timed_out {
+        return Err(format!(
+            "{output}[timed out after {timeout_s} s; the shell was killed]"
+        ));
+    }
+    let status =
+        status.ok_or_else(|| format!("{output}internal: the shell's exit status is unknown"))?;
+    let exit = describe_exit(status);
+    if status.success() {
+        Ok(format!("{output}{exit}"))
+    } else {
+        Err(format!("{output}{exit}"))
+    }
+}
+
+/// What a finished command left: its exit status (None when it was killed, or its status is unknown), whether the
+/// timeout killed it, and its output, capped, with a newline at its end when it has any.
+pub(crate) struct Captured {
+    pub status: Option<ExitStatus>,
+    pub timed_out: bool,
+    pub output: String,
+}
+
+/// Runs `builder`'s command with its output captured (stdout and stderr together) and capped, killed with its process
+/// group after `timeout_s`. The caller has set the command's environment and directory (see [`command`]).
+pub(crate) fn capture(mut builder: Command, timeout_s: u64) -> Result<Captured, String> {
     let (reader, writer) =
         io::pipe().map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
     let stderr = writer
         .try_clone()
         .map_err(|err| format!("internal: cannot open the output pipe: {err}"))?;
-    let mut builder = command(program, args, root, privilege)?;
     builder.stdout(writer).stderr(stderr);
     let mut child = builder
         .spawn()
@@ -332,19 +362,11 @@ pub(crate) fn execute(
     if !output.is_empty() && !output.ends_with('\n') {
         output.push('\n');
     }
-    if timed_out {
-        return Err(format!(
-            "{output}[timed out after {timeout_s} s; the shell was killed]"
-        ));
-    }
-    let status =
-        status.ok_or_else(|| format!("{output}internal: the shell's exit status is unknown"))?;
-    let exit = describe_exit(status);
-    if status.success() {
-        Ok(format!("{output}{exit}"))
-    } else {
-        Err(format!("{output}{exit}"))
-    }
+    Ok(Captured {
+        status,
+        timed_out,
+        output,
+    })
 }
 
 /// `exit <code>`, or the signal that ended the shell.

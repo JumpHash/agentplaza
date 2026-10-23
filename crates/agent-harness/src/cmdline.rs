@@ -13,6 +13,8 @@
 //!                     until its first welcome (optional, default off)
 //! plaza.sandbox=1     a sandbox: no hub session; serve the envd daemon on its vsock port
 //!                     (optional, default off)
+//! plaza.kind=base     the session a base build's VM opens: `hello` says it is kind `base`, with no model, and the
+//!                     hub's exec items run here (optional, default none: an agent)
 //! plaza.connect=uds:<path>  the test transport: the session connects to this Unix socket instead of
 //!                     AF_VSOCK. Its name is `vm<cid>_<port>` (vsockd serves each guest CID on one), and the
 //!                     guest CID is read from it (optional, default none: a VM never sets it)
@@ -58,6 +60,8 @@ pub struct Config {
     pub sandbox: bool,
     /// The Unix socket the session connects to instead of AF_VSOCK (`plaza.connect=uds:<path>`), if any.
     pub connect: Option<String>,
+    /// The kind of session `hello` opens (`plaza.kind=base`), if the command line names one.
+    pub kind: Option<String>,
 }
 
 impl Default for Config {
@@ -70,6 +74,7 @@ impl Default for Config {
             template: false,
             sandbox: false,
             connect: None,
+            kind: None,
         }
     }
 }
@@ -94,6 +99,11 @@ pub enum ConfigError {
         /// The value as it appeared.
         value: String,
     },
+    /// `plaza.kind={value}` is not a session kind this harness knows
+    Kind {
+        /// The value as it appeared.
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -102,6 +112,7 @@ impl fmt::Display for ConfigError {
             Self::BadValue { flag, value } => write!(f, "{flag}={value} is not a number"),
             Self::BadRole { reason } => write!(f, "plaza.role= is not a role name: {reason}"),
             Self::Transport { value } => write!(f, "plaza.connect={value} is not uds:<path>"),
+            Self::Kind { value } => write!(f, "plaza.kind={value} is not a session kind"),
         }
     }
 }
@@ -162,6 +173,15 @@ impl Config {
             Some("") | None => None,
             Some(value) => Some(validate_connect(value)?),
         };
+        let kind = match value_of("plaza.kind=") {
+            Some("") | None => None,
+            Some(value) if value == apz_proto::wire::KIND_BASE => Some(value.to_string()),
+            Some(value) => {
+                return Err(ConfigError::Kind {
+                    value: value.to_string(),
+                });
+            }
+        };
         Ok(Self {
             port,
             vm,
@@ -170,6 +190,7 @@ impl Config {
             template,
             sandbox,
             connect,
+            kind,
         })
     }
 }
@@ -245,6 +266,7 @@ mod tests {
                     template: false,
                     sandbox: false,
                     connect: None,
+                    kind: None,
                 }
             );
             assert!(!Config::parse("plaza.keepalive=0").unwrap().keepalive);
@@ -263,6 +285,22 @@ mod tests {
                 Some("/tmp/plaza/vm500_5000")
             );
             assert_eq!(Config::default().connect, None);
+            // A base build's VM names its session kind; no other kind is known.
+            assert_eq!(
+                Config::parse("plaza.keepalive=1 plaza.kind=base")
+                    .unwrap()
+                    .kind
+                    .as_deref(),
+                Some("base")
+            );
+            assert_eq!(Config::parse("plaza.kind=").unwrap().kind, None);
+            assert_eq!(Config::default().kind, None);
+            assert_eq!(
+                Config::parse("plaza.kind=engine"),
+                Err(ConfigError::Kind {
+                    value: "engine".to_string()
+                })
+            );
         }
         // Lookalike and repeated tokens do not confuse the parser: the last plaza.vm wins.
         {
