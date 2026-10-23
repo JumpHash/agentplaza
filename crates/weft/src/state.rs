@@ -52,6 +52,32 @@ pub struct Release {
     pub proposed_seq: u64,
     pub signed: Option<(ReleaseSign, u64, String)>,
     pub exports: Vec<ReleaseExport>,
+    /// Its life as its statements made it (22.2).
+    pub life: ReleaseLife,
+}
+
+/// A verdict on a release (`release.verdict`).
+#[derive(Clone, Debug, Serialize)]
+pub struct Verdict {
+    pub source: String,
+    pub verdict: String,
+    pub reason: String,
+    pub seq: u64,
+}
+
+/// A release's life: its lifecycle state (22.2) and the statements that moved it there. The states are `draft`,
+/// `candidate`, `qualifying`, `qualified`, `published`, `promoted`, `failed`, `abandoned`, `superseded` and `yanked`.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ReleaseLife {
+    pub state: String,
+    /// The candidate's statement and its sequence number.
+    pub candidate: Option<(ReleaseCandidate, u64)>,
+    pub verdicts: Vec<Verdict>,
+    /// Each promotion: the environment or store track, and the statement's sequence number.
+    pub promotions: Vec<(String, u64)>,
+    pub published: Option<u64>,
+    /// The yank's reason and sequence number.
+    pub yanked: Option<(String, u64)>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -223,7 +249,6 @@ const OWNER_KINDS: &[&str] = &[
     "pack.add",
     "pack.remove",
     "undo",
-    "release.sign",
 ];
 /// Kinds the hub signs (the owner may too).
 const HUB_KINDS: &[&str] = &[
@@ -241,6 +266,14 @@ const HUB_KINDS: &[&str] = &[
     "abandon",
     "lane.rebase",
     "lane.author",
+    // Owner-signed before W61: the hub signs a release's digest now, and the owner may too.
+    "release.sign",
+    "release.candidate",
+    "release.qualify",
+    "release.verdict",
+    "release.publish",
+    "release.promote",
+    "release.yank",
 ];
 
 /// The digest of a revision: its base and its deltas.
@@ -309,6 +342,21 @@ impl State {
         self.repos
             .get(name)
             .ok_or_else(|| format!("no repo {name}"))
+    }
+
+    /// A release of a repository, by version.
+    pub fn release(&self, repo: &str, version: &str) -> Result<&Release, String> {
+        self.repo(repo)?
+            .releases
+            .get(version)
+            .ok_or_else(|| format!("no release {version}"))
+    }
+
+    fn release_mut(&mut self, repo: &str, version: &str) -> Result<&mut Release, String> {
+        self.repo_mut(repo)?
+            .releases
+            .get_mut(version)
+            .ok_or_else(|| format!("no release {version}"))
     }
 
     fn repo_mut(&mut self, name: &str) -> Result<&mut Repo, String> {
@@ -1187,6 +1235,10 @@ impl State {
                             proposed_seq: seq,
                             signed: None,
                             exports: vec![],
+                            life: ReleaseLife {
+                                state: "draft".into(),
+                                ..ReleaseLife::default()
+                            },
                         },
                     );
                 }
@@ -1235,6 +1287,195 @@ impl State {
                     if entry.last() != Some(&from) {
                         entry.push(from);
                     }
+                }
+                s
+            }
+            "release.candidate" => {
+                let c: ReleaseCandidate = parse(&stmt.body, kind)?;
+                let rel = self.release(&c.repo, &c.version)?;
+                if rel.life.state != "draft" {
+                    return Err(format!(
+                        "{} is {}; a candidate is cut from a draft",
+                        c.version, rel.life.state
+                    ));
+                }
+                let targets = rel.propose.targets.clone();
+                for t in &targets {
+                    let built = c.artifacts.iter().any(|a| {
+                        self.artifacts
+                            .get(a)
+                            .is_some_and(|i| i.artifact.repo == c.repo && &i.artifact.target == t)
+                    });
+                    if !built {
+                        return Err(format!("{} has no artifact for target {t}", c.version));
+                    }
+                }
+                if c.artifacts.is_empty() {
+                    return Err("a candidate holds at least one artifact".into());
+                }
+                if crate::release::release_digest(self, &c.repo, &c.version, &c.artifacts)?
+                    != c.digest
+                {
+                    return Err(format!(
+                        "{} candidate digest is not its artifacts'",
+                        c.version
+                    ));
+                }
+                let s = format!(
+                    "{} {} candidate ({} artifacts){}",
+                    c.repo,
+                    c.version,
+                    c.artifacts.len(),
+                    c.number.map(|n| format!(" rc.{n}")).unwrap_or_default()
+                );
+                if !dry {
+                    let life = &mut self.release_mut(&c.repo, &c.version)?.life;
+                    life.state = "candidate".into();
+                    life.candidate = Some((c, seq));
+                }
+                s
+            }
+            "release.qualify" => {
+                let m: ReleaseMove = parse(&stmt.body, kind)?;
+                let state = self.release(&m.repo, &m.version)?.life.state.clone();
+                if state != "candidate" {
+                    return Err(format!(
+                        "{} is {state}; only a candidate is qualified",
+                        m.version
+                    ));
+                }
+                let s = format!("{} {} qualifying", m.repo, m.version);
+                if !dry {
+                    self.release_mut(&m.repo, &m.version)?.life.state = "qualifying".into();
+                }
+                s
+            }
+            "release.verdict" => {
+                let v: ReleaseVerdict = parse(&stmt.body, kind)?;
+                if !matches!(v.source.as_str(), "ci" | "qualification") {
+                    return Err(format!(
+                        "a verdict comes from ci or qualification, not {}",
+                        v.source
+                    ));
+                }
+                let state = self.release(&v.repo, &v.version)?.life.state.clone();
+                let next = match (v.verdict.as_str(), v.source.as_str(), state.as_str()) {
+                    ("failed", _, "candidate" | "qualifying") => "failed",
+                    ("abandoned", _, "draft" | "candidate" | "qualifying") => "abandoned",
+                    ("passed", "ci", "candidate") => "candidate",
+                    ("passed", "ci", "qualifying") => "qualifying",
+                    ("passed", "qualification", "qualifying") => "qualified",
+                    _ => {
+                        return Err(format!(
+                            "a {} verdict from {} does not apply to {} ({state})",
+                            v.verdict, v.source, v.version
+                        ));
+                    }
+                };
+                let s = format!(
+                    "{} {} {} from {} ({next})",
+                    v.repo, v.version, v.verdict, v.source
+                );
+                if !dry {
+                    let life = &mut self.release_mut(&v.repo, &v.version)?.life;
+                    life.verdicts.push(Verdict {
+                        source: v.source,
+                        verdict: v.verdict,
+                        reason: v.reason,
+                        seq,
+                    });
+                    life.state = next.into();
+                }
+                s
+            }
+            "release.publish" => {
+                let m: ReleaseMove = parse(&stmt.body, kind)?;
+                let rel = self.release(&m.repo, &m.version)?;
+                let ci_passed = rel
+                    .life
+                    .verdicts
+                    .iter()
+                    .rev()
+                    .find(|v| v.source == "ci")
+                    .is_some_and(|v| v.verdict == "passed");
+                let ready =
+                    rel.life.state == "qualified" || (rel.life.state == "candidate" && ci_passed);
+                if !ready {
+                    return Err(format!(
+                        "{} is {} with no passing checks or qualification; it cannot be published",
+                        m.version, rel.life.state
+                    ));
+                }
+                // The line's older published releases are superseded by this one.
+                let line = rel
+                    .propose
+                    .line
+                    .clone()
+                    .unwrap_or_else(|| format!("release/{}", line_of(&m.version)));
+                let proposed = rel.proposed_seq;
+                let s = format!("{} {} published", m.repo, m.version);
+                if !dry {
+                    let repo = self.repo_mut(&m.repo)?;
+                    for (v, other) in repo.releases.iter_mut() {
+                        let same_line = other
+                            .propose
+                            .line
+                            .clone()
+                            .unwrap_or_else(|| format!("release/{}", line_of(v)))
+                            == line;
+                        if v != &m.version
+                            && same_line
+                            && other.proposed_seq < proposed
+                            && matches!(other.life.state.as_str(), "published" | "promoted")
+                        {
+                            other.life.state = "superseded".into();
+                        }
+                    }
+                    let life = &mut repo.releases.get_mut(&m.version).expect("checked").life;
+                    life.state = "published".into();
+                    life.published = Some(seq);
+                }
+                s
+            }
+            "release.promote" => {
+                let m: ReleaseMove = parse(&stmt.body, kind)?;
+                let environment = m
+                    .environment
+                    .clone()
+                    .filter(|e| !e.trim().is_empty())
+                    .ok_or("a promotion names its environment or store track")?;
+                let state = self.release(&m.repo, &m.version)?.life.state.clone();
+                if !matches!(state.as_str(), "published" | "promoted") {
+                    return Err(format!(
+                        "{} is {state}; only a published release is promoted",
+                        m.version
+                    ));
+                }
+                let s = format!("{} {} promoted to {environment}", m.repo, m.version);
+                if !dry {
+                    let life = &mut self.release_mut(&m.repo, &m.version)?.life;
+                    life.state = "promoted".into();
+                    life.promotions.push((environment, seq));
+                }
+                s
+            }
+            "release.yank" => {
+                let m: ReleaseMove = parse(&stmt.body, kind)?;
+                if m.reason.trim().is_empty() {
+                    return Err("a yank says why".into());
+                }
+                let state = self.release(&m.repo, &m.version)?.life.state.clone();
+                if !matches!(state.as_str(), "published" | "promoted" | "superseded") {
+                    return Err(format!(
+                        "{} is {state}; only a published release is yanked",
+                        m.version
+                    ));
+                }
+                let s = format!("{} {} yanked ({})", m.repo, m.version, m.reason);
+                if !dry {
+                    let life = &mut self.release_mut(&m.repo, &m.version)?.life;
+                    life.state = "yanked".into();
+                    life.yanked = Some((m.reason, seq));
                 }
                 s
             }

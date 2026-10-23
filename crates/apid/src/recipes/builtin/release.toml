@@ -1,0 +1,35 @@
+# The release recipe (PLAN 22.2): a draft collects the changes since the base and writes the notes; the build step
+# runs once per declared target (fan_out per_target; 7.5 places each target on a pool that can build it); the
+# candidate is cut and signed by the hub once every target is built. The release entity (releases/) owns the run.
+id = "release"
+name = "Release"
+version = 1
+inputs = ["changes"]
+outputs = ["release"]
+triggers = ["release.cut"]
+
+[[steps]]
+id = "draft"
+engine = "release"
+gate = ["passed"]
+
+[[steps]]
+id = "build"
+engine = "release"
+fan_out = "per_target"
+gate = ["passed"]
+
+[[steps]]
+id = "candidate"
+engine = "release"
+gate = ["passed"]
+
+[[edges]]
+from = "draft"
+to = "build"
+when = "passed"
+
+[[edges]]
+from = "build"
+to = "candidate"
+when = "passed"

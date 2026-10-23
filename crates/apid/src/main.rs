@@ -89,6 +89,7 @@ mod provider_health;
 mod provider_listings;
 mod providers;
 mod recipes;
+mod releases;
 mod replan;
 mod review_graph;
 mod role;

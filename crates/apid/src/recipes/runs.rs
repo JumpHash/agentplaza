@@ -146,7 +146,33 @@ impl Runs {
         subject: Option<&str>,
         now: u64,
     ) -> (String, Vec<Move>) {
-        let (walk, moves) = Walk::start(recipe, &BTreeMap::new());
+        self.start_items(
+            recipe,
+            source,
+            trigger,
+            task,
+            project,
+            subject,
+            &BTreeMap::new(),
+            now,
+        )
+    }
+
+    /// [`Runs::start`] with the fan-out counts of the recipe's steps (a step absent from `items` runs one item): a
+    /// `per_target` build of three targets is `items` with `build: 3`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_items(
+        &self,
+        recipe: &Recipe,
+        source: &str,
+        trigger: &str,
+        task: Option<&str>,
+        project: Option<&str>,
+        subject: Option<&str>,
+        items: &BTreeMap<String, u32>,
+        now: u64,
+    ) -> (String, Vec<Move>) {
+        let (walk, moves) = Walk::start(recipe, items);
         let mut inner = self.lock();
         inner.next += 1;
         let id = format!("rr-{}", inner.next);
@@ -189,14 +215,38 @@ impl Runs {
         subject: Option<&str>,
         now: u64,
     ) -> Option<String> {
+        self.start_engine_items(
+            recipe,
+            trigger,
+            task,
+            project,
+            subject,
+            &BTreeMap::new(),
+            now,
+        )
+    }
+
+    /// [`Runs::start_engine`] with the fan-out counts of its steps (see [`Runs::start_items`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_engine_items(
+        &self,
+        recipe: &str,
+        trigger: &str,
+        task: Option<&str>,
+        project: Option<&str>,
+        subject: Option<&str>,
+        items: &BTreeMap<String, u32>,
+        now: u64,
+    ) -> Option<String> {
         let recipe = self.recipe(recipe, None)?;
-        let (id, moves) = self.start(
+        let (id, moves) = self.start_items(
             &recipe,
             source_of(&recipe),
             trigger,
             task,
             project,
             subject,
+            items,
             now,
         );
         for m in moves {
