@@ -358,6 +358,7 @@ dependencies = [
  "apz-store",
  "apz-testsel",
  "apz-theme",
+ "apz-transfer",
  "apz-trust",
  "apz-uds",
  "apz-view",
@@ -845,6 +846,19 @@ dependencies = [
  "apz-theme",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "apz-transfer"
+version = "1.0.0"
+dependencies = [
+ "apz-blobs",
+ "apz-http",
+ "apz-trust",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -6022,17 +6036,21 @@ dependencies = [
 name = "noded"
 version = "1.0.0"
 dependencies = [
+ "apz-blobs",
  "apz-http",
  "apz-metrics",
  "apz-os",
  "apz-sandbox",
  "apz-station",
+ "apz-transfer",
  "apz-uds",
  "base64 0.22.1",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2",
  "sysinfo",
+ "tempfile",
  "vmm",
 ]
 

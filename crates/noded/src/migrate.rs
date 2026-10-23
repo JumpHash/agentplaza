@@ -1322,6 +1322,94 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A move's files go node to node (plan 17.5): the source offers its export's files as blobs, the target fetches
+    /// the chunks it lacks over loopback with the hub's grant, and the import finishes into a sleeping VM. The source
+    /// sends every byte it offered, and nothing passes through the hub.
+    #[test]
+    fn a_move_takes_its_files_node_to_node_over_loopback() {
+        let (src_root, dst_root) = (scratch("transfer-src"), scratch("transfer-dst"));
+        let source = node_at(&src_root);
+        let run = source
+            .import_run(ImportedVm {
+                cid: 52,
+                role: None,
+                vcpus: 1,
+                memory_mib: 256,
+                balloon_usable_mib: None,
+                cmdline: "console=ttyS0 plaza.vm=0".to_string(),
+                sleep_dir: stand_in_sleep(&src_root, 9000),
+                workspace: None,
+                volumes: Vec::new(),
+            })
+            .expect("the VM is imported asleep on the source");
+        let source_migrations = Migrations::new();
+        let export =
+            export_vm(&source_migrations, &source, run.id(), 0).expect("an asleep VM exports");
+        let sent: u64 = export.files.iter().map(|file| file.len).sum();
+
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let hub_key = apz_transfer::key_to_text(&key.verifying_key());
+        let from = crate::transfer::Transfers::open(&src_root.join("blobs"));
+        from.listen("127.0.0.1:0".parse().expect("an address"))
+            .expect("the source serves its blobs");
+        let to = crate::transfer::Transfers::open(&dst_root.join("blobs"));
+        let published = crate::transfer::publish_export(
+            &from,
+            &source_migrations,
+            &export.export,
+            serde_json::json!({
+                "hub": {"node": "a", "hub_key": hub_key},
+                "files": export.files,
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .expect("the export's files are offered");
+        let id = published["id"].as_str().expect("an id");
+        let grant = apz_transfer::Grant::issue(
+            &key,
+            "move:52:export",
+            id,
+            "a",
+            "b",
+            apz_transfer::now_ms() + 60_000,
+        )
+        .encode();
+
+        let target = node_at(&dst_root);
+        let target_migrations = Migrations::new();
+        let imported = crate::transfer::import_from_transfer(
+            &to,
+            &target_migrations,
+            &target,
+            serde_json::json!({
+                "hub": {"node": "b", "hub_key": hub_key},
+                "from": format!("127.0.0.1:{}", from.port().expect("a port")),
+                "grant": grant,
+                "manifest": published["manifest"],
+                "meta": export.meta,
+                "files": export.files,
+            })
+            .to_string()
+            .as_bytes(),
+        )
+        .expect("the files arrive and the import opens");
+        assert_eq!(imported["bytes"].as_u64(), Some(sent), "every file came");
+        let import = imported["import"].as_str().expect("an import");
+        let done = finish_import(&target_migrations, &target, import).expect("the import finishes");
+        assert!(
+            target.asleep_vm(&done.run, 0).is_ok(),
+            "the moved VM is asleep here"
+        );
+        assert_eq!(
+            from.node().expect("a node").served_bytes(),
+            sent,
+            "the source sent them to the target"
+        );
+        let _ = fs::remove_dir_all(&src_root);
+        let _ = fs::remove_dir_all(&dst_root);
+    }
+
     #[test]
     fn a_vm_with_data_volumes_moves_with_them_to_a_node_that_holds_them() {
         let (src_root, dst_root) = (scratch("volumes-src"), scratch("volumes-dst"));

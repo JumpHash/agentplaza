@@ -22963,6 +22963,66 @@
         }
       }
     },
+    "/v1/transfers": {
+      "post": {
+        "operationId": "post_v1_transfers",
+        "tags": [
+          "transfers"
+        ],
+        "summary": "Distribute files from one node to another: the receiver fetches the chunks it lacks from the sender",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferBody"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "An upstream failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/stations/vms": {
       "post": {
         "operationId": "post_v1_stations_vms",
@@ -31381,6 +31441,49 @@
       }
     },
     "schemas": {
+      "TransferBody": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "description": "What the grant is for, for the record (`base:<project>:<kind>`)."
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferFile"
+            },
+            "description": "The files, by name and the path on `from`."
+          }
+        },
+        "required": [
+          "scope",
+          "from",
+          "to",
+          "files"
+        ]
+      },
+      "TransferFile": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ]
+      },
       "Error": {
         "type": "object",
         "description": "Every error answer: what went wrong, in a sentence.",

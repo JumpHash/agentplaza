@@ -1,0 +1,21 @@
+[package]
+name = "apz-transfer"
+description = "AgentPlaza node-to-node transfers: the hub's signed grants, content-addressed manifests, and the chunks a node lacks fetched straight from the node that holds them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+apz-blobs = { path = "../apz-blobs" }
+apz-http = { path = "../apz-http" }
+apz-trust = { path = "../apz-trust" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
