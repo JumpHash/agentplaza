@@ -126,6 +126,56 @@ const TABLE: &[Capabilities] = &[
         hooks: false,
         compaction_env: None,
     },
+    // The thin adapters of 5.6 (`acp/shim.rs`): they read no instruction file, have no native skills or hooks, and
+    // no compaction setting; their flags are unverified.
+    Capabilities {
+        engine: "amp",
+        version: "0.0.1792756861-g6187a2",
+        instructions: None,
+        native_skills: false,
+        hooks: false,
+        compaction_env: None,
+    },
+    Capabilities {
+        engine: "crush",
+        version: "0.98.1",
+        instructions: None,
+        native_skills: false,
+        hooks: false,
+        compaction_env: None,
+    },
+    Capabilities {
+        engine: "junie",
+        version: "1468.30.0",
+        instructions: None,
+        native_skills: false,
+        hooks: false,
+        compaction_env: None,
+    },
+    Capabilities {
+        engine: "droid",
+        version: "0.248.0",
+        instructions: None,
+        native_skills: false,
+        hooks: false,
+        compaction_env: None,
+    },
+    Capabilities {
+        engine: "aider",
+        version: "0.86.2",
+        instructions: None,
+        native_skills: false,
+        hooks: false,
+        compaction_env: None,
+    },
+    Capabilities {
+        engine: "openhands",
+        version: "1.11.0",
+        instructions: None,
+        native_skills: false,
+        hooks: false,
+        compaction_env: None,
+    },
 ];
 
 /// The capabilities of engine `id`, or `None` for an engine the table does not declare.

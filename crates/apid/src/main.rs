@@ -48,6 +48,7 @@ mod e2b_tpl;
 mod egress_inject;
 mod engine_feed;
 mod engine_instances;
+mod engine_watch;
 mod environments;
 mod evals;
 mod events;

@@ -368,14 +368,7 @@ max = 2
         let recipes = builtin();
         assert_eq!(recipes.len(), 13);
         for stub in [
-            "intake",
-            "plan",
-            "release",
-            "deploy",
-            "incident",
-            "upgrade",
-            "cve",
-            "engine-watch",
+            "intake", "plan", "release", "deploy", "incident", "upgrade", "cve",
         ] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
