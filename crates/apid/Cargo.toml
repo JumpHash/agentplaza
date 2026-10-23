@@ -86,3 +86,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# The node end of the tunnel, for the end-to-end test in src/tunnel.rs.
+apz-link = { path = "../apz-link" }

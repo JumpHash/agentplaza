@@ -193,7 +193,8 @@ pub fn is_public(method: &str, path: &str) -> bool {
         || (path.starts_with("/v1/nodes/n")
             && (path.ends_with("/commands")
                 || path.ends_with("/results")
-                || path.ends_with("/heartbeat")))
+                || path.ends_with("/heartbeat")
+                || path.ends_with("/tunnel")))
         || path.starts_with("/internal/")
         || !path.starts_with("/v1/")
 }

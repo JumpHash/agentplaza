@@ -342,6 +342,7 @@ dependencies = [
  "apz-gateway",
  "apz-http",
  "apz-ide",
+ "apz-link",
  "apz-lsp",
  "apz-metrics",
  "apz-metrics-view",
@@ -10518,6 +10519,7 @@ version = "0.1.0"
 dependencies = [
  "apz-egress-rules",
  "apz-http",
+ "apz-link",
  "apz-metrics",
  "apz-os",
  "apz-proto",
