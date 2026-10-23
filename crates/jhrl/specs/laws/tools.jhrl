@@ -318,6 +318,18 @@ law "T-032" "The planner sizes the team" {
   when resource.name == "team_set" and principal.role == "planner"
 }
 
+law "T-034" "The planner posts a plan" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only a project's planner may post the plan of a spec: the list of tasks, each with its links, its recipe and its budget, once, from the spec's tasks step."
+  rationale "A plan decides what the project builds and what it spends: the planner weighs the spec, and the plan's tasks are created in one batch the hub checks as a graph (PLAN 21.2). No other session creates tasks from a spec."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plan_post" and principal.role == "planner"
+}
+
 law "T-035" "Every agent may ask which tests a change needs" {
   tier statute
   enforcement preventive

@@ -1,0 +1,17 @@
+meta {
+  name: Read the spec of a task that does not exist: 404
+  type: http
+  seq: 56
+}
+
+get {
+  url: {{baseUrl}}/v1/tasks/t999999/spec
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

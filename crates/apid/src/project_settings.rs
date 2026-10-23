@@ -94,6 +94,10 @@ pub struct ProjectSettings {
     /// `grace_hours` overrides it; 24 when neither is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub preview_grace_hours: Option<u64>,
+    /// The words an intake item may have, title and text together, before it gets a spec and a plan rather than a task
+    /// (planning.rs); [`crate::planning::DEFAULT_SPEC_OVER_WORDS`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_over_words: Option<u32>,
     /// The project's hooks: checks and formatters that run around its agents' edits and commands (`apz_proto::hooks`).
     /// The JSON names them as a list under `hooks`; `"hooks": "defaults"` sets `hook_defaults` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -205,6 +209,7 @@ struct SettingsRow {
     team_max: Option<u32>,
     team_target: Option<u32>,
     queue_batch: Option<u32>,
+    spec_over_words: Option<u32>,
     land_approval: bool,
     release_continuous: bool,
     preview_grace_hours: Option<u64>,
@@ -278,6 +283,7 @@ impl SettingsRow {
             team_max: settings.team_max,
             team_target: settings.team_target,
             queue_batch: settings.queue_batch,
+            spec_over_words: settings.spec_over_words,
             land_approval: settings.land_approval,
             release_continuous: settings.release_continuous,
             preview_grace_hours: settings.preview_grace_hours,
@@ -304,6 +310,7 @@ impl SettingsRow {
             team_max: self.team_max,
             team_target: self.team_target,
             queue_batch: self.queue_batch,
+            spec_over_words: self.spec_over_words,
             land_approval: self.land_approval,
             release_continuous: self.release_continuous,
             preview_grace_hours: self.preview_grace_hours,

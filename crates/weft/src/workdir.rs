@@ -99,9 +99,20 @@ impl Workdir {
                     .to_string_lossy()
                     .replace('\\', "/");
                 let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+                // The plaza's own `.plaza` is not the work's, except its specs (PLAN 21.2): a spec the spec step writes
+                // on its lane is part of the change. Its directory is walked for them, and nothing else under it is.
+                if rel == ".plaza" {
+                    if meta.is_dir() {
+                        stack.push(path);
+                    }
+                    continue;
+                }
+                let plaza_other = rel.starts_with(".plaza/")
+                    && rel != ".plaza/specs"
+                    && !rel.starts_with(".plaza/specs/");
                 if rel == ".weft"
                     || rel == ".git"
-                    || rel == ".plaza"
+                    || plaza_other
                     || ignore.ignores(&rel, meta.is_dir())
                 {
                     continue;
