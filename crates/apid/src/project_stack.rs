@@ -157,13 +157,24 @@ impl Hypervisor {
     }
 }
 
-/// A target: a place a change is previewed or tried by hand, and the kind of base that serves it.
+/// A target: a place a change is previewed or tried by hand, and the kind of base that serves it. A preview target
+/// names the command that serves the app (`serve`, run by a shell in the lane's checkout), the `port` it listens on,
+/// and how many hours a preview outlives its lane's landing or closing (`grace_hours`, 24 by default; 18.1).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub name: String,
     pub kind: TargetKind,
+    #[serde(default)]
+    pub serve: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub grace_hours: Option<u64>,
 }
+
+/// The grace a preview keeps after its lane lands or closes, when the target says none: 24 hours.
+pub const DEFAULT_GRACE_HOURS: u64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

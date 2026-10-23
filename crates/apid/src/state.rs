@@ -218,6 +218,8 @@ pub struct App {
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
     pub shares: Arc<crate::shares::Store>,
+    /// Previews of lanes and their share links (previews/).
+    pub previews: Arc<crate::previews::Store>,
     pub providers: providers::Store,
     /// The coding engines as instances (`engine_instances.rs`).
     pub engines: crate::engine_instances::Store,
@@ -382,6 +384,10 @@ impl App {
                 Arc::clone(store.db(crate::store::PLAZA)),
                 &config.state_dir,
             )),
+            previews: Arc::new(crate::previews::Store::open(
+                Arc::clone(store.db(crate::store::PLAZA)),
+                &config.state_dir,
+            )),
             providers: providers::Store::new(Arc::clone(&vault)),
             engines: crate::engine_instances::Store::new(&config.state_dir)
                 .with_generations(Arc::clone(&generations)),
@@ -404,6 +410,7 @@ impl App {
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
+        crate::previews::life::spawn_sweeper(Arc::clone(&app));
         crate::e2b::start(&app);
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));

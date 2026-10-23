@@ -788,15 +788,13 @@ impl Store {
         }
     }
     /// The node's tunnel, while it is up.
-    #[cfg(test)]
     pub fn tunnel(&self, node: &str) -> Option<Arc<Mux>> {
         let tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
         tunnels.get(node).filter(|mux| mux.alive()).cloned()
     }
     /// Opens a stream to a fork's port on a node, through the node's tunnel: what is written goes to the fork, and
-    /// what the fork sends comes back on the stream. (Not yet called outside tests: terminals and model calls to remote
-    /// forks are wired by the later PRs.)
-    #[cfg(test)]
+    /// what the fork sends comes back on the stream. The node's relay and vsockd check that noded serves the port
+    /// (6.1); previews (18.1) ride it.
     pub fn open_port(
         &self,
         node: &str,

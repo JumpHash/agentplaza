@@ -367,6 +367,11 @@ impl<'a, H: Host> Fork<'a, H> {
         )
     }
 
+    /// Where the fork's VM runs: its noded run and its CID, once the start made the VM (a preview keeps both).
+    pub fn location(&self) -> Option<(String, u64)> {
+        Some((self.runner.run.clone()?, self.runner.cid?))
+    }
+
     /// Stops the fork's VM.
     pub fn retire(self) -> Result<(), String> {
         let Some(run) = self.runner.run.clone() else {

@@ -174,6 +174,20 @@ pub const SKILL_EVENTS: &str = include_str!("../../sql/queries/skill_events.sql"
 pub const SKILL_EVENT_LAST_SEQ: &str = include_str!("../../sql/queries/skill_event_last_seq.sql");
 pub const SKILL_BOUND: &str = include_str!("../../sql/queries/skill_bound.sql");
 
+// The previews (`preview`, `preview_link` and `preview_opening`: previews/mod.rs).
+pub const PREVIEW_POS: &str = include_str!("../../sql/queries/preview_pos.sql");
+pub const PREVIEW_GET: &str = include_str!("../../sql/queries/preview_get.sql");
+pub const PREVIEW_LIST: &str = include_str!("../../sql/queries/preview_list.sql");
+pub const PREVIEW_LIST_PROJECT: &str = include_str!("../../sql/queries/preview_list_project.sql");
+pub const PREVIEW_LIST_LANE: &str = include_str!("../../sql/queries/preview_list_lane.sql");
+pub const PREVIEW_OPEN: &str = include_str!("../../sql/queries/preview_open.sql");
+pub const LINK_POS: &str = include_str!("../../sql/queries/preview_link_pos.sql");
+pub const LINK_GET: &str = include_str!("../../sql/queries/preview_link_get.sql");
+pub const LINK_LIST_PREVIEW: &str = include_str!("../../sql/queries/preview_link_list.sql");
+pub const PREVIEW_OPENING_LAST_SEQ: &str =
+    include_str!("../../sql/queries/preview_opening_last_seq.sql");
+pub const PREVIEW_OPENING_PAGE: &str = include_str!("../../sql/queries/preview_opening_page.sql");
+
 // The share links (`share` and `share_event`: shares/mod.rs).
 pub const SHARE_GET: &str = include_str!("../../sql/queries/share_get.sql");
 pub const SHARE_LIST: &str = include_str!("../../sql/queries/share_list.sql");
@@ -224,6 +238,21 @@ pub const MEMORY_SEARCH_HITS: &str = include_str!("../../sql/queries/memory_sear
 /// Every query: (file, name, text), for the test that prepares each against its file.
 #[cfg(test)]
 pub const QUERIES: &[(&str, &str, &str)] = &[
+    ("plaza", "preview_pos", PREVIEW_POS),
+    ("plaza", "preview_get", PREVIEW_GET),
+    ("plaza", "preview_list", PREVIEW_LIST),
+    ("plaza", "preview_list_project", PREVIEW_LIST_PROJECT),
+    ("plaza", "preview_list_lane", PREVIEW_LIST_LANE),
+    ("plaza", "preview_open", PREVIEW_OPEN),
+    ("plaza", "preview_link_pos", LINK_POS),
+    ("plaza", "preview_link_get", LINK_GET),
+    ("plaza", "preview_link_list", LINK_LIST_PREVIEW),
+    (
+        "plaza",
+        "preview_opening_last_seq",
+        PREVIEW_OPENING_LAST_SEQ,
+    ),
+    ("plaza", "preview_opening_page", PREVIEW_OPENING_PAGE),
     ("plaza", "budget_ledger", BUDGET_LEDGER),
     ("plaza", "usage_calls_clear", USAGE_CALLS_CLEAR),
     ("plaza", "usage_calls_count", USAGE_CALLS_COUNT),

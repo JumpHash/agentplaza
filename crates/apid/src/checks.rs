@@ -1,10 +1,10 @@
 //! The CI recipe's runs (PLAN 4.5, 21.3): the checks of a change and their results as the gate.
 //!
-//! The recipe (`recipes/builtin/ci.toml`) has five steps. `lint` runs the format and lint commands of the project's
+//! The recipe (`recipes/builtin/ci.toml`) has six steps. `lint` runs the format and lint commands of the project's
 //! toolchains, `build` its build commands, `audit` `cargo deny check` where the repository configures it, and `tests`
 //! the tests `tests_select` picks for the change from the project's coverage map on main (the full suite when no map is
 //! recorded, or when the selection says so). Those four run their commands in one test fork (`base_vm::Fork`), and
-//! `tests` starts once `build` has passed. `scan` is read by the hub: the lines the change adds are searched for
+//! `tests` starts once `build` has passed. `preview` starts the lane's preview once the tests pass (18.1, `previews`). `scan` is read by the hub: the lines the change adds are searched for
 //! credentials (`secrets.rs`), so a found secret fails the gate with no fork at all.
 //!
 //! Each check is a row of its run (`CheckRow`: what ran and what it found) and a report the walker's gate reads. The
@@ -22,6 +22,7 @@ use crate::base_builds;
 use crate::base_recipe::{self, Command, WORKSPACE};
 use crate::base_vm::{Answer, Fork, Live};
 use crate::placement;
+use crate::previews;
 use crate::project_stack::{self, Stack, Toolchain};
 use crate::recipes::runs::{CheckRow, Runs, source_of};
 use crate::recipes::{Move, Report};
@@ -56,6 +57,9 @@ pub struct Input<'a> {
     pub deny: bool,
     /// The coverage maps the selection reads (`test_select::select_for`).
     pub maps: &'a TestSelect,
+    /// Starts the lane's preview (the `preview` step): its summary, or why it did not start. `None` in tests that
+    /// have no preview to start.
+    pub preview: Option<&'a dyn Fn() -> Result<String, String>>,
 }
 
 /// The commands of each check, and what the scan found, worked out before anything runs.
@@ -279,7 +283,7 @@ pub fn run_with(runs: &Runs, input: &Input, exec: &mut Exec, now: u64) -> Result
     let mut ready = starts(moves);
     while let Some(step) = ready.pop_front() {
         runs.started(&run, &step, now);
-        let (report, row) = check(&step, &plan, exec);
+        let (report, row) = check(&step, &plan, exec, input.preview);
         runs.record_check(&run, row, now);
         ready.extend(starts(runs.settle(&run, &step, &report, now)));
     }
@@ -297,8 +301,14 @@ fn starts(moves: Vec<Move>) -> VecDeque<String> {
 }
 
 /// One check: its report for the gate and its row for the run.
-fn check(step: &str, plan: &Plan, exec: &mut Exec) -> (Report, CheckRow) {
+fn check(
+    step: &str,
+    plan: &Plan,
+    exec: &mut Exec,
+    preview: Option<&dyn Fn() -> Result<String, String>>,
+) -> (Report, CheckRow) {
     match step {
+        "preview" => run_preview(preview),
         "scan" => {
             let findings = plan.findings.len() as u32;
             let summary = if plan.findings.is_empty() {
@@ -340,6 +350,29 @@ fn check(step: &str, plan: &Plan, exec: &mut Exec) -> (Report, CheckRow) {
             (report, row)
         }
     }
+}
+
+/// The preview step: starts the lane's preview and passes when it is live. A project with no preview target passes with
+/// a note; the start's error fails the step and says why.
+fn run_preview(preview: Option<&dyn Fn() -> Result<String, String>>) -> (Report, CheckRow) {
+    let (passed, summary) = match preview {
+        Some(start) => match start() {
+            Ok(summary) => (true, summary),
+            Err(why) => (false, why),
+        },
+        None => (true, "no preview target: nothing to start".to_string()),
+    };
+    let report = Report {
+        passed,
+        ..Report::default()
+    };
+    let row = CheckRow {
+        step: "preview".to_string(),
+        passed,
+        commands: "the preview base: checkout, build, serve, wait, register".into(),
+        summary,
+    };
+    (report, row)
 }
 
 /// Runs a check's commands in the fork, all of them, and reads the result: passed when every one exits 0. With no
@@ -465,6 +498,13 @@ pub fn start(app: &App, project: &str, change: &str, now: u64) -> Result<String,
             Some(node) => Fork::start(&host, node, project.to_string(), &steps),
             None => Err(format!("no node in the pool {pool} has room for a fork")),
         };
+    let lane = previews::life::Lane {
+        project,
+        lane: change,
+        rev: &rev,
+        repo: &repo,
+    };
+    let start_preview = || previews::life::start(app, &lane, &stack, now);
     let input = Input {
         project,
         change,
@@ -472,6 +512,7 @@ pub fn start(app: &App, project: &str, change: &str, now: u64) -> Result<String,
         diff: &diff,
         deny,
         maps: &app.test_select,
+        preview: Some(&start_preview),
     };
     let mut fork = fork;
     let outcome = {
@@ -623,6 +664,52 @@ mod tests {
     }
 
     /// A fork that passes every command, except those whose argv starts with a `fail` prefix, and records what ran.
+    #[test]
+    fn the_preview_starts_after_the_checks_pass_and_its_failure_fails_the_run() {
+        let stack = parse(RUST).unwrap();
+        let maps = TestSelect::default();
+        maps.record(map()).unwrap();
+        let diff = leaf_diff();
+        let runs = Runs::default();
+        let ran = RefCell::new(Vec::new());
+        let mut fork = fork(&[], &ran);
+        let starts = RefCell::new(0);
+        let refused = || -> Result<String, String> {
+            *starts.borrow_mut() += 1;
+            Err("no node in the pool has room for a preview".to_string())
+        };
+        let mut failing = input(&stack, &diff, &maps, false);
+        failing.preview = Some(&refused);
+        let run = run_with(&runs, &failing, &mut fork, 5).unwrap();
+        assert_eq!(
+            *starts.borrow(),
+            1,
+            "the preview starts once, after the tests"
+        );
+        let step = row(&runs, &run, "preview");
+        assert!(!step.passed && step.summary.contains("no node"), "{step:?}");
+        assert_eq!(
+            runs.view(&run).unwrap().run.state,
+            crate::recipes::runs::RunState::Failed
+        );
+
+        let started = || -> Result<String, String> {
+            Ok("preview p1 of lane t1 serves port 8080 on n1".to_string())
+        };
+        let mut passing = input(&stack, &diff, &maps, false);
+        passing.preview = Some(&started);
+        let run = run_with(&runs, &passing, &mut fork, 5).unwrap();
+        let step = row(&runs, &run, "preview");
+        assert!(
+            step.passed && step.summary.contains("serves port 8080"),
+            "{step:?}"
+        );
+        assert_eq!(
+            runs.view(&run).unwrap().run.state,
+            crate::recipes::runs::RunState::Passed
+        );
+    }
+
     fn fork<'a>(
         fail: &'a [&'a str],
         ran: &'a RefCell<Vec<Vec<String>>>,
@@ -651,6 +738,7 @@ mod tests {
             diff,
             deny,
             maps,
+            preview: None,
         }
     }
 
@@ -704,8 +792,14 @@ mod tests {
         let run = run_with(&runs, &input(&stack, &diff, &maps, false), &mut fork, 5).unwrap();
         let view = runs.view(&run).unwrap();
         assert_eq!(view.run.state, crate::recipes::runs::RunState::Passed);
-        assert_eq!(view.run.checks.len(), 5, "{:?}", view.run.checks);
+        assert_eq!(view.run.checks.len(), 6, "{:?}", view.run.checks);
         assert!(view.run.checks.iter().all(|c| c.passed));
+        // A project with no preview target passes its preview step with that note.
+        assert!(
+            row(&runs, &run, "preview")
+                .summary
+                .contains("no preview target")
+        );
         // The selection picked the leaf's test: the tests step ran only that package's tests.
         let tests = row(&runs, &run, "tests");
         assert_eq!(tests.commands, "cargo test -p leaf");
