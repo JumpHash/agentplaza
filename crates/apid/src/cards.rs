@@ -273,12 +273,15 @@ pub fn def() -> &'static apz_store::TableDef {
 }
 
 /// The choices a budget card offers (10.3): raise by the planner's estimate, raise to an amount, stop, replan.
-pub fn budget_choices(estimate: Option<u64>, unit: &str) -> Vec<Choice> {
+pub fn budget_choices(estimate: Option<u64>, unit: crate::budgets::Unit) -> Vec<Choice> {
     let mut choices = Vec::new();
     if let Some(estimate) = estimate {
         choices.push(Choice {
             id: "raise_by".into(),
-            label: format!("Raise by the estimate ({estimate} {unit})"),
+            label: format!(
+                "Raise by the estimate ({})",
+                crate::work_loop::amount(estimate, unit)
+            ),
             detail: Some("the planner's estimate of what finishing needs".into()),
             takes_amount: false,
         });
@@ -320,7 +323,7 @@ mod tests {
             subject: format!("task:{task}"),
             title: format!("Task {task} reached its budget"),
             body: Some("Spent $4.00 of $4.00".into()),
-            choices: budget_choices(Some(2_000_000), "µ$"),
+            choices: budget_choices(Some(2_000_000), crate::budgets::Unit::Usd),
         }
     }
 

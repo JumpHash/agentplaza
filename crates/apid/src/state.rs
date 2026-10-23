@@ -105,7 +105,7 @@ impl Config {
 pub struct App {
     pub config: Config,
     /// The event bus every module publishes on (the sockets at `/v1/ws` subscribe to it).
-    pub bus: events::Bus,
+    pub bus: Arc<events::Bus>,
     /// The plaza's laws (JHRL), enforced on every tool call.
     pub laws: &'static crate::laws::Laws,
     /// External-tool connectors (AP-063): settings and vaulted keys.
@@ -265,9 +265,10 @@ impl App {
         crate::vendor_relay::register(&vault);
         // The Library of deliverables, over the object store.
         let library = Arc::new(crate::deliverables::Store::open(Arc::clone(&blobs)));
+        let bus = Arc::new(events::Bus::default());
         let app = Arc::new(App {
             me: std::sync::OnceLock::new(),
-            bus: events::Bus::default(),
+            bus: Arc::clone(&bus),
             laws: crate::laws::global(),
             connectors: crate::connectors::Store::new(Arc::clone(&vault))
                 .with_generations(Arc::clone(&generations)),
@@ -294,7 +295,7 @@ impl App {
             saved: crate::store::saver::Ledger::default(),
             sessions: Default::default(),
             seats: Default::default(),
-            budgets: Default::default(),
+            budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
             disk: Default::default(),
             chats: Default::default(),

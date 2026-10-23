@@ -118,6 +118,10 @@ pub const STATION_SYNC_CONTENT_HASHES: &str =
 pub const TRANSCRIPT_PAGE: &str = include_str!("../../sql/queries/transcript_page.sql");
 pub const TRANSCRIPT_CIDS: &str = include_str!("../../sql/queries/transcript_cids.sql");
 pub const TRANSCRIPT_DELETE: &str = include_str!("../../sql/queries/transcript_delete.sql");
+pub const TRANSCRIPT_BEFORE_SESSION: &str =
+    include_str!("../../sql/queries/transcript_before_session.sql");
+pub const TRANSCRIPT_BEFORE_THREAD: &str =
+    include_str!("../../sql/queries/transcript_before_thread.sql");
 
 // The unfurl cache (`unfurl_cache`: unfurl/mod.rs).
 pub const UNFURL_GET: &str = include_str!("../../sql/queries/unfurl_get.sql");
@@ -363,6 +367,16 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("transcripts", "transcript_page", TRANSCRIPT_PAGE),
     ("transcripts", "transcript_cids", TRANSCRIPT_CIDS),
     ("transcripts", "transcript_delete", TRANSCRIPT_DELETE),
+    (
+        "transcripts",
+        "transcript_before_session",
+        TRANSCRIPT_BEFORE_SESSION,
+    ),
+    (
+        "transcripts",
+        "transcript_before_thread",
+        TRANSCRIPT_BEFORE_THREAD,
+    ),
     ("plaza", "prompt_list", PROMPT_LIST),
     ("plaza", "prompt_get", PROMPT_GET),
     ("plaza", "prompt_tags", PROMPT_TAGS),

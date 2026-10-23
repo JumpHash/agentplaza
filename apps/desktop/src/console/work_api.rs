@@ -422,17 +422,23 @@ pub fn session(client: &Client, id: &str) -> Result<Session, String> {
     client.get(&format!("/v1/sessions/{}", enc(id)))
 }
 
-/// A session's transcript from entry `after` on, at most `limit` entries (the hub's page is at most 1000).
+/// A session's transcript from entry `after` on, at most `limit` entries (the hub's page is at most 500). The hub's
+/// `more` is not read: a short page ends the log, as before.
 pub fn transcript(
     client: &Client,
     id: &str,
     after: u64,
     limit: u32,
 ) -> Result<Vec<TranscriptEntry>, String> {
-    client.get(&format!(
+    #[derive(Deserialize)]
+    struct Page {
+        entries: Vec<TranscriptEntry>,
+    }
+    let page: Page = client.get(&format!(
         "/v1/sessions/{}/transcript?after={after}&limit={limit}",
         enc(id)
-    ))
+    ))?;
+    Ok(page.entries)
 }
 
 /// The context of a session's last model call.

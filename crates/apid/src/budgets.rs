@@ -16,9 +16,12 @@
 //!   (`budget_entry`).
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::events::Bus;
 
 /// A budget's unit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -97,6 +100,25 @@ pub struct Budget {
 }
 
 impl Budget {
+    /// The budget as the consoles read it (`GET /v1/.../budget`, and the `budget` frame): the record, what is left,
+    /// and the share spent.
+    pub fn view(&self) -> Value {
+        let mut v = serde_json::to_value(self).unwrap_or(Value::Null);
+        v["left"] = json!(self.left());
+        v["spent_pct"] = json!(
+            self.cap
+                .filter(|c| *c > 0)
+                .map(|c| (self.spent as f64 * 100.0 / c as f64).round())
+        );
+        v
+    }
+
+    /// Whether the budget has spend in its unit: a call charged or in flight, or money reserved or drawn. Its unit
+    /// cannot change then.
+    pub fn has_spend(&self) -> bool {
+        self.spent > 0 || self.held > 0 || self.reserved > 0 || self.drawn > 0
+    }
+
     /// What is left to spend now; none when uncapped.
     pub fn left(&self) -> Option<u64> {
         let used = self.spent
@@ -193,6 +215,33 @@ pub enum Notice {
     },
 }
 
+/// Why a budget could not be set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refused {
+    /// The budget has spend in its unit, so the unit cannot change (a 409 at the routes).
+    UnitLocked { unit: Unit },
+    /// The change could not be written to `plaza.db`.
+    Store(String),
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Refused::UnitLocked { unit } => {
+                let unit = match unit {
+                    Unit::Usd => "usd",
+                    Unit::Tokens => "tokens",
+                };
+                write!(
+                    f,
+                    "this budget has spend in {unit}; its unit can no longer change"
+                )
+            }
+            Refused::Store(e) => f.write_str(e),
+        }
+    }
+}
+
 fn month_of(ms: u64) -> u32 {
     // Days since the epoch → civil date (Howard Hinnant's algorithm), enough for yyyymm.
     let days = (ms / 86_400_000) as i64;
@@ -214,6 +263,8 @@ pub type Sink = Option<Arc<apz_store::Db>>;
 pub struct Budgets {
     budgets: Mutex<BTreeMap<(OwnerKind, String), Budget>>,
     sink: Mutex<Sink>,
+    /// The bus each change is announced on, as a `budget` frame (none in tests that do not listen).
+    bus: OnceLock<Arc<Bus>>,
 }
 
 impl Default for Budgets {
@@ -221,6 +272,7 @@ impl Default for Budgets {
         Budgets {
             budgets: Mutex::new(BTreeMap::new()),
             sink: Mutex::new(None),
+            bus: OnceLock::new(),
         }
     }
 }
@@ -230,6 +282,23 @@ type Key = (OwnerKind, String);
 impl Budgets {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<Key, Budget>> {
         self.budgets.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Budgets that announce every change they make on `bus`.
+    pub fn announcing(bus: Arc<Bus>) -> Budgets {
+        let budgets = Budgets::default();
+        let _ = budgets.bus.set(bus);
+        budgets
+    }
+
+    /// The one place a budget's change reaches the consoles: a `budget` frame with the budget's view. Called after the
+    /// change is made, outside the lock.
+    fn announce<'a>(&self, changed: impl IntoIterator<Item = &'a Budget>) {
+        if let Some(bus) = self.bus.get() {
+            for b in changed {
+                bus.publish("budget", &b.view());
+            }
+        }
     }
 
     /// Sends every later change to `db` (the hub's `plaza.db`).
@@ -301,8 +370,8 @@ impl Budgets {
             .collect()
     }
 
-    /// Sets a project's budget (unit, cap, warning share, monthly cap, disk quota). Its spending so far is kept; a unit
-    /// change starts its count again in the new unit.
+    /// Sets a project's budget (unit, cap, warning share, monthly cap, disk quota). A unit cannot change once the budget
+    /// has spend in it ([`Refused::UnitLocked`]); with no spend, or the same unit, the rest is set as asked.
     pub fn set_project(
         &self,
         project: &str,
@@ -312,15 +381,14 @@ impl Budgets {
         monthly_cap: Option<u64>,
         disk_quota_bytes: Option<u64>,
         now_ms: u64,
-    ) -> Result<Budget, String> {
+    ) -> Result<Budget, Refused> {
         let budget = {
             let mut budgets = self.lock();
             let b = budgets
                 .entry((OwnerKind::Project, project.to_string()))
                 .or_insert_with(|| empty(OwnerKind::Project, project, project, unit, now_ms));
-            if b.unit != unit {
-                b.spent = 0;
-                b.month_spent = 0;
+            if b.unit != unit && b.has_spend() {
+                return Err(Refused::UnitLocked { unit: b.unit });
             }
             b.unit = unit;
             b.cap = cap;
@@ -344,11 +412,13 @@ impl Budgets {
                 now_ms,
             )],
             true,
-        )?;
+        )
+        .map_err(Refused::Store)?;
+        self.announce([&budget]);
         Ok(budget)
     }
 
-    /// Sets a task's own budget.
+    /// Sets a task's own budget. Its unit cannot change once it has spend ([`Refused::UnitLocked`]).
     pub fn set_task(
         &self,
         task: &str,
@@ -356,12 +426,15 @@ impl Budgets {
         unit: Unit,
         cap: Option<u64>,
         now_ms: u64,
-    ) -> Result<Budget, String> {
+    ) -> Result<Budget, Refused> {
         let budget = {
             let mut budgets = self.lock();
             let b = budgets
                 .entry((OwnerKind::Task, task.to_string()))
                 .or_insert_with(|| empty(OwnerKind::Task, task, project, unit, now_ms));
+            if b.unit != unit && b.has_spend() {
+                return Err(Refused::UnitLocked { unit: b.unit });
+            }
             b.unit = unit;
             b.cap = cap;
             b.paused = b.left() == Some(0) && cap.is_some();
@@ -380,7 +453,9 @@ impl Budgets {
                 now_ms,
             )],
             true,
-        )?;
+        )
+        .map_err(Refused::Store)?;
+        self.announce([&budget]);
         Ok(budget)
     }
 
@@ -438,6 +513,7 @@ impl Budgets {
             None,
             now_ms,
         );
+        self.announce([&task_budget, &project_budget]);
         self.persist(vec![task_budget, project_budget], vec![reserved], false)
             .map_err(|_| Short::Paused {
                 owner_kind: OwnerKind::Task,
@@ -474,6 +550,7 @@ impl Budgets {
                 None,
                 now_ms,
             );
+            self.announce([&t, &p]);
             let _ = self.persist(vec![t, p], vec![released], false);
         }
     }
@@ -558,6 +635,7 @@ impl Budgets {
             model,
             now_ms,
         );
+        self.announce([&budget]);
         // Acknowledged by the writer before the call goes out: a hold the hub answered survives a power loss.
         if self.persist(vec![budget], vec![held], true).is_err() {
             self.release(&hold, now_ms);
@@ -571,10 +649,18 @@ impl Budgets {
 
     /// Releases a call's hold without charging it (the call failed).
     pub fn release(&self, hold: &Hold, now_ms: u64) {
-        let mut budgets = self.lock();
-        if let Some(b) = budgets.get_mut(&(hold.owner_kind, hold.owner.clone())) {
-            b.held = b.held.saturating_sub(hold.worst.in_unit(b.unit));
-            b.updated_ms = now_ms;
+        let released = {
+            let mut budgets = self.lock();
+            budgets
+                .get_mut(&(hold.owner_kind, hold.owner.clone()))
+                .map(|b| {
+                    b.held = b.held.saturating_sub(hold.worst.in_unit(b.unit));
+                    b.updated_ms = now_ms;
+                    b.clone()
+                })
+        };
+        if let Some(b) = released {
+            self.announce([&b]);
         }
     }
 
@@ -672,6 +758,7 @@ impl Budgets {
                 }
             }
         }
+        self.announce(&changed);
         let _ = self.persist(changed, entries, false);
         notices
     }
@@ -708,6 +795,7 @@ impl Budgets {
             None,
             now_ms,
         );
+        self.announce([&budget]);
         let _ = self.persist(vec![budget.clone()], vec![raised], true);
         Some(budget)
     }
@@ -727,6 +815,7 @@ impl Budgets {
             b.updated_ms = now_ms;
             b.clone()
         };
+        self.announce([&budget]);
         let _ = self.persist(vec![budget.clone()], Vec::new(), true);
         Some(budget)
     }
@@ -1142,5 +1231,103 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.first().map(|e| e.kind), Some(EntryKind::Charge));
         assert!(ledger.iter().any(|e| e.kind == EntryKind::Hold));
+    }
+
+    /// The `budget` frames published since the subscription, as (owner, the frame's data).
+    fn budget_frames(rx: &std::sync::mpsc::Receiver<crate::events::Frame>) -> Vec<(String, Value)> {
+        rx.try_iter()
+            .filter(|f| f.kind == "budget")
+            .map(|f| {
+                let data: Value = serde_json::from_str(&f.data).unwrap();
+                (data["owner"].as_str().unwrap().to_string(), data)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_change_of_a_budget_publishes_its_view_as_a_budget_frame() {
+        let bus = Arc::new(Bus::default());
+        let rx = bus.subscribe();
+        let b = Budgets::announcing(Arc::clone(&bus));
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
+            .unwrap();
+        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
+            .unwrap();
+        let frames = budget_frames(&rx);
+        assert_eq!(
+            frames
+                .iter()
+                .map(|(owner, _)| owner.as_str())
+                .collect::<Vec<_>>(),
+            ["pr1", "t1"],
+            "a set publishes its budget"
+        );
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
+        let hold = b
+            .hold(Some("t1"), "pr1", Amount::of(usd(1.0), 0), None, None, 3)
+            .unwrap();
+        b.settle(&hold, Amount::of(usd(0.5), 0), None, None, 4);
+        let frames = budget_frames(&rx);
+        // Reserve (both), hold (the task), settle (the task and the project): every change, each with its view.
+        assert_eq!(frames.len(), 2 + 1 + 2, "{frames:?}");
+        let (_, settled) = frames.last().unwrap();
+        assert_eq!(settled["owner"], "pr1");
+        assert_eq!(settled["spent"], usd(0.5));
+        assert!(settled.get("left").is_some() && settled.get("spent_pct").is_some());
+        b.raise(OwnerKind::Task, "t1", Some(usd(1.0)), None, 5);
+        b.set_paused(OwnerKind::Project, "pr1", true, 6);
+        b.end_task("t1", 7);
+        assert_eq!(
+            budget_frames(&rx).len(),
+            1 + 1 + 2,
+            "a raise, a pause and the end of the task"
+        );
+    }
+
+    #[test]
+    fn a_unit_cannot_change_once_the_budget_has_spend_in_it() {
+        let b = Budgets::default();
+        b.set_project("pr1", Unit::Usd, Some(usd(10.0)), 80, None, None, 1)
+            .unwrap();
+        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
+            .unwrap();
+        // No spend yet: the unit changes.
+        b.set_task("t1", "pr1", Unit::Tokens, Some(2_000_000), 1)
+            .unwrap();
+        b.set_task("t1", "pr1", Unit::Usd, Some(usd(4.0)), 1)
+            .unwrap();
+        b.start_task("t1", "pr1", usd(4.0), 2).unwrap();
+        // Reserved: the task's unit is locked, and so is its project's.
+        let refused = Refused::UnitLocked { unit: Unit::Usd };
+        assert_eq!(
+            b.set_task("t1", "pr1", Unit::Tokens, Some(2_000_000), 3),
+            Err(refused.clone())
+        );
+        assert_eq!(
+            b.set_project("pr1", Unit::Tokens, None, 80, None, None, 3),
+            Err(refused.clone())
+        );
+        assert_eq!(
+            refused.to_string(),
+            "this budget has spend in usd; its unit can no longer change"
+        );
+        // The same unit still sets the rest (the cap, the warning share).
+        b.set_project("pr1", Unit::Usd, Some(usd(12.0)), 50, None, None, 3)
+            .unwrap();
+        assert_eq!(
+            b.get(OwnerKind::Project, "pr1").unwrap().cap,
+            Some(usd(12.0))
+        );
+        // A task with spend in its own unit: the same refusal, in the unit it has.
+        let hold = b
+            .hold(Some("t1"), "pr1", Amount::of(usd(0.5), 0), None, None, 4)
+            .unwrap();
+        b.settle(&hold, Amount::of(usd(0.5), 0), None, None, 5);
+        b.end_task("t1", 6);
+        assert_eq!(
+            b.set_task("t1", "pr1", Unit::Tokens, None, 7),
+            Err(refused),
+            "a charge stays: the task's unit is locked after it ends"
+        );
     }
 }

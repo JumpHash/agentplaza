@@ -271,7 +271,10 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         &format!("/v1/sessions/{builder_id}/transcript"),
         None,
     );
-    let entries = transcript.as_array().cloned().unwrap_or_default();
+    let entries = transcript["entries"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert!(
         entries.iter().any(|e| e["kind"] == "model_response"),
         "{transcript}"
