@@ -29,6 +29,7 @@ mod fdt;
 pub mod gic;
 /// Architecture specific KVM-related code
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 pub mod kvm;
 /// Layout for this aarch64 system.
 pub mod layout;
@@ -37,9 +38,11 @@ pub mod layout;
 pub mod regs;
 /// Architecture specific vCPU code
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 pub mod vcpu;
 /// Architecture specific VM state code
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 pub mod vm;
 
 // The FDT generator and its descriptors are also the Hypervisor.framework
@@ -49,23 +52,30 @@ pub use fdt::{FdtError, GicFdt, SerialFdtInfo, VirtioMmioFdtInfo, create_fdt, vi
 
 use std::cmp::min;
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
 
+#[cfg(not(windows))]
 use linux_loader::loader::KernelLoader;
+#[cfg(not(windows))]
 use linux_loader::loader::pe::PE as Loader;
-use vm_memory::{GuestMemoryBackend, GuestMemoryRegion, ReadVolatile};
+#[cfg(not(windows))]
+use vm_memory::ReadVolatile;
+use vm_memory::{GuestMemoryBackend, GuestMemoryRegion};
 
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 use linux_loader::loader::Cmdline;
 #[cfg(target_os = "linux")]
 use vm_memory::Bytes;
 
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 use crate::arch::aarch64::vcpu::KvmVcpuError;
 use crate::vstate::memory::{Address, GuestAddress, GuestMemoryMmap, u64_to_usize, usize_to_u64};
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 use crate::vstate::vcpu::Vcpu;
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 use crate::vstate::vm::KvmVm;
 
 /// Default page size for the guest OS (upstream: `arch/mod.rs`).
@@ -79,9 +89,11 @@ pub enum ConfigurationError {
     KernelFile,
     /// Cannot load kernel due to invalid memory configuration or invalid kernel image: {0}
     #[error("Cannot load kernel due to invalid memory configuration or invalid kernel image: {0}")]
+    #[cfg(not(windows))]
     KernelLoader(#[from] linux_loader::loader::Error),
     /// Cannot build the kernel command line: {0}
     #[error("Cannot build the kernel command line: {0}")]
+    #[cfg(not(windows))]
     CommandLine(#[from] linux_loader::cmdline::Error),
     /// Failed to read host cache information: {0}
     #[error("Failed to read host cache information: {0}")]
@@ -134,16 +146,30 @@ pub struct InitrdConfig {
 impl InitrdConfig {
     /// Loads the initrd from a file into guest memory.
     pub fn from_file(vm_memory: &GuestMemoryMmap, mut file: File) -> Result<Self, InitrdError> {
-        let size = file.metadata().map_err(InitrdError::Metadata)?.size();
+        let size = file.metadata().map_err(InitrdError::Metadata)?.len();
         let size = u64_to_usize(size);
         let Some(address) = initrd_load_addr(vm_memory, size) else {
             return Err(InitrdError::Address);
         };
-        let mut slice = vm_memory
-            .get_slice(GuestAddress(address), size)
-            .map_err(|_| InitrdError::Load)?;
-        file.read_exact_volatile(&mut slice)
-            .map_err(InitrdError::Read)?;
+        #[cfg(not(windows))]
+        {
+            let mut slice = vm_memory
+                .get_slice(GuestAddress(address), size)
+                .map_err(|_| InitrdError::Load)?;
+            file.read_exact_volatile(&mut slice)
+                .map_err(InitrdError::Read)?;
+        }
+        #[cfg(windows)]
+        {
+            // vm-memory's volatile file reads need raw descriptors, which Windows lacks: read, then copy.
+            use std::io::Read;
+            use vm_memory::Bytes;
+            let mut bytes = vec![0u8; size];
+            file.read_exact(&mut bytes).map_err(|_| InitrdError::Load)?;
+            vm_memory
+                .write_slice(&bytes, GuestAddress(address))
+                .map_err(|_| InitrdError::Load)?;
+        }
 
         Ok(InitrdConfig {
             address: GuestAddress(address),
@@ -231,6 +257,7 @@ pub fn arch_memory_regions(size: usize) -> Vec<(GuestAddress, usize)> {
 
 /// Configures the system for booting Linux.
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 pub fn configure_system_for_boot(
     vm: &KvmVm,
     vcpus: &mut [Vcpu],
@@ -308,6 +335,7 @@ pub fn configure_system_for_boot(
 /// (LoUU, LoUIS, ICB, Ttype). This is safe on pre-6.3 kernels where CLIDR
 /// already matches sysfs — the write is skipped as a no-op.
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 fn override_clidr(vcpus: &[Vcpu]) -> Result<(), ConfigurationError> {
     let mut l1_caches = Vec::new();
     let mut non_l1_caches = Vec::new();
@@ -401,6 +429,7 @@ pub fn get_fdt_addr(mem: &GuestMemoryMmap) -> u64 {
 }
 
 /// Load linux kernel into guest memory.
+#[cfg(not(windows))]
 pub fn load_kernel(
     kernel: &File,
     guest_memory: &GuestMemoryMmap,
@@ -430,6 +459,7 @@ pub fn load_kernel(
 /// `arch::host_kernel_version()`); this port has no `Version` type, so it reads
 /// and compares the major and minor components it needs.
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 fn host_kernel_release_at_least(major: u8, minor: u8) -> bool {
     match crate::sys::uname_release() {
         Some(release) => kernel_release_at_least(&release, major, minor),
@@ -442,6 +472,7 @@ fn host_kernel_release_at_least(major: u8, minor: u8) -> bool {
 /// Missing or non-numeric components count as 0, as upstream's
 /// `parse_kernel_release` does.
 #[cfg(target_os = "linux")]
+#[cfg(not(windows))]
 fn kernel_release_at_least(release: &str, major: u8, minor: u8) -> bool {
     let mut components = release.split(|c: char| !c.is_ascii_digit());
     let host_major = components
