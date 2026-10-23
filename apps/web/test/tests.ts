@@ -45,7 +45,7 @@ import { statusPill } from '../src/views/agent-status';
 import { sleepRoles, wholeInRange } from '../src/views/models-policy';
 import { defaultRuleForm, listOf, methodsText, rolesText, ruleBody, ruleProblem, type RuleForm } from '../src/views/egress-credentials';
 import { e2bSetupText, latestBuild, memoryText, sandboxActions, sandboxTime, templateFailure, templateTags, type E2bBuild, type E2bTemplate } from '../src/views/e2b';
-import { isStopped, nodeState, rebalanceText, waitingLines } from '../src/views/nodes';
+import { isStopped, linkText, nodeState, pathText, rebalanceText, waitingLines } from '../src/views/nodes';
 import { parseVolumeList, volumeNameOk } from '../src/views/volumes';
 import { checkpointsKey, treeKey, type TreeKeyInput } from '../src/views/ide-render';
 import type { Entry as TreeEntry } from '../src/ide/types';
@@ -1636,6 +1636,27 @@ sectionEnd('sleep and checkpoint tests: ok');
     waitingLines(nodeAt({ waiting: [{ cid: 1001, reason: 'finishing its turn first' }, { cid: 1002, reason: 'no machine in service has room for it' }] }), (cid) => (cid === 1001 ? 'Builder #1001' : undefined)),
     ['Builder #1001: finishing its turn first', 'Agent #1002: no machine in service has room for it'],
     'nodes: each waiting agent by name, else by CID, with its reason',
+  );
+  eq(
+    [
+      pathText(nodeAt({ path: 'mesh', mesh_address: '100.64.0.7:7447' })),
+      pathText(nodeAt({ path: 'tunnel' })),
+      pathText(nodeAt({ path: 'local' })),
+    ],
+    ['Mesh, 100.64.0.7:7447', 'Tunnel', 'This hub'],
+    'nodes: a node is reached over its tunnel, or on the mesh at its address',
+  );
+  const link = (over: Partial<NonNullable<NodeView['link']>>): NodeView['link'] => ({ connected: true, latency_ms: 12, errors: 0, last_error: null, last_error_ms: null, ...over });
+  eq(
+    [
+      linkText(nodeAt({})),
+      linkText(nodeAt({ link: link({}) })),
+      linkText(nodeAt({ link: link({ latency_ms: null }) })),
+      linkText(nodeAt({ link: link({ connected: false, latency_ms: null, errors: 1 }) })),
+      linkText(nodeAt({ link: link({ errors: 3 }) })),
+    ],
+    ['—', 'connected, 12 ms', 'connected, measuring', 'not connected · 1 error', 'connected, 12 ms · 3 errors'],
+    'nodes: the link says whether it is up, its latency, and its errors',
   );
   eq(
     [

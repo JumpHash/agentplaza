@@ -770,6 +770,8 @@ export const api = {
   joinCodes: readable<JoinCode[]>('/v1/nodes/codes'),
   revokeJoinCode: (id: string) => del<unknown>(`/v1/nodes/codes/${id}`),
   revokeNode: (id: string) => post<NodeView>(`/v1/nodes/${id}/revoke`),
+  /** Sets how the hub reaches a node: its tunnel, or the mesh at `mesh_address` (host:port). Its forks keep running. */
+  setNodePath: (id: string, path: 'tunnel' | 'mesh', mesh_address: string) => post<NodeView>(`/v1/nodes/${id}/path`, { path, mesh_address }),
   /** Takes a node out of service (n0 too): its agents move to the other machines. `now` interrupts their turns, which resume where they go. */
   stopNode: (id: string, now: boolean) => post<NodeView>(`/v1/nodes/${id}/stop`, { now }),
   /** Puts a stopped node back in service; with `rebalance` (the default) agents move onto it once it reports. */
@@ -909,7 +911,14 @@ export interface NodeView {
   state: NodeServiceState; left: number;
   /** The agents that cannot leave a stopping node yet, and why. */
   waiting: { cid: number; reason: string }[];
+  /** How the hub reaches the node: `tunnel` (the node dials the hub), `mesh` (the hub dials `mesh_address`), `local` (this hub). */
+  path: NodePath; mesh_address: string;
+  /** The hub's view of the node's link: up now, its last ping's latency, its errors. */
+  link?: NodeLinkHealth;
 }
+export type NodePath = 'tunnel' | 'mesh' | 'local';
+/** A node's link as the hub holds it (`GET /v1/nodes`, `link`). `latency_ms` is null until the first ping. */
+export interface NodeLinkHealth { connected: boolean; latency_ms: number | null; errors: number; last_error: string | null; last_error_ms: number | null }
 export type NodeServiceState = 'active' | 'stopping' | 'stopped';
 /** A rebalance: the moves it makes (or would, on a dry run), and whether they started. */
 export interface Rebalance { moves: { cid: number; from: string; to: string }[]; started: boolean }

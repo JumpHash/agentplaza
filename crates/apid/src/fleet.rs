@@ -502,6 +502,9 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            path: crate::nodes::TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }
     }
 

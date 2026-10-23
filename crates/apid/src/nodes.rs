@@ -17,6 +17,7 @@
 //!   POST   /v1/nodes/{id}/resume {rebalance?} → back in service, and agents move onto it (`mover`)
 //!   POST   /v1/nodes/{id}/drain  {on}     → the older name of stop (on) and resume (off)
 //!   POST   /v1/nodes/rebalance   {dry_run?} → spreads the idle agents over the machines (`mover`)
+//!   POST   /v1/nodes/{id}/path   {path: tunnel|mesh, mesh_address?} → how the hub reaches the node (`tunnel`)
 //! Node routes (public, rate-limited / signed):
 //!   POST   /v1/nodes/join   {secret, public_key, name, machine} → {node_id, cid_base, cid_count, hub}
 //!   GET    /v1/nodes/{id}/commands?wait=25   (signed) → [Command]; also the node's heartbeat
@@ -24,6 +25,7 @@
 //!   POST   /v1/nodes/{id}/heartbeat          (signed) {machine, status, runs, metrics_z?}
 //!   POST   /v1/nodes/{id}/metrics            (signed) {z} with a deflated, base64 metrics batch, or a bare batch
 //!                                            (`apz_metrics::wire::Batch`)
+//!   GET    /v1/nodes/{id}/link               (signed) → {path, mesh_token?}: the path the hub holds the node on
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::Read;
@@ -45,6 +47,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::state::App;
+use crate::tunnel::Dispatch;
 
 /// Guest CIDs per node; node `n0` (local) keeps today's 200..=230 and 20..=99 fleets.
 pub const CIDS_PER_NODE: u64 = 100;
@@ -72,6 +75,12 @@ pub(crate) fn source_of(req: &Request) -> String {
 pub(crate) const JOIN_WINDOW_MS: u64 = 60_000;
 pub(crate) const DEFAULT_TTL_MINUTES: u64 = 15;
 
+/// The paths a node is reached by: the node's own dial to the hub (`tunnel`), or the hub's dial to the node on a mesh
+/// (`mesh`, Engine 6.2). `n0`, the hub's own machine, is `local`.
+pub const TUNNEL: &str = "tunnel";
+pub const MESH: &str = "mesh";
+pub const LOCAL_PATH: &str = "local";
+
 /// A joined node, as the hub keeps it (`node` rows; its machine as one child row).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Node {
@@ -97,6 +106,40 @@ pub struct Node {
     /// Where it last called from (for the owner's eyes only).
     #[serde(default)]
     pub address: String,
+    /// How the hub reaches it: `tunnel` (the node dials the hub) or `mesh` (the hub dials `mesh_address`).
+    #[serde(default = "tunnel_path")]
+    pub path: String,
+    /// The node's address on the mesh (`host:port`), where its mesh listener is and the hub dials. Empty: no mesh.
+    #[serde(default)]
+    pub mesh_address: String,
+    /// The bearer the hub's dial presents to the node's mesh listener. Given to the node over its authenticated link
+    /// only (`GET /v1/nodes/{id}/link`), never in a view.
+    #[serde(default, skip_serializing)]
+    pub mesh_token: String,
+}
+
+fn tunnel_path() -> String {
+    TUNNEL.to_string()
+}
+
+impl Node {
+    /// Whether the hub reaches this node on the mesh.
+    pub fn on_mesh(&self) -> bool {
+        self.path == MESH
+    }
+}
+
+/// What the hub knows of a node's link: its latency (the last ping's round trip), and the errors it has had. A link
+/// that has not pinged yet has no latency.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Link {
+    /// Whether the hub has a live link to the node right now (its tunnel or its mesh session).
+    pub connected: bool,
+    pub latency_ms: Option<u64>,
+    /// How many errors the link has had since the hub started.
+    pub errors: u32,
+    pub last_error: Option<String>,
+    pub last_error_ms: Option<u64>,
 }
 
 /// The machine a node reports, typed (`node_machine`). A joining node sends the summary (`cpus`, `memory_mib`, `host`,
@@ -297,6 +340,8 @@ impl Machine {
 pub struct NodeView {
     #[serde(flatten)]
     pub node: Node,
+    /// The node's link to the hub: its path's health (`Store::link`).
+    pub link: Link,
     pub online: bool,
     /// The agents it runs: moved agents count where they were moved to.
     pub agents: u32,
@@ -419,8 +464,12 @@ pub struct Store {
     queue_signal: Condvar,
     results: Mutex<BTreeMap<String, CommandResult>>,
     result_signal: Condvar,
-    /// Per node with a live tunnel: the connection its streams run on (`tunnel.rs`).
+    /// Per node with a live link: the connection its streams run on (`tunnel.rs`), tunnel or mesh.
     tunnels: Mutex<BTreeMap<String, Arc<Mux>>>,
+    /// Per node on the mesh: whether its keeper (the hub's dial to it, `tunnel::keep_mesh`) is running.
+    keepers: Mutex<BTreeSet<String>>,
+    /// Per node: the health of its link (latency, errors).
+    links: Mutex<BTreeMap<String, Link>>,
     /// The last command sequence number handed out (`k<seq>`).
     seq: AtomicU64,
     /// Nonces seen (node id, nonce) → expiry ms; join attempts per source address.
@@ -607,6 +656,9 @@ impl Store {
             draining: false,
             revoked: false,
             address: source.to_string(),
+            path: TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         };
         code.used_by = Some(node.id.clone());
         nodes.push(node.clone());
@@ -787,11 +839,85 @@ impl Store {
             tunnels.remove(node);
         }
     }
-    /// The node's tunnel, while it is up.
-    #[cfg(test)]
+    /// The node's link, while it is up (its tunnel, or its mesh session).
     pub fn tunnel(&self, node: &str) -> Option<Arc<Mux>> {
         let tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
         tunnels.get(node).filter(|mux| mux.alive()).cloned()
+    }
+    /// Whether the node's path is the mesh (false for a node the hub does not know).
+    pub fn on_mesh(&self, node: &str) -> bool {
+        let Ok(p) = self.inner.lock() else {
+            return false;
+        };
+        p.nodes.iter().any(|n| n.id == node && n.on_mesh())
+    }
+    /// Sets how the hub reaches node `id`: `tunnel`, or `mesh` at `mesh_address` (a mesh node keeps its bearer, made
+    /// the first time it is on the mesh). A revoked node is refused (409), an unknown one is 404, `n0` is 409.
+    pub fn set_path(
+        &self,
+        id: &str,
+        path: &str,
+        mesh_address: &str,
+    ) -> Result<Node, (u16, String)> {
+        let mut p = self.inner.lock().map_err(|e| (500, e.to_string()))?;
+        let node = p
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or((404, format!("no node {id}")))?;
+        if node.revoked {
+            return Err((409, format!("node {id} is revoked")));
+        }
+        node.path = path.to_string();
+        if path == MESH {
+            node.mesh_address = mesh_address.to_string();
+            if node.mesh_token.is_empty() {
+                node.mesh_token = apz_trust::b64(&apz_trust::random::<32>());
+            }
+        }
+        Ok(node.clone())
+    }
+    /// Marks a keeper as running for node `id`; false when one already runs.
+    pub fn start_keeper(&self, id: &str) -> bool {
+        self.keepers
+            .lock()
+            .is_ok_and(|mut keepers| keepers.insert(id.to_string()))
+    }
+    /// Marks node `id`'s keeper as stopped.
+    pub fn end_keeper(&self, id: &str) {
+        if let Ok(mut keepers) = self.keepers.lock() {
+            keepers.remove(id);
+        }
+    }
+    /// Records a ping's round trip on node `id`'s link.
+    pub fn note_latency(&self, id: &str, latency: Duration) {
+        if let Ok(mut links) = self.links.lock() {
+            let link = links.entry(id.to_string()).or_default();
+            link.latency_ms = Some(u64::try_from(latency.as_millis()).unwrap_or(u64::MAX));
+        }
+    }
+    /// Records an error on node `id`'s link (its newest is kept as the last one).
+    pub fn note_error(&self, id: &str, reason: &str) {
+        if let Ok(mut links) = self.links.lock() {
+            let link = links.entry(id.to_string()).or_default();
+            link.errors = link.errors.saturating_add(1);
+            link.last_error = Some(reason.chars().take(300).collect());
+            link.last_error_ms = Some(apz_plaza::now_ms());
+        }
+    }
+    /// Node `id`'s link as the hub holds it: connected now, with its latency and errors.
+    pub fn link(&self, id: &str) -> Link {
+        let connected = self.tunnel(id).is_some();
+        let health = self
+            .links
+            .lock()
+            .ok()
+            .and_then(|links| links.get(id).cloned())
+            .unwrap_or_default();
+        Link {
+            connected,
+            ..health
+        }
     }
     /// Opens a stream to a fork's port on a node, through the node's tunnel: what is written goes to the fork, and
     /// what the fork sends comes back on the stream. (Not yet called outside tests: terminals and model calls to remote
@@ -938,6 +1064,7 @@ pub(crate) fn view(node: Node, hosted: &[Hosted], waiting: Vec<Waiting>, now_ms:
     };
     NodeView {
         node,
+        link: Link::default(),
         online,
         agents: u32::try_from(count).unwrap_or(u32::MAX),
         state,
@@ -961,7 +1088,21 @@ pub(crate) fn hosted(app: &App) -> Vec<Hosted> {
 /// One node's view as the console gets it.
 pub(crate) fn view_of(app: &App, node: Node) -> NodeView {
     let waiting = crate::mover::waiting(&node.id);
-    view(node, &hosted(app), waiting, apz_plaza::now_ms())
+    let mut shown = view(node, &hosted(app), waiting, apz_plaza::now_ms());
+    shown.link = link_view(app, &shown);
+    shown
+}
+
+/// A view's link: `n0` is connected while its noded answers; a joined node's is the store's.
+fn link_view(app: &App, shown: &NodeView) -> Link {
+    if shown.node.id == crate::fleet::LOCAL {
+        Link {
+            connected: shown.online,
+            ..Link::default()
+        }
+    } else {
+        app.nodes.link(&shown.node.id)
+    }
 }
 
 /// The view of node `id` (`n0` included), None when there is no such node.
@@ -1006,6 +1147,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 "Open a node's tunnel: a WebSocket that carries its streams (signed by the node)",
             )
             .errors(&[401]),
+        )
+        .get("/v1/nodes/{id}/link", link_route)
+        .doc(
+            RouteDoc::new("A node's path, and the mesh bearer its dial presents (the node asks, signed by its key)")
+                .errors(&[401]),
+        )
+        .post("/v1/nodes/{id}/path", path_route)
+        .doc(
+            RouteDoc::new("Set how the hub reaches a node: its tunnel, or the mesh at an address")
+                .errors(&[400, 404, 409]),
         )
         .post("/v1/nodes/{id}/results", results_route)
         .doc(RouteDoc::new("Report the result of a node's command").errors(&[400]))
@@ -1052,6 +1203,9 @@ fn local_record(app: &App, up: bool) -> Node {
         draining: app.nodes.is_stopped(crate::fleet::LOCAL),
         revoked: false,
         address: "loopback".into(),
+        path: LOCAL_PATH.to_string(),
+        mesh_address: String::new(),
+        mesh_token: String::new(),
     }
 }
 
@@ -1064,9 +1218,27 @@ pub(crate) fn views(app: &App) -> Vec<NodeView> {
         .chain(app.nodes.list())
         .map(|node| {
             let waiting = crate::mover::waiting(&node.id);
-            view(node, &hosted, waiting, now)
+            let mut shown = view(node, &hosted, waiting, now);
+            shown.link = link_view(app, &shown);
+            shown
         })
         .collect()
+}
+
+/// The hub's dispatch for the requests a node sends over its link: the gate and the routes, as an HTTP request is
+/// answered. None while the routes are not built (the hub is starting).
+pub(crate) fn dispatch(app: &App) -> Option<Dispatch> {
+    let router = app.routes.get().map(Arc::clone)?;
+    let weak = app.handle();
+    Some(Arc::new(move |request: &Request| {
+        let Some(app) = weak.upgrade() else {
+            return Response::error(503, "the hub is stopping");
+        };
+        match crate::hub_auth::gate(&app, request) {
+            Some(refused) => refused,
+            None => router.handle(&app, request),
+        }
+    }))
 }
 
 /// This machine's summary, as a joined node reports its own: cpus, memory_mib, host, version.
@@ -1119,6 +1291,38 @@ struct JoinBody {
     name: String,
     #[serde(default)]
     machine: Machine,
+    /// `tunnel` (the default) or `mesh`, and the node's mesh address when it is `mesh`.
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    mesh_address: String,
+}
+
+/// The path and mesh address a request names, checked: `tunnel`, or `mesh` with a `host:port` address.
+pub(crate) fn check_path(path: &str, mesh_address: &str) -> Result<(), String> {
+    match path {
+        TUNNEL => Ok(()),
+        MESH => {
+            let valid = mesh_address
+                .rsplit_once(':')
+                .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok());
+            if valid {
+                Ok(())
+            } else {
+                Err("a mesh address is host:port (the node's address on the mesh)".into())
+            }
+        }
+        other => Err(format!(
+            "a node's path is {TUNNEL} or {MESH}, not {other:?}"
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct PathBody {
+    path: String,
+    #[serde(default)]
+    mesh_address: String,
 }
 
 pub(crate) fn parse<T: DeserializeOwned>(req: &Request) -> Result<T, Response> {
@@ -1177,6 +1381,14 @@ fn join_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(refusal) => return refusal,
     };
+    let path = if body.path.is_empty() {
+        TUNNEL
+    } else {
+        body.path.as_str()
+    };
+    if let Err(reason) = check_path(path, &body.mesh_address) {
+        return Response::error(400, &reason);
+    }
     match app.nodes.join(
         &source_of(req),
         &body.secret,
@@ -1186,6 +1398,14 @@ fn join_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         apz_plaza::now_ms(),
     ) {
         Ok(node) => {
+            // A node joined on the mesh is held there from its first link: the hub dials its mesh address.
+            let node = if path == MESH {
+                app.nodes
+                    .set_path(&node.id, MESH, &body.mesh_address)
+                    .unwrap_or(node)
+            } else {
+                node
+            };
             app.bus.publish("node", &node);
             let hub = app
                 .hub_auth
@@ -1230,20 +1450,40 @@ fn tunnel_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(n) => n,
         Err(resp) => return resp,
     };
-    let Some(router) = app.routes.get().map(Arc::clone) else {
+    let Some(dispatch) = dispatch(app) else {
         return Response::error(503, "the hub is starting");
     };
-    let weak = app.handle();
-    let dispatch: crate::tunnel::Dispatch = Arc::new(move |request: &Request| {
-        let Some(app) = weak.upgrade() else {
-            return Response::error(503, "the hub is stopping");
-        };
-        match crate::hub_auth::gate(&app, request) {
-            Some(refused) => refused,
-            None => router.handle(&app, request),
-        }
-    });
     crate::tunnel::open(req, node.id, Arc::clone(&app.nodes), dispatch)
+}
+
+/// The path a signed node is held on, and the mesh bearer when it is on the mesh (`tunnel::link_of`).
+fn link_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    match signed_node(app, req, p) {
+        Ok(node) => Response::json(200, &crate::tunnel::link_of(&node)),
+        Err(resp) => resp,
+    }
+}
+
+/// The owner sets how the hub reaches a node: `tunnel`, or `mesh` at `mesh_address`. The node's link follows on its
+/// next dial (a tunnel is refused with 409 while the path is the mesh); its forks do not move.
+fn path_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let body: PathBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    if let Err(reason) = check_path(&body.path, &body.mesh_address) {
+        return Response::error(400, &reason);
+    }
+    match app
+        .nodes
+        .set_path(p.get("id"), &body.path, &body.mesh_address)
+    {
+        Ok(node) => {
+            app.bus.publish("node", &node);
+            Response::json(200, &view_of(app, node))
+        }
+        Err((status, message)) => Response::error(status, &message),
+    }
 }
 
 fn results_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -1617,6 +1857,9 @@ mod tests {
             draining: false,
             revoked: false,
             address: String::new(),
+            path: TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }
     }
 
@@ -1845,6 +2088,81 @@ mod tests {
             redeem(&store, "a", &decoded.secret, "box", NOW).unwrap_err(),
             INVALID_CODE
         );
+    }
+
+    #[test]
+    fn a_path_is_the_tunnel_or_the_mesh_at_a_host_and_port() {
+        assert!(check_path(TUNNEL, "").is_ok());
+        assert!(check_path(MESH, "100.64.0.7:7447").is_ok());
+        for (path, address) in [
+            (MESH, "100.64.0.7"),
+            (MESH, ":7447"),
+            (MESH, "host:port"),
+            ("sideways", ""),
+        ] {
+            assert!(check_path(path, address).is_err(), "{path} {address}");
+        }
+    }
+
+    #[test]
+    fn a_node_moves_between_paths_and_keeps_its_mesh_bearer() {
+        let store = Store::holding(vec![node("n1")]);
+        let on = store
+            .set_path("n1", MESH, "100.64.0.7:7447")
+            .expect("on the mesh");
+        assert!(on.on_mesh());
+        assert_eq!(on.mesh_address, "100.64.0.7:7447");
+        assert!(!on.mesh_token.is_empty(), "the mesh made a bearer");
+        let back = store
+            .set_path("n1", TUNNEL, "")
+            .expect("back to the tunnel");
+        assert!(!back.on_mesh());
+        assert_eq!(back.mesh_token, on.mesh_token, "a switch keeps the bearer");
+        assert_eq!(store.set_path("n9", MESH, "x:1").unwrap_err().0, 404);
+        let mut revoked = node("n2");
+        revoked.revoked = true;
+        let store = Store::holding(vec![revoked]);
+        assert_eq!(store.set_path("n2", MESH, "x:1").unwrap_err().0, 409);
+    }
+
+    #[test]
+    fn a_link_keeps_its_latency_and_its_errors_and_one_keeper_runs_per_node() {
+        let store = Store::holding(vec![node("n1")]);
+        assert_eq!(store.link("n1"), Link::default());
+        store.note_error("n1", "the mesh does not reach 100.64.0.7:7447");
+        store.note_latency("n1", Duration::from_millis(12));
+        let link = store.link("n1");
+        assert_eq!((link.latency_ms, link.errors), (Some(12), 1));
+        assert!(
+            link.last_error
+                .is_some_and(|reason| reason.starts_with("the mesh"))
+        );
+        assert!(!link.connected, "no tunnel or mesh session is up");
+        assert!(store.start_keeper("n1"));
+        assert!(!store.start_keeper("n1"), "one keeper per node");
+        store.end_keeper("n1");
+        assert!(store.start_keeper("n1"));
+    }
+
+    #[test]
+    fn a_view_shows_the_path_and_the_link_but_never_the_mesh_bearer() {
+        let mut mesh = node("n1");
+        mesh.path = MESH.into();
+        mesh.mesh_address = "100.64.0.7:7447".into();
+        mesh.mesh_token = "bearer".into();
+        let mut shown = view(mesh, &[], Vec::new(), NOW);
+        shown.link = Link {
+            connected: true,
+            latency_ms: Some(12),
+            errors: 1,
+            last_error: Some("ping: timed out".into()),
+            last_error_ms: Some(NOW),
+        };
+        let json = serde_json::to_value(&shown).expect("serializes");
+        assert_eq!(json["path"], "mesh");
+        assert_eq!(json["mesh_address"], "100.64.0.7:7447");
+        assert_eq!(json["link"]["latency_ms"], 12);
+        assert!(json.get("mesh_token").is_none(), "the bearer is in no view");
     }
 }
 

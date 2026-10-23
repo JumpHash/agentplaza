@@ -1,0 +1,30 @@
+meta {
+  name: Refuse a mesh path without a host and port
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/path
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "mesh",
+    "mesh_address": "no-port"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal says what a mesh address is", function () {
+    expect(res.getBody().error).to.include("host:port");
+  });
+}
