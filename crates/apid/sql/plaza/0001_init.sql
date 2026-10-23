@@ -2400,6 +2400,48 @@ CREATE TABLE "recipe_run_checks" (
     FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component recipe_triggers
+CREATE TABLE "recipe_trigger" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "recipe" TEXT NOT NULL,
+    "project" TEXT,
+    "action" TEXT NOT NULL CHECK ("action" IN ('run', 'full_suite', 'engine_watch')),
+    "source" TEXT NOT NULL,
+    "event" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "cron" TEXT NOT NULL,
+    "every_minutes" INTEGER NOT NULL CHECK ("every_minutes" >= 0),
+    "window_ms" INTEGER NOT NULL CHECK ("window_ms" >= 0),
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "next_ms" INTEGER CHECK ("next_ms" >= 0),
+    "last_ms" INTEGER CHECK ("last_ms" >= 0),
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- component recipe_trigger_pending
+CREATE TABLE "recipe_trigger_pending" (
+    "trigger" TEXT NOT NULL,
+    "item" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "recipe" TEXT NOT NULL,
+    "project" TEXT,
+    "source" TEXT NOT NULL,
+    "fire_at" INTEGER NOT NULL CHECK ("fire_at" >= 0),
+    "deliveries" INTEGER NOT NULL CHECK ("deliveries" >= 0),
+    PRIMARY KEY ("trigger", "item")
+) STRICT;
+
+-- component recipe_trigger_fired
+CREATE TABLE "recipe_trigger_fired" (
+    "trigger" TEXT NOT NULL,
+    "identity" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "fired_ms" INTEGER NOT NULL CHECK ("fired_ms" >= 0),
+    PRIMARY KEY ("trigger", "identity")
+) STRICT;
+
 -- component recipe_versions
 CREATE TABLE "recipe_version" (
     "recipe" TEXT NOT NULL,
