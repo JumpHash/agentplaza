@@ -8,8 +8,8 @@
 //! unverified there.
 
 use std::io::{self, BufRead, Write};
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
 
 use serde_json::{Value, json};
 
@@ -80,6 +80,28 @@ pub const SHIMS: &[Shim] = &[
         source: "a guess: the PyPI description documents OpenHands as an ACP client of other agents, not a command-line mode",
     },
 ];
+
+/// The program that serves a shim: this harness binary, which the launch starts as `acp-shim <engine>` (see `main.rs`).
+pub fn program() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-harness"))
+}
+
+/// The `acp-shim <engine>` subcommand: serves the engine's shim over this process's stdio until the client ends.
+pub fn serve_engine(engine: &str) -> ExitCode {
+    let Some(shim) = shim(engine) else {
+        eprintln!("agent-harness: no thin adapter for the engine {engine}");
+        return ExitCode::FAILURE;
+    };
+    let argv: Vec<String> = shim.argv.iter().map(|arg| arg.to_string()).collect();
+    let stdin = io::stdin();
+    match serve(&argv, stdin.lock(), io::stdout().lock()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("agent-harness: the {engine} adapter: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
 /// The shim named `engine`.
 pub fn shim(engine: &str) -> Option<&'static Shim> {
@@ -175,6 +197,8 @@ pub fn serve(argv: &[String], input: impl BufRead, mut output: impl Write) -> io
             }
             // A notification (no id) that the relay does not act on is dropped; a request it does not know is refused.
             Some(_) if id.is_none() => continue,
+            // The settings the client may send (a model, a mode) are accepted: the relay has none to change.
+            Some(method) if method.starts_with("session/set_") => Ok(json!({})),
             Some(method) => Err((NOT_FOUND, format!("method not found: {method}"))),
             None => continue,
         };
@@ -208,14 +232,10 @@ fn notify(output: &mut impl Write, session: &str, text: &str) -> io::Result<()> 
     writeln!(output, "{message}")
 }
 
+/// The stand-in engine (tests only): it performs the 12.5 scripted steps in its folder, standing in for the real binary.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    /// The stand-in engine: it performs the 12.5 scripted steps in its folder, and stands in for the real binary.
-    const STAND_IN: &str = "#!/bin/sh
-echo \"start: ok\"
+pub(crate) const STAND_IN: &str = "#!/bin/sh
+echo \"start: ok in $(pwd)\"
 echo \"read: ok\"
 echo edited > edited.txt
 echo \"edit: ok\"
@@ -225,6 +245,11 @@ echo handover > HANDOVER.md
 echo \"handover: written\"
 echo \"end: ok\"
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
