@@ -306,7 +306,7 @@ law "T-032" "The planner sizes the team" {
   when resource.name == "team_set" and principal.role == "planner"
 }
 
-law "T-033" "Every agent may ask which tests a change needs" {
+law "T-035" "Every agent may ask which tests a change needs" {
   tier statute
   enforcement preventive
   severity info

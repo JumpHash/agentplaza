@@ -1124,6 +1124,10 @@ pub fn spawn(app: Arc<App>) {
                 if !app.control.paused() {
                     // Tasks run as sessions filling seats (work_loop.rs).
                     crate::work_loop::tick(&app);
+                    // The scheduled full suite on main (15.4): starts the runs that are due, on their own threads.
+                    crate::full_run::tick(&app, apz_plaza::now_ms());
+                    // The CI runs asked for through `POST /v1/recipe-runs/ci` (4.5).
+                    crate::checks::tick(&app);
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);

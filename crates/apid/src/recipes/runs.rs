@@ -57,6 +57,9 @@ pub struct RecipeRun {
     pub steps: Vec<StepRow>,
     #[table(child)]
     pub edges: Vec<EdgeRow>,
+    /// The results of a CI run's checks (4.5): one per step that ran, in the order they ended.
+    #[table(child)]
+    pub checks: Vec<CheckRow>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -83,6 +86,19 @@ pub struct EdgeRow {
     pub to: String,
     pub state: EdgeState,
     pub taken: u32,
+}
+
+/// One check of a CI run (PLAN 21.3): a step that ran its commands in a test fork, or read a result of the hub (the
+/// secret scan), and what it found. A gate reads the report built from it, and the run keeps the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct CheckRow {
+    #[table(key)]
+    pub step: String,
+    pub passed: bool,
+    /// The commands the step ran, joined by ` && ` (empty when it ran none).
+    pub commands: String,
+    /// What the check found, in a line: the output's end of a failing command, a count of tests or findings.
+    pub summary: String,
 }
 
 /// A version of a recipe the owner saved.
@@ -189,6 +205,7 @@ impl Runs {
             outcome: None,
             steps: Vec::new(),
             edges: Vec::new(),
+            checks: Vec::new(),
             created_ms: now,
             updated_ms: now,
         };
@@ -307,6 +324,14 @@ impl Runs {
                 e.run.outcome = Some(outcome.to_string());
             });
         }
+    }
+
+    /// Records a check's result on run `run`, replacing the one the same step recorded before.
+    pub fn record_check(&self, run: &str, check: CheckRow, now: u64) {
+        self.update(run, now, |e| {
+            e.run.checks.retain(|c| c.step != check.step);
+            e.run.checks.push(check);
+        });
     }
 
     /// Stops the task's active run (its task ended): it is cancelled, and its walk ends.

@@ -128,7 +128,7 @@ fn is_code(path: &str) -> bool {
 }
 
 /// The command that runs every test of the runner.
-fn full_command(runner: &str) -> &'static str {
+pub fn full_command(runner: &str) -> &'static str {
     match runner {
         RUNNER_GO => "go test ./...",
         RUNNER_NPM => "npm test --workspaces",

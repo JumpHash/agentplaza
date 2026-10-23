@@ -167,21 +167,30 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     ))
 }
 
+/// The selection the `tests_select` tool answers for a change of `project`, with the map it reads. None when no map is
+/// recorded for the project: then nothing says which tests a change can skip, and the full suite runs.
+pub fn select_for(
+    maps: &TestSelect,
+    project: &str,
+    change: &Change,
+) -> Option<(CoverageMap, Selection)> {
+    let map = maps.latest(project)?;
+    let selection = apz_testsel::select(change, &map);
+    Some((map, selection))
+}
+
 /// Runs `tests_select` for the agent's project.
 pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
     let project = crate::projects::project_of(app, agent.cid).ok_or("you are not on a project")?;
     let change = change_of(input)?;
-    let answer = match app.test_select.latest(&project) {
-        Some(map) => {
-            let selection = apz_testsel::select(&change, &map);
-            answer(
-                &map.commit,
-                &map.source,
-                &map.runner,
-                &selection,
-                &app.test_select.misses(&project),
-            )
-        }
+    let answer = match select_for(&app.test_select, &project, &change) {
+        Some((map, selection)) => answer(
+            &map.commit,
+            &map.source,
+            &map.runner,
+            &selection,
+            &app.test_select.misses(&project),
+        ),
         None => json!({
             "full": true,
             "full_because": ["no coverage map is recorded for this project yet"],

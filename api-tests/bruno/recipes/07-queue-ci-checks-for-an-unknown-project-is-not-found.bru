@@ -1,0 +1,22 @@
+meta {
+  name: Queueing CI checks for an unknown project is not found
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/recipe-runs/ci
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "project": "no-such-project",
+    "change": "no-such-change"
+  }
+}
+
+assert {
+  res.status: eq 404
+}
