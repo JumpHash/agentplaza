@@ -1,0 +1,35 @@
+# The upgrade recipe (PLAN 21.1, 24). Stub: it needs the upgrade phase (24); none runs yet. An upgrade plans a change of
+# a dependency or a toolchain, rolls it out, and checks it.
+id = "upgrade"
+name = "Upgrade"
+description = "Stub until the upgrade phase (24): declares its steps, none runs yet."
+version = 1
+inputs = ["upgrade"]
+outputs = ["change"]
+triggers = ["upgrade.available"]
+
+[[steps]]
+id = "plan"
+engine = "upgrade"
+gate = ["passed"]
+
+[[steps]]
+id = "rollout"
+engine = "upgrade"
+gate = ["passed"]
+
+[[steps]]
+id = "verify"
+engine = "upgrade"
+gate = ["passed", "tests green"]
+output = "change"
+
+[[edges]]
+from = "plan"
+to = "rollout"
+when = "passed"
+
+[[edges]]
+from = "rollout"
+to = "verify"
+when = "passed"

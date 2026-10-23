@@ -118,6 +118,36 @@ export interface EngineRecipeDetail { recipe: EngineRecipe; toml: string; engine
 
 export interface RecipeList { recipes: RecipeSummary[]; proposals: RecipeProposal[]; engine?: EngineRecipeSummary[] }
 
+/** A run's state: `running`, `owner` (a card waits for the owner), or how it ended (`passed`, `failed`, `cancelled`). */
+export type RecipeRunState = 'running' | 'owner' | 'passed' | 'failed' | 'cancelled';
+
+/** A run of an engine recipe, as `GET /v1/recipe-runs` lists it (newest first) and `GET /v1/recipe-runs/{id}` gives it. */
+export interface RecipeRun {
+  run: string; recipe: string; version: number; source: string; trigger: string;
+  task: string | null; project: string | null; subject: string; state: RecipeRunState; outcome: string | null;
+  created_ms: number; updated_ms: number;
+}
+
+export interface RecipeRunList { runs: RecipeRun[] }
+
+/** A step's state in a run; null when the run has no walk for the step. */
+export type RecipeNodeState = 'waiting' | 'ready' | 'running' | 'passed' | 'failed' | 'skipped';
+
+/** An edge's state in a run: `open` (not decided yet), `taken`, or `dead` (the walk went another way). */
+export type RecipeEdgeState = 'open' | 'taken' | 'dead';
+
+/** A step of a run's graph: its definition, how far the walk got, and what it reported. `gate_read` is shown as the hub sends it. */
+export interface RecipeRunNode {
+  id: string; seat: string | null; role: string | null; engine: string | null; model: string | string[] | null;
+  fan_out: number | string; gate: string[]; state: RecipeNodeState | null; visits: number; items: number; reported: number;
+  gate_read: unknown;
+}
+
+export interface RecipeRunEdge { index: number; from: string; to: string; when: string; max?: number | null; state: RecipeEdgeState; taken: boolean }
+
+/** A run's graph (`GET /v1/recipe-runs/{id}/graph`): its steps and edges, each with its state. */
+export interface RecipeRunGraph { run: string; recipe: string; state: RecipeRunState; nodes: RecipeRunNode[]; edges: RecipeRunEdge[] }
+
 /** The owner's three calls on a review card. */
 export type ReviewChoice = 'pass' | 'rework' | 'fail';
 
@@ -132,6 +162,15 @@ export const review = {
   engineRecipes: async (): Promise<EngineRecipeSummary[]> => (await call<RecipeList>('GET', '/v1/recipes')).engine ?? [],
   engineRecipe: (id: string) => call<EngineRecipeDetail>('GET', `/v1/recipes/${seg(id)}`),
   decideProposal: (id: string, approve: boolean) => call<unknown>('POST', `/v1/recipes/proposals/${seg(id)}`, { approve }),
+  /** The runs of a task, of a project, or of both, newest first. */
+  recipeRuns: (scope: { task?: string; project?: string }) => {
+    const query = new URLSearchParams();
+    if (scope.task) query.set('task', scope.task);
+    if (scope.project) query.set('project', scope.project);
+    return call<RecipeRunList>('GET', `/v1/recipe-runs?${query}`);
+  },
+  recipeRun: (runId: string) => call<RecipeRun>('GET', `/v1/recipe-runs/${seg(runId)}`),
+  recipeRunGraph: (runId: string) => call<RecipeRunGraph>('GET', `/v1/recipe-runs/${seg(runId)}/graph`),
   runs: (taskId: string) => call<TaskReviews>('GET', `/v1/tasks/${seg(taskId)}/reviews`),
   run: (runId: string) => call<ReviewRunDetail>('GET', `/v1/reviews/${seg(runId)}`),
   tree: (runId: string) => call<ReviewTree>('GET', `/v1/reviews/${seg(runId)}/tree`),

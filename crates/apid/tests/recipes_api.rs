@@ -36,10 +36,10 @@ fn the_engine_recipes_and_their_saved_versions_answer_on_a_scratch_hub() {
     assert_eq!(status, 400, "{body}");
     assert!(error_of(&body).contains("higher"), "{body}");
 
-    let pinned = json!({ "toml": "id = \"change\"\nversion = 2\n[[steps]]\nid = \"build\"\nrole = \"builder\"\nmodel = \"provider/pinned\"\n" });
+    let pinned = json!({ "toml": "id = \"change\"\nversion = 2\n[[steps]]\nid = \"build\"\nrole = \"builder\"\nmodel = []\n" });
     let (status, body) = hub.call("PUT", "/v1/recipes/change", Some(pinned));
     assert_eq!(status, 400, "{body}");
-    assert!(error_of(&body).contains("any or differ"), "{body}");
+    assert!(error_of(&body).contains("model list is empty"), "{body}");
 
     let newer = json!({ "toml": concat!(
         "id = \"change\"\nversion = 2\n",

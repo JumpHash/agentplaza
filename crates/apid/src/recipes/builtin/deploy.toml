@@ -1,0 +1,25 @@
+# The deploy recipe (PLAN 21.1, 23). Stub: it needs the deployment phase (23); none runs yet. A deploy rolls a release out
+# and checks it.
+id = "deploy"
+name = "Deploy"
+description = "Stub until the deployment phase (23): declares its steps, none runs yet."
+version = 1
+inputs = ["release"]
+outputs = ["deployment"]
+triggers = ["release.published"]
+
+[[steps]]
+id = "rollout"
+engine = "deploy"
+gate = ["passed"]
+
+[[steps]]
+id = "verify"
+engine = "deploy"
+gate = ["passed", "no findings"]
+output = "deployment"
+
+[[edges]]
+from = "rollout"
+to = "verify"
+when = "passed"

@@ -14,6 +14,7 @@ import { isLive, refreshProjects } from '../scope';
 import { settingsTab } from './project-settings';
 import { maintenanceTab } from './project-maintenance';
 import { environmentsTab } from './project-environments';
+import { recipeRunsOf } from './recipe-graph';
 import { projectsApi, type ModeDef, type ProjectMode } from '../api-projects';
 import { dropZone, pickFiles, uploadToProject, type PickedFile } from '../ui/file-drop';
 import { embedContextFromStore } from '../ui/embeds';
@@ -218,6 +219,11 @@ function tasksCard(p: Project): HTMLElement {
   return card('Tasks', [box, h('p.pj-faint', null, h('a', { href: href('work', p.id) }, 'See them in the order they run, in Work'))]);
 }
 
+/** The project's recipe runs: the recipe graphs, and the latest runs of the project. */
+function recipesCard(p: Project): HTMLElement {
+  return card('Recipes', recipeRunsOf({ project: p.id }));
+}
+
 function historyCard(p: Project): HTMLElement {
   if (!p.history.length) return card('History', h('p.muted', null, 'Nothing recorded yet.'));
   const events = [...p.history].sort((a, b) => a.at_ms - b.at_ms);
@@ -266,7 +272,7 @@ function planTab(p: Project): (Node | null)[] {
     : emptyState(lu('messages-square', 22), 'No critiques yet', 'The critiques appear here once agents review the proposal.');
   const repo = p.repo ? repoCard(p.repo) : null;
   const files = p.kind === 'code' && !p.archived ? filesCard(p) : null;
-  return [card('Documents', docs), card('Critiques', critiques), tasksCard(p), repo, files, historyCard(p)];
+  return [card('Documents', docs), card('Critiques', critiques), tasksCard(p), recipesCard(p), repo, files, historyCard(p)];
 }
 
 /** The repository's name: the last part of its path. */

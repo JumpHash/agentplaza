@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::{EdgeRec, EdgeState, Move, Outcome, Report, StepRec, StepState, Walk};
 
-use super::model::{Recipe, builtin};
+use super::model::{Model, Recipe, builtin};
 
 /// Where a run is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -146,7 +146,32 @@ impl Runs {
         subject: Option<&str>,
         now: u64,
     ) -> (String, Vec<Move>) {
-        let (walk, moves) = Walk::start(recipe, &BTreeMap::new());
+        self.start_with_items(
+            recipe,
+            source,
+            trigger,
+            task,
+            project,
+            subject,
+            &BTreeMap::new(),
+            now,
+        )
+    }
+
+    /// Starts a run as [`Runs::start`], with the item counts of its named fan-outs (`items`, by step).
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_items(
+        &self,
+        recipe: &Recipe,
+        source: &str,
+        trigger: &str,
+        task: Option<&str>,
+        project: Option<&str>,
+        subject: Option<&str>,
+        items: &BTreeMap<String, u32>,
+        now: u64,
+    ) -> (String, Vec<Move>) {
+        let (walk, moves) = Walk::start(recipe, items);
         let mut inner = self.lock();
         inner.next += 1;
         let id = format!("rr-{}", inner.next);
@@ -217,6 +242,16 @@ impl Runs {
         if let Some(run) = self.active_of_task(task) {
             self.started(&run, step, now);
         }
+    }
+
+    /// The model a step of the task's active run is to use, as its recipe file says.
+    pub fn step_model(&self, task: &str, step: &str) -> Option<Model> {
+        let inner = self.lock();
+        let entry = inner
+            .runs
+            .values()
+            .find(|e| e.run.task.as_deref() == Some(task) && e.walk.outcome.is_none())?;
+        entry.recipe.step(step).map(|s| s.model.clone())
     }
 
     /// A step settled with `report`, in the task's active run. Returns the moves the caller applies.

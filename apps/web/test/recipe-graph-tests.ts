@@ -2,24 +2,32 @@
 // edge's label and loop, and the layout's input. The DOM is not touched here. Bundled with the other suites by
 // test/tests.ts; it prints "recipe graph tests: ok (N checks)".
 
-import type { EngineRecipe } from '../src/api-review';
+import type { EngineRecipe, RecipeRunGraph } from '../src/api-review';
 import {
   addEdge,
   addStep,
+  edgeClassOf,
   edgeLabel,
   isLoop,
   layoutInput,
   listOf,
   nextStepId,
+  nodeClassOf,
+  nodeLabelOf,
   parseCount,
   parseFanOut,
   parseShare,
   patchStep,
+  plainOf,
   problemOf,
   recipeToml,
   removeEdge,
   removeStep,
   renameStep,
+  runIdOf,
+  runLabelOf,
+  runToneOf,
+  runViewOf,
   stepLine,
   tomlValue,
 } from '../src/views/recipe-graph-model';
@@ -132,5 +140,63 @@ eq(removeEdge(sample(), 0).edges.map((e) => e.when), ['findings>0'], 'remove: th
 eq(nextStepId(sample()), 'step-3', 'new id: the first step-N no step has');
 eq(stepLine(sample().steps[1]!), 'any · gate no findings', 'card line: the model and the gate');
 eq(stepLine(addStep(sample(), 'lint').steps.at(-1)!), 'any · gate passed', 'card line: an empty gate reads as passed');
+
+// A run's graph as the hub sends it (GET /v1/recipe-runs/{id}/graph): a step with no walk has a null state.
+const RUN_GRAPH = `{
+  "run": "run-7", "recipe": "change", "state": "failed",
+  "nodes": [
+    { "id": "write", "seat": "worker", "role": null, "engine": null, "model": "differ", "fan_out": 1, "gate": [], "state": "passed", "visits": 1, "items": 2, "reported": 2, "gate_read": "passed" },
+    { "id": "review", "seat": null, "role": "reviewer", "engine": null, "model": "any", "fan_out": "per_file", "gate": ["no findings"], "state": "failed", "visits": 2, "items": 2, "reported": 1, "gate_read": ["findings>0"] },
+    { "id": "ship", "seat": null, "role": null, "engine": null, "model": "any", "fan_out": 1, "gate": [], "state": "skipped", "visits": 0, "items": 0, "reported": 0, "gate_read": null },
+    { "id": "lint", "seat": null, "role": null, "engine": null, "model": "any", "fan_out": 1, "gate": [], "state": null, "visits": 0, "items": 0, "reported": 0, "gate_read": null }
+  ],
+  "edges": [
+    { "index": 0, "from": "write", "to": "review", "when": "passed", "state": "taken", "taken": true },
+    { "index": 1, "from": "review", "to": "write", "when": "findings>0", "max": 2, "state": "dead", "taken": false },
+    { "index": 2, "from": "review", "to": "ship", "when": "no findings", "state": "open", "taken": false }
+  ]
+}`;
+
+eq(runIdOf(['run', 'run-7']), 'run-7', 'route: #/recipe-graph/run/<id> names the run');
+eq(runIdOf(['change']), null, 'route: a recipe id is not a run');
+eq(runIdOf(['run']), null, 'route: the run route needs its id');
+eq(runIdOf(['run', '']), null, 'route: an empty run id is no run');
+eq(nodeClassOf('running'), 'rr-running', 'run: a running step takes rr-running');
+eq(nodeClassOf(null), 'rr-none', 'run: a step with no walk takes rr-none');
+eq(nodeLabelOf('waiting'), 'Waiting', 'run: a waiting step is labelled Waiting');
+eq(nodeLabelOf(null), 'No walk', 'run: a step with no walk is labelled No walk');
+eq(edgeClassOf({ state: 'taken', taken: true }), 'rr-taken', 'run: a taken link is rr-taken');
+eq(edgeClassOf({ state: 'dead', taken: false }), 'rr-dead', 'run: a dead link is rr-dead');
+eq(edgeClassOf({ state: 'open', taken: false }), 'rr-open', 'run: an open link is rr-open');
+eq(runLabelOf('owner'), 'Waiting for you', 'run: the owner state is worded for the owner');
+eq(runToneOf('failed'), 'danger', 'run: a failed run has the danger tone');
+eq(plainOf(['findings>0', 'tests green']), 'findings>0, tests green', 'run: a list shows its items joined');
+eq(plainOf(null), '', 'run: null shows nothing');
+eq(plainOf(3), '3', 'run: a number shows as it is');
+
+const graph = JSON.parse(RUN_GRAPH) as RecipeRunGraph;
+const view = runViewOf(graph);
+eq(
+  view.nodes.map((n) => [n.id, n.cls, n.label]),
+  [
+    ['write', 'rr-passed', 'Passed'],
+    ['review', 'rr-failed', 'Failed'],
+    ['ship', 'rr-skipped', 'Skipped'],
+    ['lint', 'rr-none', 'No walk'],
+  ],
+  'run view: each step takes the class and the word of its state',
+);
+eq(view.nodes.map((n) => [n.visits, n.items, n.reported, n.gateRead]), [
+  [1, 2, 2, 'passed'],
+  [2, 2, 1, 'findings>0'],
+  [0, 0, 0, ''],
+  [0, 0, 0, ''],
+], 'run view: visits, items, reported and gate_read as the list shows them');
+eq(view.edges.map((e) => e.cls), ['rr-taken', 'rr-dead', 'rr-open'], 'run view: each link takes the class of its state');
+eq(view.edges.map((e) => e.taken), [true, false, false], 'run view: only the taken link is taken');
+eq(view.edges.map((e) => e.dashed), [false, true, true], 'run view: the taken link is solid, the others dashed');
+eq(view.recipe.steps.map((s) => s.id), ['write', 'review', 'ship', 'lint'], 'run view: the steps are laid out in the hub order');
+eq(edgeLabel(view.recipe.edges[1]!), 'findings>0 (max 2)', 'run view: a loop keeps its bound in its label');
+eq(layoutInput(view.recipe).edges.length, 3, 'run view: each linked pair goes to the layout once');
 
 console.log(`recipe graph tests: ok (${checks} checks)`);
