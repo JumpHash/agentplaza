@@ -36,5 +36,9 @@ windows-sys = { workspace = true, features = [
 name = "vsockd"
 path = "src/main.rs"
 
+[[bin]]
+name = "mcp-bridge"
+path = "src/bin/mcp_bridge.rs"
+
 [lints]
 workspace = true

@@ -312,7 +312,11 @@ impl App {
                 apz_plaza::now_ms(),
             ),
             foundry: crate::foundry::store::Foundry::new(foundry_dir),
-            mcp: crate::mcp::Mcp::load(&config.state_dir, config.mcp_proxy_port),
+            mcp: crate::mcp::Mcp::load(
+                &config.state_dir,
+                config.mcp_proxy_port,
+                Upstream::with_token(config.noded_port, internal.clone()),
+            ),
             hub_auth,
             hub_mcp: crate::hub_mcp::HubMcp::open(
                 crate::hub_mcp::default_origins(

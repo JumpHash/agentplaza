@@ -297,3 +297,40 @@ pub fn wake_readers(stream: &std::net::TcpStream) {
     // I/O requests (failing harmlessly when there are none).
     unsafe { CancelIoEx(stream.as_raw_socket() as HANDLE, std::ptr::null()) };
 }
+
+/// Connects a new `AF_VSOCK` stream socket to `cid:port` and returns it as an owned descriptor. The descriptor is
+/// close-on-exec, so a child process the guest starts does not inherit it.
+///
+/// Used by the `mcp-bridge` binary, which includes this file by path; the daemon does not call it, hence the
+/// `dead_code` allowance.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn vsock_connect(cid: u32, port: u32) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+
+    // SAFETY: `socket` takes three integers and returns a new descriptor or -1; no pointer is passed.
+    let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a fresh descriptor that nothing else owns, so the new owner is its only one.
+    let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    // SAFETY: `sockaddr_vm` is plain old data, and all zeroes is a valid value before the fields below are set.
+    let mut addr: libc::sockaddr_vm = unsafe { std::mem::zeroed() };
+    addr.svm_family = libc::AF_VSOCK as libc::sa_family_t;
+    addr.svm_cid = cid;
+    addr.svm_port = port;
+    // SAFETY: `connect` reads `size_of::<sockaddr_vm>()` bytes from `addr`, which is live and initialised above,
+    // and `sock` is an open socket that nothing else uses.
+    let ret = unsafe {
+        libc::connect(
+            fd,
+            (&addr as *const libc::sockaddr_vm).cast(),
+            std::mem::size_of::<libc::sockaddr_vm>() as libc::socklen_t,
+        )
+    };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(sock)
+}

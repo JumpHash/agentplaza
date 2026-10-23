@@ -32,6 +32,45 @@ pub trait Launcher: Send + Sync {
     fn launch(&self, spec: &Spec) -> Result<Sandboxed, String>;
 }
 
+/// A started server process, as the transport holds it: its three pipes, and its end. The sandbox's child
+/// ([`Sandboxed`]) and a microVM's (`vm::VmChild`) both are one.
+pub trait Child: Send {
+    fn stdin(&mut self) -> Option<Box<dyn Write + Send>>;
+    fn stdout(&mut self) -> Option<Box<dyn Read + Send>>;
+    fn stderr(&mut self) -> Option<Box<dyn Read + Send>>;
+    /// Whether the process has ended.
+    fn try_wait(&mut self) -> std::io::Result<bool>;
+    fn kill(&mut self) -> std::io::Result<()>;
+    /// Waits until the process has ended.
+    fn wait(&mut self) -> std::io::Result<()>;
+}
+
+impl Child for Sandboxed {
+    fn stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        Sandboxed::stdin(self)
+    }
+
+    fn stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        Sandboxed::stdout(self)
+    }
+
+    fn stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+        Sandboxed::stderr(self)
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<bool> {
+        Ok(Sandboxed::try_wait(self)?.is_some())
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        Sandboxed::kill(self)
+    }
+
+    fn wait(&mut self) -> std::io::Result<()> {
+        Sandboxed::wait(self).map(|_| ())
+    }
+}
+
 /// The OS sandbox ([`apz_sandbox::spawn`]).
 pub struct SandboxLauncher;
 
@@ -333,7 +372,7 @@ pub(crate) fn read_line_capped(
 /// The stdio transport: writes JSON lines to the child's stdin, reads its stdout on a thread, and gives
 /// each stderr line to `on_stderr`.
 pub struct StdioTransport {
-    child: Sandboxed,
+    child: Box<dyn Child>,
     stdin: Option<Box<dyn Write + Send>>,
     lines: Receiver<Result<String, ()>>,
     closed: bool,
@@ -344,7 +383,7 @@ pub struct StdioTransport {
 impl StdioTransport {
     /// Takes over a started process. `on_stderr` gets every stderr line, as the child wrote it.
     pub fn new(
-        mut child: Sandboxed,
+        mut child: Box<dyn Child>,
         on_stderr: Arc<dyn Fn(String) + Send + Sync>,
         lease: Option<Lease>,
     ) -> Result<StdioTransport, String> {
@@ -430,7 +469,7 @@ impl Transport for StdioTransport {
     }
 
     fn alive(&mut self) -> bool {
-        !self.closed && matches!(self.child.try_wait(), Ok(None))
+        !self.closed && matches!(self.child.try_wait(), Ok(false))
     }
 
     fn close(&mut self) {

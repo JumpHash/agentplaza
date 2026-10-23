@@ -21,6 +21,7 @@ pub mod runtimes;
 pub mod stdio;
 #[cfg(test)]
 mod tests;
+pub mod vm;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -37,6 +38,7 @@ use sha2::{Digest, Sha256};
 use crate::agents::Agent;
 use crate::deliverables::Upload;
 use crate::state::App;
+use crate::upstream::Upstream;
 use client::ToolInfo;
 use config::{McpServer, Risk};
 use runtime::{Ctx, Runtime};
@@ -127,7 +129,7 @@ impl Mcp {
     /// An empty MCP state: the store fills from the database at start. Stdio servers run under the OS sandbox, with
     /// their directories and the runtimes under `state_dir`, and reach the network through the egress proxy on
     /// loopback `port`.
-    pub fn load(state_dir: &Path, port: u16) -> Mcp {
+    pub fn load(state_dir: &Path, port: u16, noded: Upstream) -> Mcp {
         Mcp {
             store: config::Store::default(),
             runtime: Runtime::new(
@@ -135,7 +137,8 @@ impl Mcp {
                 Arc::new(runtimes::HttpFetch),
                 Arc::new(stdio::SandboxLauncher),
                 Some(egress::Egress::new(port)),
-            ),
+            )
+            .with_vm(Arc::new(vm::VmLauncher::new(noded))),
         }
     }
 }
