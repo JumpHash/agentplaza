@@ -182,12 +182,15 @@ pub enum Entry {
         #[table(content)]
         output: String,
     },
-    /// A tool's report: whether it worked, and its output (capped by the caller).
+    /// A tool's report: whether it worked, and its output (capped by the caller). A call a script made names the
+    /// `run_script` call it belongs to.
     ToolResult {
         call: String,
         ok: bool,
         #[table(content)]
         output: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
     },
     /// One item of an ACP engine's session feed (`{call, item, ...}`), as the feed keeps it.
     EngineUpdate(#[table(content)] Value),
@@ -749,6 +752,7 @@ mod tests {
                 call: "c1".into(),
                 ok: true,
                 output: "42".into(),
+                script: None,
             },
             Entry::EngineUpdate(
                 json!({"call": "e1", "item": "message", "message_id": null, "text": "hi"}),
@@ -1201,6 +1205,7 @@ mod tests {
                     call: "c".into(),
                     ok: true,
                     output: big.clone(),
+                    script: None,
                 },
             );
         }
@@ -1215,6 +1220,7 @@ mod tests {
                     call: "c".into(),
                     ok: true,
                     output: big.clone(),
+                    script: None,
                 },
             })
             .collect();
@@ -1256,6 +1262,7 @@ mod tests {
                 call: "c".into(),
                 ok: true,
                 output: huge,
+                script: None,
             },
         );
         let kept = store.last(7, usize::MAX);

@@ -70,6 +70,9 @@ pub fn touch(workspace: &Workspace, name: &str, input: &Value) -> Touch {
         // Code intelligence reads the files it names (its language server only indexes them).
         "symbols" | "definition" | "references" | "diagnostics" | "outline" => at(true, false),
         // A command runs in its `cwd`, or the workspace root: a `cd` it makes holds for the commands after it.
+        // A script may read or write anything in the workspace, and makes its own calls under their decisions: it runs
+        // alone, as a command in the workspace root.
+        "run_script" => Touch::Command(workspace.dir().to_path_buf()),
         "run" | "run_tests" => match input.get("cwd") {
             None | Some(Value::Null) => Touch::Command(workspace.dir().to_path_buf()),
             Some(Value::String(raw)) => match workspace.resolve(raw) {
@@ -361,6 +364,23 @@ mod tests {
             touch(&ws, "run", &json!({"command": "ls"})),
             Touch::Command(ws.dir().to_path_buf())
         );
+        // A script touches the workspace as a whole, so no read or write of it runs beside the script.
+        assert_eq!(
+            touch(
+                &ws,
+                "run_script",
+                &json!({"language": "python", "code": "pass"})
+            ),
+            Touch::Command(ws.dir().to_path_buf())
+        );
+        assert!(conflicts(
+            &touch(
+                &ws,
+                "run_script",
+                &json!({"language": "python", "code": "pass"})
+            ),
+            &read(&ws.resolve("a.txt").expect("a path").0.to_string_lossy())
+        ));
         // A file tool without its path, a path outside the workspace, and a tool the harness does not order.
         assert_eq!(touch(&ws, "read", &json!({})), Touch::Other);
         assert_eq!(

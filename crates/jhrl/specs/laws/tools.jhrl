@@ -11,12 +11,12 @@ law "T-001" "Every agent may use its own workspace tools" {
   tier statute
   enforcement preventive
   severity info
-  statement "Any agent may use the tools of its own VM: run commands, read and write its files, look up its code's symbols, definitions, references and diagnostics, fetch and download over the hub's egress, install packages, keep todos and checkpoints. An ACP engine's own actions inside its code_engine run (engine.read, engine.edit, engine.exec, engine.fetch, engine.other) are the agent's own, and each is checked as its own call."
+  statement "Any agent may use the tools of its own VM: run commands and scripts that call those tools, read and write its files, look up its code's symbols, definitions, references and diagnostics, fetch and download over the hub's egress, install packages, keep todos and checkpoints. An ACP engine's own actions inside its code_engine run (engine.read, engine.edit, engine.exec, engine.fetch, engine.other) are the agent's own, and each is checked as its own call."
   rationale "Inside its own microVM an agent may do anything; the sandbox laws keep that VM its own. An engine's request is the same kind of action as the tool it stands for, so it is checked one by one like any other."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["run", "run_tests", "read", "edit", "find", "search", "share_file", "fetch_url", "download", "install_packages", "todo_write", "code_engine", "deliver_file", "artifact_create", "artifact_update", "artifact_attach_data", "artifact_share_request", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list", "symbols", "definition", "references", "diagnostics", "outline", "engine.read", "engine.edit", "engine.exec", "engine.fetch", "engine.other"]
+  when resource.name in ["run", "run_tests", "run_script", "read", "edit", "find", "search", "share_file", "fetch_url", "download", "install_packages", "todo_write", "code_engine", "deliver_file", "artifact_create", "artifact_update", "artifact_attach_data", "artifact_share_request", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list", "symbols", "definition", "references", "diagnostics", "outline", "engine.read", "engine.edit", "engine.exec", "engine.fetch", "engine.other"]
 }
 
 law "T-002" "Every agent may use the plaza's shared tools" {

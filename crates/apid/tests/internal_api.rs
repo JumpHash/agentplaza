@@ -401,3 +401,32 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
         "{transcript}"
     );
 }
+
+#[test]
+fn a_tool_report_of_a_call_a_script_made_names_the_script_call_in_the_transcript() {
+    let scratch = Scratch::new("internal-script");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 452;
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
+
+    // A call the script made is reported under the run_script call it belongs to, and the transcript keeps that link.
+    let reply = message(
+        &hub,
+        cid,
+        json!({
+            "type": "tool_report", "work": 1, "call": "toolu_s1.1", "ok": true, "output": "ran",
+            "name": "read", "input": {"files": []}, "script": "toolu_s1",
+        }),
+    );
+    assert!(reply["reply"].is_null(), "{reply}");
+    let (status, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
+    assert_eq!(status, 200, "{transcript}");
+    let linked = transcript.as_array().is_some_and(|entries| {
+        entries.iter().any(|e| {
+            let text = e.to_string();
+            text.contains("toolu_s1.1") && text.contains(r#""script":"toolu_s1""#)
+        })
+    });
+    assert!(linked, "{transcript}");
+}

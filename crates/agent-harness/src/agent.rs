@@ -40,6 +40,7 @@ use crate::acp::hub::HubLink;
 use crate::bash;
 use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
+use crate::script;
 use crate::session::{SessionError, escape_for_transcript, kind_of};
 use crate::tool_batch::{self, Streamed, Touch};
 use crate::tool_search::{self, Deferred};
@@ -62,6 +63,8 @@ const TASK_DONE: &str = "TASK DONE";
 const HANDOVER_ASK: &str = "Write your handover with handover_write first: what stands, what is done, what is next, what to check first. Then end your turn. If the task is finished and nothing is left for another session, end with the line TASK DONE instead.";
 /// How often a local tool's thread is checked while the beat runs beside it.
 const LOCAL_POLL: Duration = Duration::from_millis(20);
+/// How long a script's calls that arrive together wait to be decided as one batch.
+const SCRIPT_GATHER: Duration = Duration::from_millis(5);
 /// How long queued work waits for the profile. A hub restart can welcome the agent before its
 /// profile is ready, and the profile follows a few seconds later.
 const PROFILE_WAIT: Duration = Duration::from_secs(60);
@@ -118,13 +121,16 @@ enum Step {
     Run(Run),
 }
 
-/// A call that runs here: the call, what it touches, and how it runs.
+/// A call that runs here: the call, what it touches, how it runs, and the `run_script` call it belongs to when a script
+/// made it.
+#[derive(Clone)]
 struct Run {
     id: String,
     name: String,
     input: Value,
     touch: Touch,
     allowance: Allowance,
+    script: Option<String>,
 }
 
 /// A turn's calls as they settle. Each result goes back in the model's order, and each run is reported once the calls
@@ -164,6 +170,7 @@ fn tool_report(
     output: String,
     record: Option<&(String, String, Value)>,
     ms: u64,
+    script: Option<&str>,
 ) -> GuestMessage {
     let (policy, name, input) = match record {
         Some((policy, name, input)) => (
@@ -182,6 +189,7 @@ fn tool_report(
         name,
         input,
         duration_ms: Some(ms),
+        script: script.map(str::to_string),
     }
 }
 
@@ -1301,29 +1309,46 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         work: u64,
         uses: &[(String, String, Value, Option<Value>)],
     ) -> Result<Vec<(String, bool)>, Halt> {
-        let policy = self.policy.clone();
-        let mut early = std::mem::take(&mut self.early);
-        let mut routes: Vec<Route> = Vec::with_capacity(uses.len());
-        for (_, name, input, meta) in uses {
-            let route = if let Some(reason) = invalid_input(input, meta.as_ref()) {
-                Route::Refused(format!("INVALID_INPUT: {reason}"))
-            } else if name == tool_search::TOOL {
-                match input["query"].as_str() {
-                    Some(query) => Route::Answered(self.deferred.search(query)),
-                    None => Route::Refused("INVALID_INPUT: tool_search needs a query".into()),
+        let early = std::mem::take(&mut self.early);
+        let steps = self.decide(work, uses, None)?;
+        self.run_steps(work, steps, early)
+    }
+
+    /// How one call is routed: refused for its input or its tool, answered by `tool_search`, allowed by the policy (it
+    /// runs here), or left to the hub. The same for a model's call and a script's.
+    fn route(&mut self, name: &str, input: &Value, meta: Option<&Value>) -> Route {
+        if let Some(reason) = invalid_input(input, meta) {
+            Route::Refused(format!("INVALID_INPUT: {reason}"))
+        } else if name == tool_search::TOOL {
+            match input["query"].as_str() {
+                Some(query) => Route::Answered(self.deferred.search(query)),
+                None => Route::Refused("INVALID_INPUT: tool_search needs a query".into()),
+            }
+        } else if let Some(reason) = self.deferred.refusal(name) {
+            Route::Refused(reason)
+        } else {
+            match &self.policy {
+                Some(policy) if policy.allow.iter().any(|tool| tool == name) => {
+                    Route::Local(policy.id.clone())
                 }
-            } else if let Some(reason) = self.deferred.refusal(name) {
-                Route::Refused(reason)
-            } else {
-                match &policy {
-                    Some(policy) if policy.allow.iter().any(|tool| tool == name) => {
-                        Route::Local(policy.id.clone())
-                    }
-                    _ => Route::Hub,
-                }
-            };
-            routes.push(route);
+                _ => Route::Hub,
+            }
         }
+    }
+
+    /// Decides the calls of a turn, or of a batch a script made, in order: each call's step. A call the policy or the hub
+    /// allows runs here. `script` is the `run_script` call the calls belong to, when a script made them; the calls are
+    /// reported under it. The calls the hub decides go to it in one batch.
+    fn decide(
+        &mut self,
+        work: u64,
+        uses: &[(String, String, Value, Option<Value>)],
+        script: Option<&str>,
+    ) -> Result<Vec<Step>, Halt> {
+        let routes: Vec<Route> = uses
+            .iter()
+            .map(|(_, name, input, meta)| self.route(name, input, meta.as_ref()))
+            .collect();
         let calls: Vec<BatchCall> = uses
             .iter()
             .zip(&routes)
@@ -1349,33 +1374,53 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 .map(|decision| (decision.call.clone(), decision))
                 .collect();
         }
-        let steps: Vec<Step> = uses
+        let steps = uses
             .iter()
             .zip(routes)
-            .map(|((id, name, input, _), route)| match route {
-                Route::Refused(text) => Step::Settled(text, true),
-                Route::Answered(text) => Step::Settled(text, false),
-                Route::Local(policy) => run_step(
-                    self.workspace,
-                    id,
-                    name,
-                    input,
-                    Allowance {
-                        policy: Some(policy),
-                        ..Allowance::default()
-                    },
-                ),
-                Route::Hub => match decided.remove(id) {
-                    Some(decision) => decided_step(self.workspace, id, name, input, decision),
-                    None => Step::Settled(
-                        "the host sent no decision for this tool call".to_string(),
-                        true,
+            .map(|((id, name, input, _), route)| {
+                let step = match route {
+                    Route::Refused(text) => Step::Settled(text, true),
+                    Route::Answered(text) => Step::Settled(text, false),
+                    Route::Local(policy) => run_step(
+                        self.workspace,
+                        id,
+                        name,
+                        input,
+                        Allowance {
+                            policy: Some(policy),
+                            ..Allowance::default()
+                        },
                     ),
-                },
+                    Route::Hub => match decided.remove(id) {
+                        Some(decision) => decided_step(self.workspace, id, name, input, decision),
+                        None => Step::Settled(
+                            "the host sent no decision for this tool call".to_string(),
+                            true,
+                        ),
+                    },
+                };
+                match (step, script) {
+                    (Step::Run(run), Some(script)) => Step::Run(Run {
+                        script: Some(script.to_string()),
+                        ..run
+                    }),
+                    (step, _) => step,
+                }
             })
             .collect();
-        // A call that ran while the answer streamed is the one the turn settles with, when the answer asks for the
-        // same call under the same policy.
+        Ok(steps)
+    }
+
+    /// Runs the steps of a turn or of a script's batch, and returns each call's result in order. A call that ran while the
+    /// answer streamed (`early`) is not run again. The calls still to run go in waves: the calls that touch nothing in
+    /// common run at once, and the rest keep their order (see `tool_batch`). A script runs alone: it touches the whole
+    /// workspace (see `tool_batch::touch`), so no other call shares its wave.
+    fn run_steps(
+        &mut self,
+        work: u64,
+        steps: Vec<Step>,
+        mut early: HashMap<String, Early>,
+    ) -> Result<Vec<(String, bool)>, Halt> {
         let outcomes = steps
             .iter()
             .map(|step| match step {
@@ -1411,16 +1456,21 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             .collect();
         self.settle(work, &mut turn)?;
         for wave in tool_batch::waves(&touches) {
-            let jobs: Vec<(usize, Thunk<'a>)> = wave
-                .iter()
-                .filter_map(|&position| {
-                    let index = pending[position];
-                    match &turn.steps[index] {
-                        Step::Run(run) => Some((index, self.job(work, run))),
-                        Step::Settled(..) => None,
-                    }
-                })
-                .collect();
+            let mut jobs: Vec<(usize, Thunk<'a>)> = Vec::new();
+            for &position in &wave {
+                let index = pending[position];
+                let Step::Run(run) = &turn.steps[index] else {
+                    continue;
+                };
+                if run.name == script::TOOL {
+                    let run = run.clone();
+                    let timed = self.script_run(work, &run)?;
+                    turn.outcomes[index] = Some(timed);
+                    self.settle(work, &mut turn)?;
+                } else {
+                    jobs.push((index, self.job(work, run)));
+                }
+            }
             self.run_jobs(jobs, &mut |agent, index, timed| {
                 turn.outcomes[index] = Some(timed);
                 agent.settle(work, &mut turn)
@@ -1428,6 +1478,129 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         }
         self.settle(work, &mut turn)?;
         Ok(turn.results)
+    }
+
+    /// Runs one `run_script` call, and returns its timed result: the script's value, or why it did not finish.
+    fn script_run(&mut self, work: u64, run: &Run) -> Result<Timed, Halt> {
+        let started = Instant::now();
+        let outcome = self.script_drive(work, run)?;
+        Ok(Timed {
+            outcome,
+            ms: started.elapsed().as_millis() as u64,
+        })
+    }
+
+    /// Runs the script of one `run_script` call while it makes its calls: each batch of calls it makes is decided and
+    /// run here (see `script_batch`), until the script ends, runs past its time or its output, or the work is cancelled.
+    /// A host stop ends the wait with [`Halt::Stop`].
+    fn script_drive(&mut self, work: u64, run: &Run) -> Result<Outcome, Halt> {
+        let script = match script::Script::parse(&run.input) {
+            Ok(script) => script,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let tools = self
+            .profile
+            .as_ref()
+            .map_or_else(Vec::new, |profile| profile.tools.clone());
+        let mut session = match script::Session::start(self.workspace, &script, &tools) {
+            Ok(session) => session,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let (calls, requests) = mpsc::channel();
+        let deadline = Instant::now() + Duration::from_secs(script.timeout_s);
+        let mut made = 0;
+        let mut stopped = loop {
+            if let Some(reason) = self.stopping.take() {
+                return Err(Halt::Stop(reason));
+            }
+            if self.cancelled.is_some() {
+                break Some("the work item was cancelled; the script was killed".to_string());
+            }
+            if session.exited() {
+                break None;
+            }
+            if Instant::now() >= deadline {
+                break Some(format!(
+                    "timed out after {} s; the script was killed",
+                    script.timeout_s
+                ));
+            }
+            if session.output_bytes() > script::MAX_OUTPUT_BYTES {
+                break Some(output_cap_reason());
+            }
+            session.accept(&calls);
+            match requests.recv_timeout(LOCAL_POLL) {
+                Ok(first) => {
+                    let mut batch = vec![first];
+                    let gathered_until = Instant::now() + SCRIPT_GATHER;
+                    while let Ok(next) = requests
+                        .recv_timeout(gathered_until.saturating_duration_since(Instant::now()))
+                    {
+                        batch.push(next);
+                    }
+                    self.script_batch(work, &run.id, &mut made, batch)?;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    self.beat_when_due()?;
+                    self.hear_during_tool()?;
+                }
+                Err(RecvTimeoutError::Disconnected) => break None,
+            }
+        };
+        // A script that printed past the cap and ended before the look above is still past it.
+        if stopped.is_none() && session.output_bytes() > script::MAX_OUTPUT_BYTES {
+            stopped = Some(output_cap_reason());
+        }
+        Ok(session.finish(stopped))
+    }
+
+    /// Decides and runs one batch of the calls a script made, and answers each on its connection. A call past the
+    /// script's cap, and a call to `run_script`, are refused here; the others are decided as `decide` says.
+    fn script_batch(
+        &mut self,
+        work: u64,
+        script_call: &str,
+        made: &mut usize,
+        batch: Vec<script::Request>,
+    ) -> Result<(), Halt> {
+        let mut answers: Vec<Option<(String, bool)>> = vec![None; batch.len()];
+        let mut uses = Vec::new();
+        let mut slots = Vec::new();
+        for (slot, request) in batch.iter().enumerate() {
+            *made += 1;
+            if *made > script::MAX_CALLS {
+                answers[slot] = Some((
+                    format!(
+                        "INVALID_INPUT: a script makes at most {} tool calls",
+                        script::MAX_CALLS
+                    ),
+                    true,
+                ));
+            } else if request.name == script::TOOL {
+                answers[slot] = Some(("a script cannot run a script".to_string(), true));
+            } else {
+                uses.push((
+                    format!("{script_call}.{made}"),
+                    request.name.clone(),
+                    request.input.clone(),
+                    None,
+                ));
+                slots.push(slot);
+            }
+        }
+        if !uses.is_empty() {
+            let steps = self.decide(work, &uses, Some(script_call))?;
+            let results = self.run_steps(work, steps, HashMap::new())?;
+            for (slot, result) in slots.into_iter().zip(results) {
+                answers[slot] = Some(result);
+            }
+        }
+        for (request, answer) in batch.into_iter().zip(answers) {
+            if let Some((output, is_error)) = answer {
+                request.answer(!is_error, &output);
+            }
+        }
+        Ok(())
     }
 
     /// Settles the turn's calls in the model's order, as far as their outcomes are known: a call that ran is reported,
@@ -1474,6 +1647,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 output.clone(),
                 record.as_ref(),
                 timed.ms,
+                run.script.as_deref(),
             ))?;
             return Ok((library::summary(&output), false));
         }
@@ -1485,6 +1659,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             output.clone(),
             record.as_ref(),
             timed.ms,
+            run.script.as_deref(),
         ))?;
         Ok((output, !ok))
     }
@@ -1533,6 +1708,14 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
     }
 }
 
+/// Why a script was stopped for printing past its output cap.
+fn output_cap_reason() -> String {
+    format!(
+        "printed more than {} KiB; the script was killed",
+        script::MAX_OUTPUT_BYTES >> 10
+    )
+}
+
 /// The step of a call that runs here: what it is, and what it touches.
 fn run_step(
     workspace: &Workspace,
@@ -1547,6 +1730,7 @@ fn run_step(
         input: input.clone(),
         touch: tool_batch::touch(workspace, name, input),
         allowance,
+        script: None,
     })
 }
 
@@ -1613,7 +1797,8 @@ fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'static str> {
 const OPERATOR_WORK: u64 = 0;
 
 /// The names [`run_guest_tool`] serves itself, besides the tools of [`tools::serve`].
-const GUEST_TOOLS: [&str; 24] = [
+const GUEST_TOOLS: [&str; 25] = [
+    "run_script",
     "read",
     "edit",
     "find",
@@ -3442,7 +3627,7 @@ mod tests {
 
     #[test]
     fn a_tool_report_carries_how_long_its_call_ran_and_a_timed_run_keeps_its_outcome() {
-        let report = tool_report(1, "toolu_1", true, "ok".into(), None, 7);
+        let report = tool_report(1, "toolu_1", true, "ok".into(), None, 7, None);
         assert_eq!(
             report,
             GuestMessage::ToolReport {
@@ -3454,6 +3639,7 @@ mod tests {
                 name: None,
                 input: None,
                 duration_ms: Some(7),
+                script: None,
             }
         );
         let timed = Timed::run(|| {
@@ -3462,5 +3648,259 @@ mod tests {
         });
         assert_eq!(timed.outcome, Err("late".to_string()));
         assert!(timed.ms >= 20, "{}", timed.ms);
+    }
+
+    /// A profile that offers the tools the script tests call: `read`, `run`, `tool_search`, and `run_script`.
+    fn script_tools() -> Value {
+        json!([
+            {"name": "read", "description": "read files", "input_schema": {"type": "object", "properties": {"files": {"type": "array"}}}},
+            {"name": "run", "description": "run a command", "input_schema": {"type": "object"}},
+            {"name": "tool_search", "description": "fetch the schemas of deferred tools", "input_schema": {"type": "object"}},
+            {"name": "run_script", "description": "run a script", "input_schema": {"type": "object"}},
+        ])
+    }
+
+    /// The `run_script` call a model makes with `language` and `code`, and an optional time limit.
+    fn script_use(id: &str, language: &str, code: &str, timeout_s: Option<u64>) -> Value {
+        let mut input = json!({"language": language, "code": code});
+        if let Some(seconds) = timeout_s {
+            input["timeout_s"] = json!(seconds);
+        }
+        tool_use(id, "run_script", input)
+    }
+
+    /// The ten-file survey: read each file, keep the names of those with an error, and set the summary.
+    const SURVEY: &str = "rows = []\nfor n in range(10):\n    text = read({\"files\": [{\"path\": \"f%d.txt\" % n}]})\n    if \"ERROR\" in text:\n        rows.append(\"f%d.txt\" % n)\nresult({\"files\": 10, \"with_errors\": rows})\n";
+
+    #[test]
+    fn a_ten_file_survey_is_one_model_call_and_its_reads_run_under_the_policy() {
+        let workspace = scratch("survey");
+        for n in 0..10 {
+            let body = if n == 3 || n == 7 {
+                "ERROR: bad row\n"
+            } else {
+                "fine\n"
+            };
+            std::fs::write(workspace.dir().join(format!("f{n}.txt")), body).unwrap();
+        }
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("survey", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "survey the files"))
+                .unwrap();
+            expect_type(host, "model_call");
+            host.send(&answer(
+                1,
+                json!([script_use("s1", "python", SURVEY, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            // The script is not under the policy: the hub decides it, once.
+            let batch = expect_type(host, "tool_batch");
+            assert_eq!(batch["calls"][0]["name"], "run_script", "{batch}");
+            host.send(&batch_answer(1, vec![entry("s1", "allow", "", false)]))
+                .unwrap();
+            // Its ten reads run here under the policy, each reported under the script call.
+            for n in 0..10 {
+                let report = expect_report(host);
+                assert_eq!(report["call"], json!(format!("s1.{}", n + 1)), "{report}");
+                assert_eq!(report["script"], "s1", "{report}");
+                assert_eq!(report["policy"], "survey", "{report}");
+                assert_eq!(report["name"], "read", "{report}");
+            }
+            // The script's own call is reported when it returns, under no policy: the hub allowed it.
+            let outer = expect_report(host);
+            assert_eq!(outer["call"], "s1", "{outer}");
+            assert!(
+                outer.get("policy").is_none() && outer.get("script").is_none(),
+                "{outer}"
+            );
+            let value: Value = serde_json::from_str(outer["output"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                value,
+                json!({"files": 10, "with_errors": ["f3.txt", "f7.txt"]}),
+                "{outer}"
+            );
+            // The model's next call sees the summary as the script call's result, and nothing of the ten reads.
+            let next = expect_type(host, "model_call");
+            let seen = next.to_string();
+            assert!(seen.contains("with_errors"), "{seen}");
+            assert!(!seen.contains("bad row"), "{seen}");
+            host.send(&answer(2, json!([text("done")]), "end_turn"))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_call_outside_the_policy_goes_to_the_hub_in_a_batch_of_its_own() {
+        let workspace = scratch("script-hub");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("reads", &["read"])).unwrap();
+            host.send(&work(1, "task", "t", "run one command")).unwrap();
+            expect_type(host, "model_call");
+            let code = "result(run({\"command\": \"echo hi\"}))\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s2", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            let outer = expect_type(host, "tool_batch");
+            assert_eq!(outer["calls"][0]["name"], "run_script", "{outer}");
+            host.send(&batch_answer(1, vec![entry("s2", "allow", "", false)]))
+                .unwrap();
+            // The script's `run` is not under the policy: it goes to the hub, alone, under its own call id.
+            let inner = expect_type(host, "tool_batch");
+            assert_eq!(inner["calls"].as_array().map(Vec::len), Some(1), "{inner}");
+            assert_eq!(inner["calls"][0]["call"], "s2.1", "{inner}");
+            assert_eq!(inner["calls"][0]["name"], "run", "{inner}");
+            host.send(&batch_answer(1, vec![entry("s2.1", "allow", "", false)]))
+                .unwrap();
+            // The hub allowed it, so it runs here, reported under the script call.
+            let report = expect_report(host);
+            assert_eq!(report["call"], "s2.1", "{report}");
+            assert_eq!(report["script"], "s2", "{report}");
+            assert!(report.get("policy").is_none(), "{report}");
+            let outer = expect_report(host);
+            assert_eq!(outer["call"], "s2", "{outer}");
+            assert!(outer["output"].as_str().unwrap().contains("hi"), "{outer}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_call_the_hub_denies_raises_in_the_script_and_its_message_comes_back() {
+        let workspace = scratch("script-denied");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "try one command")).unwrap();
+            expect_type(host, "model_call");
+            let code = "try:\n    run({\"command\": \"rm -rf /\"})\nexcept PlazaError as err:\n    result(str(err))\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s3", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s3", "allow", "", false)]))
+                .unwrap();
+            let inner = expect_type(host, "tool_batch");
+            assert_eq!(inner["calls"][0]["call"], "s3.1", "{inner}");
+            host.send(&batch_answer(
+                1,
+                vec![entry("s3.1", "deny", "the owner denied it", true)],
+            ))
+            .unwrap();
+            // The denial is the script's to catch: its message is the script's value, and no report is made for it.
+            let outer = expect_report(host);
+            assert_eq!(outer["call"], "s3", "{outer}");
+            assert_eq!(outer["output"], "the owner denied it", "{outer}");
+            assert_eq!(outer["ok"], true, "{outer}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_past_its_time_is_stopped_and_its_call_says_so() {
+        let workspace = scratch("script-time");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "wait")).unwrap();
+            expect_type(host, "model_call");
+            let code = "import time\ntime.sleep(60)\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s4", "python", code, Some(1))]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s4", "allow", "", false)]))
+                .unwrap();
+            let started = Instant::now();
+            let outer = expect_report(host);
+            assert_eq!(outer["ok"], false, "{outer}");
+            assert!(
+                outer["output"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("[timed out after 1 s; the script was killed]"),
+                "{outer}"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "{:?}",
+                started.elapsed()
+            );
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_past_its_output_cap_is_stopped_and_its_call_says_so() {
+        let workspace = scratch("script-output");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "print a lot")).unwrap();
+            expect_type(host, "model_call");
+            // 3000 lines of 101 bytes: more than the 256 KiB the script may print.
+            let code = "for i in range(3000):\n    print('x' * 100)\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s5", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s5", "allow", "", false)]))
+                .unwrap();
+            let outer = expect_report(host);
+            assert_eq!(outer["ok"], false, "{outer}");
+            assert!(
+                outer["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("printed more than 256 KiB"),
+                "{outer}"
+            );
+            expect_type(host, "model_call");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_script_makes_at_most_fifty_calls_and_the_rest_are_refused_in_the_script() {
+        let workspace = scratch("script-calls");
+        run_hub(&workspace, |host| {
+            host.send(&welcome_with_tools(script_tools())).unwrap();
+            host.send(&policy_line("none", &[])).unwrap();
+            host.send(&work(1, "task", "t", "count")).unwrap();
+            expect_type(host, "model_call");
+            // Fifty-two refused calls (tool_search with no query is refused here, not by the hub): two are past the cap.
+            let code = "over = 0\nfor n in range(52):\n    try:\n        call(\"tool_search\", {})\n    except PlazaError as err:\n        if \"at most 50\" in str(err):\n            over += 1\nresult(over)\n";
+            host.send(&answer(
+                1,
+                json!([script_use("s6", "python", code, None)]),
+                "tool_use",
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&batch_answer(1, vec![entry("s6", "allow", "", false)]))
+                .unwrap();
+            let outer = expect_report(host);
+            assert_eq!(outer["output"], "2", "{outer}");
+            expect_type(host, "model_call");
+            stop(host);
+        });
     }
 }

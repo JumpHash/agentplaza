@@ -44,6 +44,7 @@ CREATE TABLE "entry" (
     "entry_tool_result_call" TEXT,
     "entry_tool_result_ok" INTEGER CHECK ("entry_tool_result_ok" IN (0, 1)),
     "entry_tool_result_output_content" TEXT,
+    "entry_tool_result_script" TEXT,
     "entry_engine_update_content" TEXT,
     "entry_error_message" TEXT,
     "entry_compressed_before" INTEGER CHECK ("entry_compressed_before" >= 0),

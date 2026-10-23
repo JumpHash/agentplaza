@@ -1116,7 +1116,7 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     {
         flags.insert("impersonation");
     }
-    if matches!(tool, "run" | "run_tests") && longest_base64_run(&text) > 400 {
+    if matches!(tool, "run" | "run_tests" | "run_script") && longest_base64_run(&text) > 400 {
         flags.insert("obfuscation");
     }
     flags
@@ -1197,6 +1197,7 @@ fn longest_base64_run(text: &str) -> usize {
 const GUEST_EXEC: &[&str] = &[
     "run",
     "run_tests",
+    "run_script",
     "edit",
     "download",
     "fetch_url",
