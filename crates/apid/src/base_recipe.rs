@@ -4,6 +4,9 @@
 //! typed list of steps, run in order: each command runs in the VM through noded, and the checkout is fetched from Weft
 //! through the node's link. Nothing here starts a VM: the caller gives a [`VmRunner`] (noded's, or a fake in tests).
 //!
+//! The VM mounts the node's shared volumes: the git objects, which its checkout borrows (16.6), and, for Rust, the
+//! build cache that sccache keeps (16.5); the commands run with sccache as their compiler wrapper.
+//!
 //! The recipe engine (4.1) takes this list over as the built-in `base` recipe (21.1): the steps and their order move
 //! there unchanged. Its one caller, the hub's build of a base on a landing (16.4), comes with 3.3.
 
@@ -20,6 +23,16 @@ pub const OS_TEMPLATE: &str = "workspace";
 pub const WORKSPACE: &str = "/workspace";
 /// How long one command may run before its step fails (30 minutes).
 pub const STEP_TIMEOUT_S: u64 = 1800;
+/// The node's shared git objects, read-only (16.6): a volume whose root holds `objects/`, mounted at `/data/<name>`.
+pub const GIT_OBJECTS_VOLUME: &str = "git-objects";
+/// The node's per-node build cache (16.5), mounted at `/data/<name>` like every data volume.
+pub const SCCACHE_VOLUME: &str = "sccache";
+/// The object directory a checkout borrows from: the git objects volume, as the VM sees it.
+pub const GIT_OBJECTS_DIR: &str = "/data/git-objects/objects";
+/// The directory sccache keeps its cache in: the per-node cache volume, as the VM sees it.
+pub const SCCACHE_DIR: &str = "/data/sccache";
+/// The file that points the checkout's git at [`GIT_OBJECTS_DIR`]: the checkout's own objects stay in its disk.
+pub const ALTERNATES_FILE: &str = "/workspace/.git/objects/info/alternates";
 
 /// The kinds of base (16.1) this recipe builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,26 +55,36 @@ impl BaseKind {
 /// One step of the base recipe, run in order in the base's VM.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Step {
-    /// Starts the VM from the guest image `template`.
-    Start { template: &'static str },
+    /// Starts the VM from the guest image `template`, with the node's shared `volumes` mounted read-only.
+    Start {
+        template: &'static str,
+        volumes: Vec<&'static str>,
+    },
     /// Runs a command and waits for it: it must exit 0 within its timeout.
     Run(Command),
     /// Starts a process and leaves it running (a language server, a service); the next step does not wait for it.
     Background(Command),
-    /// Checks out `commit` of the Weft repository `repo` in [`WORKSPACE`].
-    Checkout { repo: String, commit: String },
+    /// Checks out `commit` of the Weft repository `repo` in [`WORKSPACE`]. The runner first initializes the repository
+    /// and writes [`alternates_file`] for `alternates` (the objects directory it borrows from), then fetches, so the
+    /// fetch finds the node's objects already there.
+    Checkout {
+        repo: String,
+        commit: String,
+        alternates: &'static str,
+    },
     /// Stops the VM and snapshots it as the base of `kind`.
     Snapshot { kind: BaseKind },
 }
 
-/// A command in the VM: its argument vector (never run through a shell), the directory it runs in, and how long it
-/// may run.
+/// A command in the VM: its argument vector (never run through a shell), the directory it runs in, how long it may
+/// run, and the environment it adds to the VM's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     pub label: String,
     pub argv: Vec<String>,
     pub cwd: &'static str,
     pub timeout_s: u64,
+    pub env: Vec<(&'static str, &'static str)>,
 }
 
 impl Command {
@@ -71,6 +94,7 @@ impl Command {
             argv: argv.iter().map(|part| part.to_string()).collect(),
             cwd: WORKSPACE,
             timeout_s: STEP_TIMEOUT_S,
+            env: Vec::new(),
         }
     }
 }
@@ -87,6 +111,31 @@ impl Step {
     }
 }
 
+/// The file a checkout's git reads its borrowed objects from, and its text: the objects directory, on one line.
+pub fn alternates_file(objects: &str) -> (&'static str, String) {
+    (ALTERNATES_FILE, format!("{objects}\n"))
+}
+
+/// The node volumes a base of `stack` mounts. Every base has the git objects; the per-node build cache is for Rust,
+/// the only language whose compiler sccache wraps here.
+pub fn volumes(stack: &Stack) -> Vec<&'static str> {
+    let mut volumes = vec![GIT_OBJECTS_VOLUME];
+    if stack.toolchains.contains_key(&Toolchain::Rust) {
+        volumes.push(SCCACHE_VOLUME);
+    }
+    volumes
+}
+
+/// The environment every command of a base adds: sccache wraps rustc and keeps its cache on the node's volume. Empty
+/// without Rust.
+pub fn cache_env(stack: &Stack) -> Vec<(&'static str, &'static str)> {
+    if stack.toolchains.contains_key(&Toolchain::Rust) {
+        vec![("RUSTC_WRAPPER", "sccache"), ("SCCACHE_DIR", SCCACHE_DIR)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Runs the base's steps: noded's commands in the VM, or a fake in tests.
 pub trait VmRunner {
     fn run(&mut self, step: &Step) -> Result<(), String>;
@@ -94,42 +143,48 @@ pub trait VmRunner {
 
 /// The steps that build a base of `kind` from `stack`, checked out at `commit` of the Weft repository `repo`.
 pub fn steps(stack: &Stack, kind: BaseKind, repo: &str, commit: &str) -> Vec<Step> {
+    let env = cache_env(stack);
+    // Every command of the base runs with the environment of the base's cache (16.5).
+    let command = |label: &str, argv: &[&str]| {
+        let mut command = Command::new(label, argv);
+        command.env = env.clone();
+        command
+    };
     let mut steps = vec![Step::Start {
         template: OS_TEMPLATE,
+        volumes: volumes(stack),
     }];
     for (toolchain, version) in &stack.toolchains {
         let label = format!("install {} {version}", toolchain.name());
         for argv in toolchain.install(version) {
-            steps.push(Step::Run(Command::new(&label, &argv_refs(&argv))));
+            steps.push(Step::Run(command(&label, &argv_refs(&argv))));
         }
     }
     steps.push(Step::Checkout {
         repo: repo.to_string(),
         commit: commit.to_string(),
+        alternates: GIT_OBJECTS_DIR,
     });
     for argv in commands(stack.build.fetch.as_ref(), stack, Toolchain::fetch) {
-        steps.push(Step::Run(Command::new(
-            "fetch dependencies",
-            &argv_refs(&argv),
-        )));
+        steps.push(Step::Run(command("fetch dependencies", &argv_refs(&argv))));
     }
     for argv in commands(stack.build.build.as_ref(), stack, Toolchain::build) {
-        steps.push(Step::Run(Command::new("build", &argv_refs(&argv))));
+        steps.push(Step::Run(command("build", &argv_refs(&argv))));
     }
     for spec in servers(&stack.languages) {
         let label = format!("start {}", spec.id);
-        steps.push(Step::Background(Command::new(&label, &server_argv(spec))));
+        steps.push(Step::Background(command(&label, &server_argv(spec))));
     }
     if kind == BaseKind::Test {
         for service in &stack.services {
             let label = format!("start service {}", service.name);
-            steps.push(Step::Background(Command::new(
+            steps.push(Step::Background(command(
                 &label,
                 &argv_refs(&service.command),
             )));
         }
         for argv in &stack.test.setup {
-            steps.push(Step::Run(Command::new("test setup", &argv_refs(argv))));
+            steps.push(Step::Run(command("test setup", &argv_refs(argv))));
         }
     }
     steps.push(Step::Snapshot { kind });
@@ -261,17 +316,33 @@ command = ["postgres", "-D", "/var/lib/pg"]
 setup = [["make", "seed"]]
 "#;
 
+    /// The sample declares Rust, so its base mounts the git objects and the build cache.
     fn start() -> Step {
         Step::Start {
             template: OS_TEMPLATE,
+            volumes: vec![GIT_OBJECTS_VOLUME, SCCACHE_VOLUME],
         }
     }
 
+    /// A command of a Rust base: it runs with the cache's environment.
+    fn cached(label: &str, argv: &[&str]) -> Command {
+        let mut command = Command::new(label, argv);
+        command.env = vec![
+            ("RUSTC_WRAPPER", "sccache"),
+            ("SCCACHE_DIR", "/data/sccache"),
+        ];
+        command
+    }
+
     fn run(label: &str, argv: &[&str]) -> Step {
-        Step::Run(Command::new(label, argv))
+        Step::Run(cached(label, argv))
     }
 
     fn background(label: &str, argv: &[&str]) -> Step {
+        Step::Background(cached(label, argv))
+    }
+
+    fn plain_background(label: &str, argv: &[&str]) -> Step {
         Step::Background(Command::new(label, argv))
     }
 
@@ -323,6 +394,7 @@ setup = [["make", "seed"]]
                 Step::Checkout {
                     repo: "repo-1".into(),
                     commit: "abc123".into(),
+                    alternates: GIT_OBJECTS_DIR,
                 },
                 run("fetch dependencies", &["cargo", "fetch"]),
                 run("fetch dependencies", &["npm", "ci"]),
@@ -408,12 +480,89 @@ setup = [["make", "seed"]]
         assert_eq!(
             servers,
             vec![
-                background("start pyright", &["pyright-langserver", "--stdio"]),
-                background(
+                plain_background("start pyright", &["pyright-langserver", "--stdio"]),
+                plain_background(
                     "start typescript-language-server",
                     &["typescript-language-server", "--stdio"],
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn a_rust_base_mounts_the_git_objects_and_the_build_cache_and_other_bases_only_the_objects() {
+        let rust = parse(SAMPLE).unwrap();
+        assert_eq!(volumes(&rust), vec!["git-objects", "sccache"]);
+        let python = parse("languages = []\n[toolchains]\npython = \"3.13\"\n").unwrap();
+        assert_eq!(volumes(&python), vec!["git-objects"]);
+        let started = steps(&python, BaseKind::Build, "r", "c");
+        assert_eq!(
+            started[0],
+            Step::Start {
+                template: OS_TEMPLATE,
+                volumes: vec!["git-objects"],
+            }
+        );
+    }
+
+    #[test]
+    fn every_command_of_a_rust_base_runs_with_sccache_on_the_node_cache_and_no_other_base_does() {
+        let rust = parse(SAMPLE).unwrap();
+        let test_base = steps(&rust, BaseKind::Test, "r", "c");
+        let commands: Vec<&Command> = test_base
+            .iter()
+            .filter_map(|step| match step {
+                Step::Run(command) | Step::Background(command) => Some(command),
+                _ => None,
+            })
+            .collect();
+        assert!(commands.len() > 5);
+        for command in commands {
+            assert_eq!(
+                command.env,
+                vec![
+                    ("RUSTC_WRAPPER", "sccache"),
+                    ("SCCACHE_DIR", "/data/sccache")
+                ],
+                "{}",
+                command.label
+            );
+        }
+        let python = parse("languages = []\n[toolchains]\npython = \"3.13\"\n").unwrap();
+        for step in steps(&python, BaseKind::Build, "r", "c") {
+            if let Step::Run(command) | Step::Background(command) = step {
+                assert!(command.env.is_empty(), "{}", command.label);
+            }
+        }
+    }
+
+    #[test]
+    fn a_checkout_borrows_the_node_objects_through_the_alternates_file_it_is_given() {
+        let stack = parse(SAMPLE).unwrap();
+        let steps = steps(&stack, BaseKind::Build, "repo-1", "abc123");
+        let checkout = steps
+            .iter()
+            .position(|step| matches!(step, Step::Checkout { .. }))
+            .unwrap();
+        assert_eq!(
+            steps[checkout],
+            Step::Checkout {
+                repo: "repo-1".into(),
+                commit: "abc123".into(),
+                alternates: GIT_OBJECTS_DIR,
+            }
+        );
+        assert_eq!(
+            checkout, 5,
+            "the checkout follows the toolchains (Start, rust's two, node's two)"
+        );
+        // The file a fork's checkout gets: git reads the node's objects from the volume, the fork keeps its own.
+        assert_eq!(
+            alternates_file(GIT_OBJECTS_DIR),
+            (
+                "/workspace/.git/objects/info/alternates",
+                "/data/git-objects/objects\n".to_string()
+            )
         );
     }
 
