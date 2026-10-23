@@ -208,6 +208,15 @@ pub const ARTIFACT_BLOB_USERS: &str = include_str!("../../sql/queries/artifact_b
 pub const ARTIFACT_REFERS: &str = include_str!("../../sql/queries/artifact_refers.sql");
 pub const ARTIFACT_BLOB_DELETE: &str = include_str!("../../sql/queries/artifact_blob_delete.sql");
 
+// The full-text indexes of the journal's notes and the project memory's entries (store/search.rs): rebuilt by the
+// saver, and searched.
+pub const JOURNAL_SEARCH_CLEAR: &str = include_str!("../../sql/queries/journal_search_clear.sql");
+pub const JOURNAL_SEARCH_FILL: &str = include_str!("../../sql/queries/journal_search_fill.sql");
+pub const JOURNAL_SEARCH_HITS: &str = include_str!("../../sql/queries/journal_search_hits.sql");
+pub const MEMORY_SEARCH_CLEAR: &str = include_str!("../../sql/queries/memory_search_clear.sql");
+pub const MEMORY_SEARCH_FILL: &str = include_str!("../../sql/queries/memory_search_fill.sql");
+pub const MEMORY_SEARCH_HITS: &str = include_str!("../../sql/queries/memory_search_hits.sql");
+
 /// Every query: (file, name, text), for the test that prepares each against its file.
 #[cfg(test)]
 pub const QUERIES: &[(&str, &str, &str)] = &[
@@ -434,4 +443,10 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "artifact_blob_users", ARTIFACT_BLOB_USERS),
     ("plaza", "artifact_refers", ARTIFACT_REFERS),
     ("plaza", "artifact_blob_delete", ARTIFACT_BLOB_DELETE),
+    ("plaza", "journal_search_clear", JOURNAL_SEARCH_CLEAR),
+    ("plaza", "journal_search_fill", JOURNAL_SEARCH_FILL),
+    ("plaza", "journal_search_hits", JOURNAL_SEARCH_HITS),
+    ("plaza", "memory_search_clear", MEMORY_SEARCH_CLEAR),
+    ("plaza", "memory_search_fill", MEMORY_SEARCH_FILL),
+    ("plaza", "memory_search_hits", MEMORY_SEARCH_HITS),
 ];

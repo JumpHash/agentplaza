@@ -1756,12 +1756,27 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 let protocol = self.profile.as_ref().map_or(1, |profile| {
                     crate::acp::run::protocol_offer(&profile.engine_transport)
                 });
+                // The helpers the engine starts and awaits through its MCP server run on this connection's board,
+                // as the agent's own helper calls do (see `job`).
+                let board = Arc::clone(&self.helpers);
+                let helper_profile = self.profile.clone();
+                let helper_policy = self.policy.clone();
                 Box::new(move || {
                     // The plaza's VM tools the hub lets run here (code intelligence, tests, library programs)
                     // run through the same path as the agent's own calls.
                     let here =
                         move |name: &str, input: &Value, program: Option<&Program>| match program {
                             Some(program) => library::run(workspace, program, input),
+                            None if matches!(name, "spawn_helper" | "await_helper") => {
+                                helpers::run_tool(
+                                    &board,
+                                    work,
+                                    helper_profile.as_ref(),
+                                    helper_policy.clone(),
+                                    name,
+                                    input,
+                                )
+                            }
                             None => run_guest_tool(workspace, work, name, input),
                         };
                     let link = HubLink::new(shared, work, call, &cancel, tools)
@@ -1771,18 +1786,13 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 })
             }
             // A helper is started and awaited here: the board runs it on a thread of the agent's scope.
-            None if name == "spawn_helper" => {
+            None if name == "spawn_helper" || name == "await_helper" => {
                 let board = Arc::clone(&self.helpers);
                 let profile = self.profile.clone();
                 let policy = self.policy.clone();
-                Box::new(move || match profile {
-                    Some(profile) => board.spawn(work, &profile, policy, &input),
-                    None => Err("this agent has no model".to_string()),
+                Box::new(move || {
+                    helpers::run_tool(&board, work, profile.as_ref(), policy, &name, &input)
                 })
-            }
-            None if name == "await_helper" => {
-                let board = Arc::clone(&self.helpers);
-                Box::new(move || board.await_report(&input))
             }
             None => {
                 let shared = self.shared;
@@ -1883,41 +1893,6 @@ pub(crate) fn invalid_input(input: &Value, meta: Option<&Value>) -> Option<&'sta
 /// The work id the owner's operator calls run under in the v2 tools: a work item of its own, so the reads and
 /// shell of the agent's work items are not mixed with the owner's.
 const OPERATOR_WORK: u64 = 0;
-
-/// The names [`run_guest_tool`] serves itself, besides the tools of [`tools::serve`].
-const GUEST_TOOLS: [&str; 25] = [
-    "run_script",
-    "read",
-    "edit",
-    "find",
-    "search",
-    "run",
-    "run_tests",
-    "install_packages",
-    "todo_write",
-    "code_engine",
-    "tool_package",
-    "deliver_file",
-    "artifact_create",
-    "artifact_update",
-    "artifact_attach_data",
-    "artifact_share_request",
-    "share_file",
-    "checkpoint_diff",
-    "checkpoint_restore",
-    "checkpoint_list",
-    "symbols",
-    "definition",
-    "references",
-    "diagnostics",
-    "outline",
-];
-
-/// True for a tool the harness runs itself, so the VM's own tools: the ones an engine's plaza MCP
-/// server must not offer, since the engine has its own through ACP.
-pub(crate) fn is_guest_tool(name: &str) -> bool {
-    GUEST_TOOLS.contains(&name) || tools::serves(name)
-}
 
 /// Runs a tool the host allowed, under the names the model knows.
 pub(crate) fn run_guest_tool(
