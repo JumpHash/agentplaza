@@ -13,6 +13,7 @@ use weft::store::Store;
 use super::entity::{Release, ReleaseState, Store as Releases};
 use super::flow::{self, Builder, Built, Cut, Deps, Ledger};
 use super::lanes::{self, Agents};
+use super::signing::{Notary, Signing};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
 use crate::review_graph::{Reviews, Run};
@@ -20,10 +21,12 @@ use apz_blobs::Blobs;
 use std::sync::Arc;
 
 const TOKEN: &str = "release-test-token";
+/// The lock file of the test package: 9.3's SBOM is read from it at the revision the release is cut from.
+pub(super) const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"5f0e2c6ed6606019b4e29e69dbaae37b4f5b6fc1c0a2e2ef3b6f7f4b4d2f7a10\"\n";
 const CARGO: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[package.metadata.weft]\ntargets = [\"linux-x86_64\", \"macos-aarch64\"]\n";
 
 /// Weft's client as the flow reads and writes through it.
-struct WeftLedger(Client);
+pub(super) struct WeftLedger(Client);
 
 impl Ledger for WeftLedger {
     fn read(&self, path: &str) -> Result<Value, String> {
@@ -43,6 +46,21 @@ impl Ledger for WeftLedger {
         self.0
             .upload(&[hash], &|_: &weft::hash::Hash| Ok(bytes.to_vec()))?;
         Ok(hash)
+    }
+
+    fn bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.0.get_bytes(path)
+    }
+
+    fn blob(&self, hash: &weft::hash::Hash) -> Result<Vec<u8>, String> {
+        let mut found = None;
+        self.0.download(&[*hash], &mut |h, bytes| {
+            if h == hash {
+                found = Some(bytes.to_vec());
+            }
+            Ok(())
+        })?;
+        found.ok_or_else(|| format!("Weft did not send blob {}", hash.short()))
     }
 }
 
@@ -80,7 +98,7 @@ fn put(store: &Store, path: &str, text: &str) -> Delta {
 
 /// A Weft on a scratch store with one landed change (a Cargo package declaring two targets), served in-process.
 /// Returns the client the flow uses, the server's handle (it serves while the handle lives) and the directory.
-fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
+pub(super) fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
     let dir = std::env::temp_dir().join(format!("apid-release-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let owner = KeyPair::generate();
@@ -136,6 +154,7 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
             .unwrap();
         let deltas = vec![
             put(&store, "Cargo.toml", CARGO),
+            put(&store, "Cargo.lock", CARGO_LOCK),
             put(&store, "src/main.rs", "fn main() {}\n"),
         ];
         store
@@ -182,15 +201,16 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
 }
 
 /// The dependencies of one test: its Weft, the recipe runs, the review graph's store and the release store.
-struct World {
-    ledger: WeftLedger,
-    runs: Runs,
-    reviews: Reviews,
-    releases: Releases,
+pub(super) struct World {
+    pub(super) ledger: WeftLedger,
+    pub(super) runs: Runs,
+    pub(super) reviews: Reviews,
+    pub(super) releases: Releases,
+    pub(super) signing: TestSigning,
 }
 
 impl World {
-    fn new(client: Client, name: &str) -> World {
+    pub(super) fn new(client: Client, name: &str) -> World {
         let dir =
             std::env::temp_dir().join(format!("apid-release-blobs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -200,20 +220,77 @@ impl World {
             runs: Runs::default(),
             reviews: Reviews::new(blobs),
             releases: Releases::default(),
+            signing: TestSigning::new(),
         }
     }
 
-    fn deps(&self) -> Deps<'_> {
+    pub(super) fn deps(&self) -> Deps<'_> {
         Deps {
             weft: &self.ledger,
             runs: &self.runs,
             reviews: &self.reviews,
             releases: &self.releases,
+            signing: &self.signing,
         }
     }
 }
 
-fn cut(version: &str) -> Cut {
+/// The release step's keys in a test: generated here, never the owner's or the vault's.
+pub(super) struct TestSigning {
+    hub: String,
+    android: String,
+    windows: String,
+    pub(super) notary: RecordingNotary,
+}
+
+impl TestSigning {
+    pub(super) fn new() -> TestSigning {
+        TestSigning {
+            hub: KeyPair::generate().seed_hex(),
+            android: KeyPair::generate().seed_hex(),
+            windows: KeyPair::generate().seed_hex(),
+            notary: RecordingNotary::default(),
+        }
+    }
+}
+
+impl Signing for TestSigning {
+    fn hub(&self) -> Result<KeyPair, String> {
+        KeyPair::from_hex(&self.hub)
+    }
+
+    fn platform(&self, scheme: &str) -> Result<KeyPair, String> {
+        match scheme {
+            "apksigner-standin" => KeyPair::from_hex(&self.android),
+            "authenticode-standin" => KeyPair::from_hex(&self.windows),
+            other => Err(format!("no test key for {other}")),
+        }
+    }
+
+    fn notary(&self) -> &dyn Notary {
+        &self.notary
+    }
+}
+
+/// A notary that records what it was sent and issues a ticket per digest.
+#[derive(Default)]
+pub(super) struct RecordingNotary {
+    pub(super) submitted: std::sync::Mutex<Vec<String>>,
+}
+
+impl Notary for RecordingNotary {
+    fn submit(&self, sha256: &str) -> Result<String, String> {
+        self.submitted.lock().unwrap().push(sha256.to_string());
+        Ok(format!("ticket-{}", &sha256[..12]))
+    }
+
+    fn accepted(&self, ticket: &str, sha256: &str) -> bool {
+        ticket == format!("ticket-{}", &sha256[..12])
+            && self.submitted.lock().unwrap().iter().any(|s| s == sha256)
+    }
+}
+
+pub(super) fn cut(version: &str) -> Cut {
     Cut {
         version: Some(version.into()),
         changes: vec![],

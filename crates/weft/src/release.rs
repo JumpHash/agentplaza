@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::git::{self, Kind, Person};
 use crate::gitwire::{self, Remote, Update};
 use crate::hash::Hash;
-use crate::keys::KeyPair;
+use crate::keys::{KeyPair, PublicKey};
 use crate::model::*;
 use crate::state::{ChangeState, State};
 use crate::store::Store;
@@ -402,12 +402,12 @@ pub fn artifact_body(
     )
 }
 
-/// A provenance statement in a DSSE envelope signed with `key` (the file that ships beside an artifact).
-pub fn dsse(statement: &Value, key: &KeyPair) -> Value {
-    let payload = serde_json::to_vec(statement).unwrap_or_default();
-    let ty = "application/vnd.in-toto+json";
-    // DSSE's pre-authentication encoding.
-    let pae = [
+/// The payload type of an in-toto statement in a DSSE envelope.
+pub const IN_TOTO: &str = "application/vnd.in-toto+json";
+
+/// DSSE's pre-authentication encoding of `payload` under the payload type `ty`: what a signature covers.
+pub fn pae(ty: &str, payload: &[u8]) -> Vec<u8> {
+    [
         b"DSSEv1 ".to_vec(),
         ty.len().to_string().into_bytes(),
         b" ".to_vec(),
@@ -415,12 +415,46 @@ pub fn dsse(statement: &Value, key: &KeyPair) -> Value {
         b" ".to_vec(),
         payload.len().to_string().into_bytes(),
         b" ".to_vec(),
-        payload.clone(),
+        payload.to_vec(),
     ]
-    .concat();
-    let sig = key.sign(&pae);
+    .concat()
+}
+
+/// A provenance statement in a DSSE envelope signed with `key` (the file that ships beside an artifact).
+pub fn dsse(statement: &Value, key: &KeyPair) -> Value {
+    let payload = serde_json::to_vec(statement).unwrap_or_default();
+    let sig = key.sign(&pae(IN_TOTO, &payload));
     let b64 = base64::engine::general_purpose::STANDARD;
-    json!({ "payloadType": ty, "payload": b64.encode(&payload), "signatures": [{ "keyid": key.id(), "sig": b64.encode(sig) }] })
+    json!({ "payloadType": IN_TOTO, "payload": b64.encode(&payload), "signatures": [{ "keyid": key.id(), "sig": b64.encode(sig) }] })
+}
+
+/// Opens a DSSE envelope of an in-toto statement: the statement it carries, when one of its signatures is `key`'s over
+/// the payload. Refuses any other payload type, and an envelope whose payload or signature has changed.
+pub fn open_dsse(envelope: &Value, key: &PublicKey) -> Result<Value, String> {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let ty = envelope["payloadType"]
+        .as_str()
+        .ok_or("the envelope names no payload type")?;
+    if ty != IN_TOTO {
+        return Err(format!(
+            "the envelope's payload is {ty}, not an in-toto statement"
+        ));
+    }
+    let payload = b64
+        .decode(envelope["payload"].as_str().unwrap_or_default())
+        .map_err(|e| format!("the envelope's payload is not base64: {e}"))?;
+    let signed = pae(ty, &payload);
+    let checked = envelope["signatures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["sig"].as_str())
+        .filter_map(|sig| b64.decode(sig).ok())
+        .any(|sig| key.verify(&signed, &sig).is_ok());
+    if !checked {
+        return Err("no signature of the envelope is the key's over its payload".into());
+    }
+    serde_json::from_slice(&payload).map_err(|e| format!("the payload is not JSON: {e}"))
 }
 
 // ── export ───────────────────────────────────────────────────────────────────────────────────────────────────────

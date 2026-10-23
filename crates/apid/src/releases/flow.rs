@@ -13,11 +13,14 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use weft::hash::Hash;
 
+use super::attest;
 use super::channels;
 use super::entity::{
     Release, ReleaseArtifact, ReleaseChange, ReleasePromotion, ReleaseState, ReleaseVerdict, Store,
 };
 use super::lanes;
+use super::sbom;
+use super::signing::{self, Signing};
 use super::versions::{self, Bump, Note};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
@@ -33,6 +36,11 @@ pub trait Ledger {
     fn statement(&self, kind: &str, body: Value) -> Result<Value, String>;
     /// Uploads bytes to Weft's blob store and returns their hash.
     fn upload(&self, bytes: &[u8]) -> Result<Hash, String>;
+    /// `GET /v1/<path>` as the raw bytes it answers with (a file at a revision).
+    fn bytes(&self, path: &str) -> Result<Vec<u8>, String>;
+    /// The bytes of a blob by its hash, checked against it (an artifact's content is the blob of its digest). Fetched
+    /// through Weft's object protocol, which carries objects larger than one answer.
+    fn blob(&self, hash: &Hash) -> Result<Vec<u8>, String>;
 }
 
 impl Ledger for crate::weft_hub::Weft {
@@ -53,6 +61,21 @@ impl Ledger for crate::weft_hub::Weft {
         self.client("hub")?
             .upload(&[hash], &|_: &Hash| Ok(bytes.to_vec()))?;
         Ok(hash)
+    }
+
+    fn bytes(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.client("hub")?.get_bytes(path)
+    }
+
+    fn blob(&self, hash: &Hash) -> Result<Vec<u8>, String> {
+        let mut found = None;
+        self.client("hub")?.download(&[*hash], &mut |h, bytes| {
+            if h == hash {
+                found = Some(bytes.to_vec());
+            }
+            Ok(())
+        })?;
+        found.ok_or_else(|| format!("Weft did not send blob {}", hash.short()))
     }
 }
 
@@ -88,6 +111,8 @@ pub struct Deps<'a> {
     pub runs: &'a Runs,
     pub reviews: &'a Reviews,
     pub releases: &'a Store,
+    /// The keys and notary the release step signs with (`signing.rs`).
+    pub signing: &'a dyn Signing,
 }
 
 /// A request to cut a draft (and optionally a candidate).
@@ -343,8 +368,6 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
             sections.join("\n\n")
         },
         run: None,
-        sbom: String::new(),
-        provenance: String::new(),
         changes,
         artifacts: Vec::new(),
         verdicts: Vec::new(),
@@ -432,7 +455,8 @@ pub fn candidate(
     refresh(d, id)
 }
 
-/// One target: built, uploaded, and recorded in Weft as an artifact of the release's revision.
+/// One target: built, platform-signed, uploaded, and recorded in Weft as an artifact of the release's revision, with
+/// its SBOM and its provenance signed by the hub (9.3). The keys are read here and nowhere else.
 fn build_one(
     d: &Deps,
     rel: &Release,
@@ -443,7 +467,11 @@ fn build_one(
     let built = builder
         .build(rel, target)
         .map_err(|e| format!("{}: {e}", label(target)))?;
-    let blob = d.weft.upload(&built.bytes)?;
+    let signed = signing::sign_platform(d.signing, built.bytes)
+        .map_err(|e| format!("{}: {e}", label(target)))?;
+    let sha = signing::sha256_hex(&signed.bytes);
+    let hub = d.signing.hub()?;
+    let blob = d.weft.upload(&signed.bytes)?;
     let art = d.weft.post(
         "/artifacts",
         &json!({
@@ -451,16 +479,62 @@ fn build_one(
             "built_from": rel.from, "builder": built.builder, "command": built.command,
         }),
     )?;
+    let components = components(d, rel, target)?;
+    let bom = serde_json::to_string_pretty(&sbom::document(
+        &rel.project,
+        &rel.version,
+        &sha,
+        &components,
+    ))
+    .unwrap_or_default();
+    let statement = attest::statement(&attest::Built {
+        repo: &rel.repo,
+        target,
+        from: &rel.from,
+        command: &built.command,
+        builder: &built.builder,
+        pool: &built.pool,
+        base: &built.base,
+        run,
+        artifact_sha256: &sha,
+        sbom_sha256: &signing::sha256_hex(bom.as_bytes()),
+    });
+    let mut lines = vec![signing::hub_line(&hub, &sha)];
+    lines.extend(signed.lines);
     Ok(ReleaseArtifact {
         target: target.to_string(),
         artifact: text(&art["id"]),
         digest: text(&art["digest"]),
         size: art["size"].as_u64().unwrap_or(0),
-        signatures: String::new(),
+        signatures: lines.join("\n"),
+        sbom: bom,
+        provenance: attest::seal(&statement, &hub),
         pool: built.pool,
         base: built.base,
         run: run.to_string(),
     })
+}
+
+/// The components of a target's build: the lock file of its ecosystem at the revision the release is cut from. A
+/// target whose ecosystem has no reader, or whose revision has no lock file, has no SBOM and cannot be a candidate.
+fn components(d: &Deps, rel: &Release, target: &str) -> Result<Vec<sbom::Component>, String> {
+    let (kind, lock) = sbom::lock_file_of(target)?;
+    let files = d.weft.read(&format!("/revisions/{}/files", rel.from))?;
+    let listed = files["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|f| f["path"] == lock);
+    if !listed {
+        return Err(format!(
+            "{target}: {lock} is not in the revision the release is cut from"
+        ));
+    }
+    let bytes = d
+        .weft
+        .bytes(&format!("/revisions/{}/file?path={lock}", rel.from))?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("{lock} is not UTF-8"))?;
+    sbom::components(kind, &text)
 }
 
 fn label(target: &str) -> &str {
@@ -487,9 +561,26 @@ pub fn qualify(d: &Deps, id: &str) -> Result<Release, String> {
     move_with(d, id, "release.qualify", json!({}))
 }
 
-/// Publishes a release whose checks passed (or that was qualified).
+/// Publishes a release whose checks passed (or that was qualified). Its artifacts must verify first (9.3).
 pub fn publish(d: &Deps, id: &str) -> Result<Release, String> {
+    verify(d, id)?;
     move_with(d, id, "release.publish", json!({}))
+}
+
+/// Checks every artifact of the release against its bytes in Weft and the signing keys: the signature, the provenance
+/// and the SBOM (`signing::check`). The first artifact that does not verify refuses the release.
+pub fn verify(d: &Deps, id: &str) -> Result<(), String> {
+    let rel = get(d, id)?;
+    for art in &rel.artifacts {
+        let hash = art
+            .digest
+            .parse::<Hash>()
+            .map_err(|e| format!("{}: its digest is not a hash: {e}", art.target))?;
+        let bytes = d.weft.blob(&hash)?;
+        signing::check(art, &bytes, d.signing)
+            .map_err(|e| format!("the release does not verify: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Promotes a published release to an environment or a store track.
