@@ -14,7 +14,6 @@ assets/robots/
   species/<id>.json one per species, schema 1
   tools/<id>.json   held tools and carried items (grip one | two | carry)
   props/<id>.json   station props: furniture a robot works at, with its spots (schema 1)
-  behaviour.json    the behaviour engine's config (read by `world/work.rs`)
 ```
 
 Code: `crates/apz-engine/src/robots/` (`types.rs` the formats, `validate.rs` the checks, `files.rs` the embedded

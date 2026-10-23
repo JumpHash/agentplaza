@@ -1,14 +1,14 @@
 """Shared harness for the AgentPlaza acceptance suites.
 
-This module is the boring plumbing the four fixed suites
-(``suite_demo``, ``suite_redteam``, ``suite_killresume``, ``suite_budgets``)
-share. It was written to be runnable on every CI machine class with nothing but
-CPython's standard library.
+This module is the boring plumbing the acceptance suites (``suite_demo``,
+``suite_redteam``, ``suite_killresume``, ``suite_jail``, ``suite_budgets``,
+``suite_lifecycle``) share. It was written to be runnable on every CI machine
+class with nothing but CPython's standard library.
 
-* **Why a Python runner, not a Rust bin.** The repository's own test trees are
-  shell entry points around Python/Node suites (``docs/protocol-draft/check.sh``
-  + ``tests/test_protocol.py``, ``docs/orchestrator-draft/check.sh`` +
-  ``tests/core.test.mjs``). ``tests/acceptance`` is therefore *not* a cargo
+* **Why a Python runner, not a Rust bin.** The repository's other test trees
+  follow the same shape: a shell entry point around a Python/Node suite
+  (``docs/orchestrator-draft/check.sh`` around its PGlite suite).
+  ``tests/acceptance`` is therefore *not* a cargo
   workspace member: ``cargo build --workspace`` is untouched, no dependency is
   added, and the same runner executes unchanged on the x86_64, Pi 4, Pi 5 and
   Apple Silicon machines. The suites drive the *real binaries* (``noded``,

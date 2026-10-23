@@ -92,7 +92,7 @@ Both families are distributed under the SIL Open Font License 1.1. Full license 
 <rect x="1010" y="151" width="88" height="22" fill="#f6f7f3" stroke="#151915" stroke-width="1.4"/>
 <text x="1054" y="166" text-anchor="middle" class="mono" font-size="10.5" letter-spacing="0.6" fill="#151915">VAULT</text>
 <rect x="1104" y="151" width="87" height="22" fill="#f6f7f3" stroke="#151915" stroke-width="1.4"/>
-<text x="1147.5" y="166" text-anchor="middle" class="mono" font-size="10.5" letter-spacing="0.6" fill="#151915">TREASURY</text>
+<text x="1147.5" y="166" text-anchor="middle" class="mono" font-size="10.5" letter-spacing="0.6" fill="#151915">BUDGET</text>
 <rect class="flash" x="824" y="151" width="88" height="22" fill="#fff"/>
 
 <line x1="868" y1="206" x2="868" y2="276" stroke="#4b524a" stroke-width="1.4" stroke-dasharray="3 4"/><rect x="865.5" y="203.5" width="5" height="5" fill="#151915"/>

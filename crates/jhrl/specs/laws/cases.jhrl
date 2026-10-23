@@ -1,5 +1,5 @@
 fixture "plaza" "One plaza with agents of several roles, tools of each risk class, hosts in each group" {
-  Town("plaza") { name: "plaza" }
+  Plaza("plaza") { name: "plaza" }
   Agent("builder") { kind: "llm", role: "builder" }
   Agent("planner") { kind: "llm", role: "planner" }
   Agent("architect") { kind: "llm", role: "architect" }
@@ -7,7 +7,6 @@ fixture "plaza" "One plaza with agents of several roles, tools of each risk clas
   Agent("reviewer") { kind: "llm", role: "reviewer" }
   Agent("orchestrator") { kind: "llm", role: "orchestrator" }
   Agent("researcher") { kind: "llm", role: "researcher" }
-  Agent("finance") { kind: "llm", role: "finance" }
   Agent("auditor") { kind: "llm", role: "auditor" }
   Agent("edge") { kind: "llm", role: "edge-operator" }
   Agent("release") { kind: "llm", role: "release" }
@@ -56,7 +55,6 @@ authz "constitution" using "plaza" {
   deny "builder reads the vault" Agent("builder") vault.read Vault("vault") {} by "C-002a"
   deny "orchestrator lists the vault" Agent("orchestrator") vault.list Vault("vault") {} by "C-002a"
   allow "auditor reads the usage ledger" Agent("auditor") usage.read UsageLedger("ledger") {}
-  allow "finance reads the audit log" Agent("finance") audit.read AuditLog("log") {}
 
   deny "builder asks a peer for a token" Agent("builder") message.send Agent("reviewer") {flags: {"credential_seeking"}} by "C-002b"
   deny "researcher fetches a credential over the network" Agent("researcher") egress.connect Host("news") {flags: {"credential_seeking"}} by "C-002b"
@@ -84,10 +82,10 @@ authz "constitution" using "plaza" {
 authz "statutes" using "plaza" {
   deny "builder reaches a blocked host" Agent("builder") egress.connect Host("evil") {flags: {}}
   deny "builder calls a write tool" Agent("builder") tool.call Tool("edit-code") {flags: {}}
-  allow "planner submits a plan" Agent("planner") plan.submit Town("plaza") {}
-  allow "architect submits design notes" Agent("architect") design.submit Town("plaza") {}
-  allow "qa submits a test suite" Agent("qa") testsuite.submit Town("plaza") {}
-  allow "researcher submits a brief" Agent("researcher") research.submit Town("plaza") {}
+  allow "planner submits a plan" Agent("planner") plan.submit Plaza("plaza") {}
+  allow "architect submits design notes" Agent("architect") design.submit Plaza("plaza") {}
+  allow "qa submits a test suite" Agent("qa") testsuite.submit Plaza("plaza") {}
+  allow "researcher submits a brief" Agent("researcher") research.submit Plaza("plaza") {}
   allow "orchestrator approves a merge under threshold" Agent("orchestrator") merge.approve Task("task1") {budget: 5, threshold: 10, ambiguous: false}
   deny "orchestrator approves a merge over threshold" Agent("orchestrator") merge.approve Task("task1") {budget: 50, threshold: 10, ambiguous: false}
   deny "orchestrator approves an ambiguous plan" Agent("orchestrator") plan.approve Task("task1") {budget: 5, threshold: 10, ambiguous: true}
@@ -97,6 +95,4 @@ authz "statutes" using "plaza" {
   deny "builder actuates a device" Agent("builder") device.actuate Device("arm") {within_envelope: true, on_node: "node-1"} by "S-016c"
   allow "edge operator actuates inside its envelope" Agent("edge") device.actuate Device("arm") {within_envelope: true, on_node: "node-1"}
   deny "edge operator actuates outside its envelope" Agent("edge") device.actuate Device("arm") {within_envelope: false, on_node: "node-1"}
-  allow "finance submits a finance report" Agent("finance") report.submit Report("rep1") {kind: "finance", flags: {}}
-  deny "finance submits an incident report" Agent("finance") report.submit Report("rep1") {kind: "incident", flags: {}}
 }

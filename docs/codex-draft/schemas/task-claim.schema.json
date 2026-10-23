@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/task-claim.schema.json",
   "title": "Task claim",
-  "description": "A builder's claim that its task is done. It is verified, never trusted (0040, 0053).",
+  "description": "A builder's claim that its task is done. It is verified, never trusted.",
   "type": "object",
   "additionalProperties": false,
   "required": [

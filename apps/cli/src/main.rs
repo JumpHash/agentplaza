@@ -11,7 +11,7 @@ mod tui;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "agentplaza", version = apz_os::version(), about = "AgentPlaza: a town for your AI agents, from the terminal", propagate_version = true)]
+#[command(name = "agentplaza", version = apz_os::version(), about = "AgentPlaza: a plaza for your AI agents, from the terminal", propagate_version = true)]
 struct Cli {
     /// The hub: a URL or the name of a saved hub (default: the saved default, else the local hub).
     #[arg(long, global = true, env = "APZ_HUB")]

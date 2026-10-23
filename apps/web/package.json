@@ -1,6 +1,6 @@
 {
   "name": "@agentplaza/web",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "AgentPlaza node console — register, run detail, machine, 2D map and the 3D view (the Rust engine, compiled to wasm) over the noded /api/v0 contract. Framework-free TypeScript, static build to dist/.",

@@ -10,8 +10,9 @@ a corpus or a model cache. Nothing in a VM can write to it.
 
 ## The image
 
-A volume is an ext4 image on a node. The file lives in noded's `--volume-dir` (default `volumes/` beside the
-snapshots). The caller makes it from an absolute path on the node:
+A volume is an ext4 image on a node. The file lives in noded's `--volume-dir` (default `volumes/` under
+`--persist-dir`, else under the state directory). Each volume is two files there: `<name>.ext4` and its metadata,
+`<name>.json`. The caller makes the image from an absolute path on the node:
 
 | source | what noded does |
 |---|---|
@@ -22,7 +23,7 @@ A name is 1 to 20 characters from `a-z`, `0-9` and `-`. It cannot start with `-`
 
 ## Routes
 
-noded and apid serve the same routes. apid proxies to the noded on the hub machine.
+apid serves the same routes and proxies them to the noded on the hub machine.
 
 | route | what it does |
 |---|---|
@@ -45,8 +46,9 @@ Volumes reach agents by role.
 - The device id is the volume name. The guest init mounts each disk whose id is a volume name at `/data/<name>` with
   `MS_RDONLY|MS_NOSUID|MS_NODEV`. The workspace is the disk with an empty id.
 - One image can back any number of VMs at once, because nothing writes it.
-- A VM takes up to 4 volumes. Each has its own MMIO slot and interrupt. On x86_64 the interrupts are GSI 16 to 19, after
-  the balloon's slot. On aarch64 each volume is a device tree node, on KVM and on Hypervisor.framework (GSI `8 + i`).
+- A VM takes up to 4 volumes. Each has its own MMIO slot and interrupt. On x86_64 the interrupts are GSI 16 to 19, past
+  the ISA lines, and the MMIO slots follow the balloon's. On aarch64 each volume is a device tree node, on KVM and on
+  Hypervisor.framework, with GSI `8 + i`.
 
 ## Snapshots and moves
 
@@ -55,7 +57,8 @@ Volumes reach agents by role.
   the id was saved are checked by count only.
 - Sleep, wake, checkpoints and forks keep the run's volumes.
 - A VM with volumes boots cold. Warm templates carry no volumes.
-- A VM moved to another node needs the same volume name on that node.
+- Export and import (`migrate.rs`) carry the sleep snapshot and the workspace disk only. The export's metadata
+  (`VmMeta`) has no volume names, so an import neither carries nor checks a VM's data volumes.
 
 ## Not yet
 

@@ -2,20 +2,87 @@
 
 //! `noded` — the node daemon: one machine's microVMs over a loopback HTTP API.
 //!
+//! Machine and monitoring:
+//!
 //! * `GET /v1/machine` — the machine's facts
 //! * `GET /v1/machine/stats` — live CPU, load, memory and VM counts, with history
-//! * `GET /v1/host/scale` — whether this host suits scale mode (zswap, encrypted swap, reflinks,
-//!   cgroups, KSM), item by item
-//! * `GET /v1/runs` · `POST /v1/runs` — runs (groups of VMs) · boot one
-//! * `GET /v1/runs/{id}` · `DELETE /v1/runs/{id}` — one run with its serial captures · kill it
+//! * `GET /v1/ws` — a WebSocket (`apz.noded.v1`) of `run`, `vm` and `serial` events; read-only
+//! * `GET /v1/host/scale` — whether this host suits scale mode, item by item
+//! * `GET /v1/metrics` — the node's Prometheus metrics, as text
+//! * `GET /v1/metrics/batch` — the metrics collected since the last batch (`?live=1`: 204 unless the hub streams this node)
+//! * `POST /v1/metrics/live` — stream live metrics until `until_ms`
+//!
+//! Shared volumes and warm templates:
+//!
+//! * `GET /v1/volumes` — every shared data volume, with the live VMs that mount it
+//! * `POST /v1/volumes` — create a shared data volume
+//! * `DELETE /v1/volumes/{name}` — delete a volume (409 while a live VM mounts it)
+//! * `GET /v1/templates` — the warm templates built
+//! * `DELETE /v1/templates/{key}` — remove a warm template
+//!
+//! Runs and their VMs:
+//!
+//! * `GET /v1/runs` — every run, oldest first
+//! * `POST /v1/runs` — boot a run (a group of VMs)
+//! * `GET /v1/runs/{id}` — one run, with its serial captures
+//! * `DELETE /v1/runs/{id}` — kill a run's VMs
 //! * `POST /v1/runs/{id}/input` — write to one VM's serial console
 //! * `POST /v1/runs/{id}/vms/{index}/memory` — resize one VM's balloon
-//! * `GET /v1/ws` — a WebSocket (`apz.noded.v1`): one text message per event,
-//!   `{"event":"run"|"vm"|"serial","data":{…}}`; read-only, no browsers
-//! * `POST /v1/train` · `GET /v1/train` — start a trainer job · the running jobs
-//! * `GET /v1/train/{job_id}/events?after=N` · `POST /v1/train/{job_id}/stop` — what the job
-//!   printed since line N · stop it
+//! * `POST /v1/runs/{id}/vms/{index}/restart` — restart one VM as it was booted, with the same CID
+//! * `POST /v1/runs/{id}/vms/{index}/wipe` — reset one VM's workspace to the base image and boot it
+//! * `POST /v1/runs/{id}/vms/{index}/stop` — stop one VM for good
+//! * `POST /v1/runs/{id}/vms/{index}/pause` — pause one VM
+//! * `POST /v1/runs/{id}/vms/{index}/resume` — resume a paused VM
+//! * `POST /v1/runs/{id}/vms/{index}/doze` — pause a VM and page its guest memory out of host RAM
+//! * `POST /v1/runs/{id}/vms/{index}/sleep` — sleep a VM to its snapshot and stop it
+//! * `POST /v1/runs/{id}/vms/{index}/wake` — wake a sleeping VM from its snapshot
+//! * `POST /v1/runs/{id}/vms/{index}/fork` — checkpoint a VM and fork it into new single-VM runs
+//! * `GET /v1/runs/{id}/vms/{index}/checkpoints` — list a VM's checkpoints
+//! * `POST /v1/runs/{id}/vms/{index}/checkpoints` — checkpoint a VM
+//! * `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/restore` — restore a VM to a checkpoint
+//! * `DELETE /v1/runs/{id}/vms/{index}/checkpoints/{name}` — delete a checkpoint
 //!
+//! Moving a sleeping VM between nodes (`migrate.rs`):
+//!
+//! * `POST /v1/runs/{id}/vms/{index}/export` — record a sleeping VM's files for a transfer
+//! * `GET /v1/exports/{export}/{name}` — read one chunk of an exported file (`offset`, `len`)
+//! * `DELETE /v1/exports/{export}` — forget an export
+//! * `POST /v1/imports` — start an import of a VM's files
+//! * `POST /v1/imports/{import}/{name}` — write one chunk of an imported file
+//! * `POST /v1/imports/{import}/finish` — check the staged files and make the VM asleep here
+//! * `DELETE /v1/imports/{import}` — abort an import and remove what it staged
+//!
+//! Workstations (desktop VMs):
+//!
+//! * `GET /v1/workstations` — every workstation
+//! * `POST /v1/workstations` — create a workstation
+//! * `GET /v1/workstations/{id}` — one workstation
+//! * `DELETE /v1/workstations/{id}` — stop a workstation and remove its disk and snapshot
+//! * `POST /v1/workstations/{id}/start` — start a workstation
+//! * `POST /v1/workstations/{id}/sleep` — sleep a workstation, keeping its memory
+//! * `POST /v1/workstations/{id}/wake` — resume a sleeping workstation
+//! * `GET /v1/workstations/{id}/console` — the tail of the serial console (`?bytes=`, default 16 KiB)
+//! * `POST /v1/workstations/{id}/stop` — stop a workstation
+//! * `POST /v1/workstations/{id}/snapshot` — snapshot a stopped workstation's disk
+//! * `POST /v1/workstations/{id}/revert` — copy a snapshot back over the workstation's disk
+//!
+//! MCP servers in microVMs:
+//!
+//! * `GET /v1/mcp-vm` — whether this node can run an MCP server in a microVM
+//! * `POST /v1/mcp-runs` — boot a run for an MCP server
+//! * `GET /v1/mcp-runs/{id}` — one MCP server run
+//! * `DELETE /v1/mcp-runs/{id}` — stop an MCP server's VM and remove its run
+//! * `DELETE /v1/mcp-storage/{server}` — remove a server's kept workspace
+//!
+//! Trainer jobs:
+//!
+//! * `GET /v1/train` — the running trainer jobs
+//! * `POST /v1/train` — start a trainer job
+//! * `GET /v1/train/{job_id}/events?after=N` — what the job printed since line N
+//! * `POST /v1/train/{job_id}/stop` — stop a trainer job
+//! * `DELETE /v1/train/{job_id}` — remove a finished job's directory
+//!
+//
 //! With `--agents <roles manifest>` it also boots the role fleet at start:
 //! one long-lived, harnessed VM per role. The plaza itself (agents, tasks,
 //! models) lives in `apid`.
@@ -1731,10 +1798,7 @@ struct InputRequest {
     vm: u32,
 }
 
-/// The API under `/v1`, and the console's files.
-///
-/// Everything that changes state or drives an agent is a POST (or DELETE), so
-/// The API under `/v1`. Everything that changes state is a POST or DELETE.
+/// The `/v1` API: every route the node serves. Everything that changes state is a POST or DELETE.
 fn router() -> Router<Node> {
     Router::<Node>::new()
         .get("/v1/machine", |node, _, _| {

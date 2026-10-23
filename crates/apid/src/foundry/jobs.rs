@@ -222,9 +222,9 @@ pub fn law_check(app: &crate::state::App, spec: &Spec) -> Result<(), Refused> {
         Some(cid) => (cid, app.agents.get(cid).map(|a| a.role).unwrap_or_default()),
         None => (0, "owner".to_string()),
     };
-    // S-006c/d are written on `resource is Town` and read `context.gpu_hours`: the same shape as laws.rs.
+    // S-006c/d are written on `resource is Plaza` and read `context.gpu_hours`: the same shape as laws.rs.
     let resource = jhrl::authz::Entity {
-        ty: "Town".into(),
+        ty: "Plaza".into(),
         id: "main".into(),
     };
     let attrs = std::collections::BTreeMap::from([(
@@ -1371,10 +1371,10 @@ mod law_refusal_tests {
     use crate::laws::Laws;
     use std::collections::BTreeMap;
 
-    /// The `training.submit` check as `law_check` makes it: the Town resource and `gpu_hours` in context.
+    /// The `training.submit` check as `law_check` makes it: the Plaza resource and `gpu_hours` in context.
     fn refuse(laws: &Laws, gpu_hours: i128) -> Option<String> {
-        let town = jhrl::authz::Entity {
-            ty: "Town".into(),
+        let plaza = jhrl::authz::Entity {
+            ty: "Plaza".into(),
             id: "main".into(),
         };
         let extra = BTreeMap::from([("gpu_hours".to_string(), jhrl::value::Value::int(gpu_hours))]);
@@ -1382,7 +1382,7 @@ mod law_refusal_tests {
             1,
             "breeder",
             "training.submit",
-            town,
+            plaza,
             BTreeMap::new(),
             &serde_json::json!({}),
             extra,

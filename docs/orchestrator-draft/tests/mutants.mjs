@@ -25,8 +25,6 @@ const MUTANTS = [
   ['DepCycles', 'SELECT 1 FROM reach WHERE id = NEW.task_id) THEN', 'SELECT 1 FROM reach WHERE false) THEN'],
   ['SupersedeWhileVerifying', "('verifying', 'accepted'),", "('verifying', 'accepted'), ('verifying', 'superseded'),"],
   ['AuditUnchained', 'coalesce((SELECT hash FROM core.audit ORDER BY id DESC LIMIT 1),', 'coalesce(NULL::bytea,'],
-  ['TownsResurrect', "('active', 'archived'), ('paused', 'archived')) THEN", "('active', 'archived'), ('paused', 'archived'), ('archived', 'active')) THEN"],
-  ['SpawnIntoPausedTown', "(SELECT state FROM core.towns WHERE id = NEW.town_id) <> 'active' THEN", "(SELECT state FROM core.towns WHERE id = NEW.town_id) IN ('proposed', 'rejected') THEN"],
   ['UnchainedTranscript', 'IF NEW.prev_hash <> coalesce(', 'IF false AND NEW.prev_hash <> coalesce('],
   ['IgnoreOvercommitCap', 'CHECK (overcommit_cap IS NULL OR overcommit <= overcommit_cap)', 'CHECK (true)'],
   ['RunsResurrect', "('stalled', 'running'),", "('stalled', 'running'), ('done', 'running'),"],

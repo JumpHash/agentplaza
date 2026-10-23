@@ -120,8 +120,8 @@ Native iced, same design language as the web console (`apps/web/DESIGN.md`).
   rail, hidden), the top bar (STOP ALL) and the held banner.
 - **Parity list:**
   - Overview, Agents (+ agent detail: transcript, chat, model + effort, harness, permissions,
-    memory, profile, restart / wipe / retire), Projects, Tasks, Git, Library, Approvals (incl.
+    profile, restart / wipe / retire), Projects, Tasks, Git, Library, Approvals (incl.
     agent proposals), Floor;
-  - Society, Conversations, Board, Council, Treasury, Rules;
+  - Conversations, Board, Rules;
   - Models, Tools, Machines (+ Nodes, join codes);
   - the agent wizard, the model picker.

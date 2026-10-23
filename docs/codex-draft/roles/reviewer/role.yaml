@@ -1,7 +1,6 @@
 # Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
 role: reviewer
 variant: ''
-council_seat: false
 permits:
 - statutes/S-002
 model:
@@ -24,7 +23,7 @@ tools:
 outputs:
 - review-verdict
 budget:
-  default_credits: 800
+  default_budget: 800
 compaction:
   trigger_fraction: 0.75
   keep_recent_turns: 10

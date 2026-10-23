@@ -44,7 +44,7 @@ fn law_c004a_parses_its_header_scopes_and_conditions() {
     assert!(matches!(&l.resource, Some(Scope::Is(t)) if t.name() == Some("Tool")));
     assert_eq!(l.when.len(), 1);
     assert_eq!(l.unless.len(), 1);
-    assert!(l.expires.is_none() && l.town.is_none() && l.implements.is_empty());
+    assert!(l.expires.is_none() && l.project.is_none() && l.implements.is_empty());
 }
 
 #[test]

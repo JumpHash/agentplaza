@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/security-review.schema.json",
   "title": "Security review",
-  "description": "A security reviewer's verdict on a change (0105, 0113).",
+  "description": "A security reviewer's verdict on a change.",
   "type": "object",
   "additionalProperties": false,
   "required": [
