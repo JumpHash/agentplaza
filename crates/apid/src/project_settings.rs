@@ -115,6 +115,21 @@ pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[table(child)]
     pub intake: Vec<IntakeRule>,
+    /// The project's limits on its performance comparisons with the last qualified stable release (PLAN 22.8): a
+    /// metric's name (exact, or a prefix ending in `*`) and its largest change in tenths of a percent (150 is 15 percent;
+    /// for an error rate, tenths of a point). The defaults (`apz_topology::compare`) hold for the metrics no row names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
+    pub performance_limits: Vec<PerfLimit>,
+}
+
+/// One limit on a performance comparison: the metric's name and the largest change it may make, in tenths of a
+/// percent (an integer, so the row keeps its equality).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[serde(default, deny_unknown_fields)]
+pub struct PerfLimit {
+    pub metric: String,
+    pub max_tenths: u32,
 }
 
 /// One intake rule: an outside item whose `field` is `value` becomes a task of the project on `recipe`. The field is
@@ -225,6 +240,8 @@ struct SettingsRow {
     hooks: Vec<HookRow>,
     #[table(child)]
     intake: Vec<IntakeRule>,
+    #[table(child)]
+    performance_limits: Vec<PerfLimit>,
 }
 
 /// One hook of a project as its row: the action is a kind and, for a rule, the rule's id, and its paths and languages
@@ -297,6 +314,7 @@ impl SettingsRow {
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
             intake: settings.intake.clone(),
+            performance_limits: settings.performance_limits.clone(),
         }
     }
 
@@ -322,6 +340,7 @@ impl SettingsRow {
             preview_grace_hours: self.preview_grace_hours,
             hooks: self.hooks,
             intake: self.intake,
+            performance_limits: self.performance_limits,
             hook_defaults: self.hook_defaults,
             subscription_fallback: self.subscription_fallback,
         };
@@ -343,6 +362,13 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         return Err("queue_batch: a batch holds from 1 to 16 lanes".into());
     }
     crate::intake::check_rules(&settings.intake)?;
+    for limit in &settings.performance_limits {
+        if limit.metric.trim().is_empty() || limit.max_tenths == 0 {
+            return Err(
+                "performance_limits: each names a metric and a largest change above zero (tenths of a percent)".into(),
+            );
+        }
+    }
     if settings
         .preview_grace_hours
         .is_some_and(|hours| hours > MAX_PREVIEW_GRACE_HOURS)

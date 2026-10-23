@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 for the performance of an unknown test-lab run
+  type: http
+  seq: 45
+}
+
+get {
+  url: {{baseUrl}}/v1/test-lab/runs/q999/performance
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

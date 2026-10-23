@@ -26713,7 +26713,7 @@
         "tags": [
           "test-lab"
         ],
-        "summary": "Checks a done run's topology assertions over what it observed; each failing step is filed as a finding on the run's change",
+        "summary": "Checks a done run's topology assertions over what it observed, and its performance against its release's baseline; each failing step is filed as a finding on the run's change",
         "parameters": [
           {
             "name": "id",
@@ -26766,6 +26766,66 @@
           },
           "409": {
             "description": "Conflicts with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/test-lab/runs/{id}/performance": {
+      "get": {
+        "operationId": "get_v1_test_lab_runs_id_performance",
+        "tags": [
+          "test-lab"
+        ],
+        "summary": "A lab run's performance against the last qualified stable release's run: each metric's values, its change and whether it passed the project's limits (baseline null when there is none)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
             "content": {
               "application/json": {
                 "schema": {

@@ -25,9 +25,17 @@ name = "apz-topo-collect"
 path = "src/bin/apz-topo-collect.rs"
 
 [[bin]]
+# The load generator (PLAN 22.8): runs a traffic profile against a URL, prints its summary and records it at the run.
+name = "apz-load"
+path = "src/bin/apz-load.rs"
+
+[[bin]]
 # A stand-in service for the topology tests: echoes, or relays to another service by name.
 name = "apz-topo-echo"
 path = "src/bin/apz-topo-echo.rs"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

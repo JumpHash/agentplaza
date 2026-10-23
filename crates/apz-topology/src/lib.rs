@@ -11,11 +11,17 @@
 //! - [`k3s`]: the guest config of a k3s topology (a Kubernetes cluster in the lab VM).
 //! - [`observe`] and [`assert`]: what a run observed (OTLP, log lines) and the topology's test steps over it (PLAN 22.7);
 //!   [`collector`] is the lab VM's collector that ships it, and [`pii`] the personal data patterns the steps scan for.
+//! - [`load`], [`bench`] and [`compare`]: traffic profiles and their generator, benchmark output parsed, and the
+//!   comparison of a candidate's metrics with a baseline's (PLAN 22.8); [`slowserve`] is the stand-in service the load
+//!   tests aim at.
 
 pub mod assert;
+pub mod bench;
 pub mod collector;
+pub mod compare;
 pub mod compose;
 pub mod k3s;
+pub mod load;
 pub mod manifests;
 pub mod observe;
 pub mod pii;
@@ -23,4 +29,5 @@ pub mod plan;
 pub mod report;
 pub mod resolver;
 pub mod run;
+pub mod slowserve;
 pub mod spec;
