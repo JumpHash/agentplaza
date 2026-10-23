@@ -729,6 +729,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             after,
             folded,
             reason,
+            summary,
         } => {
             app.transcripts.record(
                 &app.bus,
@@ -739,6 +740,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                     after,
                     folded,
                     reason,
+                    summary,
                 },
             );
             record_compaction(app, cid, before, after);

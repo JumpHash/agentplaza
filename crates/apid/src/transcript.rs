@@ -187,12 +187,16 @@ pub enum Entry {
     EngineUpdate(#[table(content)] Value),
     /// An error the hub recorded for the agent.
     Error { message: String },
-    /// The agent's context was compressed: its size before and after, the turns folded, and why.
+    /// The agent's context was compressed: its size before and after, the turns folded, why, and the
+    /// summary that stands in for them.
     Compressed {
         before: u64,
         after: u64,
         folded: u32,
         reason: String,
+        #[serde(default)]
+        #[table(content)]
+        summary: String,
     },
     /// An egress decision of the agent's VM, as the egress proxy reported it.
     Egress {
@@ -742,6 +746,7 @@ mod tests {
                 after: 40,
                 folded: 3,
                 reason: "auto".into(),
+                summary: "Decisions: sessions, not named agents.".into(),
             },
             Entry::Egress {
                 host: "example.com".into(),

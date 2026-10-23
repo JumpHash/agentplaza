@@ -45,6 +45,7 @@ CREATE TABLE "entry" (
     "entry_compressed_after" INTEGER CHECK ("entry_compressed_after" >= 0),
     "entry_compressed_folded" INTEGER CHECK ("entry_compressed_folded" >= 0),
     "entry_compressed_reason" TEXT,
+    "entry_compressed_summary_content" TEXT,
     "entry_egress_host" TEXT,
     "entry_egress_port" INTEGER CHECK ("entry_egress_port" >= 0),
     "entry_egress_allowed" INTEGER CHECK ("entry_egress_allowed" IN (0, 1)),

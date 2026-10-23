@@ -18,8 +18,10 @@ use crate::state::App;
 /// The host tools this module serves (offered to the orchestrator tier).
 pub const TOOLS: &[&str] = &["plaza_agent_control", "plaza_loop"];
 
-/// Compress a conversation past this many serialized bytes (about 60k tokens).
+/// Compress a conversation past this many serialized bytes (about 60k tokens), when the model's window is not known.
 pub const DEFAULT_COMPRESS_AT: u64 = 240_000;
+/// Compress a conversation once its last model call used this share of the model's context window (per cent).
+pub const DEFAULT_COMPACT_AT_PCT: u32 = 70;
 /// Turns kept verbatim when compressing.
 pub const DEFAULT_KEEP_RECENT: u32 = 6;
 /// What a looped prompt's result must contain for the loop to end itself.
