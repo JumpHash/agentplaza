@@ -487,7 +487,10 @@ max = 2
                 .iter()
                 .all(|s| s.role.as_deref() == Some("planner"))
         );
-        for stub in ["deploy", "incident", "upgrade", "cve"] {
+        let deploy = builtin_named("deploy").unwrap();
+        assert!(!deploy.description.contains("Stub"), "deploy is real");
+        assert_eq!(deploy.steps[0].fan_out, Fan::Named("per_target".into()));
+        for stub in ["incident", "upgrade", "cve"] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
                 r.description.contains("Stub until"),

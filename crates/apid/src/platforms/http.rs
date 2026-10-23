@@ -16,6 +16,11 @@ pub enum Body {
     Json(Value),
     /// `application/x-www-form-urlencoded` (OAuth token endpoints).
     Form(Vec<(String, String)>),
+    /// Bytes sent as they are, with their content type (a multipart upload, 23's Cloudflare versions and deployments).
+    Raw {
+        content_type: String,
+        bytes: Vec<u8>,
+    },
 }
 
 /// A platform's answer: its status and its body (JSON, or the text as a JSON string, or null when empty).
@@ -96,6 +101,13 @@ impl Http for Ureq {
             Some(Body::Form(fields)) => {
                 builder = builder.header("Content-Type", "application/x-www-form-urlencoded");
                 form(&fields).into_bytes()
+            }
+            Some(Body::Raw {
+                content_type,
+                bytes,
+            }) => {
+                builder = builder.header("Content-Type", content_type.as_str());
+                bytes
             }
             None => Vec::new(),
         };

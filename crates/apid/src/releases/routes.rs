@@ -264,7 +264,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Send a candidate to qualification").errors(&[404, 409]))
         .post("/v1/releases/{id}/publish", |app, _, p: &Params<'_>| {
-            answer(flow::publish(&deps(app), p.get("id")))
+            let published = flow::publish(&deps(app), p.get("id"));
+            // The environments that track releases deploy it now (23).
+            if let (Ok(release), Some(arc)) = (&published, app.handle().upgrade()) {
+                crate::deploy::published(&arc, &release.project);
+            }
+            answer(published)
         })
         .doc(
             RouteDoc::new("Publish a release whose checks passed or that was qualified")
