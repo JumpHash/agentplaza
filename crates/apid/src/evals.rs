@@ -60,6 +60,9 @@ pub struct Run {
     /// The harness's capabilities as its VM said hello (`caps`, comma-separated).
     pub harness: String,
     pub node: Option<String>,
+    /// The pool the node was in when the session ended (`arch/hypervisor/cpu_baseline`, `nodes::Pool::key`); None when
+    /// it had none (plan 7.5: a test result or an eval says where it ran).
+    pub pool: Option<String>,
     pub tokens_in: u64,
     pub tokens_out: u64,
     pub tokens_cached: u64,
@@ -325,7 +328,12 @@ pub fn ended(app: &App, session: &Session) {
         return;
     }
     let (begun, vm) = app.evals.take(session);
-    let run = Run::of(session, begun, vm);
+    let mut run = Run::of(session, begun, vm);
+    run.pool = session
+        .node
+        .as_deref()
+        .and_then(|node| crate::placement::known_pool(app, node))
+        .map(|pool| pool.key());
     if let Err(err) = app.evals.record(&run) {
         eprintln!(
             "apid: evals: the record of {} was not written: {err}",
@@ -360,6 +368,7 @@ impl Run {
             provider,
             harness: vm.harness,
             node: session.node.clone(),
+            pool: None,
             tokens_in: session.usage.tokens_in,
             tokens_out: session.usage.tokens_out,
             tokens_cached: session.usage.tokens_cached,
@@ -442,20 +451,21 @@ fn run_at(r: &Row<'_>) -> apz_store::rusqlite::Result<Run> {
         provider: r.get(11)?,
         harness: r.get(12)?,
         node: r.get(13)?,
-        tokens_in: r.get(14)?,
-        tokens_out: r.get(15)?,
-        tokens_cached: r.get(16)?,
-        cost_micros: r.get(17)?,
-        model_calls: r.get(18)?,
-        tool_calls: r.get(19)?,
-        tool_ms: r.get(20)?,
-        wall_ms: r.get(21)?,
-        verdict: r.get(22)?,
-        outcome: r.get(23)?,
-        ok: r.get(24)?,
-        landed: r.get(25)?,
-        reverted: r.get(26)?,
-        ended_ms: r.get(27)?,
+        pool: r.get(14)?,
+        tokens_in: r.get(15)?,
+        tokens_out: r.get(16)?,
+        tokens_cached: r.get(17)?,
+        cost_micros: r.get(18)?,
+        model_calls: r.get(19)?,
+        tool_calls: r.get(20)?,
+        tool_ms: r.get(21)?,
+        wall_ms: r.get(22)?,
+        verdict: r.get(23)?,
+        outcome: r.get(24)?,
+        ok: r.get(25)?,
+        landed: r.get(26)?,
+        reverted: r.get(27)?,
+        ended_ms: r.get(28)?,
     })
 }
 
@@ -533,6 +543,7 @@ mod tests {
             provider: Some("mock".into()),
             harness: "acp".into(),
             node: None,
+            pool: None,
             tokens_in: 10,
             tokens_out: 5,
             tokens_cached: 0,

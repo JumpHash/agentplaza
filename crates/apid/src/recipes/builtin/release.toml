@@ -1,0 +1,16 @@
+# The release recipe (PLAN 7.5, 20.5): a release's build step fans out per target, one item per build target that a pool
+# can build (targets.rs places them; a target no pool can build is not run, and is no item). Its engine settles each
+# item as that target's build ends.
+id = "release"
+name = "Release"
+version = 1
+inputs = ["main"]
+outputs = ["release"]
+triggers = ["release"]
+
+[[steps]]
+id = "build"
+engine = "build"
+fan_out = "per_target"
+gate = ["passed"]
+output = "release"

@@ -59,6 +59,8 @@ const TEMPLATES_FRESH: Duration = Duration::from_secs(30);
 
 /// Recent placements: the node each new agent went to, and when.
 static RESERVED: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
+/// The local node's pool as it last answered (`pool_of`): a session's end reads it without asking noded again.
+static LOCAL_POOL: Mutex<Option<Pool>> = Mutex::new(None);
 /// Each node's template list, and when it was fetched.
 static TEMPLATES: Mutex<BTreeMap<String, (Instant, Value)>> = Mutex::new(BTreeMap::new());
 
@@ -338,6 +340,12 @@ fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) ->
         .collect()
 }
 
+/// The nodes that could build a project's targets (targets.rs): every candidate in service, with its pool and whether it
+/// holds the project's base (the Android SDK lives there).
+pub(crate) fn build_candidates(app: &App, project: &str) -> Vec<Candidate> {
+    candidates(app, "", &[], Some(project))
+}
+
 /// The pools a project declares in its `.plaza/project.toml` (17.2): none when it declares none, or when its
 /// declaration does not read yet (a project with no repo, or Weft out of reach).
 fn declared_pools(app: &App, project: &str) -> Vec<project_stack::Pool> {
@@ -413,11 +421,25 @@ pub(crate) fn pool_of(app: &App, node: &str) -> Option<Pool> {
         let Ok((200, machine)) = fleet::noded(app, LOCAL, "GET", "/v1/machine", None) else {
             return None;
         };
-        return Pool::of(
+        let pool = Pool::of(
             machine["arch"].as_str(),
             machine["backend"].as_str(),
             machine["cpu_baseline"].as_str(),
         );
+        *LOCAL_POOL.lock().unwrap_or_else(PoisonError::into_inner) = pool.clone();
+        return pool;
+    }
+    app.nodes.get(node)?.machine.pool()
+}
+
+/// The pool of node `node` as last known, asking no node: a joined node's from its heartbeat, the local node's from the
+/// last answer `pool_of` had. A session's end records its node's pool this way.
+pub(crate) fn known_pool(app: &App, node: &str) -> Option<Pool> {
+    if node == LOCAL {
+        return LOCAL_POOL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
     }
     app.nodes.get(node)?.machine.pool()
 }

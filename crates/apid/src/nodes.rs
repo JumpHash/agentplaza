@@ -282,6 +282,13 @@ impl Pool {
     }
 }
 
+impl Pool {
+    /// The pool's key as the eval records and the plan name it: `arch/hypervisor/cpu_baseline`.
+    pub fn key(&self) -> String {
+        format!("{}/{}/{}", self.arch, self.hypervisor, self.cpu_baseline)
+    }
+}
+
 impl Machine {
     /// The pool this machine is in (see [`Pool`]).
     pub fn pool(&self) -> Option<Pool> {
@@ -1322,6 +1329,27 @@ fn metrics_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pool_is_keyed_by_architecture_hypervisor_and_baseline() {
+        let arm = Pool::of(
+            Some("aarch64"),
+            Some("kvm"),
+            Some("arm64 midr=0x41:0xd0c:0x3:1"),
+        )
+        .unwrap();
+        assert_eq!(arm.key(), "aarch64/kvm/arm64 midr=0x41:0xd0c:0x3:1");
+        let mut machine = Machine::default();
+        assert!(
+            machine.pool().is_none(),
+            "a machine that reports nothing is in no pool"
+        );
+        machine.arch = Some("aarch64".into());
+        machine.backend = Some("kvm".into());
+        assert!(machine.pool().is_none(), "no baseline, no pool");
+        machine.cpu_baseline = Some("arm64 midr=0x41:0xd0c:0x3:1".into());
+        assert_eq!(machine.pool(), Some(arm));
+    }
 
     /// A body as a node sends it: the JSON deflated, then base64 encoded.
     fn deflated(json: &[u8]) -> String {

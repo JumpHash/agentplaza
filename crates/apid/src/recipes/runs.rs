@@ -146,7 +146,33 @@ impl Runs {
         subject: Option<&str>,
         now: u64,
     ) -> (String, Vec<Move>) {
-        let (walk, moves) = Walk::start(recipe, &BTreeMap::new());
+        self.start_items(
+            recipe,
+            &BTreeMap::new(),
+            source,
+            trigger,
+            task,
+            project,
+            subject,
+            now,
+        )
+    }
+
+    /// As [`Runs::start`], with the items of the steps that fan out (`items` by step id; a fan-out step absent from it
+    /// runs one item).
+    #[allow(clippy::too_many_arguments)]
+    fn start_items(
+        &self,
+        recipe: &Recipe,
+        items: &BTreeMap<String, u32>,
+        source: &str,
+        trigger: &str,
+        task: Option<&str>,
+        project: Option<&str>,
+        subject: Option<&str>,
+        now: u64,
+    ) -> (String, Vec<Move>) {
+        let (walk, moves) = Walk::start(recipe, items);
         let mut inner = self.lock();
         inner.next += 1;
         let id = format!("rr-{}", inner.next);
@@ -189,9 +215,34 @@ impl Runs {
         subject: Option<&str>,
         now: u64,
     ) -> Option<String> {
+        self.start_engine_items(
+            recipe,
+            &BTreeMap::new(),
+            trigger,
+            task,
+            project,
+            subject,
+            now,
+        )
+    }
+
+    /// As [`Runs::start_engine`], with the items of the fan-out steps (`items` by step id). A release's `build` step runs
+    /// one item per placed target (targets.rs, the `release` recipe).
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_engine_items(
+        &self,
+        recipe: &str,
+        items: &BTreeMap<String, u32>,
+        trigger: &str,
+        task: Option<&str>,
+        project: Option<&str>,
+        subject: Option<&str>,
+        now: u64,
+    ) -> Option<String> {
         let recipe = self.recipe(recipe, None)?;
-        let (id, moves) = self.start(
+        let (id, moves) = self.start_items(
             &recipe,
+            items,
             source_of(&recipe),
             trigger,
             task,

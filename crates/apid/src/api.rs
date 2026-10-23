@@ -132,6 +132,7 @@ pub fn router() -> Router<App> {
     let router = crate::sleep::routes(router);
     let router = crate::metrics::prom::routes(router);
     let router = crate::placement::routes(router);
+    let router = crate::targets::routes(router);
     let router = crate::vm_snapshots::routes(router);
     let router = crate::e2b::routes(router);
     let router = crate::egress_inject::routes(router);
