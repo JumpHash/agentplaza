@@ -407,11 +407,14 @@ fn serve_bridged(tcp: TcpStream, cid: u32, policy: &Policy, apid: &Apid) {
         let _ = io::copy(&mut client_in, &mut guest_out);
         let _ = guest_out.shutdown(Shutdown::Write);
     });
-    thread::spawn(move || {
+    let down = thread::spawn(move || {
         let _ = io::copy(&mut guest_in, &mut client_out);
         let _ = client_out.shutdown(Shutdown::Write);
     });
     serve_conn(theirs, cid, policy, apid);
+    // The answer is still on its way to the client: the other end of the pair is shut, so the copy ends once it has
+    // written everything, and only then is the client hung up (which also ends the copy from the client).
+    let _ = down.join();
     let _ = client.shutdown(Shutdown::Both);
 }
 

@@ -383,14 +383,7 @@ max = 2
     fn the_built_in_recipes_check_and_round_trip() {
         let recipes = builtin();
         assert_eq!(recipes.len(), 13);
-        for stub in [
-            "intake",
-            "plan",
-            "deploy",
-            "incident",
-            "upgrade",
-            "cve",
-        ] {
+        for stub in ["intake", "plan", "deploy", "incident", "upgrade", "cve"] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
                 r.description.contains("Stub until"),
