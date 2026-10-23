@@ -7,3 +7,4 @@ pub mod forward;
 pub mod identity;
 pub mod join;
 pub mod run;
+pub mod tunnel;

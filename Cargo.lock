@@ -342,6 +342,7 @@ dependencies = [
  "apz-gateway",
  "apz-http",
  "apz-ide",
+ "apz-link",
  "apz-lsp",
  "apz-metrics",
  "apz-metrics-view",

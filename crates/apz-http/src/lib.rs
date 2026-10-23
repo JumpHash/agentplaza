@@ -20,6 +20,7 @@ pub mod auth;
 pub mod client;
 mod doc;
 mod message;
+pub mod mux;
 mod router;
 mod server;
 pub mod ws;

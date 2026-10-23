@@ -56,8 +56,7 @@ fn weft_object(identity: &Identity, key: &NodeKey, request: &Request) -> Option<
                 .headers
                 .push(("content-type".into(), "application/json".into()));
         }
-        apz_http::client::request(&target, method, &path, body, HUB_TIMEOUT)
-            .map_err(|e| e.to_string())
+        crate::tunnel::request(&target, method, &path, body, HUB_TIMEOUT).map_err(|e| e.to_string())
     };
     match (request.method.as_str(), rest) {
         ("GET", tail) if tail.starts_with("objects/") && request.header("range").is_none() => {
@@ -169,7 +168,7 @@ pub fn handle(identity: &Identity, key: &NodeKey, token: &str, request: &Request
     } else {
         Some(request.body.as_slice())
     };
-    match apz_http::client::request(&target, &request.method, &full_path, body, HUB_TIMEOUT) {
+    match crate::tunnel::request(&target, &request.method, &full_path, body, HUB_TIMEOUT) {
         Ok(reply) => Response::new(reply.status, &reply.content_type, reply.body),
         Err(error) => Response::error(502, &error.to_string()),
     }
@@ -230,6 +229,7 @@ mod tests {
     #[test]
     fn the_nodes_weft_cache_fetches_a_miss_once_and_answers_the_rest_itself() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        crate::tunnel::use_http();
         let blob = b"fn main() {}\n".to_vec();
         let hash = weft::hash::Hash::of(&blob);
         let calls = Arc::new(AtomicUsize::new(0));
