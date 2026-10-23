@@ -20,6 +20,8 @@ pub struct Grant {
     pub from: String,
     /// The node that may fetch them.
     pub to: String,
+    /// The sender's certificate pin (SHA-256 of its certificate, hex): the receiver's TLS pins it.
+    pub pin: String,
     /// When the grant stops working (unix ms).
     pub expires_ms: u64,
     /// The hub's signature over the fields above, base64url.
@@ -57,6 +59,7 @@ impl Grant {
         manifest: &str,
         from: &str,
         to: &str,
+        pin: &str,
         expires_ms: u64,
     ) -> Grant {
         let mut grant = Grant {
@@ -64,6 +67,7 @@ impl Grant {
             manifest: manifest.to_string(),
             from: from.to_string(),
             to: to.to_string(),
+            pin: pin.to_string(),
             expires_ms,
             sig: String::new(),
         };
@@ -79,6 +83,7 @@ impl Grant {
             &self.manifest,
             &self.from,
             &self.to,
+            &self.pin,
             self.expires_ms,
         ))
         .unwrap_or_default()
@@ -127,12 +132,14 @@ impl Grant {
 mod tests {
     use super::*;
 
+    const PIN: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
 
     fn grant(key: &SigningKey, expires_ms: u64) -> Grant {
-        Grant::issue(key, "base:p:build", "m1", "n1", "n2", expires_ms)
+        Grant::issue(key, "base:p:build", "m1", "n1", "n2", PIN, expires_ms)
     }
 
     #[test]

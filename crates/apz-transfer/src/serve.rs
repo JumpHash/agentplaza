@@ -12,8 +12,11 @@ use ed25519_dalek::VerifyingKey;
 
 use crate::{GRANT_HEADER, Grant, Manifest, RECEIVER_HEADER, now_ms};
 
-/// A node's transfer state: its store, the hub's grant key, and the manifests it offers.
+/// A node's transfer state: its store, the hub's grant key, the manifests it offers, and its certificate (served over TLS;
+/// a receiver pins its pin, which the hub puts in the grant).
 pub struct Node {
+    tls: Arc<rustls::ServerConfig>,
+    pin: [u8; 32],
     /// This node's id in the hub; the hub names it with each call (`set_id`).
     id: Mutex<String>,
     blobs: Arc<Blobs>,
@@ -23,14 +26,25 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(id: &str, blobs: Arc<Blobs>) -> Arc<Node> {
-        Arc::new(Node {
+    pub fn new(
+        id: &str,
+        blobs: Arc<Blobs>,
+        identity: &apz_trust::tls::CertPair,
+    ) -> Result<Arc<Node>, String> {
+        Ok(Arc::new(Node {
+            tls: apz_trust::tls::server_config(identity)?,
+            pin: apz_trust::tls::fingerprint(&identity.cert_pem)?,
             id: Mutex::new(id.to_string()),
             blobs,
             hub: Mutex::new(None),
             published: Mutex::new(BTreeMap::new()),
             served: AtomicU64::new(0),
-        })
+        }))
+    }
+
+    /// The SHA-256 of this node's certificate: what a grant pins.
+    pub fn pin(&self) -> [u8; 32] {
+        self.pin
     }
 
     pub fn id(&self) -> String {
@@ -115,9 +129,11 @@ impl Node {
         }
     }
 
-    /// Serves [`Node::handle`] on `addr` until the handle is dropped.
+    /// Serves [`Node::handle`] over TLS on `addr` until the handle is dropped.
     pub fn spawn(self: &Arc<Self>, addr: SocketAddr) -> std::io::Result<Handle> {
         let node = Arc::clone(self);
-        Server::bind_addr(addr)?.spawn(move |req| node.handle(req, now_ms()))
+        Server::bind_addr(addr)?
+            .tls(Arc::clone(&self.tls))
+            .spawn(move |req| node.handle(req, now_ms()))
     }
 }

@@ -108,6 +108,9 @@ pub struct Machine {
     /// The port the node serves node-to-node transfers on (noded's transfer.rs); absent or null when it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfer_port: Option<u16>,
+    /// The SHA-256 pin of the node's transfer certificate (hex): the grants carry it, and a receiver pins it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_pin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -791,7 +794,6 @@ impl Store {
         }
     }
     /// The node's tunnel, while it is up.
-    #[cfg(test)]
     pub fn tunnel(&self, node: &str) -> Option<Arc<Mux>> {
         let tunnels = self.tunnels.lock().unwrap_or_else(|e| e.into_inner());
         tunnels.get(node).filter(|mux| mux.alive()).cloned()

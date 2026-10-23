@@ -1372,6 +1372,7 @@ mod tests {
             id,
             "a",
             "b",
+            &from.pin().expect("a pin"),
             apz_transfer::now_ms() + 60_000,
         )
         .encode();
@@ -1384,7 +1385,7 @@ mod tests {
             &target,
             serde_json::json!({
                 "hub": {"node": "b", "hub_key": hub_key},
-                "from": format!("127.0.0.1:{}", from.port().expect("a port")),
+                "routes": [{"direct": format!("127.0.0.1:{}", from.port().expect("a port"))}],
                 "grant": grant,
                 "manifest": published["manifest"],
                 "meta": export.meta,

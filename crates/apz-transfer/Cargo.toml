@@ -11,6 +11,8 @@ apz-blobs = { path = "../apz-blobs" }
 apz-http = { path = "../apz-http" }
 apz-trust = { path = "../apz-trust" }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+# The server config of a node's TLS (serve.rs); the same rustls as apz-trust and apz-http.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true
 

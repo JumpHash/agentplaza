@@ -822,6 +822,8 @@ fn carry(
     )?;
     let export = text(&exported, "export")?;
     staged.export = Some(export.clone());
+    let sender = crate::transfer::sender_of(app, from)?;
+    let broker = crate::transfer::broker_addr();
     let offered = crate::transfer::exchange(
         &mut send,
         from,
@@ -830,9 +832,17 @@ fn carry(
         &crate::transfer::hub_body(&key, from, json!({"files": exported["files"]})),
     )?;
     let id = text(&offered, "id")?;
-    let grant =
-        crate::transfer::grant_for(&key, &format!("move:{cid}:{export}"), &id, from, target);
-    let from_addr = crate::transfer::address_of(app, from)?;
+    let expires = apz_transfer::now_ms() + apz_transfer::grant::TTL_MS;
+    let grant = apz_transfer::Grant::issue(
+        &key,
+        &format!("move:{cid}:{export}"),
+        &id,
+        from,
+        target,
+        &sender.pin,
+        expires,
+    );
+    let (routes, _) = crate::transfer::routes_for(&sender, broker.as_deref(), expires);
     let imported = crate::transfer::exchange(
         &mut send,
         target,
@@ -842,7 +852,7 @@ fn carry(
             &key,
             target,
             json!({
-                "from": from_addr,
+                "routes": routes,
                 "grant": grant.encode(),
                 "manifest": offered["manifest"],
                 "meta": exported["meta"],

@@ -2448,6 +2448,22 @@ impl Registry {
         Ok(view)
     }
 
+    /// The directory of a checkpoint of a VM (its files), when the checkpoint exists.
+    pub fn checkpoint_dir(
+        &self,
+        run: &str,
+        vm: u32,
+        name: &str,
+    ) -> Result<std::path::PathBuf, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        store
+            .view(cid, name)
+            .ok_or(VmOpError::UnknownRun)
+            .map(|_| store.dir(cid, name))
+    }
+
     /// The checkpoints of VM `vm` of run `run`, newest first.
     pub fn checkpoints(&self, run: &str, vm: u32) -> Result<Vec<SnapshotView>, VmOpError> {
         let store = self.snapshot_store()?;

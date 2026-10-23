@@ -644,6 +644,7 @@ version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-os",
+ "apz-transfer",
  "apz-trust",
  "base64 0.22.1",
  "flate2",
@@ -856,6 +857,7 @@ dependencies = [
  "apz-http",
  "apz-trust",
  "ed25519-dalek",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",

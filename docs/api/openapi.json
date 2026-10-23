@@ -22969,7 +22969,7 @@
         "tags": [
           "transfers"
         ],
-        "summary": "Distribute files from one node to another: the receiver fetches the chunks it lacks from the sender",
+        "summary": "Distribute files from one node to another: the receiver fetches the chunks it lacks from the sender, directly or through the hub's broker",
         "requestBody": {
           "required": true,
           "content": {

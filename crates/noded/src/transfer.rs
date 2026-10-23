@@ -4,9 +4,14 @@
 //!
 //! Routes (hub → node, see `lib.rs`):
 //!   POST /v1/exports/{export}/manifest  {hub, files}                       → {id, manifest}
-//!   POST /v1/imports/from-transfer      {hub, from, grant, manifest, meta, files} → {import, fetched, reused, bytes}
+//!   POST /v1/imports/from-transfer      {hub, routes, grant, manifest, meta, files} → {import, fetched, reused, bytes, via}
 //!   POST /v1/transfers/manifests        {hub, files: [{name, path}]}       → {id, manifest}
-//!   POST /v1/transfers/fetch            {hub, from, grant, manifest}       → {fetched, reused, bytes}
+//!   POST /v1/transfers/fetch            {hub, routes, grant, manifest}     → {fetched, reused, bytes, via}
+//!   POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest {hub}       → {id, manifest} (a base's checkpoint)
+//!
+//! The sender is reached by one of `routes`, tried in order: a direct dial, or the hub's broker with a ticket (the hub
+//! relays the bytes, never reading them). Either way the TLS session is pinned to the sender's certificate, which the
+//! grant carries.
 
 use std::io::{self, Read};
 use std::net::SocketAddr;
@@ -14,7 +19,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use apz_blobs::Blobs;
-use apz_transfer::{Grant, Manifest, Node};
+use apz_transfer::{Grant, Manifest, Node, Route};
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -38,12 +43,35 @@ struct Hub {
     hub_key: String,
 }
 
+/// A route the hub gave: the sender's address, or the broker and the ticket for the sender.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RouteIn {
+    Direct { direct: String },
+    Brokered { broker: String, ticket: String },
+}
+
+fn routes(list: Vec<RouteIn>) -> Vec<Route> {
+    list.into_iter()
+        .map(|route| match route {
+            RouteIn::Direct { direct } => Route::Direct(direct),
+            RouteIn::Brokered { broker, ticket } => Route::Brokered { broker, ticket },
+        })
+        .collect()
+}
+
 impl Transfers {
     /// The transfer state over the blob store at `dir`. A store that cannot be opened leaves transfers refused.
     pub fn open(dir: &Path) -> Transfers {
-        match Blobs::open(dir) {
-            Ok(blobs) => Transfers {
-                node: Some(Node::new("", Arc::new(blobs))),
+        let made = Blobs::open(dir)
+            .map_err(|err| err.to_string())
+            .and_then(|blobs| {
+                let identity = apz_transfer::identity(dir)?;
+                Node::new("", Arc::new(blobs), &identity)
+            });
+        match made {
+            Ok(node) => Transfers {
+                node: Some(node),
                 server: Mutex::new(None),
             },
             Err(err) => {
@@ -54,6 +82,13 @@ impl Transfers {
                 }
             }
         }
+    }
+
+    /// This node's certificate pin, as the hub's grants carry it.
+    pub fn pin(&self) -> Option<String> {
+        self.node
+            .as_ref()
+            .map(|node| apz_transfer::pin_text(&node.pin()))
     }
 
     /// Offers this node's blobs on `addr`.
@@ -167,6 +202,38 @@ fn publish_manifest(node: &Node, manifest: Manifest) -> Result<Value, MigrateErr
     Ok(json!({"id": id, "manifest": manifest}))
 }
 
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest`: offers a checkpoint's files (`dir`, the checkpoint's
+/// directory) as blobs, for a base's distribution.
+pub fn publish_checkpoint(
+    transfers: &Transfers,
+    dir: &Path,
+    body: &[u8],
+) -> Result<Value, MigrateError> {
+    #[derive(Deserialize)]
+    struct Publish {
+        hub: Hub,
+    }
+    let request: Publish = parse(body)?;
+    let node = transfers.adopt(&request.hub)?;
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|err| MigrateError::Invalid(format!("{}: {err}", dir.display())))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    let mut files = Vec::with_capacity(names.len());
+    for name in &names {
+        let handle = std::fs::File::open(dir.join(name))
+            .map_err(|err| MigrateError::Invalid(format!("{name}: {err}")))?;
+        files.push(
+            Manifest::store(node.blobs(), name, handle)
+                .map_err(|err| MigrateError::Invalid(format!("{name}: {err}")))?,
+        );
+    }
+    publish_manifest(&node, Manifest { files })
+}
+
 /// `POST /v1/imports/from-transfer`: creates an import of the VM's files as `POST /v1/imports` does, fetches the
 /// chunks this node lacks from the sender, and writes the files into the import. The import is finished as before.
 pub fn import_from_transfer(
@@ -178,7 +245,7 @@ pub fn import_from_transfer(
     #[derive(Deserialize)]
     struct Pull {
         hub: Hub,
-        from: String,
+        routes: Vec<RouteIn>,
         grant: String,
         manifest: Manifest,
     }
@@ -189,17 +256,14 @@ pub fn import_from_transfer(
     let report = match apz_transfer::fetch(
         node.blobs(),
         &pull.hub.node,
-        &pull.from,
+        &routes(pull.routes),
         &grant,
         &pull.manifest,
     ) {
         Ok(report) => report,
         Err(err) => {
             let _ = migrate::abort_import(migrations, &import);
-            return Err(MigrateError::Invalid(format!(
-                "the fetch from {}: {err}",
-                pull.from
-            )));
+            return Err(MigrateError::Invalid(format!("the fetch: {err}")));
         }
     };
     if let Err(err) = write_files(migrations, &import, &node, &pull.manifest) {
@@ -211,6 +275,7 @@ pub fn import_from_transfer(
         "fetched": report.fetched,
         "reused": report.reused,
         "bytes": report.bytes,
+        "via": report.via.as_str(),
     }))
 }
 
@@ -269,7 +334,7 @@ pub fn fetch_manifest(transfers: &Transfers, body: &[u8]) -> Result<Value, Migra
     #[derive(Deserialize)]
     struct Fetch {
         hub: Hub,
-        from: String,
+        routes: Vec<RouteIn>,
         grant: String,
         manifest: Manifest,
     }
@@ -279,15 +344,16 @@ pub fn fetch_manifest(transfers: &Transfers, body: &[u8]) -> Result<Value, Migra
     let report = apz_transfer::fetch(
         node.blobs(),
         &request.hub.node,
-        &request.from,
+        &routes(request.routes),
         &grant,
         &request.manifest,
     )
-    .map_err(|err| MigrateError::Invalid(format!("the fetch from {}: {err}", request.from)))?;
+    .map_err(|err| MigrateError::Invalid(format!("the fetch: {err}")))?;
     Ok(json!({
         "fetched": report.fetched,
         "reused": report.reused,
         "bytes": report.bytes,
+        "via": report.via.as_str(),
     }))
 }
 
@@ -352,8 +418,9 @@ mod tests {
         std::fs::write(path, bytes).expect("a file");
     }
 
-    /// Two node stores on loopback, each with its transfer server: a base's files published on "a" reach "b" with the
-    /// grant the hub signed, and "b" fetches nothing it already holds.
+    /// Two node stores on loopback, each with its transfer server over TLS: a base's files published on "a" reach "b"
+    /// with the grant the hub signed, pinned to "a"'s certificate; a grant for another node is refused, and "b" fetches
+    /// nothing it already holds.
     #[test]
     fn a_base_reaches_a_second_node_store_and_a_bad_grant_is_refused() {
         let dir = tempfile::tempdir().expect("a dir");
@@ -379,6 +446,7 @@ mod tests {
         .expect("published");
         let id = published["id"].as_str().expect("an id").to_string();
         let from = format!("127.0.0.1:{}", a.port().expect("a port"));
+        let pin = a.pin().expect("a pin");
         let grant_for = |to: &str| {
             apz_transfer::Grant::issue(
                 &hub,
@@ -386,6 +454,7 @@ mod tests {
                 &id,
                 "a",
                 to,
+                &pin,
                 apz_transfer::now_ms() + 60_000,
             )
             .encode()
@@ -395,7 +464,7 @@ mod tests {
                 &b,
                 json!({
                     "hub": {"node": to, "hub_key": hub_key},
-                    "from": from,
+                    "routes": [{"direct": from}],
                     "grant": grant,
                     "manifest": published["manifest"],
                 })
@@ -413,6 +482,7 @@ mod tests {
 
         let got = fetch("b", grant_for("b")).expect("fetched");
         assert_eq!(got["bytes"], 6 << 20);
+        assert_eq!(got["via"], "direct");
         assert_eq!(a.node().expect("a node").served_bytes(), 6 << 20);
         // The same base again moves nothing: every chunk is held.
         let again = fetch("b", grant_for("b")).expect("fetched");

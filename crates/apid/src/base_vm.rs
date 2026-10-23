@@ -94,6 +94,25 @@ fn hold(node: &str, key: &str) {
         .insert(key.to_string());
 }
 
+/// The checkpoint each base was last built as: the run and the checkpoint's name, by base key.
+static CHECKPOINTS: Mutex<BTreeMap<String, (String, String)>> = Mutex::new(BTreeMap::new());
+
+fn remember_checkpoint(base: &str, run: &str, name: &str) {
+    CHECKPOINTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(base.to_string(), (run.to_string(), name.to_string()));
+}
+
+/// The run and checkpoint name a project's base of `kind` was last snapshotted as (its files are noded's to offer).
+pub fn built_checkpoint(project: &str, kind: BaseKind) -> Option<(String, String)> {
+    CHECKPOINTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key(project, kind))
+        .cloned()
+}
+
 /// The base a build of `kind` for `project` is recorded under: `<project>/build` or `<project>/test`.
 pub fn key(project: &str, kind: BaseKind) -> String {
     format!("{project}/{}", kind.name())
@@ -326,6 +345,9 @@ impl<'a, H: Host> Runner<'a, H> {
             return Err(format!("noded: status {status} stopping VM {cid}: {reply}"));
         }
         hold(&self.node, &key(&self.project, kind));
+        if let Some(name) = reply["name"].as_str() {
+            remember_checkpoint(&key(&self.project, kind), &run, name);
+        }
         Ok(())
     }
 }

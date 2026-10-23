@@ -399,6 +399,7 @@ mod tests {
             forward: 0,
             token: apz_http::auth::InternalToken::none(),
             inbound: inbound_port,
+            transfer: 0,
         };
 
         // The node dials the hub, and serves the hub's streams.

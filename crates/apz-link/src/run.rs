@@ -42,6 +42,8 @@ pub struct Local {
     pub token: InternalToken,
     /// vsockd's inbound listener, on loopback: the port streams from the hub are handed to it (`inbound.rs`).
     pub inbound: u16,
+    /// noded's transfer port (node-to-node transfers, default 7447): a `transfer` stream is piped to it.
+    pub transfer: u16,
 }
 
 impl Default for Local {
@@ -52,6 +54,11 @@ impl Default for Local {
             forward: 7701,
             token: InternalToken::none(),
             inbound: 19095,
+            // The port noded serves transfers on (`APZ_TRANSFER_PORT`, as noded reads it).
+            transfer: std::env::var("APZ_TRANSFER_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(7447),
         }
     }
 }
@@ -194,8 +201,9 @@ fn local_json(local: &Local, port: u16, path: &str) -> Value {
 }
 
 /// The fields noded reports about the machine that a heartbeat carries to the hub.
-const NODED_MACHINE_FIELDS: [&str; 19] = [
+const NODED_MACHINE_FIELDS: [&str; 20] = [
     "transfer_port",
+    "transfer_pin",
     "kind",
     "vendor",
     "model",

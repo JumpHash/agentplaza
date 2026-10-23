@@ -246,6 +246,8 @@ pub struct Node {
 pub struct MachineView {
     /// The port this node serves node-to-node transfers on (transfer.rs); null when it does not.
     pub transfer_port: Option<u16>,
+    /// The SHA-256 pin of this node's transfer certificate (hex); null when it serves none.
+    pub transfer_pin: Option<String>,
     pub name: String,
     pub arch: &'static str,
     pub os: &'static str,
@@ -336,6 +338,7 @@ impl Node {
         let class = machine_class();
         MachineView {
             transfer_port: self.transfers.port(),
+            transfer_pin: self.transfers.pin(),
             name: hostname(),
             arch: machine_arch(),
             os: machine_os(),
@@ -2050,6 +2053,18 @@ fn router() -> Router<Node> {
         .delete("/v1/exports/{export}", |node, _, params| {
             delete_export(node, params.get("export"))
         })
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest",
+            |node, request, params| {
+                checkpoint_manifest(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                    &request.body,
+                )
+            },
+        )
         .post("/v1/exports/{export}/manifest", |node, request, params| {
             migrate_answer(
                 201,
@@ -2341,6 +2356,21 @@ fn checkpoint_list(node: &Node, id: &str, index: &str) -> Response {
     };
     match node.registry().checkpoints(id, vm) {
         Ok(checkpoints) => Response::json(200, &serde_json::json!({"checkpoints": checkpoints})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest`: the checkpoint's files as blobs, offered to the receiver.
+fn checkpoint_manifest(node: &Node, id: &str, index: &str, name: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().checkpoint_dir(id, vm, name) {
+        Ok(dir) => migrate_answer(
+            200,
+            transfer::publish_checkpoint(&node.transfers, &dir, body),
+        ),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
