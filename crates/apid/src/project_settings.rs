@@ -98,6 +98,28 @@ pub struct ProjectSettings {
     /// Whether the project's hooks start from the defaults (`apz_proto::hooks::default_hooks`), before its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hook_defaults: bool,
+    /// The intake rules: which outside items (GitHub, Linear, Notion) become this project's tasks, by repository,
+    /// label, team or database, and on which recipe. The JSON names them as a list under `intake`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
+    pub intake: Vec<IntakeRule>,
+}
+
+/// One intake rule: an outside item whose `field` is `value` becomes a task of the project on `recipe`. The field is
+/// a repository or a label (GitHub), a team's key or a label (Linear), a database's id (Notion). An item from a public
+/// repository starts work only when `allow_public` is set; otherwise it waits for the owner (`held`). The Notion fields
+/// name the database's status property and its options (empty: `Status`, `In progress`, `Done`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[serde(default, deny_unknown_fields)]
+pub struct IntakeRule {
+    pub source: String,
+    pub field: String,
+    pub value: String,
+    pub recipe: String,
+    pub allow_public: bool,
+    pub status_property: String,
+    pub started: String,
+    pub done: String,
 }
 
 /// Every project's overrides, by project id.
@@ -111,6 +133,14 @@ impl Store {
         self.by_project
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Every project's overrides, by project id (the intake routes read every project's rules).
+    pub fn all(&self) -> Vec<(String, ProjectSettings)> {
+        self.guard()
+            .iter()
+            .map(|(id, settings)| (id.clone(), settings.clone()))
+            .collect()
     }
 
     /// Project `id`'s overrides (none set when it has none).
@@ -175,6 +205,8 @@ struct SettingsRow {
     role_models: BTreeMap<String, String>,
     #[table(child)]
     hooks: Vec<HookRow>,
+    #[table(child)]
+    intake: Vec<IntakeRule>,
 }
 
 /// One hook of a project as its row: the action is a kind and, for a rule, the rule's id, and its paths and languages
@@ -243,6 +275,7 @@ impl SettingsRow {
             hook_defaults: settings.hook_defaults,
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
+            intake: settings.intake.clone(),
         }
     }
 
@@ -265,6 +298,7 @@ impl SettingsRow {
             land_approval: self.land_approval,
             release_continuous: self.release_continuous,
             hooks: self.hooks,
+            intake: self.intake,
             hook_defaults: self.hook_defaults,
         };
         (self.project, settings)
@@ -284,6 +318,7 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
     {
         return Err("queue_batch: a batch holds from 1 to 16 lanes".into());
     }
+    crate::intake::check_rules(&settings.intake)?;
     if let Some(model) = &settings.default_model {
         app.settings
             .allowed(Tier::Worker, model)

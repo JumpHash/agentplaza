@@ -63,6 +63,7 @@ mod hub_mcp;
 mod ide;
 mod ide_term;
 mod inference;
+mod intake;
 mod internal;
 mod journal;
 mod laws;
