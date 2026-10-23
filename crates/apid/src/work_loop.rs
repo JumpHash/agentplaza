@@ -809,6 +809,15 @@ pub fn on_verdict(app: &App, cid: u64, task: &str, pass: bool, notes: &str) -> O
             ));
         }
     }
+    // A contest the verifier holds holds the walk until the planner (or the owner) rules (8.5): the verdict is kept on
+    // the session, and [`resume_held_review`] settles it.
+    if session.role == "verifier" && pass && review_graph::contested_held(app, task) {
+        let _ = app.sessions.update(&session.id, |s| s.verdict = Some(pass));
+        return Some(
+            "Held: the verifier holds a contested finding, and the review goes on once it is ruled. End your turn now."
+                .to_string(),
+        );
+    }
     let now = now();
     let _ = app.sessions.update(&session.id, |s| s.verdict = Some(pass));
     let next = step_ended(app, task, &seat, pass, false, notes, now);
@@ -822,6 +831,30 @@ pub fn on_verdict(app: &App, cid: u64, task: &str, pass: bool, notes: &str) -> O
         Some(Next::Done) => format!("Recorded: task {task} passes. End your turn now."),
         _ => format!("Recorded: seat {seat} reported. End your turn now."),
     })
+}
+
+/// A held review resumes once its contested findings are ruled: the verifier's held verdict settles on the walk, so a
+/// fix rewinds the builder and an accept or a drop lets the walk go on.
+pub fn resume_held_review(app: &App, task: &str) {
+    if review_graph::contested_held(app, task) {
+        return;
+    }
+    let Some(seat) = app.seats.get(task, "verifier") else {
+        return;
+    };
+    if seat.state != seats::SeatState::Filled {
+        return;
+    }
+    let Some(session) = seat.session.as_deref().and_then(|id| app.sessions.get(id)) else {
+        return;
+    };
+    if session.verdict != Some(true) {
+        return;
+    }
+    let now = now();
+    if let Some(next) = step_ended(app, task, "verifier", true, false, "", now) {
+        apply(app, task, next, now);
+    }
 }
 
 /// What the seats said, applied to the task.

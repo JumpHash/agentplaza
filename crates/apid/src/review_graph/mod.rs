@@ -1848,23 +1848,21 @@ fn request_ruling(app: &App, run: &Run, f: &Finding) {
     );
     let now = apz_plaza::now_ms();
     if run.purpose == "seat" {
+        // The walk holds for the ruling: the planner's when it can rule, else the owner's card.
         if on_other {
             crate::work_loop::to_planner(app, &run.project, &text);
+            crate::work_loop::notice(
+                app,
+                &crate::work_loop::task_chat(app, &run.task, &run.project, now),
+                &format!(
+                    "Task {} holds a contested finding {}: the planner rules on it.",
+                    run.task, f.id
+                ),
+                now,
+            );
+        } else {
+            contest_card(app, run, f);
         }
-        crate::work_loop::notice(
-            app,
-            &crate::work_loop::task_chat(app, &run.task, &run.project, now),
-            &format!(
-                "Task {} has a contested finding: {}.",
-                run.task,
-                if on_other {
-                    "the planner rules on it"
-                } else {
-                    "the owner rules on it"
-                }
-            ),
-            now,
-        );
         return;
     }
     match planner {
@@ -1971,20 +1969,77 @@ pub fn arbitrate(
     if me.is_empty() || me == author || me == verifier {
         return Err("a planner on a model other than the author's and the verifier's rules on it; without one, the owner does".into());
     }
+    settle_ruling(app, run_id, finding, ruling, reason, "the planner")
+}
+
+/// A contested finding is ruled (the planner's, or the owner's on a card): the finding settles, and the task's chat says
+/// how. A seat's round goes on from its walk (a held verdict settles there); a review-graph run ticks.
+pub fn settle_ruling(
+    app: &App,
+    run_id: &str,
+    finding: &str,
+    ruling: &str,
+    reason: &str,
+    by: &str,
+) -> Result<String, String> {
+    let run = app.reviews.run(run_id).ok_or("no such review")?;
     app.reviews
         .edit(run_id, |r| arbitrate_finding(r, finding, ruling, reason))?;
+    let consequence = match ruling {
+        "fix" => "the builder goes back with it",
+        "accept" => "the risk is accepted and the review goes on",
+        _ => "it is dropped and the review goes on",
+    };
     let now = apz_plaza::now_ms();
     crate::work_loop::notice(
         app,
         &crate::work_loop::task_chat(app, &run.task, &run.project, now),
         &format!(
-            "The planner ruled {ruling} on {finding} of task {}: {reason}",
+            "{by} ruled {ruling} on {finding} of task {}: {reason}; {consequence}.",
             run.task
         ),
         now,
     );
-    tick(app);
+    if run.purpose == "seat" {
+        crate::work_loop::resume_held_review(app, &run.task);
+    } else {
+        tick(app);
+    }
     Ok(format!("{finding}: {ruling}"))
+}
+
+/// The owner's card for a contested finding the walk holds, when no planner can rule: fix, accept or drop.
+fn contest_card(app: &App, run: &Run, f: &Finding) {
+    let detail = json!({
+        "gate": "contest",
+        "task": run.task,
+        "run": run.id,
+        "finding": f.id,
+        "cid": run.worker,
+        "worker": app.agents.get(run.worker).map(|a| a.label()).unwrap_or_default(),
+        "goal": app.plaza.tasks.find(&run.task).map(|t| t.goal().to_string()).unwrap_or_default(),
+        "summary": f.text,
+        "verdict": format!("{} is confirmed; the author contests it: {}", f.id, f.contest),
+        "needs_you": format!("the verifier holds {}: {}", f.id, f.proof),
+        "readings": [],
+        "choices": ["fix", "accept", "drop"],
+    });
+    let item = app.approvals.submit(
+        run.worker,
+        "review",
+        &format!("contest of {} on task {}", f.id, run.task),
+        detail,
+    );
+    crate::approvals::announce(app, &item);
+    crate::work_loop::notice(
+        app,
+        &crate::work_loop::task_chat(app, &run.task, &run.project, apz_plaza::now_ms()),
+        &format!(
+            "Task {} holds a contested finding {}: the owner rules on it.",
+            run.task, f.id
+        ),
+        apz_plaza::now_ms(),
+    );
 }
 
 // ── the seat path: a task's review round on the work loop's seats (8.2) ─────────────────────────────────────────────
@@ -2146,6 +2201,13 @@ pub fn open_round(app: &App, task: &str) {
             }
         }
     });
+}
+
+/// Whether the task's seat round holds a contested finding the planner or the owner has yet to rule on.
+pub fn contested_held(app: &App, task: &str) -> bool {
+    app.reviews
+        .seat_run(task)
+        .is_some_and(|r| r.awaiting_ruling())
 }
 
 /// A review seat's session started on `cid` with `model`: its node is its (the review's reviewer or verifier).
@@ -2673,6 +2735,25 @@ pub fn owner_ruled(
     approve: bool,
     action: Option<&str>,
 ) -> Result<(), String> {
+    if item.detail.get("gate").and_then(Value::as_str) == Some("contest") {
+        // The owner rules on a contested finding the walk holds: fix, accept or drop (the card's choices).
+        let run_id = item.detail["run"].as_str().ok_or("no run on the card")?;
+        let finding = item.detail["finding"]
+            .as_str()
+            .ok_or("no finding on the card")?;
+        let ruling = action.map(str::to_string).unwrap_or_else(|| {
+            if approve {
+                "accept".into()
+            } else {
+                "fix".into()
+            }
+        });
+        let reason = item
+            .reason
+            .clone()
+            .unwrap_or_else(|| "the owner ruled".into());
+        return settle_ruling(app, run_id, finding, &ruling, &reason, "the owner").map(|_| ());
+    }
     if item.detail.get("gate").and_then(Value::as_str) == Some("cross_model") {
         // The reviewer ran on the builder's own model: the owner admits the change or fails the review (8.2).
         let task = item.detail["task"].as_str().ok_or("no task on the card")?;

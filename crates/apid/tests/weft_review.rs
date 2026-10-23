@@ -577,6 +577,12 @@ fn a_code_change_through_the_adversarial_chain_finds_a_seeded_bug_proves_it_fixe
     );
     assert_eq!(w2["lane"]["change"], change.as_str(), "{w2}");
     let b2_vm = vm_of(&hub, b2_cid, &home, &token);
+    // The author contests the first finding in its rework session: the verifier looks again in the next round.
+    b2_vm.tool(
+        w2_id,
+        "finding_contest",
+        json!({ "finding": "f1", "reason": "the scenario does not hold for this queue" }),
+    );
     let ws2 = b2_vm.checkout(&change, &repo);
     b2_vm.write(&format!("{repo}/src/queue.rs"), &tested_queue());
     b2_vm.write(
@@ -613,7 +619,9 @@ fn a_code_change_through_the_adversarial_chain_finds_a_seeded_bug_proves_it_fixe
         hub.log()
     );
 
-    // Round 2: the reviewers find nothing, and the verifier has nothing to prove: the change passes the chain.
+    // Round 2: the reviewers pass the fix. The verifier re-rules the contested finding: its proof holds, so the verifier
+    // holds the contest, and the walk waits for a ruling. No planner is free on another model, so the owner's card
+    // rules: the finding is accepted, the walk goes on, and the change passes the chain.
     for _ in 0..2 {
         let (cid, work, session, _) = seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
         assert_ne!(session["model"], BUILDER_MODEL, "{session}");
@@ -628,15 +636,42 @@ fn a_code_change_through_the_adversarial_chain_finds_a_seeded_bug_proves_it_fixe
     }
     let (v2_cid, v2_work, v2_session, v2) = seat_vm(&hub, &gateway, &tid, "verifier", &mut known);
     assert_eq!(v2_session["model"], VERIFIER_MODEL, "{v2_session}");
-    assert!(!text(&v2["prompt"]).contains("Scenario:"), "{v2}");
+    assert!(
+        text(&v2["prompt"]).contains("The author contests f1"),
+        "{v2}"
+    );
     let v2_vm = vm_of(&hub, v2_cid, &home, &token);
-    let verdict = v2_vm.tool(
+    v2_vm.tool(
+        v2_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "the same test: next() returns 2, so the oldest item is not first" }),
+    );
+    let held = v2_vm.tool(
         v2_work,
         "plaza_verdict",
-        json!({ "task": tid, "pass": true, "notes": "nothing to prove" }),
+        json!({ "task": tid, "pass": true, "notes": "the contest does not hold" }),
     );
-    assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
-    hub.work_done(v2_cid, v2_work, "done", "passed");
+    assert!(text(&held["output"]).contains("Held"), "{held}");
+    let card = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter()
+                .any(|x| x["detail"]["gate"] == "contest" && x["state"] == "pending")
+        })
+    });
+    let card = card
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["detail"]["gate"] == "contest").cloned())
+        .unwrap_or_else(|| panic!("a contest card: {card}\n{}", hub.log()));
+    let (status, decided) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&card["id"])),
+        Some(json!({ "approve": true, "action": "accept", "reason": "the scenario does not hold for this queue" })),
+    );
+    assert_eq!(status, 200, "{decided}\n{}", hub.log());
+    eventually(&hub, "the task's chat says the owner ruled", || {
+        chat_says(&hub, &format!("task-{tid}"), "the owner ruled accept on f1")
+    });
+    hub.work_done(v2_cid, v2_work, "done", "held, then ruled");
 
     // It lands: the change is on main, the task is done, its chats say so, and the change is exported to the remote.
     let landed = hub.wait_for(
