@@ -348,7 +348,7 @@ pub(crate) fn execute(
 }
 
 /// `exit <code>`, or the signal that ended the shell.
-fn describe_exit(status: ExitStatus) -> String {
+pub(crate) fn describe_exit(status: ExitStatus) -> String {
     match (status.code(), status.signal()) {
         (Some(code), _) => format!("exit {code}"),
         (None, Some(signal)) => format!("exit: killed by signal {signal}"),

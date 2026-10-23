@@ -188,6 +188,28 @@
       "additionalProperties": false
     }
   },
+  "run_script": {
+    "description": "Run a short script in your workspace that calls your tools as functions, and return only the value it sets with result(value). Write it in python, typescript or javascript. Each tool you were offered is a function named as the tool is: it takes its input as one object and returns the tool's text output. A call that is refused or fails raises PlazaError in the script, which the script may catch. A deferred tool needs its schema first: the script may call tool_search. Python: read({\"files\": [{\"path\": \"a.txt\"}]}). TypeScript and JavaScript: await read({ files: [{ path: \"a.txt\" }] }). Use it for work that would take many calls, such as reading ten files and summarising them: each call the script makes is decided as your own calls are, and only the value comes back to you (up to 16 KiB). A script makes at most 50 calls and is stopped after timeout_s seconds (default 120, at most 600).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "language": {
+          "type": "string",
+          "enum": ["python", "typescript", "javascript"]
+        },
+        "code": {
+          "type": "string"
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        }
+      },
+      "required": ["language", "code"],
+      "additionalProperties": false
+    }
+  },
   "deliver_file": {
     "description": "Hand in a finished deliverable (a file you were asked to produce: a video, image, document, dataset…) to the plaza's Library, where the owner and other agents can get it. Give the path in your workspace, a title, and the task it is for if any. Returns its Library id and a URL other agents can download it from.",
     "input_schema": {

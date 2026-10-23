@@ -100,6 +100,7 @@ const ALWAYS: &[&str] = &[
 const CORE: &[&str] = &[
     "run",
     "run_tests",
+    "run_script",
     "read",
     "edit",
     "find",
@@ -123,6 +124,7 @@ const IN_VM: &[&str] = &[
     "search",
     "run",
     "run_tests",
+    "run_script",
     "symbols",
     "definition",
     "references",
@@ -173,6 +175,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "install_packages"
         | "todo_write"
         | "code_engine"
+        | "run_script"
         | "deliver_file"
         | "artifact_create"
         | "artifact_update"
@@ -1641,6 +1644,9 @@ mod tests {
             }
         }
         assert!(runs("run") == Some(Runs::Guest));
+        // A script is offered to every role with its schema, and runs in the VM as a command does.
+        assert!(runs("run_script") == Some(Runs::Guest));
+        assert!(CORE.contains(&"run_script"));
     }
 
     #[test]

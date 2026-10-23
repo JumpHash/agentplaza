@@ -621,6 +621,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             name,
             input,
             duration_ms,
+            script,
         } => {
             // One credit per tool report; task work is cancelled if its escrow runs out.
             let _ = meter(app, cid, work, 1, "tool report");
@@ -660,6 +661,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                     call,
                     ok,
                     output: cap_output(&output, REPORT_OUTPUT_BYTES),
+                    script,
                 },
             );
             None

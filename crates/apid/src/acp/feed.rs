@@ -207,7 +207,7 @@ fn text_update(session_update: &str, text: &str) -> Value {
 /// The tool's kind for the editor, from the law operation the plaza checks the call as.
 fn tool_kind(name: &str) -> apz_acp::types::ToolKind {
     let operation = match name {
-        "run" | "run_tests" | "code_engine" => "tool.exec",
+        "run" | "run_tests" | "run_script" | "code_engine" => "tool.exec",
         "fetch_url" | "download" => "tool.fetch",
         _ if crate::laws::risk_class(name) == "read" => "tool.read",
         _ => "tool.write",

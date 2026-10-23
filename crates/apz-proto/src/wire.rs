@@ -123,6 +123,10 @@ pub enum GuestMessage {
         /// v7: how long the guest ran the call, in milliseconds. A harness from before v7 sends none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
+        /// v8: the `run_script` call this call belongs to, when a script made it (its id is the script call's). None
+        /// for a call the model made.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
     },
     /// v5: the calls of one model turn the policy does not allow, decided by the hub in one answer
     /// ([`HostMessage::ToolBatchDecision`]), in the calls' order.
@@ -959,6 +963,7 @@ mod tests {
             name: None,
             input: None,
             duration_ms: None,
+            script: None,
         };
         assert_eq!(
             plain.to_line().unwrap(),
@@ -973,6 +978,7 @@ mod tests {
             name: Some("glob".into()),
             input: Some(json!({"pattern": "*.rs"})),
             duration_ms: Some(12),
+            script: None,
         };
         let line = local.to_line().unwrap();
         assert_eq!(
@@ -992,6 +998,25 @@ mod tests {
         // A harness from before v5 sends no policy: its report parses with none.
         let old = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#;
         assert_eq!(GuestMessage::from_line(old).unwrap(), plain);
+        // A call a script made names the script call it belongs to; a report from before v8 names none.
+        let scripted = GuestMessage::ToolReport {
+            work: 1,
+            call: "toolu_3#2".into(),
+            ok: true,
+            output: "3".into(),
+            policy: Some("ab12".into()),
+            name: Some("read".into()),
+            input: Some(json!({"files": []})),
+            duration_ms: Some(1),
+            script: Some("toolu_9".into()),
+        };
+        let line = scripted.to_line().unwrap();
+        assert!(line.contains(r#""script":"toolu_9""#), "{line}");
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), scripted);
+        assert!(matches!(
+            GuestMessage::from_line(old).unwrap(),
+            GuestMessage::ToolReport { script: None, .. }
+        ));
     }
 
     #[test]

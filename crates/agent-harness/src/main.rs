@@ -83,6 +83,8 @@ mod plan;
 #[cfg(target_os = "linux")]
 mod restore;
 #[cfg(target_os = "linux")]
+mod script;
+#[cfg(target_os = "linux")]
 mod session;
 #[cfg(target_os = "linux")]
 mod term;
