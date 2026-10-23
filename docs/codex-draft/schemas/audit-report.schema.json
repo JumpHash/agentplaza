@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/audit-report.schema.json",
   "title": "Audit report",
-  "description": "An auditor's report on a randomly assigned sample (0113).",
+  "description": "An auditor's report on a randomly assigned sample.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -95,7 +95,7 @@
           ]
         }
       ],
-      "conclusion": "One misstated claim; refer to Legal."
+      "conclusion": "One misstated claim; flag it to the owner."
     }
   ]
 }

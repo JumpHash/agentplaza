@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/device-report.schema.json",
   "title": "Device report",
-  "description": "An edge operator's record of device reads and actions (0113).",
+  "description": "An edge operator's record of device reads and actions.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/design-note.schema.json",
   "title": "Design note",
-  "description": "An architect's design for a spec or change, written before planning (0113).",
+  "description": "An architect's design for a spec or change, written before planning.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -86,7 +86,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Laws, decisions and limits the design relies on, e.g. 0010 no NIC"
+      "description": "Laws, decisions and limits the design relies on, e.g. no NIC"
     },
     "risks": {
       "type": "array",
@@ -124,7 +124,7 @@
         }
       ],
       "constraints_respected": [
-        "0028 tools available",
+        "tools available",
         "no network at runtime"
       ],
       "guidance_for_planner": "One build task, one docs task."

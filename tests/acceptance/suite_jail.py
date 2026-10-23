@@ -80,8 +80,8 @@ from apz import (
 )
 
 #: The CIDs the two boot cases serve — disjoint from every other suite's (the
-#: demo matrix uses 10..13/100..103, kill-and-resume 10..37, budgets 40, fleet
-#: 50..56/100..101, treasury 130..151, social 170..178, agora 180..183).
+#: demo matrix uses 10..13/100..103, kill-and-resume 10..37, budgets 40, and the
+#: soak below starts at 110).
 CID_ARMED = 60
 CID_OFF = 62
 
@@ -186,8 +186,8 @@ def _vmm_kinds(threads: list[dict]) -> set[str]:
 def _flag(ctx, binary: str, needle: str) -> bool:
     """Whether ``binary``'s CLI advertises ``needle`` (a ``--help`` probe).
 
-    The suite's gating idiom (as in ``suite_fleet``): a flag a sibling slice has
-    not landed is gated behind this probe, never assumed.
+    The suite's gating idiom: a flag the binary has not landed is gated behind
+    this probe, never assumed.
     """
     try:
         out = subprocess.run(

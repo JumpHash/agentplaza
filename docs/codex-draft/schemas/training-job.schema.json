@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/training-job.schema.json",
   "title": "Training job",
-  "description": "A breeder's job spec for the Foundry job runner (0058, 0082).",
+  "description": "A breeder's job spec for the Foundry job runner.",
   "type": "object",
   "additionalProperties": false,
   "required": [
