@@ -1,6 +1,7 @@
 //! The release flow against a Weft of its own: an in-process `weft serve` on a scratch store, a landed change, fake
 //! builds and a fake CI result (the stand-ins for 7.5's pools and for the checks of 9.4). Each test is one release's life.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
@@ -10,13 +11,14 @@ use weft::model::Delta;
 use weft::record::{Actor, Statement};
 use weft::store::Store;
 
+use super::builder::build_target;
+use super::builder::tests::{FakeHost, STACK, linux_node};
 use super::entity::{Release, ReleaseState, Store as Releases};
-use super::flow::{self, Builder, Built, Cut, Deps, Ledger};
-use super::lanes::{self, Agents};
+use super::flow::{self, Builder, Built, Cut, Deps, Ledger, Outcome};
+use super::lanes::{self, Agents, Chain};
 use super::signing::{Notary, Signing};
-use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
-use crate::review_graph::{Reviews, Run};
+use crate::review_graph::{Reviews, Run, RunState as ReviewState};
 use apz_blobs::Blobs;
 use std::sync::Arc;
 
@@ -68,14 +70,14 @@ impl Ledger for WeftLedger {
 struct FakeBuilder;
 
 impl Builder for FakeBuilder {
-    fn build(&self, release: &Release, target: &str) -> Result<Built, String> {
-        Ok(Built {
+    fn build(&self, release: &Release, target: &str) -> Result<Outcome, String> {
+        Ok(Outcome::Built(Built {
             bytes: format!("{} for {target}", release.version).into_bytes(),
             pool: "fake-pool".into(),
             base: "fake-base".into(),
             builder: "fake-builder".into(),
             command: "cargo build --release".into(),
-        })
+        }))
     }
 }
 
@@ -83,8 +85,92 @@ impl Builder for FakeBuilder {
 struct BrokenBuilder;
 
 impl Builder for BrokenBuilder {
-    fn build(&self, _release: &Release, target: &str) -> Result<Built, String> {
+    fn build(&self, _release: &Release, target: &str) -> Result<Outcome, String> {
         Err(format!("the pool for {target} went away"))
+    }
+}
+
+/// The production builder's placement and fork (`builder::build_target`) over a fake fleet: the project declares a
+/// Linux target, and a Linux pool is in service; the Mac target has no declaration and so no pool.
+struct FleetBuilder {
+    host: FakeHost,
+    stack: crate::project_stack::Stack,
+    placements: Vec<crate::targets::Placement>,
+}
+
+impl Builder for FleetBuilder {
+    fn build(&self, release: &Release, target: &str) -> Result<Outcome, String> {
+        build_target(
+            &self.host,
+            &release.project,
+            &release.repo,
+            &release.from,
+            &self.stack,
+            &self.placements,
+            target,
+        )
+    }
+}
+
+/// The review chain of a test: the backport's task is bound to its change, and its review run is stored as the review
+/// graph stores one, running until the test settles it.
+struct FakeChain<'a> {
+    reviews: &'a Reviews,
+    tasks: std::cell::Cell<u64>,
+    bound: std::cell::RefCell<BTreeMap<String, String>>,
+}
+
+impl<'a> FakeChain<'a> {
+    fn new(reviews: &'a Reviews) -> FakeChain<'a> {
+        FakeChain {
+            reviews,
+            tasks: std::cell::Cell::new(0),
+            bound: std::cell::RefCell::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl Chain for FakeChain<'_> {
+    fn task(&self, _project: &str, _title: &str, _worker: u64) -> Result<String, String> {
+        let n = self.tasks.get() + 1;
+        self.tasks.set(n);
+        Ok(format!("task-{n}"))
+    }
+
+    fn bind(&self, task: &str, change: &str) {
+        self.bound
+            .borrow_mut()
+            .insert(task.to_string(), change.to_string());
+    }
+
+    fn review(&self, task: &str) -> Option<String> {
+        let change = self.bound.borrow().get(task)?.clone();
+        let id = format!("rv-{task}");
+        self.reviews.put_run(Run {
+            id: id.clone(),
+            task: task.to_string(),
+            project: "app".into(),
+            worker: 107,
+            change,
+            revision: String::new(),
+            recipe: "code".into(),
+            round: 1,
+            rounds: 3,
+            kind: "code".into(),
+            state: ReviewState::Running,
+            nodes: Vec::new(),
+            rules: Vec::new(),
+            owner_asked: false,
+            outcome: None,
+            tree_blob: None,
+            summary: String::new(),
+            purpose: "review".into(),
+            repo: String::new(),
+            models: Vec::new(),
+            created_ms: 1,
+            updated_ms: 1,
+        });
+        Some(id)
     }
 }
 
@@ -617,32 +703,33 @@ fn a_fix_is_backported_to_a_release_line_and_a_patch_release_is_cut_from_that_li
     let main_after_fix = head_of(&world, "main");
     assert_ne!(main_after_fix, published.from);
 
-    // The backport is a change on the line with its own review; the review has not passed, so it does not land.
-    let backport = lanes::backport(&d, &agents, "app", "release/1.4", &fix, 107).unwrap();
+    // The backport is a change on the line with its own review, started through the review chain; the review has not
+    // passed, so it does not land.
+    let chain = FakeChain::new(&world.reviews);
+    let backport = lanes::backport(&d, &agents, &chain, "app", "release/1.4", &fix, 107).unwrap();
     assert_eq!(backport.state, "reviewing");
     assert_eq!(backport.line, "release/1.4");
     assert_eq!(
-        d.runs.view(&backport.review_run).unwrap().run.state,
-        RunState::Running
+        d.reviews.run(&backport.review_run).unwrap().state,
+        ReviewState::Running
     );
-    let early = lanes::land_backport(&d, "app", &backport.change).unwrap_err();
+    assert_eq!(
+        d.reviews.run(&backport.review_run).unwrap().change,
+        backport.change,
+        "the review is the change's"
+    );
+    let early = lanes::land_backport(&d, &backport.change).unwrap_err();
     assert!(early.contains("has not passed yet"), "{early}");
     assert_eq!(head_of(&world, "release/1.4"), published.from);
 
     // The review passes, and the line's queue lands the backport on the line only.
-    d.runs.finish_subject(
-        "backport",
-        &backport.change,
-        &Report::verdict(true),
-        "passed",
-        false,
-        apz_plaza::now_ms(),
-    );
+    d.reviews
+        .settle_run(&backport.review_run, ReviewState::Passed);
     assert_eq!(
-        d.runs.view(&backport.review_run).unwrap().run.state,
-        RunState::Passed
+        d.reviews.run(&backport.review_run).unwrap().state,
+        ReviewState::Passed
     );
-    let landing = lanes::land_backport(&d, "app", &backport.change).unwrap();
+    let landing = lanes::land_backport(&d, &backport.change).unwrap();
     assert_eq!(landing.line, "release/1.4");
     assert_eq!(head_of(&world, "release/1.4"), landing.head);
     assert_ne!(landing.head, published.from);
@@ -652,7 +739,7 @@ fn a_fix_is_backported_to_a_release_line_and_a_patch_release_is_cut_from_that_li
         "main does not move for a backport"
     );
     assert!(
-        lanes::land_backport(&d, "app", &backport.change)
+        lanes::land_backport(&d, &backport.change)
             .unwrap_err()
             .contains("has landed already")
     );
@@ -702,11 +789,13 @@ fn a_backport_is_only_of_a_landed_fix_on_main_to_a_cut_line() {
         "a_backport_is_only_of_a_landed_fix_on_main_to_a_cut_line",
     );
     let d = world.deps();
-    let not_a_line = lanes::backport(&d, &agents, "app", "main", &change, 107).unwrap_err();
+    let chain = FakeChain::new(&world.reviews);
+    let not_a_line = lanes::backport(&d, &agents, &chain, "app", "main", &change, 107).unwrap_err();
     assert!(not_a_line.contains("is not a release line"), "{not_a_line}");
-    let no_line = lanes::backport(&d, &agents, "app", "release/9.9", &change, 107).unwrap_err();
+    let no_line =
+        lanes::backport(&d, &agents, &chain, "app", "release/9.9", &change, 107).unwrap_err();
     assert!(no_line.contains("has no release/9.9"), "{no_line}");
-    assert!(lanes::backport(&d, &agents, "app", "release/1.4", "w-99", 107).is_err());
+    assert!(lanes::backport(&d, &agents, &chain, "app", "release/1.4", "w-99", 107).is_err());
 
     // A draft has no line to cut: only a published release does.
     let drafted = flow::draft(
@@ -722,6 +811,153 @@ fn a_backport_is_only_of_a_landed_fix_on_main_to_a_cut_line() {
     .unwrap();
     let cut = lanes::cut_lane(&d, &drafted.id).unwrap_err();
     assert!(cut.contains("from a published release"), "{cut}");
+}
+
+/// One file with two functions: a fix edits `main`, and the line edits `greet`, so the two merge three ways.
+const GREET_BASE: &str = "fn main() {\n    greet();\n}\n\nfn greet() {\n    print();\n}\n";
+const GREET_FIX: &str =
+    "fn main() {\n    greet();\n    exit();\n}\n\nfn greet() {\n    print();\n}\n";
+const GREET_LINE: &str =
+    "fn main() {\n    greet();\n}\n\nfn greet() {\n    println!(\"line\");\n}\n";
+/// A second fix that edits the line the release's own change edited: its backport clashes.
+const GREET_CLASH: &str =
+    "fn main() {\n    greet();\n    exit();\n}\n\nfn greet() {\n    print_twice();\n}\n";
+
+#[test]
+fn a_backport_merges_three_ways_with_a_line_that_changed_the_same_file_and_refuses_a_clash() {
+    let (client, _handle, _dir, change, agent) = lab("backport_merge");
+    let agents = TestAgents {
+        client: client.clone(),
+        key: KeyPair::from_hex(&agent).unwrap(),
+    };
+    let world = World::new(client, "a_backport_merges_three_ways");
+    let d = world.deps();
+    land_on(
+        &world,
+        &agents,
+        "main",
+        "Greet from main",
+        "src/main.rs",
+        GREET_BASE,
+    );
+    let released = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            version: Some("1.4.0".into()),
+            changes: vec![change],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    let candidate = flow::candidate(&d, &released.id, &FakeBuilder, Some(1)).unwrap();
+    flow::checks(&d, &candidate.id, true, "fake CI: every check passed").unwrap();
+    let published = flow::publish(&d, &candidate.id).unwrap();
+    lanes::cut_lane(&d, &published.id).unwrap();
+
+    // The fix edits `main` on main; the line edits `greet` in the same file, so the fix's file changed on the line too.
+    let fix = land_on(
+        &world,
+        &agents,
+        "main",
+        "Exit after greeting",
+        "src/main.rs",
+        GREET_FIX,
+    );
+    let line_change = land_on(
+        &world,
+        &agents,
+        "release/1.4",
+        "Name the greeting",
+        "src/main.rs",
+        GREET_LINE,
+    );
+    assert_ne!(
+        head_of(&world, "release/1.4"),
+        published.from,
+        "{line_change}"
+    );
+
+    let chain = FakeChain::new(&world.reviews);
+    let backport = lanes::backport(&d, &agents, &chain, "app", "release/1.4", &fix, 107).unwrap();
+    d.reviews
+        .settle_run(&backport.review_run, ReviewState::Passed);
+    let landing = lanes::land_backport(&d, &backport.change).unwrap();
+    let merged = d
+        .weft
+        .bytes(&format!(
+            "/revisions/{}/file?path=src/main.rs",
+            landing.head
+        ))
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(merged).unwrap(),
+        "fn main() {\n    greet();\n    exit();\n}\n\nfn greet() {\n    println!(\"line\");\n}\n",
+        "both sides' edits are on the line"
+    );
+
+    // A second fix edits the same line the line's change edited: the backport is refused, naming the file.
+    let clash = land_on(
+        &world,
+        &agents,
+        "main",
+        "Halt the greeting",
+        "src/main.rs",
+        GREET_CLASH,
+    );
+    let refused =
+        lanes::backport(&d, &agents, &chain, "app", "release/1.4", &clash, 107).unwrap_err();
+    assert!(
+        refused.contains("conflicts with it in: src/main.rs"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_release_builds_each_target_on_a_pool_that_can_build_it_and_cuts_the_rest() {
+    let (client, _handle, _dir, _change, _agent) = lab("fleet");
+    let world = World::new(client, "a_release_builds_each_target_on_a_pool");
+    let d = world.deps();
+    // The lab declares a Linux and a macOS target; the fleet has a Linux pool only.
+    let fleet = FleetBuilder {
+        host: FakeHost::new(9401, b"\x7fELF built by the fleet"),
+        stack: crate::project_stack::parse(STACK).unwrap(),
+        placements: crate::targets::place(
+            &[
+                crate::targets::Platform::LinuxX86_64,
+                crate::targets::Platform::Macos,
+            ],
+            &[linux_node("n-lin")],
+        ),
+    };
+    let drafted = flow::draft(&d, "app", "app", &cut("v0.1.0")).unwrap();
+    let candidate = flow::candidate(&d, &drafted.id, &fleet, Some(1)).unwrap();
+    assert_eq!(
+        candidate.state,
+        ReleaseState::Candidate,
+        "the release is cut"
+    );
+    assert_eq!(candidate.artifacts.len(), 1, "{:?}", candidate.artifacts);
+    let built = &candidate.artifacts[0];
+    assert!(built.target.ends_with("linux-x86_64"), "{}", built.target);
+    assert_eq!(built.pool, "x86_64-kvm");
+    assert_eq!(candidate.not_run.len(), 1, "{:?}", candidate.not_run);
+    assert!(candidate.not_run[0].target.ends_with("macos-aarch64"));
+    assert!(
+        candidate.not_run[0].reason.contains("a Mac pool"),
+        "{}",
+        candidate.not_run[0].reason
+    );
+    assert_eq!(
+        d.runs
+            .view(&drafted.run.clone().unwrap())
+            .unwrap()
+            .run
+            .state,
+        RunState::Passed,
+        "a target not run does not fail the build step"
+    );
 }
 
 #[test]

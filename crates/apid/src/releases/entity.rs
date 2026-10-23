@@ -68,6 +68,10 @@ pub struct Release {
     pub changes: Vec<ReleaseChange>,
     #[table(child = "release_artifact")]
     pub artifacts: Vec<ReleaseArtifact>,
+    /// The targets no pool could build, each with the reason (20.5): the release is cut without them.
+    #[serde(default)]
+    #[table(child = "release_not_run")]
+    pub not_run: Vec<ReleaseNotRun>,
     /// The verdicts on the release (its checks and its qualification), as Weft recorded them.
     #[table(child = "release_verdict")]
     pub verdicts: Vec<ReleaseVerdict>,
@@ -115,6 +119,14 @@ pub struct ReleaseArtifact {
     pub base: String,
     #[serde(default)]
     pub run: String,
+}
+
+/// A target a candidate did not build: no pool in service can build it, and the reason says which pool it needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct ReleaseNotRun {
+    #[table(key)]
+    pub target: String,
+    pub reason: String,
 }
 
 /// A verdict Weft recorded on the release.

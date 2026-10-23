@@ -2,6 +2,7 @@
 //! of a recipe. Its life is Weft's `release.*` statements (weft's `state.rs`), read back into the entity after each one.
 //!
 //! - `entity.rs`: the typed release (`release` and its child tables in `plaza.db`) and its store.
+//! - `builder.rs`: the production builder: each target placed on a pool and built in a fork of the project's base.
 //! - `flow.rs`: draft, candidate (every target built through the `release` recipe's fan-out), checks, qualification,
 //!   publication, promotion and yanks; the [`flow::Ledger`] and [`flow::Builder`] seams.
 //! - `versions.rs`: a release's version from its changes (22.3): the bumps, and the project's schemes.
@@ -12,6 +13,7 @@
 //!   and its platform signatures (9.3); publish verifies them all first.
 
 pub mod attest;
+pub mod builder;
 pub mod channels;
 pub mod entity;
 pub mod flow;

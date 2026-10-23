@@ -1307,9 +1307,16 @@ impl State {
                             .get(a)
                             .is_some_and(|i| i.artifact.repo == c.repo && &i.artifact.target == t)
                     });
-                    if !built {
+                    let skipped = c.not_run.iter().any(|n| &n.target == t);
+                    if !built && !skipped {
                         return Err(format!("{} has no artifact for target {t}", c.version));
                     }
+                }
+                if let Some(n) = c.not_run.iter().find(|n| !targets.contains(&n.target)) {
+                    return Err(format!(
+                        "{} names no declared target {}",
+                        c.version, n.target
+                    ));
                 }
                 if c.artifacts.is_empty() {
                     return Err("a candidate holds at least one artifact".into());

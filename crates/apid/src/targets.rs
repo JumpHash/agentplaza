@@ -132,6 +132,15 @@ pub fn place(platforms: &[Platform], candidates: &[Candidate]) -> Vec<Placement>
         .collect()
 }
 
+impl Placement {
+    /// The platform the placement is for.
+    pub fn platform(&self) -> Platform {
+        match self {
+            Placement::Built { platform, .. } | Placement::NotRun { platform, .. } => *platform,
+        }
+    }
+}
+
 /// A pool as the plan shows it: its architecture, hypervisor and CPU baseline.
 fn pool_json(pool: &Pool) -> Value {
     json!({"arch": pool.arch, "hypervisor": pool.hypervisor, "cpu_baseline": pool.cpu_baseline})
