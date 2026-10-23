@@ -45,6 +45,7 @@ const ALWAYS: &[&str] = &[
     "plaza_board_comment",
     "plaza_send_message",
     "plaza_message_seat",
+    "team_set",
     "share_file",
     "plaza_get_file",
     "fetch_url",
@@ -195,6 +196,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_board_comment"
         | "plaza_send_message"
         | "plaza_message_seat"
+        | "team_set"
         | "plaza_agents"
         | "plaza_money"
         | "plaza_post_task"
@@ -990,6 +992,7 @@ fn host_call(
                 )
             }))
         }
+        "team_set" => crate::work_loop::team_set(app, agent, input),
         "plaza_message_seat" => crate::work_loop::message_seat(
             app,
             agent.cid,
@@ -1581,6 +1584,8 @@ mod tests {
             assert!(has(ORCHESTRATOR_ROLE, "plaza_agent_control"));
             assert!(has(ORCHESTRATOR_ROLE, "plaza_loop"));
             assert!(has("planner", "plaza_project_advance"));
+            assert!(has("planner", "team_set"));
+            assert!(!has("builder", "team_set"));
             assert!(has(ORCHESTRATOR_ROLE, "plaza_project_approve"));
             assert!(!has("builder", "plaza_project_open"));
             assert!(!has("builder", "plaza_project_approve"));

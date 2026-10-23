@@ -293,3 +293,15 @@ law "T-031" "The verifier answers flagged memory" {
   resource is Tool
   when resource.name == "memory_verify" and principal.role == "verifier"
 }
+
+law "T-032" "The planner sizes the team" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Only a project's planner may set its team: the most tasks that run at once, and the team it aims for."
+  rationale "The team is how many tasks a project runs at once and so how much it spends at once; the planner widens it when the graph widens and narrows it when the work is coupled, and the owner's project settings bound it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "team_set" and principal.role == "planner"
+}

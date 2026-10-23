@@ -862,3 +862,241 @@ fn a_vm_with_no_session_spends_from_the_plazas_own_budget() {
     );
     every_save_succeeded(&hub);
 }
+
+/// How long a test lets the loop tick (every 2 s) after the team reaches its size, so a team that would overshoot does.
+const SETTLE: Duration = Duration::from_secs(5);
+
+/// A project with a budget of `cap` tokens and its builder and reviewer on two models.
+fn team_project(hub: &Hub, cap: u64) -> String {
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Changelog", "goal": "Keep the changelog.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, budget) = hub.call(
+        "PUT",
+        &format!("/v1/projects/{pid}/budget"),
+        Some(json!({ "unit": "tokens", "cap": cap })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": { "builder": "mock/agent", "reviewer": "mock/echo" } })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    pid
+}
+
+/// `count` tasks of project `pid`, none after another: each is ready at once.
+fn ready_tasks(hub: &Hub, pid: &str, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| {
+            let (status, task) = hub.call(
+                "POST",
+                "/v1/tasks",
+                Some(json!({ "goal": format!("Write changelog entry {i}"), "project": pid })),
+            );
+            assert_eq!(status, 201, "{task}");
+            text(&task["id"])
+        })
+        .collect()
+}
+
+/// How many of `tasks` hold seats now, which is how many the work loop has started.
+fn holding(hub: &Hub, tasks: &[String]) -> usize {
+    tasks
+        .iter()
+        .filter(|tid| {
+            let (_, seats) = hub.call("GET", &format!("/v1/tasks/{tid}/seats"), None);
+            seats.as_array().is_some_and(|s| !s.is_empty())
+        })
+        .count()
+}
+
+/// Waits until `want` of `tasks` hold seats, then lets the loop tick for a while: how many hold them then.
+fn team_after_settling(hub: &Hub, tasks: &[String], want: usize) -> usize {
+    let deadline = std::time::Instant::now() + WAIT.mul_f64(common::slack());
+    while holding(hub, tasks) < want && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(SETTLE);
+    holding(hub, tasks)
+}
+
+#[test]
+fn a_project_runs_up_to_its_team_maximum_at_once_and_widens_when_the_maximum_does() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-team");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // Twelve independent tasks in a project with room in its budget, and a team of four.
+    let pid = team_project(&hub, 100_000_000);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "team_max": 4 })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let tasks = ready_tasks(&hub, &pid, 12);
+    assert_eq!(team_after_settling(&hub, &tasks, 4), 4, "{}", hub.log());
+
+    // The owner widens the team: one more task starts, and no more than the new maximum.
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "team_max": 5 })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(team_after_settling(&hub, &tasks, 5), 5, "{}", hub.log());
+    let (_, effective) = hub.call(
+        "GET",
+        &format!("/v1/projects/{pid}/settings/effective"),
+        None,
+    );
+    assert_eq!(
+        effective["settings"]["team_max"],
+        json!({ "value": 5, "source": "project" }),
+        "{effective}"
+    );
+}
+
+#[test]
+fn a_team_waits_at_its_projects_budget_rate_and_asks_nobody_for_more() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-budget-rate");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // A budget of 5 000 000 tokens and tasks with none of their own: each expects the default reserve of 2 000 000,
+    // so two fit at once, though the team's maximum is the default twenty.
+    let pid = team_project(&hub, 5_000_000);
+    let tasks = ready_tasks(&hub, &pid, 12);
+    assert_eq!(team_after_settling(&hub, &tasks, 2), 2, "{}", hub.log());
+
+    // The task that waits is not short of budget: the project's running tasks hold the rest, so no card is asked.
+    let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
+    assert!(
+        cards.as_array().is_some_and(|c| c
+            .iter()
+            .all(|c| !(c["kind"] == "budget" && c["project"].as_str() == Some(pid.as_str())))),
+        "a waiting task asks the owner for nothing: {cards}"
+    );
+
+    // The owner raises the budget: the team grows to what the new budget holds beside the running tasks' reserves.
+    let (status, budget) = hub.call(
+        "PUT",
+        &format!("/v1/projects/{pid}/budget"),
+        Some(json!({ "unit": "tokens", "cap": 10_000_000 })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    assert_eq!(team_after_settling(&hub, &tasks, 5), 5, "{}", hub.log());
+}
+
+#[test]
+fn a_planner_sizes_its_projects_team_and_a_size_out_of_bounds_is_refused() {
+    let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
+    let (noded, gateway) = daemons(&vms);
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "planner": role("planner", "Planner"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-team-tool");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // A project opens and gets its planner, a long-lived session on a VM of its own.
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Guide", "goal": "Write the guide.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let planners = hub.wait_for(&format!("/v1/sessions?project={pid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["role"] == "planner" && s["cid"].is_u64())
+        })
+    });
+    let planner_cid = planners
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["role"] == "planner"))
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a planner session: {planners}\n{}", hub.log()));
+    let (status, _) = hub.guest(planner_cid, "hello", json!({ "role": "planner", "vm": 1 }));
+    assert_eq!(status, 200);
+
+    // The planner widens the team and aims it at four.
+    let reply = tool(
+        &hub,
+        planner_cid,
+        1,
+        "team_set",
+        json!({ "max": 6, "target": 4 }),
+    );
+    assert!(
+        text(&reply["output"]).contains("at most 6 tasks at once, aiming for 4"),
+        "{reply}"
+    );
+    let (_, effective) = hub.call(
+        "GET",
+        &format!("/v1/projects/{pid}/settings/effective"),
+        None,
+    );
+    assert_eq!(effective["settings"]["team_max"]["value"], 6, "{effective}");
+    assert_eq!(
+        effective["settings"]["team_target"]["value"], 4,
+        "{effective}"
+    );
+
+    // A maximum past the limit is refused, and the team stays as it was.
+    let reply = tool(&hub, planner_cid, 2, "team_set", json!({ "max": 101 }));
+    assert_eq!(reply["is_error"], true, "{reply}");
+    let (_, effective) = hub.call(
+        "GET",
+        &format!("/v1/projects/{pid}/settings/effective"),
+        None,
+    );
+    assert_eq!(effective["settings"]["team_max"]["value"], 6, "{effective}");
+}

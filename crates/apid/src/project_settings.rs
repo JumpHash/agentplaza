@@ -73,6 +73,12 @@ pub struct ProjectSettings {
     /// How long a finished task waits for a reviewer before the owner is asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_timeout_minutes: Option<u32>,
+    /// The most tasks of the project that run at once (its team's maximum); [`DEFAULT_TEAM_MAX`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_max: Option<u32>,
+    /// The team the planner aims for when the graph allows, never above the maximum; [`DEFAULT_TEAM_TARGET`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team_target: Option<u32>,
 }
 
 /// Every project's overrides, by project id.
@@ -139,6 +145,8 @@ struct SettingsRow {
     task_budget: Option<u64>,
     permission_mode: Option<Mode>,
     review_timeout_minutes: Option<u32>,
+    team_max: Option<u32>,
+    team_target: Option<u32>,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
 }
@@ -156,6 +164,8 @@ impl SettingsRow {
             task_budget: settings.task_budget,
             permission_mode: settings.permission_mode,
             review_timeout_minutes: settings.review_timeout_minutes,
+            team_max: settings.team_max,
+            team_target: settings.team_target,
             role_models: settings.role_models.clone(),
         }
     }
@@ -172,6 +182,8 @@ impl SettingsRow {
             task_budget: self.task_budget,
             permission_mode: self.permission_mode,
             review_timeout_minutes: self.review_timeout_minutes,
+            team_max: self.team_max,
+            team_target: self.team_target,
         };
         (self.project, settings)
     }
@@ -238,6 +250,22 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
     {
         return Err("review_timeout_minutes must be 1 to 10080 (a week)".into());
     }
+    check_team(settings)
+}
+
+/// A project's team sizes are each 1 to [`TEAM_LIMIT`] (pure). The target is kept within the maximum where it is read
+/// ([`team_target`]), so the two need not be checked against each other.
+fn check_team(settings: &ProjectSettings) -> Result<(), String> {
+    if let Some(max) = settings.team_max
+        && !(1..=TEAM_LIMIT).contains(&max)
+    {
+        return Err(format!("team_max must be 1 to {TEAM_LIMIT}"));
+    }
+    if let Some(target) = settings.team_target
+        && !(1..=TEAM_LIMIT).contains(&target)
+    {
+        return Err(format!("team_target must be 1 to {TEAM_LIMIT}"));
+    }
     Ok(())
 }
 
@@ -295,6 +323,31 @@ pub fn model_for(app: &App, agent: &Agent) -> Option<String> {
 /// The budget a task of project `pid` gets when it names none.
 pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
     pid.and_then(|pid| app.project_settings.get(pid).task_budget)
+}
+
+/// The most tasks a project runs at once when it sets no maximum, and the team its planner aims for when it sets no
+/// target (PLAN 7.1, W25). The largest either may be set to is [`TEAM_LIMIT`].
+pub const DEFAULT_TEAM_MAX: u32 = 20;
+pub const DEFAULT_TEAM_TARGET: u32 = 10;
+pub const TEAM_LIMIT: u32 = 100;
+
+/// The most tasks of project `pid` run at once: its team's maximum.
+pub fn team_max(app: &App, pid: &str) -> usize {
+    app.project_settings
+        .get(pid)
+        .team_max
+        .unwrap_or(DEFAULT_TEAM_MAX)
+        .try_into()
+        .unwrap_or(usize::MAX)
+}
+
+/// The team the planner of project `pid` aims for: its target, never above its maximum.
+pub fn team_target(app: &App, pid: &str) -> u32 {
+    let settings = app.project_settings.get(pid);
+    settings
+        .team_target
+        .unwrap_or(DEFAULT_TEAM_TARGET)
+        .min(settings.team_max.unwrap_or(DEFAULT_TEAM_MAX))
 }
 
 /// How long a finished task of project `pid` waits for a reviewer, in milliseconds.
@@ -436,6 +489,8 @@ pub fn effective(app: &App, id: &str) -> Value {
             "task_budget": pick(own.task_budget.map(Value::from), json!(apz_plaza::tasks::DEFAULT_TASK_BUDGET)),
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
+            "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
+            "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },
         "role_models": role_models,
         "budget": budget_view(app, id),
@@ -526,11 +581,43 @@ mod tests {
     }
 
     #[test]
+    fn a_team_is_sized_between_one_and_the_limit() {
+        let sized = |max: Option<u32>, target: Option<u32>| {
+            check_team(&ProjectSettings {
+                team_max: max,
+                team_target: target,
+                ..ProjectSettings::default()
+            })
+        };
+        assert!(sized(None, None).is_ok(), "unset, the defaults hold");
+        assert!(sized(Some(1), Some(1)).is_ok());
+        assert!(sized(Some(TEAM_LIMIT), Some(TEAM_LIMIT)).is_ok());
+        assert!(sized(Some(0), None).is_err());
+        assert!(sized(Some(TEAM_LIMIT + 1), None).is_err());
+        assert!(sized(None, Some(0)).is_err());
+        assert!(sized(None, Some(TEAM_LIMIT + 1)).is_err());
+        // The target above a lowered maximum is read as the maximum, so it is not refused here.
+        assert!(sized(Some(4), Some(10)).is_ok());
+    }
+
+    #[test]
+    fn a_team_patch_sets_and_unsets_its_sizes() {
+        let current = ProjectSettings {
+            team_max: Some(4),
+            ..ProjectSettings::default()
+        };
+        let next = merged(&current, &json!({"team_max": null, "team_target": 6})).expect("a patch");
+        assert_eq!((next.team_max, next.team_target), (None, Some(6)));
+    }
+
+    #[test]
     fn settings_come_back_from_their_table_and_an_empty_one_is_dropped() {
         let store = Store::default();
         let settings = ProjectSettings {
             task_budget: Some(3000),
             permission_mode: Some(Mode::ReadOnly),
+            team_max: Some(6),
+            team_target: Some(3),
             role_models: BTreeMap::from([("builder".into(), "anthropic/claude-sonnet-5-5".into())]),
             ..ProjectSettings::default()
         };

@@ -1246,6 +1246,25 @@
       "additionalProperties": false
     }
   },
+  "team_set": {
+    "description": "Set your project's team: `max` is the most tasks of the project that run at once (the owner's ceiling, 1 to 100, default 20), `target` the team you aim for when the graph allows (at most `max`, default 10). Widen it when the ready work is independent, narrow it when the work is coupled. A lower max starts no new task until the team is back under it; running tasks go on.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "target": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        }
+      },
+      "additionalProperties": false
+    }
+  },
   "symbols": {
     "description": "Find code symbols. With `path`: the symbols of that file, nested by their parents. With `query`: the definitions whose names contain it, across the lanes. A language server answers when one is installed in this VM for the file's language; otherwise Weft's tree-sitter index of the lane's revision does, and the answer names which.",
     "input_schema": {
