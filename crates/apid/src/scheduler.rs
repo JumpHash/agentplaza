@@ -1130,6 +1130,8 @@ pub fn spawn(app: Arc<App>) {
                     crate::triggers::tick(&app, apz_plaza::now_ms());
                     // The CI runs asked for through `POST /v1/recipe-runs/ci` (4.5).
                     crate::checks::tick(&app);
+                    // The user tests of recipe runs (19): each queued run on its own thread.
+                    crate::user_test::tick(&app);
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);

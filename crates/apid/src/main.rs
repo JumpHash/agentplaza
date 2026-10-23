@@ -138,6 +138,7 @@ mod unfurl;
 mod upstream;
 mod usage;
 mod usage_providers;
+mod user_test;
 mod vault;
 mod vendor_relay;
 mod verifier;

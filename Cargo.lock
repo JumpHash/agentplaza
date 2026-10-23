@@ -373,6 +373,7 @@ dependencies = [
  "hmac",
  "jhrl",
  "libc",
+ "png 0.18.1",
  "qrcode",
  "rcgen",
  "ring",

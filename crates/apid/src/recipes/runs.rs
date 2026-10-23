@@ -60,6 +60,10 @@ pub struct RecipeRun {
     /// The results of a CI run's checks (4.5): one per step that ran, in the order they ended.
     #[table(child)]
     pub checks: Vec<CheckRow>,
+    /// The evidence of a `test:user` step (PLAN 19.2): the tree, the screenshot and the action of each observation, in
+    /// the order the loop made them. The screenshots and trees are in the object store, by their hashes.
+    #[table(child)]
+    pub evidence: Vec<EvidenceRow>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -99,6 +103,20 @@ pub struct CheckRow {
     pub commands: String,
     /// What the check found, in a line: the output's end of a failing command, a count of tests or findings.
     pub summary: String,
+}
+
+/// One observation of a user test (PLAN 19.2): the tree and the screenshot the loop saw in `scenario`'s `step`, the
+/// action it took after them (empty when it took none) and why. `tree` and `screenshot` are object-store hashes in hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct EvidenceRow {
+    #[table(key)]
+    pub seq: u32,
+    pub scenario: String,
+    pub step: u32,
+    pub action: String,
+    pub tree: String,
+    pub screenshot: String,
+    pub note: String,
 }
 
 /// A version of a recipe the owner saved.
@@ -206,6 +224,7 @@ impl Runs {
             steps: Vec::new(),
             edges: Vec::new(),
             checks: Vec::new(),
+            evidence: Vec::new(),
             created_ms: now,
             updated_ms: now,
         };
@@ -405,6 +424,19 @@ impl Runs {
         self.update(run, now, |e| {
             e.run.checks.retain(|c| c.step != check.step);
             e.run.checks.push(check);
+        });
+    }
+
+    /// Adds the evidence of a run's user-test step, numbered after the evidence the run has.
+    pub fn record_evidence(&self, run: &str, rows: Vec<EvidenceRow>, now: u64) {
+        self.update(run, now, |e| {
+            let base = e.run.evidence.len() as u32;
+            e.run
+                .evidence
+                .extend(rows.into_iter().enumerate().map(|(i, mut row)| {
+                    row.seq = base + i as u32 + 1;
+                    row
+                }));
         });
     }
 

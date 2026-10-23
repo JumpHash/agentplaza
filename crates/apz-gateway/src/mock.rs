@@ -218,7 +218,20 @@ fn answer(entries: &[Entry], req: &ChatRequest) -> (String, Option<(String, Valu
         .messages
         .iter()
         .filter(|m| m.role == Role::User)
-        .map(Message::text)
+        .map(|m| {
+            // Each image the user sent is named in the text a script matches on (`IMAGE: image/png`), so a script
+            // can answer for a screen it was sent.
+            let mut text = m.text();
+            for block in &m.content {
+                if let Block::Image { media_type, data } = block {
+                    text.push_str(&format!(
+                        "\nIMAGE: {media_type} ({} base64 characters)",
+                        data.len()
+                    ));
+                }
+            }
+            text
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let Some(entry) = entries
@@ -318,6 +331,7 @@ fn input_chars(req: &ChatRequest) -> usize {
             Block::ToolResult { content, .. } => content.len(),
             Block::ToolUse { input, .. } => input.to_string().len(),
             Block::Opaque { raw, .. } => raw.to_string().len(),
+            Block::Image { data, .. } => data.len(),
         })
         .sum();
     let tools: usize = req
@@ -492,5 +506,21 @@ mod tests {
             answer(&verdict, &request("Task t7: Check it.")).1,
             Some(("plaza_verdict".into(), json!({"task": "t7", "pass": true})))
         );
+    }
+
+    #[test]
+    fn a_script_sees_an_image_the_user_sent() {
+        let entries: Vec<Entry> = serde_json::from_str(
+            r#"[{"when": ["IMAGE: image/png"], "turns": [{"text": "a Pay button"}]},
+                {"when": ["look"], "turns": [{"text": "no picture"}]}]"#,
+        )
+        .unwrap();
+        let mut req = request("look");
+        req.messages[0].content.push(Block::Image {
+            media_type: "image/png".into(),
+            data: "iVBORw0KGgo=".into(),
+        });
+        assert_eq!(answer(&entries, &req).0, "a Pay button");
+        assert_eq!(answer(&entries, &request("look")).0, "no picture");
     }
 }

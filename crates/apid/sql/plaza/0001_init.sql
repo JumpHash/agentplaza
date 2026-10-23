@@ -2484,6 +2484,19 @@ CREATE TABLE "recipe_run_checks" (
     PRIMARY KEY ("recipe_run_id", "checks_pos"),
     FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "recipe_run_evidence" (
+    "recipe_run_id" TEXT NOT NULL,
+    "evidence_pos" INTEGER NOT NULL CHECK ("evidence_pos" >= 0),
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "scenario" TEXT NOT NULL,
+    "step" INTEGER NOT NULL CHECK ("step" >= 0),
+    "action" TEXT NOT NULL,
+    "tree" TEXT NOT NULL,
+    "screenshot" TEXT NOT NULL,
+    "note" TEXT NOT NULL,
+    PRIMARY KEY ("recipe_run_id", "evidence_pos"),
+    FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 
 -- component recipe_triggers
 CREATE TABLE "recipe_trigger" (

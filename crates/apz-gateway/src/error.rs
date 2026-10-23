@@ -22,6 +22,10 @@ pub enum GatewayError {
     /// The provider's configuration is incomplete (no region, no project, …).
     #[error("provider configuration: {0}")]
     Config(String),
+    /// The call asks for something the provider's wire format cannot carry (an image, for one): refused before any
+    /// request is sent. The message names the provider and the thing.
+    #[error("{0}")]
+    Unsupported(String),
     /// The provider answered with an error status.
     #[error("HTTP {status}: {body}")]
     Http {
