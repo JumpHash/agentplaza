@@ -167,6 +167,37 @@ impl Seats {
         Ok(out)
     }
 
+    /// Gives `step` of `task` more seats, up to `count` (a risky change's third reviewer), as the seats it has: they
+    /// start waiting, like the step's others.
+    pub fn grow(&self, task: &str, step: &str, count: u32, now_ms: u64) {
+        let mut seats = self.lock();
+        let existing: Vec<Seat> = seats
+            .values()
+            .filter(|s| s.task == task && s.step == step)
+            .cloned()
+            .collect();
+        let Some(template) = existing.first().cloned() else {
+            return;
+        };
+        for i in existing.len() as u32 + 1..=count {
+            let name = format!(
+                "{}#{i}",
+                template.name.split('#').next().unwrap_or(&template.name)
+            );
+            let seat = Seat {
+                name: name.clone(),
+                state: SeatState::Waiting,
+                session: None,
+                last_model: None,
+                attempts: 0,
+                returned_with: None,
+                updated_ms: now_ms,
+                ..template.clone()
+            };
+            seats.insert((task.to_string(), name), seat);
+        }
+    }
+
     pub fn get(&self, task: &str, name: &str) -> Option<Seat> {
         self.lock()
             .get(&(task.to_string(), name.to_string()))
@@ -375,92 +406,116 @@ mod tests {
         walk.settle(recipe, step, &Report::verdict(passed))
     }
 
+    /// Settles `step` with `report` (a step's verdict, and the count of findings a verifier reports), and returns the moves.
+    fn settle_with(walk: &mut Walk, recipe: &Recipe, step: &str, report: Report) -> Vec<Move> {
+        walk.started(step);
+        walk.settle(recipe, step, &report)
+    }
+
     #[test]
-    fn a_change_goes_build_review_done() {
+    fn a_clean_change_goes_build_then_two_sceptics_then_the_verifier_and_is_done() {
         let (recipe, mut walk) = change();
         let seats = Seats::default();
         let opened = seats.open("t1", &recipe, 1).unwrap();
-        assert_eq!(opened.len(), 2);
         assert_eq!(
-            seats
-                .ready()
-                .iter()
-                .map(|s| s.name.as_str())
-                .collect::<Vec<_>>(),
-            ["builder"]
+            opened.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["builder", "reviewer#1", "reviewer#2", "verifier"]
         );
-        seats.fill("t1", "builder", "s1", Some("a/m1"), 2).unwrap();
+        seats.fill("t1", "builder", "b1", Some("a/m1"), 2).unwrap();
         let moves = settle(&mut walk, &recipe, "build", true);
         assert_eq!(
             seats.ended("t1", "builder", true, false, "done", 3, &moves),
-            Some(Next::Ready("reviewer".into()))
+            Some(Next::Ready("reviewer#1".into()))
+        );
+        // Both sceptics review in parallel: the step passes when the second one reports.
+        seats
+            .fill("t1", "reviewer#1", "r1", Some("b/m2"), 4)
+            .unwrap();
+        seats
+            .fill("t1", "reviewer#2", "r2", Some("b/m3"), 4)
+            .unwrap();
+        let moves = settle_with(&mut walk, &recipe, "review", Report::verdict(true));
+        assert!(moves.is_empty(), "one sceptic of two has not reported");
+        assert_eq!(
+            seats.ended("t1", "reviewer#1", true, false, "fine", 5, &moves),
+            None
+        );
+        let moves = settle_with(&mut walk, &recipe, "review", Report::verdict(true));
+        assert_eq!(
+            seats.ended("t1", "reviewer#2", true, false, "fine", 6, &moves),
+            Some(Next::Ready("verifier".into()))
+        );
+        // The verifier finds nothing confirmed: the change is done.
+        seats.fill("t1", "verifier", "v1", Some("c/m4"), 7).unwrap();
+        let moves = settle_with(
+            &mut walk,
+            &recipe,
+            "verify",
+            Report {
+                passed: true,
+                findings: Some(0),
+                ..Report::default()
+            },
         );
         assert_eq!(
-            seats.models_to_avoid("t1", "reviewer"),
-            vec!["a/m1".to_string()]
-        );
-        seats.fill("t1", "reviewer", "s2", Some("b/m2"), 4).unwrap();
-        let moves = settle(&mut walk, &recipe, "review", true);
-        assert_eq!(
-            seats.ended("t1", "reviewer", true, false, "looks right", 5, &moves),
+            seats.ended("t1", "verifier", true, false, "nothing to prove", 8, &moves),
             Some(Next::Done)
         );
     }
 
     #[test]
-    fn a_failed_review_sends_it_back_with_the_findings_a_bounded_number_of_times() {
+    fn a_confirmed_finding_sends_the_builder_back_at_most_twice_and_then_the_run_fails() {
         let (recipe, mut walk) = change();
         let seats = Seats::default();
         seats.open("t1", &recipe, 1).unwrap();
-        // The change recipe's loop allows two rounds back: three reviews in all.
-        for round in 1..=2 {
+        // Three rounds: the verifier confirms a finding in each of the first two, which sends the builder back; the
+        // third confirmation is past the loop's bound, and the run fails.
+        for round in 1..=3u32 {
             seats
                 .fill("t1", "builder", &format!("b{round}"), Some("a/m1"), 2)
                 .unwrap();
             let moves = settle(&mut walk, &recipe, "build", true);
+            assert_eq!(
+                seats.ended("t1", "builder", true, false, "done", 3, &moves),
+                Some(Next::Ready("reviewer#1".into()))
+            );
             seats
-                .ended("t1", "builder", true, false, "done", 3, &moves)
+                .fill("t1", "reviewer#1", &format!("r{round}a"), Some("b/m2"), 4)
                 .unwrap();
             seats
-                .fill("t1", "reviewer", &format!("r{round}"), Some("b/m2"), 4)
+                .fill("t1", "reviewer#2", &format!("r{round}b"), Some("b/m3"), 4)
                 .unwrap();
-            let moves = settle(&mut walk, &recipe, "review", false);
-            let next = seats.ended(
-                "t1",
-                "reviewer",
-                false,
-                false,
-                "the date filter is ignored",
-                5,
-                &moves,
-            );
-            assert_eq!(next, Some(Next::Back("builder".into())));
-            let builder = seats.get("t1", "builder").unwrap();
+            let moves = settle_with(&mut walk, &recipe, "review", Report::verdict(true));
+            seats.ended("t1", "reviewer#1", true, false, "fine", 5, &moves);
+            let moves = settle_with(&mut walk, &recipe, "review", Report::verdict(true));
             assert_eq!(
-                builder.returned_with.as_deref(),
-                Some("the date filter is ignored")
+                seats.ended("t1", "reviewer#2", true, false, "fine", 6, &moves),
+                Some(Next::Ready("verifier".into()))
             );
-            assert_eq!(builder.round, round + 1);
-            assert_eq!(
-                seats.get("t1", "reviewer").unwrap().state,
-                SeatState::Waiting
+            seats
+                .fill("t1", "verifier", &format!("v{round}"), Some("c/m4"), 7)
+                .unwrap();
+            let moves = settle_with(
+                &mut walk,
+                &recipe,
+                "verify",
+                Report {
+                    passed: true,
+                    findings: Some(1),
+                    ..Report::default()
+                },
             );
+            let next = seats.ended("t1", "verifier", true, false, "f1 confirmed", 8, &moves);
+            if round < 3 {
+                assert_eq!(next, Some(Next::Back("builder".into())), "round {round}");
+                assert_eq!(
+                    seats.get("t1", "builder").unwrap().returned_with.as_deref(),
+                    Some("f1 confirmed")
+                );
+            } else {
+                assert!(matches!(next, Some(Next::Failed(_))), "{next:?}");
+            }
         }
-        seats.fill("t1", "builder", "bn", Some("a/m1"), 2).unwrap();
-        let moves = settle(&mut walk, &recipe, "build", true);
-        seats
-            .ended("t1", "builder", true, false, "done", 3, &moves)
-            .unwrap();
-        seats.fill("t1", "reviewer", "rn", Some("b/m2"), 4).unwrap();
-        let moves = settle(&mut walk, &recipe, "review", false);
-        assert!(matches!(
-            seats.ended("t1", "reviewer", false, false, "still wrong", 5, &moves),
-            Some(Next::Failed(_))
-        ));
-        assert_eq!(
-            seats.get("t1", "reviewer").unwrap().state,
-            SeatState::Failed
-        );
     }
 
     #[test]

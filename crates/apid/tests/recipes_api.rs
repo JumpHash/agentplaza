@@ -28,7 +28,8 @@ fn the_engine_recipes_and_their_saved_versions_answer_on_a_scratch_hub() {
     assert_eq!(status, 200, "{change}");
     assert_eq!(change["engine"], json!(true));
     assert_eq!(change["recipe"]["steps"][1]["id"], json!("review"));
-    assert_eq!(change["recipe"]["edges"][1]["max"], json!(2));
+    assert_eq!(change["recipe"]["steps"][2]["id"], json!("verify"));
+    assert_eq!(change["recipe"]["edges"][2]["max"], json!(2));
 
     // A version must be newer than the one there is, and must check.
     let same = json!({ "toml": "id = \"change\"\nversion = 1\n[[steps]]\nid = \"build\"\nrole = \"builder\"\n" });
@@ -42,7 +43,7 @@ fn the_engine_recipes_and_their_saved_versions_answer_on_a_scratch_hub() {
     assert!(error_of(&body).contains("model list is empty"), "{body}");
 
     let newer = json!({ "toml": concat!(
-        "id = \"change\"\nversion = 2\n",
+        "id = \"change\"\nversion = 3\n",
         "[[steps]]\nid = \"build\"\nrole = \"builder\"\n",
         "[[steps]]\nid = \"review\"\nseat = \"reviewer\"\nrole = \"reviewer\"\nmodel = \"differ\"\n",
         "[[edges]]\nfrom = \"build\"\nto = \"review\"\nwhen = \"passed\"\n",
@@ -51,7 +52,7 @@ fn the_engine_recipes_and_their_saved_versions_answer_on_a_scratch_hub() {
     assert_eq!(status, 200, "{body}");
     let (status, now) = hub.call("GET", "/v1/recipes/change", None);
     assert_eq!(status, 200, "{now}");
-    assert_eq!(now["recipe"]["version"], json!(2));
+    assert_eq!(now["recipe"]["version"], json!(3));
     assert_eq!(now["recipe"]["edges"].as_array().unwrap().len(), 1);
 
     // Runs: none yet, and the routes for a run that is not there are 404.

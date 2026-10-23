@@ -92,7 +92,8 @@ pub fn group_of(name: &str) -> Option<Group> {
     Some(match name {
         "weft_status" | "weft_diff" | "weft_describe" | "weft_log" | "weft_show" | "weft_blame"
         | "weft_map" | "weft_change_tree" | "weft_touches" => Group::Weft,
-        "review_tree" | "review_score" | "review_verdict" | "review_spawn" => Group::Review,
+        "review_tree" | "review_score" | "review_verdict" | "review_spawn" | "finding_verify"
+        | "finding_contest" | "finding_arbitrate" => Group::Review,
         "symbols" | "definition" | "references" | "diagnostics" | "outline" => Group::Code,
         "run_tests" | "tests_select" => Group::Tests,
         "plaza_skills" | "plaza_skill_read" => Group::Skills,

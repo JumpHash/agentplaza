@@ -115,6 +115,19 @@ pub struct Step {
     pub budget_share: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// For a fixed fan-out: how many more items a large or risky change runs (8.2: a third sceptic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<Risk>,
+}
+
+/// What makes a change large or risky: more than `lines` changed lines, or a path one of `paths` matches. Then the
+/// step's fan-out grows by `extra` items.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Risk {
+    pub lines: u32,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    pub extra: u32,
 }
 
 fn one() -> f64 {
@@ -211,6 +224,9 @@ impl Recipe {
                 }
             } else if step.engine.is_none() {
                 return Err(format!("step {} needs a role or an engine", step.id));
+            }
+            if step.risk.is_some() && !matches!(step.fan_out, Fan::Count(_)) {
+                return Err(format!("step {}: a risk grows a fixed fan-out", step.id));
             }
             if let Fan::Named(named) = &step.fan_out
                 && !matches!(named.as_str(), "per_file" | "per_target" | "per_finding")
@@ -386,7 +402,8 @@ max = 2
         }
         let change = builtin_named("change").unwrap();
         assert_eq!(change.steps[1].seat_name(), "reviewer");
-        assert_eq!(change.edges[1].max, Some(2));
+        assert_eq!(change.steps[2].seat_name(), "verifier");
+        assert_eq!(change.edges[2].max, Some(2));
     }
 
     #[test]

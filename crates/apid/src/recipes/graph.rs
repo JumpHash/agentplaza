@@ -280,6 +280,16 @@ impl Walk {
         (walk, moves)
     }
 
+    /// Sets how many items a step runs, before it starts (the caller sized it from the change). A running step keeps
+    /// its items.
+    pub fn set_items(&mut self, step: &str, items: u32) {
+        if let Some(rec) = self.steps.get_mut(step)
+            && rec.state != StepState::Running
+        {
+            rec.items = items.max(1);
+        }
+    }
+
     /// A ready step starts: its session (or its item) is in flight. Only a running step settles.
     pub fn started(&mut self, step: &str) {
         if let Some(rec) = self.steps.get_mut(step)

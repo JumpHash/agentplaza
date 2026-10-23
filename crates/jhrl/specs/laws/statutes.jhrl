@@ -117,15 +117,15 @@ law "S-002b" "Reviewers may connect to registries and the hub's git" {
   when principal.role == "reviewer" and (resource.group == "package-registries" or resource.group == "hub-git")
 }
 
-law "S-002c" "Reviewers may submit verdicts on tasks" {
+law "S-002c" "Reviewers and verifiers may submit verdicts on tasks" {
   tier statute
   enforcement preventive
   severity info
-  statement "A reviewer may submit a review verdict on tasks."
+  statement "A reviewer or a verifier may submit a review verdict on tasks."
   permit review.submit
   principal is Agent
   resource is Task
-  when principal.role == "reviewer"
+  when principal.role == "reviewer" or principal.role == "verifier"
 }
 
 law "S-003a" "Planners may work in their own sandbox and read the hub's git" {

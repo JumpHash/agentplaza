@@ -23,6 +23,7 @@ fn roles() -> Value {
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
         "planner": role("planner", "Planner"),
         "curator": role("curator", "Curator"),
     } })
@@ -126,6 +127,19 @@ fn session_of(hub: &Hub, pid: &str, role: &str) -> u64 {
         .unwrap_or_else(|| panic!("a {role} session on {pid}: {found}\n{}", hub.log()))
 }
 
+/// The VM of the project's session on `seat` (`reviewer#1`, `verifier`, …), once it has one.
+fn cid_of_seat(hub: &Hub, pid: &str, seat: &str) -> u64 {
+    let found = hub.wait_for(&format!("/v1/sessions?project={pid}"), WAIT, |s| {
+        s.as_array()
+            .is_some_and(|s| s.iter().any(|s| s["seat"] == seat && s["cid"].is_u64()))
+    });
+    found
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == seat).cloned())
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a {seat} session on {pid}: {found}\n{}", hub.log()))
+}
+
 /// The project's memory view, once `want` holds for it (or when the wait runs out: the caller asserts on it).
 fn memory_when(hub: &Hub, pid: &str, want: impl Fn(&Value) -> bool) -> Value {
     hub.wait_for(&format!("/v1/projects/{pid}/memory"), WAIT, want)
@@ -209,17 +223,32 @@ fn a_finished_tasks_journal_lands_through_the_curator_and_the_owner_edits_the_me
     assert!(written.contains("Handover recorded"), "{written}");
     hub.work_done(builder, work, "done", "Drafted the notes.");
 
-    // The reviewer passes it: the change joins the landing queue and lands, and the task is done.
-    let reviewer = session_of(&hub, &pid, "reviewer");
-    let (status, _) = hub.guest(reviewer, "hello", json!({ "role": "reviewer", "vm": 1 }));
+    // The chain's review: two sceptic reviewers read it, then the verifier, which has nothing to prove. The change joins
+    // the landing queue and lands, and the task is done.
+    for seat in ["reviewer#1", "reviewer#2"] {
+        let reviewer = cid_of_seat(&hub, &pid, seat);
+        let (status, _) = hub.guest(reviewer, "hello", json!({ "role": "reviewer", "vm": 1 }));
+        assert_eq!(status, 200);
+        let (review, _) = first_work(&gateway, reviewer);
+        let reported = tool(
+            &hub,
+            reviewer,
+            review,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "Reads well." }),
+        );
+        assert!(reported.contains("reported"), "{reported}");
+    }
+    let verifier = cid_of_seat(&hub, &pid, "verifier");
+    let (status, _) = hub.guest(verifier, "hello", json!({ "role": "verifier", "vm": 3 }));
     assert_eq!(status, 200);
-    let (review, _) = first_work(&gateway, reviewer);
+    let (verify, _) = first_work(&gateway, verifier);
     let verdict = tool(
         &hub,
-        reviewer,
-        review,
+        verifier,
+        verify,
         "plaza_verdict",
-        json!({ "task": tid, "pass": true, "notes": "Reads well." }),
+        json!({ "task": tid, "pass": true, "notes": "Nothing to prove." }),
     );
     assert!(verdict.contains("passes"), "{verdict}");
 

@@ -1,8 +1,10 @@
-# The change recipe (PLAN 21.1): a builder's step, then a review on another model. A failed review sends the change
-# back to the builder with its findings, at most twice more (three reviews in all, as CHANGE_ROUNDS said).
+# The change recipe (PLAN 21.1, 8.2): a builder's step, then the adversarial chain. Two sceptic reviewers review the
+# sealed change on models other than the builder's, in parallel (a third on a large or risky change: `risk`). A verifier,
+# on a model no other seat of the task used where one exists, proves each finding or drops it. A confirmed finding
+# sends the builder back with it, and the chain re-reviews what changed, at most twice more (three rounds in all).
 id = "change"
 name = "Change"
-version = 1
+version = 2
 inputs = ["task"]
 outputs = ["change"]
 triggers = ["task.ready"]
@@ -19,7 +21,20 @@ id = "review"
 seat = "reviewer"
 role = "reviewer"
 model = "differ"
+fan_out = 2
 gate = ["passed"]
+
+[steps.risk]
+lines = 400
+paths = ["crates/apid/src/vault/**", "crates/apz-trust/**", "crates/weft/src/keys.rs"]
+extra = 1
+
+[[steps]]
+id = "verify"
+seat = "verifier"
+role = "verifier"
+model = "differ"
+gate = ["passed", "no findings"]
 
 [[edges]]
 from = "build"
@@ -28,6 +43,11 @@ when = "passed"
 
 [[edges]]
 from = "review"
+to = "verify"
+when = "passed"
+
+[[edges]]
+from = "verify"
 to = "build"
-when = "failed"
+when = "findings>0"
 max = 2
