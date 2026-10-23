@@ -1,11 +1,19 @@
-//! The hub's end of a node's tunnel (PLAN 17.4): one WebSocket per joined node, `/v1/nodes/{id}/tunnel`, carrying every
-//! stream between the hub and the node (apz_http::mux). The node dials it and keeps it up; the hub:
+//! The hub's end of a node's link (PLAN 17.4, Engine 6.2): one WebSocket per joined node, `/v1/nodes/{id}/tunnel`, dialled
+//! by the node (the tunnel), or the hub's own dial to the node's mesh address (`keep_mesh`, the mesh). Either carries every
+//! stream between the hub and the node (apz_http::mux):
 //! - sends each command queued for the node as a `command` stream (`nodes::Store::enqueue`) and stores its result
 //!   (`put_result`), so the callers that wait for results are unchanged;
 //! - opens `port` streams to a fork's port through the node (`nodes::Store::open_port`): a terminal's bytes, a model
 //!   call's deltas;
 //! - answers the node's `request` streams (heartbeats, results, metrics, the agents' calls) through the same gate and
-//!   routes as an HTTP request, with the node's signature headers as they were sent.
+//!   routes as an HTTP request, with the node's signature headers as they were sent;
+//! - pings the node every few seconds and records the round trip and any failure (`Store::note_latency`, `note_error`),
+//!   which the Nodes screen shows.
+//!
+//! A node's path (`Node::path`) says which link the hub uses: `tunnel` (the node's dial; a session ends when the path
+//! becomes `mesh`) or `mesh` (the hub's dial to the node's mesh address, `keep_mesh`, with a bearer and the node's key:
+//! the node answers a `hello` by signing the hub's nonce; a session ends when the path becomes `tunnel`). The forks on
+//! the node are the same either way: only the hub's way to them changes.
 //!
 //! The handshake is the caller's to authenticate (the route checks the node's signature before [`open`]).
 
@@ -13,14 +21,17 @@ use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use apz_http::client::Target;
 use apz_http::mux::{Mux, Side, Stream};
-use apz_http::ws::{self, Limits, Origins, Socket};
+use apz_http::ws::{self, Limits, Origins};
 use apz_http::{Body, Request, Response};
+use apz_trust::node::{H_NONCE, H_SIG, H_TS};
 use serde_json::{Value, json};
 
-use crate::nodes::{Command, CommandResult, Store};
+use crate::nodes::{Command, CommandResult, Node, Store, check_freshness};
+use crate::state::App;
 
 /// Answers a request a node sent over its tunnel: the hub's gate and routes, as they answer an HTTP request.
 pub type Dispatch = Arc<dyn Fn(&Request) -> Response + Send + Sync>;
@@ -33,32 +44,61 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(90);
 const QUEUE_WAIT_MS: u64 = 250;
 /// How often a stream acceptor looks at whether the tunnel is still up.
 const ACCEPT_WAIT: Duration = Duration::from_millis(500);
+/// How often a session pings its node, and how long a ping may take.
+const PING_EVERY: Duration = Duration::from_secs(5);
+const PING_TIMEOUT: Duration = Duration::from_secs(5);
+/// The keeper's dial: how long it may take to connect, to prove the node, and its retry back-off (1 s doubling to 30 s).
+const MESH_CONNECT: Duration = Duration::from_secs(10);
+const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
+const MESH_RETRY_MIN: Duration = Duration::from_secs(1);
+const MESH_RETRY_MAX: Duration = Duration::from_secs(30);
+/// How often the hub looks for nodes on the mesh that have no keeper yet.
+const MESH_SCAN: Duration = Duration::from_secs(2);
 
 /// The tunnel's handshake, after the route has authenticated the node: the WebSocket upgrade. The socket then runs the
-/// session on its own thread until the node disconnects.
+/// session on its own thread until the node disconnects. A node on the mesh is not dialled here: 409.
 pub fn open(req: &Request, node: String, store: Arc<Store>, dispatch: Dispatch) -> Response {
+    if store.on_mesh(&node) {
+        return Response::json(
+            409,
+            &json!({"error": "this node is on the mesh", "path": "mesh"}),
+        );
+    }
     let peer = req.peer;
     ws::accept(req, Origins::None, None, Limits::default(), move |socket| {
-        serve(socket, node, peer, store, dispatch)
+        session(
+            Mux::new(socket, Side::Acceptor),
+            node,
+            peer,
+            store,
+            dispatch,
+            false,
+        )
     })
 }
 
-/// The session: accepts the node's streams on a thread of their own, and sends the node its queued commands until the
-/// tunnel ends. Then the node's tunnel is forgotten, so the queue waits for its next one.
-fn serve(
-    socket: Socket,
+/// Runs one link to a node: serves its streams, sends its queued commands, and pings it, until the link ends or the
+/// node's path leaves this link (`mesh` says which path this link is). Then the link is forgotten, so the queue waits
+/// for the node's next link.
+fn session(
+    mux: Arc<Mux>,
     node: String,
     peer: Option<IpAddr>,
     store: Arc<Store>,
     dispatch: Dispatch,
+    mesh: bool,
 ) {
-    let mux = Mux::new(socket, Side::Acceptor);
     store.set_tunnel(&node, Arc::clone(&mux));
     {
         let (mux, dispatch) = (Arc::clone(&mux), Arc::clone(&dispatch));
-        thread::spawn(move || accept_streams(&mux, peer, &dispatch));
+        let (store, node) = (Arc::clone(&store), node.clone());
+        thread::spawn(move || accept_streams(&mux, peer, &dispatch, &store, &node, mesh));
     }
-    while mux.alive() {
+    {
+        let (mux, store, node) = (Arc::clone(&mux), Arc::clone(&store), node.clone());
+        thread::spawn(move || ping_forever(&mux, &store, &node, mesh));
+    }
+    while mux.alive() && store.on_mesh(&node) == mesh {
         for command in store.take(&node, QUEUE_WAIT_MS) {
             send_command(&mux, &store, &node, command);
         }
@@ -66,8 +106,16 @@ fn serve(
     store.clear_tunnel(&node, &mux);
 }
 
-/// Answers each stream the node opens, until the tunnel ends.
-fn accept_streams(mux: &Mux, peer: Option<IpAddr>, dispatch: &Dispatch) {
+/// Answers each stream the node opens, until the link ends or its path leaves this session. Returning matters: the
+/// thread holds the connection, which closes only when its last holder lets go (`Mux` closes on drop).
+fn accept_streams(
+    mux: &Mux,
+    peer: Option<IpAddr>,
+    dispatch: &Dispatch,
+    store: &Store,
+    node: &str,
+    mesh: bool,
+) {
     loop {
         match mux.accept(ACCEPT_WAIT) {
             Ok(Some(stream)) => {
@@ -75,13 +123,167 @@ fn accept_streams(mux: &Mux, peer: Option<IpAddr>, dispatch: &Dispatch) {
                 thread::spawn(move || answer(&stream, peer, &dispatch));
             }
             Ok(None) => {
-                if !mux.alive() {
+                if !mux.alive() || store.on_mesh(node) != mesh {
                     return;
                 }
             }
             Err(_) => return,
         }
     }
+}
+
+/// Pings the node every [`PING_EVERY`] while the link is up on its path: the round trip is the link's latency, and a
+/// ping that fails is an error on the link.
+fn ping_forever(mux: &Mux, store: &Store, node: &str, mesh: bool) {
+    while mux.alive() && store.on_mesh(node) == mesh {
+        let started = Instant::now();
+        match ping(mux) {
+            Ok(()) => store.note_latency(node, started.elapsed()),
+            Err(reason) => store.note_error(node, &format!("ping: {reason}")),
+        }
+        thread::sleep(PING_EVERY);
+    }
+}
+
+/// One ping: a `ping` stream the node finishes at once.
+fn ping(mux: &Mux) -> Result<(), String> {
+    let stream = mux
+        .open(br#"{"kind":"ping"}"#)
+        .map_err(|err| err.to_string())?;
+    let _ = stream.finish();
+    stream
+        .read_all(PING_TIMEOUT)
+        .map(|_| ())
+        .map_err(|err| err.to_string())
+}
+
+/// Keeps the hub's dial to a node on the mesh while the node's path is `mesh`: dials its mesh address with the mesh
+/// bearer, proves the node with a `hello`, serves the session, and dials again when it ends. Returns when the node is
+/// no longer on the mesh, or is revoked or gone; the scan (`spawn_mesh`) starts it again when the node comes back.
+pub fn keep_mesh(store: Arc<Store>, node: String, dispatch: Dispatch) {
+    let mut backoff = MESH_RETRY_MIN;
+    loop {
+        let Some(found) = store.get(&node).filter(|n| n.on_mesh() && !n.revoked) else {
+            return;
+        };
+        let target = Target {
+            base: format!("http://{}", found.mesh_address),
+            pin: None,
+            bearer: Some(found.mesh_token.clone()),
+            headers: Vec::new(),
+        };
+        match ws::connect(&target, "/v1/mesh", None, MESH_CONNECT, Limits::default()) {
+            Ok(socket) => {
+                let mux = Mux::new(socket, Side::Dialer);
+                match hello(&mux, &node, &store) {
+                    Ok(()) => {
+                        backoff = MESH_RETRY_MIN;
+                        session(
+                            mux,
+                            node.clone(),
+                            None,
+                            Arc::clone(&store),
+                            dispatch.clone(),
+                            true,
+                        );
+                    }
+                    Err(reason) => store.note_error(
+                        &node,
+                        &format!("the mesh dial did not prove the node's key: {reason}"),
+                    ),
+                }
+            }
+            Err(err) => store.note_error(
+                &node,
+                &format!("the mesh does not reach {}: {err}", found.mesh_address),
+            ),
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(MESH_RETRY_MAX);
+    }
+}
+
+/// The node's key on top of the mesh's: the hub sends a fresh nonce on a `hello` stream, and the node answers with its
+/// signature over it (`apz_trust::node`, method `HELLO`). Only the node's key makes that signature.
+fn hello(mux: &Mux, node: &str, store: &Store) -> Result<(), String> {
+    let nonce = apz_trust::b64(&apz_trust::random::<16>());
+    let stream = mux
+        .open(
+            json!({"kind": "hello", "nonce": nonce})
+                .to_string()
+                .as_bytes(),
+        )
+        .map_err(|err| err.to_string())?;
+    let _ = stream.finish();
+    let bytes = stream
+        .read_all(HELLO_TIMEOUT)
+        .map_err(|err| err.to_string())?;
+    let answer: Value =
+        serde_json::from_slice(&bytes).map_err(|_| "the node's answer is not JSON".to_string())?;
+    let field = |name: &str| {
+        answer[name]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("the answer has no {name}"))
+    };
+    let ts: u64 = field(H_TS)?
+        .parse()
+        .map_err(|_| "the answer's timestamp is not a number".to_string())?;
+    check_freshness(ts, apz_plaza::now_ms())?;
+    let public = store
+        .get(node)
+        .map(|n| n.public_key)
+        .ok_or("the node is not known")?;
+    let path = format!("/v1/nodes/{node}/hello");
+    let ok = apz_trust::node::verify(
+        &public,
+        "HELLO",
+        &path,
+        ts,
+        &field(H_NONCE)?,
+        nonce.as_bytes(),
+        &field(H_SIG)?,
+    );
+    if ok {
+        Ok(())
+    } else {
+        Err("bad signature".into())
+    }
+}
+
+/// The node's link as the node asks for it (`GET /v1/nodes/{id}/link`, signed by the node): its path, and on the mesh the
+/// bearer its dial presents.
+pub fn link_of(node: &Node) -> Value {
+    if node.on_mesh() {
+        json!({"path": "mesh", "mesh_token": node.mesh_token})
+    } else {
+        json!({"path": "tunnel"})
+    }
+}
+
+/// Starts the keeper of each node whose path is the mesh, when it has none: at start, and again each time a node's path
+/// comes back to the mesh. Runs for the life of the hub.
+pub fn spawn_mesh(app: Arc<App>) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(MESH_SCAN);
+            for node in app.nodes.list() {
+                if node.revoked || !node.on_mesh() || !app.nodes.start_keeper(&node.id) {
+                    continue;
+                }
+                match crate::nodes::dispatch(&app) {
+                    Some(dispatch) => {
+                        let (store, id) = (Arc::clone(&app.nodes), node.id.clone());
+                        thread::spawn(move || {
+                            keep_mesh(Arc::clone(&store), id.clone(), dispatch);
+                            store.end_keeper(&id);
+                        });
+                    }
+                    None => app.nodes.end_keeper(&node.id),
+                }
+            }
+        }
+    });
 }
 
 /// Sends one queued command as a `command` stream, and stores its result when the node answers. A command the tunnel
@@ -255,6 +457,27 @@ mod tests {
         addr
     }
 
+    /// A fork's port that says which connection it is (`fork 1`, `fork 2`, ...) and echoes the rest: a fork that
+    /// kept running answers with the next number, a restarted one starts again at 1.
+    fn counting_fork() -> std::net::SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let addr = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let mut connections = 0u64;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                connections += 1;
+                let line = format!("fork {connections}\n");
+                thread::spawn(move || {
+                    let _ = stream.write_all(line.as_bytes());
+                    let mut buf = [0u8; 1024];
+                    while matches!(std::io::Read::read(&mut stream, &mut buf), Ok(n) if n > 0) {}
+                });
+            }
+        });
+        addr
+    }
+
     /// A fork's port that reads the model's deltas in order, checks them, and answers with how many arrived.
     fn model_fork() -> (std::net::SocketAddr, mpsc::Receiver<Result<usize, String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
@@ -301,15 +524,46 @@ mod tests {
         (addr, result)
     }
 
+    /// The first bytes a stream receives, up to the first line break.
+    fn first_line(stream: &Stream) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        while !bytes.contains(&b'\n') {
+            match stream.recv(Duration::from_secs(5)) {
+                Some(apz_http::mux::Event::Data(more)) => bytes.extend_from_slice(&more),
+                other => panic!("the fork did not answer: {other:?}"),
+            }
+        }
+        bytes
+    }
+
+    /// A free port on `host`.
+    fn free_port(host: &str) -> u16 {
+        TcpListener::bind(format!("{host}:0"))
+            .expect("binds")
+            .local_addr()
+            .expect("address")
+            .port()
+    }
+
     /// The end-to-end test: a hub (the tunnel's route behind TLS, pinned by the node) and one node link over loopback.
-    /// One test, because the node link keeps its tunnel in one process-wide slot.
+    /// The node's link runs as the node runs it (`apz_link::run::link`), so it redials and answers the mesh the way it
+    /// does in production. One test, because the node link keeps its tunnel and mesh state in process-wide slots.
     #[test]
-    fn the_tunnel_carries_a_terminal_a_model_call_commands_and_requests_over_loopback_tls() {
+    fn a_node_carries_its_streams_over_the_tunnel_then_the_mesh_and_keeps_its_forks() {
         // The hub's certificate and the node's identity, pinned as a join would pin them.
         let pair = apz_trust::tls::self_signed(&["localhost".to_string()]).expect("a certificate");
         let pin = apz_trust::tls::fingerprint(&pair.cert_pem).expect("a pin");
         let tls = apz_trust::tls::server_config(&pair).expect("a server config");
-        let node_key = NodeKey::generate();
+        let node_key = Arc::new(NodeKey::generate());
+        // The test's "mesh" is a second loopback listener the hub dials directly: on Linux, where all of 127/8 is loopback,
+        // a second address (127.0.0.2); on macOS only 127.0.0.1 is routed without an alias (an alias would change the
+        // machine's network settings), so there it is a second port on 127.0.0.1.
+        let mesh_host = if cfg!(target_os = "linux") {
+            "127.0.0.2"
+        } else {
+            "127.0.0.1"
+        };
+        let mesh_addr = format!("{mesh_host}:{}", free_port(mesh_host));
         let store = Arc::new(Store::holding(vec![Node {
             id: "n1".into(),
             name: "box".into(),
@@ -322,6 +576,9 @@ mod tests {
             draining: false,
             revoked: false,
             address: String::new(),
+            path: "tunnel".into(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }]));
 
         // The hub's requests from the node are answered only when the node's signature checks out.
@@ -347,24 +604,33 @@ mod tests {
         });
         let route_store = Arc::clone(&store);
         let route_dispatch = Arc::clone(&dispatch);
-        let router: Router<()> = Router::new().get("/v1/nodes/n1/tunnel", move |_, req, _| {
-            match route_store.authenticate(req, apz_plaza::now_ms()) {
-                Ok(node) => open(
-                    req,
-                    node.id,
-                    Arc::clone(&route_store),
-                    Arc::clone(&route_dispatch),
-                ),
-                Err(reason) => Response::error(401, &reason),
-            }
-        });
+        let link_store = Arc::clone(&store);
+        let router: Router<()> = Router::new()
+            .get("/v1/nodes/n1/tunnel", move |_, req, _| {
+                match route_store.authenticate(req, apz_plaza::now_ms()) {
+                    Ok(node) => open(
+                        req,
+                        node.id,
+                        Arc::clone(&route_store),
+                        Arc::clone(&route_dispatch),
+                    ),
+                    Err(reason) => Response::error(401, &reason),
+                }
+            })
+            .get("/v1/nodes/n1/link", move |_, req, _| {
+                match link_store.authenticate(req, apz_plaza::now_ms()) {
+                    Ok(node) => Response::json(200, &link_of(&node)),
+                    Err(reason) => Response::error(401, &reason),
+                }
+            });
         let hub = Server::bind(0)
             .expect("an ephemeral port")
             .tls(tls)
             .spawn(move |request| router.handle(&(), request))
             .expect("serves");
 
-        // A fake noded for the command, and a fork's terminal and model ports, reached through the node's relay and vsockd's inbound listener.
+        // A fake noded for the command, and a fork's terminal, model and counting ports, reached through the node's
+        // relay and vsockd's inbound listener.
         let noded_router: Router<()> = Router::new().get("/v1/runs", |_, _, _| {
             Response::json(200, &json!({"runs": []}))
         });
@@ -373,26 +639,30 @@ mod tests {
             .spawn(move |request| noded_router.handle(&(), request))
             .expect("serves");
         let terminal = echo_fork();
+        let counted = counting_fork();
         let (model, model_result) = model_fork();
         // vsockd's inbound listener, with the table of what runs serve and where their guests answer on loopback.
         let mut table = apz_link::inbound::Table::default();
         table.served.lock().unwrap().insert((1000, 7681));
+        table.served.lock().unwrap().insert((1000, 7682));
         table.served.lock().unwrap().insert((1000, 7690));
         table.guests.insert((1000, 7681), terminal);
+        table.guests.insert((1000, 7682), counted);
         table.guests.insert((1000, 7690), model);
         let inbound_listener = TcpListener::bind("127.0.0.1:0").expect("binds");
         let inbound_port = inbound_listener.local_addr().expect("address").port();
         let table = Arc::new(table);
         thread::spawn(move || apz_link::inbound::serve(inbound_listener, table.clone(), table));
 
-        let identity = Identity {
+        let identity = Arc::new(Identity {
             hub_url: format!("https://localhost:{}", hub.port()),
             pin: apz_trust::b64(&pin),
             node_id: "n1".into(),
             cid_base: REMOTE_CID_BASE,
             cid_count: CIDS_PER_NODE,
             hub_name: "test".into(),
-        };
+            mesh: Some(mesh_addr.clone()),
+        });
         let local = Local {
             noded: noded.port(),
             vsockd: 0,
@@ -401,9 +671,16 @@ mod tests {
             inbound: inbound_port,
         };
 
-        // The node dials the hub, and serves the hub's streams.
-        let mux = node_tunnel::connect(&identity, &node_key).expect("the tunnel opens over TLS");
-        let serving = thread::spawn(move || node_tunnel::serve(mux, local));
+        // The node runs its link: it dials the hub, and listens at its mesh address for the hub's dial.
+        {
+            let (identity, key, local, mesh) = (
+                Arc::clone(&identity),
+                Arc::clone(&node_key),
+                local.clone(),
+                mesh_addr.clone(),
+            );
+            thread::spawn(move || apz_link::run::link(identity, key, local, Some(mesh.as_str())));
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         while store.tunnel("n1").is_none() {
             assert!(Instant::now() < deadline, "the hub never saw the tunnel");
@@ -515,7 +792,84 @@ mod tests {
         assert_eq!(body["bytes"], json!(2));
         assert_eq!(body["query"], json!("x=1"));
 
+        // A fork on the tunnel: its first connection is its first answer.
+        assert_eq!(
+            first_line(&store.open_port("n1", 1000, 7682).expect("opens")),
+            b"fork 1\n"
+        );
+
+        // The switch to the mesh: the hub's path to the node changes, and the node's forks stay where they were.
+        // Only the tunnel's identity is kept: holding its Arc would keep the connection open after the switch.
+        let tunnel_before = Arc::as_ptr(&store.tunnel("n1").expect("the tunnel is up")) as usize;
+        store
+            .set_path("n1", "mesh", &mesh_addr)
+            .expect("the path changes");
+        {
+            let (store, dispatch) = (Arc::clone(&store), Arc::clone(&dispatch));
+            thread::spawn(move || keep_mesh(store, "n1".to_string(), dispatch));
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !store
+            .tunnel("n1")
+            .is_some_and(|mux| Arc::as_ptr(&mux) as usize != tunnel_before)
+        {
+            assert!(
+                Instant::now() < deadline,
+                "the mesh never took the node: {:?}",
+                store.link("n1")
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(store.get("n1").expect("the node").path, "mesh");
+
+        // The fork kept its state: its second connection is served on the mesh by the same process.
+        assert_eq!(
+            first_line(
+                &store
+                    .open_port("n1", 1000, 7682)
+                    .expect("opens on the mesh")
+            ),
+            b"fork 2\n"
+        );
+        // The terminal answers on the mesh as it did on the tunnel.
+        let terminal_stream = store
+            .open_port("n1", 1000, 7681)
+            .expect("a terminal stream opens on the mesh");
+        terminal_stream.send(b"mesh\n").expect("sends");
+        let mut echoed = Vec::new();
+        while echoed.len() < 5 {
+            match terminal_stream.recv(Duration::from_secs(5)) {
+                Some(apz_http::mux::Event::Data(bytes)) => echoed.extend_from_slice(&bytes),
+                other => panic!("the terminal did not echo on the mesh: {other:?}"),
+            }
+        }
+        assert_eq!(echoed, b"mesh\n");
+        terminal_stream.finish().expect("finishes");
+
+        // The node's own requests travel the mesh too, and the link reports its latency.
+        let target = identity
+            .signed(&node_key, "POST", "/v1/nodes/n1/heartbeat", b"{}")
+            .expect("signs");
+        let reply = node_tunnel::request(
+            &target,
+            "POST",
+            "/v1/nodes/n1/heartbeat",
+            Some(b"{}"),
+            Duration::from_secs(10),
+        )
+        .expect("the hub answers over the mesh");
+        assert_eq!(reply.status, 200);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while store.link("n1").latency_ms.is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "no latency: {:?}",
+                store.link("n1")
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(store.link("n1").connected);
+
         drop(hub);
-        drop(serving);
     }
 }

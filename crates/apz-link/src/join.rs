@@ -16,10 +16,21 @@ use crate::identity::{self, Identity};
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Joins the hub named in `token`. `name` is this node's display name, `machine` its summary
-/// (cpus, memory_mib, host, version). Refuses when `dir` already holds an identity.
-pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Identity, String> {
+/// (cpus, memory_mib, host, version). `mesh` is the node's address on a mesh (`--mesh`): the hub then
+/// reaches the node there (path `mesh`), else the node keeps its tunnel (path `tunnel`). Refuses when
+/// `dir` already holds an identity.
+pub fn join(
+    token: &str,
+    name: &str,
+    machine: Value,
+    dir: &Path,
+    mesh: Option<&str>,
+) -> Result<Identity, String> {
     if dir.join("node.json").exists() {
         return Err(format!("already joined: {}", dir.display()));
+    }
+    if let Some(address) = mesh {
+        check_mesh_address(address)?;
     }
     let token = JoinToken::decode(token)?;
     let now = SystemTime::now()
@@ -60,6 +71,8 @@ pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Ident
         "public_key": key.public_b64(),
         "name": name,
         "machine": machine,
+        "path": if mesh.is_some() { "mesh" } else { "tunnel" },
+        "mesh_address": mesh.unwrap_or_default(),
     });
     let (status, body) = request_json(&target, "POST", "/v1/nodes/join", Some(&request), TIMEOUT)
         .map_err(|e| format!("cannot reach the hub: {e}"))?;
@@ -92,9 +105,21 @@ pub fn join(token: &str, name: &str, machine: Value, dir: &Path) -> Result<Ident
         cid_base,
         cid_count,
         hub_name,
+        mesh: mesh.map(str::to_string),
     };
     identity::save(dir, &identity, &key)?;
     Ok(identity)
+}
+
+/// A mesh address is `host:port` with a port: what the node listens on and the hub dials.
+pub fn check_mesh_address(address: &str) -> Result<(), String> {
+    let (host, port) = address
+        .rsplit_once(':')
+        .ok_or("--mesh needs host:port (the node's address on the mesh)")?;
+    if host.is_empty() || port.parse::<u16>().is_err() {
+        return Err("--mesh needs host:port (the node's address on the mesh)".into());
+    }
+    Ok(())
 }
 
 /// The hub's `error` field when it sent one, else its status code.
@@ -159,7 +184,7 @@ mod tests {
         let token =
             JoinToken::issue("https://hub.example:7443", [0; 32], now() - 1000, 900).encode();
         let dir = scratch("expired");
-        let err = join(&token, "node", json!({}), &dir).unwrap_err();
+        let err = join(&token, "node", json!({}), &dir, None).unwrap_err();
         assert_eq!(err, "this join code has expired");
         assert!(!dir.exists());
     }
@@ -170,9 +195,18 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("node.json"), "{}").unwrap();
         let token = JoinToken::issue("https://hub.example:7443", [0; 32], now(), 900).encode();
-        let err = join(&token, "node", json!({}), &dir).unwrap_err();
+        let err = join(&token, "node", json!({}), &dir, None).unwrap_err();
         assert!(err.starts_with("already joined: "), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_mesh_address_is_host_and_port() {
+        assert!(check_mesh_address("100.64.0.7:7447").is_ok());
+        assert!(check_mesh_address("node.tailnet.ts.net:7447").is_ok());
+        for bad in ["100.64.0.7", ":7447", "host:port", "host:70000"] {
+            assert!(check_mesh_address(bad).is_err(), "{bad}");
+        }
     }
 
     #[cfg(target_os = "linux")]

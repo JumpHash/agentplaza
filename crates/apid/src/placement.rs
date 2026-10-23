@@ -1205,6 +1205,9 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            path: crate::nodes::TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }
     }
 
@@ -1429,6 +1432,9 @@ mod tests {
                 draining: false,
                 revoked: false,
                 address: String::new(),
+                path: crate::nodes::TUNNEL.to_string(),
+                mesh_address: String::new(),
+                mesh_token: String::new(),
             }]);
             let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
             assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");

@@ -8,6 +8,7 @@
 //! - A refused signature (403) stops the loop with an error: the node was revoked.
 
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
@@ -22,7 +23,7 @@ use flate2::write::DeflateEncoder;
 use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
-use crate::tunnel::{self, Connect};
+use crate::tunnel::{self, Connect, Who};
 use crate::{forward, join};
 
 /// How often the node reports itself.
@@ -123,9 +124,11 @@ fn reply_body(bytes: &[u8]) -> Value {
 }
 
 /// Runs the node until revoked or a fatal error: starts the forwarder, the heartbeat thread and
-/// the command loop. Transient hub errors are retried with backoff (1 s doubling to 30 s).
-pub fn run(dir: &Path, local: Local) -> Result<(), String> {
+/// the link. `mesh` is the node's address on a mesh (`run --mesh`), else the one it joined with. Transient
+/// hub errors are retried with backoff (1 s doubling to 30 s).
+pub fn run(dir: &Path, local: Local, mesh: Option<String>) -> Result<(), String> {
     let (identity, key) = identity::load(dir)?;
+    let mesh = mesh.or_else(|| identity.mesh.clone());
     let token = identity::internal_token(dir)?;
     // The file noded and vsockd are started with: each call to them re-reads it.
     let local = Local {
@@ -152,6 +155,29 @@ pub fn run(dir: &Path, local: Local) -> Result<(), String> {
     let _live = {
         let (identity, key, local) = (identity.clone(), key.clone(), local.clone());
         thread::spawn(move || live_forever(identity, key, local))
+    };
+    link(identity, key, local, mesh.as_deref())
+}
+
+/// The node's link to its hub until revoked: the mesh listener when the node has a mesh address (the hub dials it
+/// when it holds the node on the mesh), and the tunnel the node dials otherwise.
+pub fn link(
+    identity: Arc<Identity>,
+    key: Arc<NodeKey>,
+    local: Local,
+    mesh: Option<&str>,
+) -> Result<(), String> {
+    let _listener = match mesh {
+        Some(address) => {
+            let addr: SocketAddr = address
+                .parse()
+                .map_err(|_| format!("--mesh {address}: not an address (host:port)"))?;
+            let who = Who::new(&identity, &key);
+            let listener = tunnel::listen(addr, who, local.clone())
+                .map_err(|err| format!("the mesh listener did not start on {addr}: {err}"))?;
+            Some(listener)
+        }
+        None => None,
     };
     command_loop(&identity, &key, &local)
 }
@@ -415,21 +441,33 @@ fn deliver(identity: &Identity, key: &NodeKey, path: &str, result: &Value) -> Re
 
 /// The node's link to the hub. The tunnel is opened and served until it ends; a hub that predates it gets one long
 /// poll for commands (results posted as before) between tries at the tunnel. A refused upgrade is a revoked node.
-fn command_loop(identity: &Identity, key: &NodeKey, local: &Local) -> Result<(), String> {
+fn command_loop(identity: &Identity, key: &Arc<NodeKey>, local: &Local) -> Result<(), String> {
     let mut backoff = BACKOFF_MIN;
     let mut failing = false;
     loop {
+        // A mesh session is up: the hub's dial serves this node, and no tunnel is dialled meanwhile.
+        if tunnel::mesh_up() {
+            thread::sleep(BACKOFF_MIN);
+            continue;
+        }
         match tunnel::connect(identity, key) {
             Ok(mux) => {
                 eprintln!("connected to the hub");
                 failing = false;
                 backoff = BACKOFF_MIN;
-                tunnel::serve(mux, local.clone());
+                tunnel::serve(mux, local.clone(), Who::new(identity, key), false);
                 eprintln!("the tunnel to the hub ended; reconnecting");
                 thread::sleep(BACKOFF_MIN);
             }
             Err(Connect::Revoked) => return Err(revoked()),
             Err(Connect::Legacy) => poll_once(identity, key, local)?,
+            Err(Connect::Moved) => {
+                match tunnel::fetch_link(identity, key) {
+                    Ok(path) => eprintln!("the hub holds this node on its {path} path"),
+                    Err(message) => eprintln!("cannot read this node's path at the hub: {message}"),
+                }
+                thread::sleep(BACKOFF_MIN);
+            }
             Err(Connect::Failed(message)) => {
                 if !failing {
                     eprintln!("retrying the hub: {message}");

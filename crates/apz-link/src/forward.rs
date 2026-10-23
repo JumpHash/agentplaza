@@ -223,6 +223,7 @@ mod tests {
             cid_base: 3,
             cid_count: 1,
             hub_name: String::new(),
+            mesh: None,
         }
     }
 
