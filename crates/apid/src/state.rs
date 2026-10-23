@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::upstream::Upstream;
 use crate::{agents, api, events, plaza, providers, scheduler, settings, spawned, transcript};
@@ -143,10 +142,8 @@ pub struct App {
     pub maintenance: crate::maintenance::Store,
     /// Where each project runs.
     pub environments: crate::environments::Store,
-    /// The review graph's runs and recipes (review_graph), at `<state-dir>/review-graph.json`.
+    /// The review graph's runs and recipes (review_graph), kept in plaza.db; the change trees are in the object store.
     pub reviews: crate::review_graph::Reviews,
-    /// Postgres, the plaza's state of record (memory is the working copy).
-    pub db: Arc<crate::db::Db>,
     /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
     /// components' tables equal to it.
     pub store: Arc<apz_store::Store>,
@@ -214,6 +211,10 @@ pub struct App {
     pub models: crate::foundry::registry::Models,
     /// The Hugging Face import queue and the owner's token (foundry/hf_import.rs).
     pub hf: crate::foundry::hf_import::Imports,
+    /// The owner's egress credential rules (egress_inject.rs).
+    pub egress_rules: crate::egress_inject::Store,
+    /// The E2B templates and their builds (e2b_tpl.rs).
+    pub e2b_templates: crate::e2b_tpl::Templates,
     /// Operator-spawned agents and model overrides (plaza.db, the `spawned` table).
     pub spawned: spawned::Store,
     pub transcripts: transcript::Store,
@@ -243,9 +244,8 @@ impl App {
         // The same file the token was just written to: noded and vsockd are told it, and every call
         // this app makes to them presents it.
         let internal = apz_http::auth::InternalToken::file(config.state_dir.join("internal.token"));
-        let hub_auth =
-            crate::hub_auth::Hub::load(&config.state_dir, &config.public_url, config.tls)
-                .map_err(std::io::Error::other)?;
+        let hub_auth = crate::hub_auth::Hub::new(&config.state_dir, &config.public_url, config.tls)
+            .map_err(std::io::Error::other)?;
         let foundry_dir = config.state_dir.join("foundry");
         // The store first: it takes the folder's lock, so a second hub on this folder stops here.
         let store = Arc::new(crate::store::open(&config.state_dir).map_err(std::io::Error::other)?);
@@ -254,7 +254,6 @@ impl App {
             apz_blobs::Blobs::open(&config.state_dir.join("blobs"))
                 .map_err(std::io::Error::other)?,
         );
-        let db = Arc::new(crate::db::Db::connect(&env));
         let prompt_store: Arc<dyn crate::prompts::PromptStore> = Arc::new(
             crate::prompts::store::SqlitePrompts::new(Arc::clone(store.db(crate::store::PLAZA))),
         );
@@ -285,12 +284,11 @@ impl App {
             project_settings: Default::default(),
             harness: crate::harness_control::Store::default(),
             weft: crate::weft_hub::Weft::default(),
-            platforms: crate::platforms::Store::load(&config.state_dir),
+            platforms: crate::platforms::Store::new(),
             maintenance: Default::default(),
             environments: crate::environments::Store::default()
                 .with_generations(Arc::clone(&generations)),
-            reviews: crate::review_graph::Reviews::load(&config.state_dir),
-            db: Arc::clone(&db),
+            reviews: crate::review_graph::Reviews::new(Arc::clone(&blobs)),
             store: Arc::clone(&store),
             blobs: Arc::clone(&blobs),
             saved: crate::store::saver::Ledger::default(),
@@ -353,14 +351,16 @@ impl App {
                 &config.state_dir,
             )),
             providers: providers::Store::new(Arc::clone(&vault)),
-            engines: crate::engine_instances::Store::load(&config.state_dir)?
+            engines: crate::engine_instances::Store::new(&config.state_dir)
                 .with_generations(Arc::clone(&generations)),
-            usage_providers: crate::usage_providers::Store::load(&config.state_dir)?,
+            usage_providers: crate::usage_providers::Store::default(),
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             spawned: spawned::Store::default(),
             agents: agents::Roster::default(),
             models: crate::foundry::registry::Models::open(&config.state_dir),
-            hf: crate::foundry::hf_import::Imports::open(&config.state_dir),
+            hf: crate::foundry::hf_import::Imports::new(&config.state_dir),
+            egress_rules: Default::default(),
+            e2b_templates: Default::default(),
             transcripts: transcript::Store::default(),
             work: scheduler::Queues::default(),
             plaza: plaza::Plaza::new(),
@@ -394,6 +394,9 @@ impl App {
         for problem in crate::store::saver::load(&app) {
             eprintln!("apid: store: {problem}");
         }
+        // The egress rules' consumers and the E2B builds the hub stopped during are set up from the loaded store.
+        crate::egress_inject::register_consumers(&app);
+        crate::e2b_tpl::recover(&app);
         // A VM's transcript entries are keyed by the session it works in.
         let sessions_of = Arc::downgrade(&app);
         app.transcripts.key_by_session(Box::new(move |cid| {
@@ -404,8 +407,7 @@ impl App {
         // A budget hold is written through to plaza.db, acknowledged before its call is sent (budgets.rs).
         app.budgets
             .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
-        // Postgres, for the components not yet in the store.
-        crate::db::restore_all(&app);
+        restore_transcripts(&app);
         // The built-in skills join the skill library (one the library already holds is left alone).
         if let Err(why) = crate::skills::seed_builtins(&app.skills, "owner", apz_plaza::now_ms()) {
             eprintln!("apid: cannot seed the built-in skills: {why}");
@@ -435,7 +437,6 @@ impl App {
         crate::shares::relay::start(Arc::clone(&app));
         // Promoted models come back on the roster with their CIDs.
         app.models.revive(&app.agents);
-        crate::db::spawn_writer(Arc::clone(&app));
         crate::store::saver::spawn(Arc::clone(&app));
         spawn_component_savers(Arc::clone(&app));
         // A stop signal (SIGTERM, Ctrl-C) writes the state once more, in order, then exits (shutdown.rs).
@@ -448,7 +449,6 @@ impl App {
             // The archives first: a snapshot that no longer holds what moved out is saved after its lines are.
             save_archives(&app);
             crate::store::saver::pass(&app);
-            crate::db::write_pass(&app);
             app.store.close();
             crate::weft_hub::stop(&app);
         });
@@ -546,9 +546,17 @@ fn read_env_file(path: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Saves the Foundry (`<state>/foundry/state.json`) every three seconds whenever it changed. Its file is
-/// the copy at start when Postgres does not hold it yet; a component whose load failed is not written
-/// (db::Db::is_held).
+/// Loads the stored transcripts into the transcript store from `transcripts.db`, which then writes every record from
+/// now on there.
+fn restore_transcripts(app: &App) {
+    if let Err(e) =
+        crate::transcript::restore(&app.transcripts, app.store.db(crate::store::TRANSCRIPTS))
+    {
+        eprintln!("apid: transcripts not restored: {e}");
+    }
+}
+
+/// Every three seconds: the MCP runtimes' tick and the archive lines the task ledger moved out.
 fn spawn_component_savers(app: Arc<App>) {
     std::thread::spawn(move || {
         loop {
@@ -587,24 +595,6 @@ fn save_archives(app: &App) {
             );
         }
     }
-}
-
-/// Counts the temporary files this process has started, so no two writes share a temporary name.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Writes `text` to `path` through a temporary file and a rename, so a crash
-/// mid-write leaves the previous snapshot whole. The temporary name carries the process id and
-/// a counter, so the stop pass and a saver loop never write the same temporary file.
-pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let count = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let mut tmp_name = path
-        .file_name()
-        .unwrap_or(std::ffi::OsStr::new("snapshot"))
-        .to_os_string();
-    tmp_name.push(format!(".{}.{count}.tmp", std::process::id()));
-    let tmp = path.with_file_name(tmp_name);
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
 }
 
 /// A fresh random token in `<state-dir>/internal.token`, mode 0600.

@@ -15,31 +15,38 @@
 //! - Off loopback the hub serves HTTPS with a self-signed certificate made on first start
 //!   (`<state>/tls/cert.pem`, `key.pem`); its SHA-256 is the pin join tokens carry.
 //!
-//! Saved:`<state>/hub.json` (owner token hash, public URL, name), mode 0600.
+//! Saved in plaza.db's `hub_config` table (owner token hash, public URL, name). The owner token file
+//! (`<state>/owner-token`, mode 0600) and the TLS certificate stay files under the state folder.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 
 use crate::state::App;
 
-const HUB_FILE: &str = "hub.json";
 const OWNER_TOKEN_FILE: &str = "owner-token";
 /// The console's session cookie.
 pub const SESSION_COOKIE: &str = "apz_session";
 /// How long a console session lasts.
 pub const SESSION_MS: u64 = 12 * 3_600_000;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "hub_config")]
 pub struct HubConfig {
     /// SHA-256 of the owner token, hex.
     pub owner_token_sha256: String,
     /// How nodes reach this hub (e.g. `https://hub.example.org:7700`); join tokens carry it.
     pub public_url: String,
     pub name: String,
+}
+
+/// The hub config table: `hub_config`, one row.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(HubConfig)
 }
 
 /// The hub's identity and access settings.
@@ -49,37 +56,21 @@ pub struct Hub {
     pub cert_sha256: [u8; 32],
     /// Console sessions: SHA-256 of the session id → expiry (ms). In memory only.
     sessions: Mutex<BTreeMap<[u8; 32], u64>>,
+    /// The state folder: the owner token file and the TLS certificate live here.
+    state_dir: PathBuf,
 }
 
 impl Hub {
-    /// Loads or creates `<state>/hub.json`, the owner token and the TLS certificate (made when
-    /// `tls` is true and none exists). A new owner token goes only to `<state>/owner-token` (mode 0600);
-    /// the log names that file and never the token.
-    pub fn load(state_dir: &Path, public_url: &str, tls: bool) -> Result<Hub, String> {
+    /// The hub before plaza.db is open: the defaults (named `AgentPlaza`) with `public_url`, and the TLS
+    /// certificate's SHA-256, made under `<state>/tls/` when `tls` is true and none exists. [`Hub::load`] then
+    /// replaces the defaults with the stored `hub_config` row.
+    pub fn new(state_dir: &Path, public_url: &str, tls: bool) -> Result<Hub, String> {
         std::fs::create_dir_all(state_dir).map_err(|e| format!("{}: {e}", state_dir.display()))?;
-        let path = state_dir.join(HUB_FILE);
-        let mut config = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<HubConfig>(&text)
-                .map_err(|e| format!("{}: {e}", path.display()))?,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => HubConfig {
-                name: "AgentPlaza".into(),
-                ..Default::default()
-            },
-            Err(err) => return Err(format!("{}: {err}", path.display())),
+        let config = HubConfig {
+            name: "AgentPlaza".into(),
+            public_url: public_url.to_string(),
+            ..Default::default()
         };
-        config.public_url = public_url.to_string();
-        if config.owner_token_sha256.is_empty() {
-            let token = apz_trust::owner::new_token();
-            config.owner_token_sha256 = hex_encode(&apz_trust::owner::hash(&token));
-            let path = owner_token_path(state_dir);
-            write_private(&path, token.as_bytes())?;
-            // The log names the file and a command that uses it. The token itself is never logged or printed.
-            eprintln!(
-                "apid: owner token created: {} (use it with `agentplaza hub login`)",
-                path.display()
-            );
-        }
-        save(state_dir, &config)?;
         let cert_sha256 = if tls {
             certificate(state_dir, public_url)
         } else {
@@ -89,7 +80,37 @@ impl Hub {
             config: Mutex::new(config),
             cert_sha256,
             sessions: Mutex::default(),
+            state_dir: state_dir.to_path_buf(),
         })
+    }
+
+    /// Replaces the config with the stored `hub_config` row when there is one, keeping the public URL that
+    /// [`Hub::new`] was given. A first start makes the owner token: it goes only to `<state>/owner-token`, and
+    /// its hash waits in memory for the saver ([`Hub::rows`]). The log names that file and never the token.
+    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<HubConfig>(conn, def())?;
+        let mut config = self.lock();
+        let mut next = stored.unwrap_or_else(|| config.clone());
+        next.public_url = config.public_url.clone();
+        if next.owner_token_sha256.is_empty() {
+            let token = apz_trust::owner::new_token();
+            let path = owner_token_path(&self.state_dir);
+            write_private(&path, token.as_bytes())
+                .map_err(|err| StoreError::Io(std::io::Error::other(err)))?;
+            next.owner_token_sha256 = hex_encode(&apz_trust::owner::hash(&token));
+            // The log names the file and a command that uses it. The token itself is never logged or printed.
+            eprintln!(
+                "apid: owner token created: {} (use it with `agentplaza hub login`)",
+                path.display()
+            );
+        }
+        *config = next;
+        Ok(())
+    }
+
+    /// The config's row, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::one(def(), &*self.lock())
     }
 
     /// Whether `token` is the owner's.
@@ -98,20 +119,16 @@ impl Hub {
         stored.is_some_and(|stored| apz_trust::owner::check(token, &stored))
     }
 
-    /// A new owner token (returned once; the old one stops working).
-    pub fn rotate_owner_token(&self, state_dir: &Path) -> Result<String, String> {
+    /// A new owner token (returned once; the old one stops working). Its hash waits in memory for the saver.
+    pub fn rotate_owner_token(&self) -> Result<String, String> {
         let token = apz_trust::owner::new_token();
-        let mut config = self.lock();
-        let mut next = config.clone();
-        next.owner_token_sha256 = hex_encode(&apz_trust::owner::hash(&token));
-        save(state_dir, &next)?;
-        *config = next;
+        write_private(&owner_token_path(&self.state_dir), token.as_bytes())?;
+        self.lock().owner_token_sha256 = hex_encode(&apz_trust::owner::hash(&token));
         // A new owner token ends every console session made with the old one.
         self.sessions
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        write_private(&owner_token_path(state_dir), token.as_bytes())?;
         Ok(token)
     }
 
@@ -381,7 +398,7 @@ fn identity_route(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
 }
 
 fn rotate_route(app: &App, _req: &Request, _p: &Params<'_>) -> Response {
-    match app.hub_auth.rotate_owner_token(&app.config.state_dir) {
+    match app.hub_auth.rotate_owner_token() {
         Ok(token) => Response::json(200, &serde_json::json!({ "token": token })),
         Err(err) => Response::error(500, &err),
     }
@@ -446,12 +463,7 @@ fn owner_token_path(state_dir: &Path) -> PathBuf {
     state_dir.join(OWNER_TOKEN_FILE)
 }
 
-fn save(state_dir: &Path, config: &HubConfig) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    write_private(&state_dir.join(HUB_FILE), text.as_bytes())
-}
-
-/// Writes `path` with mode 0600 (the owner token, the hub's record and the key are private).
+/// Writes `path` with mode 0600 (the owner token and the TLS key are private).
 fn write_private(path: &Path, contents: &[u8]) -> Result<(), String> {
     apz_os::private::write(path, contents).map_err(|err| format!("{}: {err}", path.display()))
 }
@@ -493,10 +505,24 @@ mod tests {
         std::fs::read_to_string(owner_token_path(dir)).unwrap()
     }
 
+    /// An in-memory plaza.db with the `hub_config` table, as App::start opens it.
+    fn store() -> apz_store::rusqlite::Connection {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        conn
+    }
+
+    /// A hub over a fresh store: [`Hub::new`] then [`Hub::load`].
+    fn open_hub(dir: &Path, public_url: &str, tls: bool) -> Hub {
+        let hub = Hub::new(dir, public_url, tls).unwrap();
+        hub.load(&store()).unwrap();
+        hub
+    }
+
     #[test]
     fn sessions_open_check_close_expire_and_end_on_rotation() {
         let dir = scratch("sessions");
-        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let hub = open_hub(&dir, "http://127.0.0.1:7700", false);
         let now = 1_000_000;
         let a = hub.open_session(now);
         let b = hub.open_session(now);
@@ -507,7 +533,7 @@ mod tests {
         hub.close_session(&b);
         assert!(!hub.session_ok(&b, now + 1));
         let c = hub.open_session(now);
-        hub.rotate_owner_token(&dir).unwrap();
+        hub.rotate_owner_token().unwrap();
         assert!(!hub.session_ok(&c, now + 1));
     }
 
@@ -580,7 +606,7 @@ mod tests {
     #[test]
     fn a_browser_request_from_another_origin_gets_no_loopback_trust() {
         let dir = scratch("cross-origin");
-        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let hub = open_hub(&dir, "http://127.0.0.1:7700", false);
         let now = 1_000_000;
         let local = Some(IpAddr::from(Ipv4Addr::LOCALHOST));
         let post = |headers: &[(&str, &str)]| Request {
@@ -638,7 +664,7 @@ mod tests {
     #[test]
     fn the_owner_is_the_machine_the_owner_token_or_a_console_session() {
         let dir = scratch("owner-of");
-        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let hub = open_hub(&dir, "http://127.0.0.1:7700", false);
         let token = token_of(&dir);
         let now = 1_000_000;
         let remote: IpAddr = Ipv4Addr::new(192, 0, 2, 1).into();
@@ -681,9 +707,11 @@ mod tests {
     }
 
     #[test]
-    fn first_start_makes_hub_json_and_owner_token_and_second_load_keeps_it() {
+    fn first_start_makes_the_owner_token_and_a_second_load_keeps_it() {
         let dir = scratch("first");
-        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let conn = store();
+        let hub = Hub::new(&dir, "http://127.0.0.1:7700", false).unwrap();
+        hub.load(&conn).unwrap();
         let token = token_of(&dir);
         assert!(token.starts_with(apz_trust::owner::PREFIX));
         assert!(hub.owner_ok(&token));
@@ -691,12 +719,13 @@ mod tests {
         #[cfg(unix)]
         {
             assert_eq!(mode(&owner_token_path(&dir)), 0o600);
-            assert_eq!(mode(&dir.join(HUB_FILE)), 0o600);
         }
         let first = hub.lock().owner_token_sha256.clone();
+        apz_store::table::replace(&conn, def(), &hub.rows().unwrap()).unwrap();
         drop(hub);
 
-        let again = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let again = Hub::new(&dir, "http://127.0.0.1:7700", false).unwrap();
+        again.load(&conn).unwrap();
         assert_eq!(again.lock().owner_token_sha256, first);
         assert!(again.owner_ok(&token));
         let _ = std::fs::remove_dir_all(&dir);
@@ -705,7 +734,7 @@ mod tests {
     #[test]
     fn another_token_is_refused() {
         let dir = scratch("other");
-        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let hub = open_hub(&dir, "http://127.0.0.1:7700", false);
         assert!(!hub.owner_ok("apzo_not-the-owner"));
         assert!(!hub.owner_ok(""));
         let _ = std::fs::remove_dir_all(&dir);
@@ -714,16 +743,20 @@ mod tests {
     #[test]
     fn rotate_invalidates_the_old_token() {
         let dir = scratch("rotate");
-        let hub = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let conn = store();
+        let hub = Hub::new(&dir, "http://127.0.0.1:7700", false).unwrap();
+        hub.load(&conn).unwrap();
         let old = token_of(&dir);
-        let new = hub.rotate_owner_token(&dir).unwrap();
+        let new = hub.rotate_owner_token().unwrap();
         assert_ne!(old, new);
         assert!(!hub.owner_ok(&old));
         assert!(hub.owner_ok(&new));
         assert_eq!(token_of(&dir), new);
+        apz_store::table::replace(&conn, def(), &hub.rows().unwrap()).unwrap();
         drop(hub);
 
-        let again = Hub::load(&dir, "http://127.0.0.1:7700", false).unwrap();
+        let again = Hub::new(&dir, "http://127.0.0.1:7700", false).unwrap();
+        again.load(&conn).unwrap();
         assert!(again.owner_ok(&new));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -787,7 +820,7 @@ mod tests {
     #[test]
     fn a_loopback_peer_under_a_foreign_host_is_not_the_owner() {
         let dir = scratch("rebind");
-        let hub = Hub::load(&dir, "https://hub.example.org:7700", false).unwrap();
+        let hub = open_hub(&dir, "https://hub.example.org:7700", false);
         let loopback = |host: Option<&str>| Request {
             method: "GET".into(),
             path: "/v1/agents".into(),

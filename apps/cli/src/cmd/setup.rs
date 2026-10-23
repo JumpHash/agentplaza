@@ -675,7 +675,7 @@ mod tests {
         for refused in [
             &["--fix", "nope"][..],
             &["--fix", "docker-running"][..],
-            &["--fix", "postgres"][..],
+            &["--fix", "redis"][..],
             &["--fix", "ports", "--fix-all"][..],
             &["--hub", "--fix-all"][..],
         ] {

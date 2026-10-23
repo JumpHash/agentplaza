@@ -40,7 +40,6 @@ ureq.workspace = true
 sha2.workspace = true
 blake2.workspace = true
 apz-trust = { path = "../apz-trust" }
-postgres = { version = "0.19.14", features = ["with-serde_json-1"] }
 apz-os = { path = "../apz-os" }
 apz-egress-rules = { path = "../apz-egress-rules" }
 # The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.

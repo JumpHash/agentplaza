@@ -238,6 +238,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.threads.load(conn),
         },
         Component {
+            name: "decisions",
+            def: crate::decisions::def,
+            rows: |app| app.providers.decisions.rows(),
+            load: |app, conn| app.providers.decisions.load(conn),
+        },
+        Component {
             name: "provider_listings",
             def: crate::provider_listings::def,
             rows: |app| {
@@ -246,6 +252,61 @@ pub fn all() -> Vec<Component> {
                     .rows(&app.providers.gateway().providers())
             },
             load: |app, conn| app.providers.listings.load(conn),
+        },
+        // The engine 0.11 records (state files of the hub folder, now in plaza.db).
+        Component {
+            name: "engines",
+            def: crate::engine_instances::def,
+            rows: |app| app.engines.rows(),
+            load: |app, conn| app.engines.load(conn),
+        },
+        Component {
+            name: "review_graph",
+            def: crate::review_graph::def,
+            rows: |app| app.reviews.rows(),
+            load: |app, conn| app.reviews.load(conn),
+        },
+        Component {
+            name: "usage_providers",
+            def: crate::usage_providers::def,
+            rows: |app| app.usage_providers.rows(),
+            load: |app, conn| app.usage_providers.load(conn),
+        },
+        Component {
+            name: "hub_config",
+            def: crate::hub_auth::def,
+            rows: |app| app.hub_auth.rows(),
+            load: |app, conn| app.hub_auth.load(conn),
+        },
+        Component {
+            name: "platforms",
+            def: crate::platforms::def,
+            rows: |app| app.platforms.rows(),
+            load: |app, conn| app.platforms.load(conn),
+        },
+        Component {
+            name: "hf_imports",
+            def: crate::foundry::hf_import::def,
+            rows: |app| app.hf.rows(),
+            load: |app, conn| app.hf.load(conn),
+        },
+        Component {
+            name: "egress_rules",
+            def: crate::egress_inject::def,
+            rows: |app| app.egress_rules.rows(),
+            load: |app, conn| app.egress_rules.load(conn),
+        },
+        Component {
+            name: "e2b_sandboxes",
+            def: crate::e2b::def,
+            rows: |app| crate::e2b::sandboxes(app).rows(),
+            load: |app, conn| crate::e2b::sandboxes(app).load(conn),
+        },
+        Component {
+            name: "e2b_templates",
+            def: crate::e2b_tpl::def,
+            rows: |app| app.e2b_templates.rows(),
+            load: |app, conn| app.e2b_templates.load(conn),
         },
     ]
 }

@@ -59,7 +59,7 @@ The families cover:
   which each node reads from vsockd's `GET /v1/metrics` on loopback);
 - host, VM, workstation and sandbox CPU, memory, disk, IO and network;
 - agent time by state, the work queue, approvals and law infractions;
-- the hub's API routes, Postgres, event bus, node links and outside services;
+- the hub's API routes, SQLite, event bus, node links and outside services;
 - forecasts, budgets and capacity headroom.
 
 ## How a value travels
@@ -95,7 +95,7 @@ timelines of all machines line up.
 
 ## Storage
 
-The tables are in `crates/apid/sql/migrations/0014_metrics.sql`. The store's own connection writes them, so metric
+The tables are in `metrics.db`. The store's own connection writes them, so metric
 writes never wait behind the hub's state writes (`crates/apid/src/metrics/pg.rs`).
 
 | Table | Contents | Default retention |
@@ -111,12 +111,10 @@ writes never wait behind the hub's state writes (`crates/apid/src/metrics/pg.rs`
 - Every other table is partitioned by day (UTC). Retention drops whole partitions, so there are no large deletes.
 - The open 10-minute chunk of each series is held in memory and written when it closes.
 - Retention is part of the owner's settings (`crates/apid/src/metrics/settings.rs`).
-- When there is no Postgres, `crates/apid/src/metrics/mem.rs` keeps the same data in memory, and the saved values in
-  files.
 
 Sizing, as the design estimated it for 3 nodes, 100 VMs and about 2,000 series: about 26 MB a day of 10-second chunks,
 about 30 MB a day of 1-minute aggregates, about 1 MB a day of hourly aggregates and about 6 MB a day of model calls.
-These are estimates. Packing points into rows matters more than compressing them, because each Postgres row carries a
+These are estimates. Packing points into rows matters more than compressing them, because each database row carries a
 fixed header.
 
 ## API
@@ -223,7 +221,7 @@ The metrics system measures its own cost (`collect.rs` records it with the hub's
 | Hot path (one model call, one block request) | under 1 µs added, no allocation, lock or syscall |
 | Harness, per agent | under 100 KB |
 | Heartbeat payload | under 4 KB per beat on average |
-| Postgres | under 100 MB per day at the estimate above |
+| Metrics store (`metrics.db`) | under 100 MB per day at the estimate above |
 | Console | under 2 percent CPU while visible and live, nothing while hidden |
 
 `crates/apz-metrics/tests/budget.rs` checks the heartbeat, the stored bytes per point and the hot-path cost on a
@@ -233,10 +231,10 @@ not measured by a test; the hub's own numbers (`self.*`) show them, and the gove
 
 **At scale.** `crates/apz-metrics/tests/scale.rs` (run on demand: `cargo test --release -p apz-metrics --test scale
 -- --ignored --nocapture`) simulates an hour of a plaza of 1000 agents on 10 nodes of 100 VMs, a quarter of them
-working, through the real registry, rollup, chunk encoding, wire format and the Postgres store's write cadence. On
+working, through the real registry, rollup, chunk encoding, wire format and the metrics store's write cadence. On
 this machine it measured: 24 hub series per agent (24,000) plus 10,000 VM series; 0.27 % of one core for the hub's
 10 s tick; about 160 MiB of hub memory; per day 296 MiB of 10 s chunks (2.4 B a point), 337 MiB of 1-minute rows and
-7 MiB of 1-hour rows, about 8 GB kept at the default retention; 886 MiB of Postgres writes a day; and 3.8 KiB/s of
+7 MiB of 1-hour rows, about 8 GB kept at the default retention; 886 MiB of store writes a day (measured on Postgres); and 3.8 KiB/s of
 heartbeats into the hub. Model-call rows, events and traces come on top and grow with the calls made. The registry's
 cap per entity kind (100,000 series) leaves room for a few thousand agents.
 

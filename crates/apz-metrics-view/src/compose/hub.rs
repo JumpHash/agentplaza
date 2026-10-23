@@ -1,9 +1,9 @@
-//! The hub tab: the API, the database, the node links, the event bus and the services outside the hub.
+//! The hub tab: the API, the store, the node links, the event bus and the services outside the hub.
 
 use apz_metrics::catalog::Unit;
 use apz_metrics::query::AggFn;
 
-use super::{Ctx, empty, panel, series_of};
+use super::{Ctx, empty, panel};
 use crate::format::format;
 use crate::model::*;
 use crate::source::{Entity, GroupBy, Read, Source};
@@ -19,7 +19,6 @@ pub fn panels(ctx: &Ctx, src: &dyn Source) -> Vec<Panel> {
     vec![
         tiles(ctx, src),
         routes(ctx, src),
-        postgres(ctx, src),
         links(src),
         bus(ctx, src),
         outside(src),
@@ -49,7 +48,7 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
     points.note = series
         .map(|n| format!("≈ {} series", format(Unit::Count, n)))
         .unwrap_or_default();
-    // Two rows of four: the hub's traffic and its wake queue, then its stores and the guests' idle cost.
+    // Two rows: the hub's traffic and its wake queue, then its points, its cache and the guests' idle cost.
     let items = vec![
         ctx.tile(
             src,
@@ -82,16 +81,6 @@ fn tiles(ctx: &Ctx, src: &dyn Source) -> Panel {
             tab,
         ),
         wakes_waiting(ctx, src),
-        ctx.tile(
-            src,
-            "Postgres p95",
-            "hub.pg_ms",
-            AggFn::P95,
-            Unit::Ms,
-            true,
-            Tone::C4,
-            tab,
-        ),
         points,
         ctx.tile(
             src,
@@ -261,43 +250,6 @@ fn route_requests(ctx: &Ctx, src: &dyn Source, scope: &str) -> Vec<f64> {
         .next()
         .map(|g| g.values.iter().map(|v| v.unwrap_or(0.0)).collect())
         .unwrap_or_default()
-}
-
-/// Postgres: the p95 query time, and the connections in use on the same panel.
-///
-/// The chart has one unit, so the connections (a count) share the milliseconds axis.
-fn postgres(ctx: &Ctx, src: &dyn Source) -> Panel {
-    let mut chart = ctx.chart(
-        src,
-        &ctx.read("hub.pg_ms", AggFn::P95, GroupBy::All),
-        Unit::Ms,
-        false,
-        CHART_HEIGHT,
-    );
-    // Both series read the whole hub, so each is named by what it measures rather than by its scope.
-    let first = chart.series.first().map(|s| s.name.clone());
-    if let Some(s) = chart.series.first_mut() {
-        s.name = "query p95".into();
-    }
-    if let Some(first) = first {
-        for g in &mut chart.ghosts {
-            g.name = g.name.replacen(&first, "query p95", 1);
-        }
-    }
-    let in_use = src.series(&ctx.read("hub.pg_in_use", AggFn::Last, GroupBy::All));
-    chart.series.extend(in_use.iter().enumerate().map(|(i, g)| {
-        let mut s = series_of(g, Tone::chart(i + 1));
-        s.name = "connections in use".into();
-        s
-    }));
-    chart_panel(
-        "postgres",
-        "Postgres",
-        "Query time and connections in use",
-        4,
-        chart,
-        "No database queries in this window.",
-    )
 }
 
 /// The node links: each node's last beat, beat lag, round trip, queued commands, clock offset and payload size.
@@ -515,27 +467,20 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_tab_returns_its_six_panels_in_order() {
+    fn the_hub_tab_returns_its_five_panels_in_order() {
         let view = hub_view();
         assert_eq!(view.tab, "hub");
         let ids: Vec<&str> = view.panels.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["tiles", "routes", "postgres", "links", "bus", "outside"]
-        );
+        assert_eq!(ids, ["tiles", "routes", "links", "bus", "outside"]);
     }
 
     #[test]
     fn each_hub_panel_is_its_body_kind_or_empty_when_the_source_has_nothing() {
         let view = hub_view();
-        assert!(matches!(body(&view, "tiles"), Body::Tiles { tiles } if tiles.len() == 8));
+        assert!(matches!(body(&view, "tiles"), Body::Tiles { tiles } if tiles.len() == 7));
         assert!(matches!(
             body(&view, "routes"),
             Body::Table(_) | Body::Empty { .. }
-        ));
-        assert!(matches!(
-            body(&view, "postgres"),
-            Body::Chart(_) | Body::Empty { .. }
         ));
         assert!(matches!(
             body(&view, "links"),

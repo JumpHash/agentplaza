@@ -1,5 +1,5 @@
 //! Model prices: what one million tokens of each model costs, so the plaza can show what its
-//! agents spend. The catalog is fetched from two public lists and kept in Postgres ("prices"),
+//! agents spend. The catalog is fetched from two public lists and kept in plaza.db ("prices"),
 //! so a hub without internet still has the last prices it saw:
 //!
 //! - OpenRouter's model list (`https://openrouter.ai/api/v1/models`): every OpenRouter model id
