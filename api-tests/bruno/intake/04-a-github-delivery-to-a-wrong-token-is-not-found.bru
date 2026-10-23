@@ -1,11 +1,11 @@
 meta {
-  name: A GitHub webhook is refused when no webhook secret is set, and never kept
+  name: A GitHub delivery to a token that is not the connector's is a 404, and never kept
   type: http
   seq: 4
 }
 
 post {
-  url: {{baseUrl}}/v1/intake/github
+  url: {{baseUrl}}/v1/hooks/github/no-such-token
   body: json
   auth: none
 }
