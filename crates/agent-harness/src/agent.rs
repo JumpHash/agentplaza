@@ -428,6 +428,10 @@ pub(crate) fn serve_capped<S: Duplex, W: Write + Send>(
     let shared = Shared::new(writer, log);
     // The first stats report measures CPU from here, so the baseline is taken now.
     let baseline = sample_processes(Path::new(PROC_DIR));
+    // The profile a session starts with carries the project's hooks too (hooks.rs).
+    if let Some(profile) = &profile {
+        crate::hooks::set_for(workspace, profile.hooks.clone());
+    }
     let (inbox_tx, inbox_rx) = mpsc::channel();
     let (operator_tx, operator_rx) = mpsc::channel();
     let (exec_tx, exec_rx) = mpsc::channel();
@@ -656,6 +660,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             HostMessage::Profile { profile } => {
                 // A changed profile can add or drop the egress CA (the owner edited a rule).
                 crate::trust::install(self.workspace, profile.egress_ca.as_deref());
+                crate::hooks::set_for(self.workspace, profile.hooks.clone());
                 self.profile = Some(profile);
                 Incoming::Handled
             }

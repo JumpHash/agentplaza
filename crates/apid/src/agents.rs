@@ -387,6 +387,8 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
             String::new()
         },
         egress_ca: crate::egress_inject::ca_for_role(app, &agent.role),
+        // The project's hooks, which the harness runs around the agent's edits and commands (apz-proto's hooks).
+        hooks: crate::project_settings::hooks_of_agent(app, agent.cid),
         // A step session writes its handover before it ends (journal.rs).
         handover: app
             .sessions

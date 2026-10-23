@@ -16,10 +16,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
+use std::path::Path;
 
 use serde_json::{Value, json};
 
 use crate::files::{self, MAX_FILE_BYTES, MAX_WRITE_BYTES, Workspace};
+use crate::hooks;
 use crate::tools::ToolError;
 
 use super::track::{self, Seen, Stamp};
@@ -250,14 +253,43 @@ fn apply_file(
             files::io_tool_error(err, format!("cannot create the folders of {label}"))
         })?;
     }
+    // What the file held before, so a refusing hook can put it back (nothing when the edit creates the file).
+    let previous = if existed {
+        Some(
+            fs::read(&target)
+                .map_err(|err| files::io_tool_error(err, format!("cannot open {label}")))?,
+        )
+    } else {
+        None
+    };
     files::write_atomic(&target, content.as_bytes())
         .map_err(|err| files::io_tool_error(err, format!("cannot write {label}")))?;
+    let added: Vec<&str> = ops
+        .iter()
+        .map(|op| match op {
+            Op::Create(text) => text.as_str(),
+            Op::Replace(replacement) => replacement.new.as_str(),
+        })
+        .collect();
+    let check = hooks::after_edit(workspace, lane, &label, &target, &added.join("\n"));
+    if check.blocked {
+        restore(&target, previous.as_deref())
+            .map_err(|err| files::io_tool_error(err, format!("cannot restore {label}")))?;
+        return Err(ToolError::Denied {
+            reason: format!(
+                "refused by a hook, so {label} keeps its earlier content: {}",
+                check.summary()
+            ),
+        });
+    }
+    // The hooks may have formatted the file: what is recorded is what is on disk now.
+    let on_disk = fs::read(&target).unwrap_or_else(|_| content.clone().into_bytes());
     locked(&lane.tracking).record(
         &label,
         Seen {
-            digest: Some(track::digest_of(content.as_bytes())),
+            digest: Some(track::digest_of(&on_disk)),
             stamp: track::stamp_of(&target).unwrap_or(Stamp::UNKNOWN),
-            window: (1, content.lines().count()),
+            window: (1, String::from_utf8_lossy(&on_disk).lines().count()),
             call,
         },
     );
@@ -269,16 +301,18 @@ fn apply_file(
     if replacements > 0 {
         entry["replacements"] = json!(replacements);
     }
-    if let Some(check) = after_write(workspace, &label) {
-        entry["check"] = check;
+    if !check.is_empty() {
+        entry["check"] = json!({ "summary": check.summary() });
     }
     Ok(entry)
 }
 
-/// The hook after a file is written: formatting (1.7) and diagnostics (1.8) report their results here, under
-/// `check` in the file's entry. Until they land a write has none.
-fn after_write(_workspace: &Workspace, _label: &str) -> Option<Value> {
-    None
+/// Puts a file back as it was before an edit: its earlier bytes, or no file when the edit created it.
+fn restore(target: &Path, previous: Option<&[u8]>) -> io::Result<()> {
+    match previous {
+        Some(bytes) => files::write_atomic(target, bytes),
+        None => fs::remove_file(target),
+    }
 }
 
 /// Replaces `replacement.old` in `content`: it must occur, and once unless `replace_all`. Returns the updated

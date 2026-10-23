@@ -1118,7 +1118,7 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
     let text = input.to_string();
     let lower = text.to_lowercase();
     let mut flags = BTreeSet::new();
-    if has_secret(&text) || reads_credential_store(&lower) {
+    if apz_secrets::has_secret(&text) || reads_credential_store(&lower) {
         flags.insert("credential_seeking");
     }
     if lower.contains("impersonat")
@@ -1131,47 +1131,6 @@ pub fn detect_flags(tool: &str, input: &Json) -> BTreeSet<&'static str> {
         flags.insert("obfuscation");
     }
     flags
-}
-
-/// Whether `text` carries a secret by its well-known shape: provider API keys and tokens,
-/// cloud access keys, chat-platform tokens and private-key blocks.
-fn has_secret(text: &str) -> bool {
-    if text.contains("PRIVATE KEY-----") {
-        return true;
-    }
-    // (prefix, minimum length of the token-character run after it)
-    const SHAPES: [(&str, usize); 9] = [
-        ("sk-ant-", 20),
-        ("sk-proj-", 20),
-        ("sk-", 32),
-        ("ghp_", 30),
-        ("github_pat_", 30),
-        ("xoxb-", 20),
-        ("xoxp-", 20),
-        ("AIza", 35),
-        ("AKIA", 16),
-    ];
-    let token_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
-    for (prefix, min) in SHAPES {
-        let mut from = 0;
-        while let Some(at) = text[from..].find(prefix) {
-            let start = from + at;
-            // The prefix must start a token, not sit inside a longer word.
-            let boundary = text[..start]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !token_char(c));
-            let run = text[start + prefix.len()..]
-                .chars()
-                .take_while(|c| token_char(*c))
-                .count();
-            if boundary && run >= min {
-                return true;
-            }
-            from = start + prefix.len();
-        }
-    }
-    false
 }
 
 /// Whether a command reaches for a credential store.

@@ -135,6 +135,13 @@ impl Terminals {
         let env = env_arg(params)?;
         let dir = self.folder_arg(params)?;
         let limit = limit_arg(params)?;
+        // The project's run hooks see the command line before it starts (hooks.rs).
+        let line = std::iter::once(command)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+        crate::hooks::before_run(&crate::v2::lane_of(&self.workspace), &line)
+            .map_err(|err| err.to_string())?;
 
         let mut state = locked(&self.state);
         if state.terms.len() >= MAX_TERMINALS {

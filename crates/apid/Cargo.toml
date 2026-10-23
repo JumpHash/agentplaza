@@ -45,6 +45,7 @@ blake2.workspace = true
 apz-trust = { path = "../apz-trust" }
 apz-os = { path = "../apz-os" }
 apz-egress-rules = { path = "../apz-egress-rules" }
+apz-secrets = { path = "../apz-secrets" }
 # The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.
 chacha20poly1305.workspace = true
 argon2.workspace = true

@@ -105,8 +105,29 @@ pub fn write_text_file(workspace: &Workspace, params: &Value) -> Result<Value, S
         create_dirs(parent)
             .map_err(|err| format!("cannot create the folders of {label}: {err}"))?;
     }
+    // What the file held before, so a refusing hook can put it back (hooks.rs).
+    let existed = file.exists();
+    let previous = if existed {
+        std::fs::read(&file).ok()
+    } else {
+        None
+    };
     write_atomic(&file, content.as_bytes())
         .map_err(|err| format!("cannot write {label}: {err}"))?;
+    let lane = crate::v2::lane_of(workspace);
+    let check = crate::hooks::after_edit(workspace, &lane, &label, &file, &content);
+    if check.blocked {
+        let restored = match previous {
+            Some(bytes) => write_atomic(&file, &bytes),
+            None if !existed => std::fs::remove_file(&file),
+            None => Ok(()),
+        };
+        restored.map_err(|err| format!("cannot restore {label}: {err}"))?;
+        return Err(format!(
+            "refused by a hook, so {label} keeps its earlier content: {}",
+            check.summary()
+        ));
+    }
     if let Some(top) = new_top {
         layout::give_to_engine(workspace.dir(), &top)?;
     }
