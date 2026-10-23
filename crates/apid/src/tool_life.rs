@@ -19,9 +19,13 @@ fn now_ms() -> u64 {
     apz_plaza::now_ms()
 }
 
-/// The transport a hub-run tool's requests go through: the approved egress, over HTTPS.
+/// The transport a hub-run tool's requests go through: the approved egress, over HTTPS. A test hub names a fake API with
+/// `APZ_GLUE_STAND_IN` (an address), and the requests go there with the same paths and headers.
 fn outbound() -> Arc<dyn glue::Outbound> {
-    Arc::new(glue::HttpsOutbound)
+    match std::env::var("APZ_GLUE_STAND_IN") {
+        Ok(addr) if !addr.is_empty() => Arc::new(glue::StandIn { addr }),
+        _ => Arc::new(glue::HttpsOutbound),
+    }
 }
 
 /// Runs glue-tier version `entry` on the hub with `input`: `(is_error, output, ms)`. The component gets the connector's

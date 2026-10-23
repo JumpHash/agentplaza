@@ -606,11 +606,11 @@ impl Store {
 fn offerable(entry: &Entry, cid: u64, project: Option<&str>) -> bool {
     let shared = entry.state == "published"
         && (entry.promoted || project.is_some_and(|p| p == entry.project));
+    // An author tests its own drafts. A tool that uses a connector's secret is offered only once published: until the
+    // owner answers its card, nothing may run with the key.
     let own = entry.author_cid == cid
-        && matches!(
-            entry.state.as_str(),
-            "private" | "pending" | "awaiting_owner"
-        );
+        && entry.connector.is_empty()
+        && matches!(entry.state.as_str(), "private" | "pending");
     shared || own
 }
 
@@ -1217,6 +1217,8 @@ mod tests {
             store.review("fetcher", 1, true, "").unwrap(),
             "awaiting_owner"
         );
+        // Until the owner answers, not even its author is offered it: nothing runs with the key.
+        assert!(store.visible(7, Some("p1"), "x_fetcher").is_none());
         assert!(store.program(7, Some("p1"), "x_fetcher").is_none());
         assert_eq!(store.settle("fetcher", 1, true).unwrap(), "published");
         assert!(store.program(7, Some("p1"), "x_fetcher").is_none());

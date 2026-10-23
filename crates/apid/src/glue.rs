@@ -73,6 +73,27 @@ pub trait Outbound: Send + Sync {
     fn send(&self, request: &Outgoing) -> Result<Reply, String>;
 }
 
+/// A transport for a test hub: each request goes to the fake API at `addr` with the same path and headers, so the glue
+/// tier's checks and the secret's header are the hub's own. A hub uses it when `APZ_GLUE_STAND_IN` names an address
+/// (`tool_life.rs`); production never sets it.
+pub struct StandIn {
+    pub addr: String,
+}
+
+impl Outbound for StandIn {
+    fn send(&self, request: &Outgoing) -> Result<Reply, String> {
+        let path = request
+            .url
+            .strip_prefix("https://")
+            .and_then(|rest| rest.find('/').map(|i| &rest[i..]))
+            .unwrap_or("/");
+        HttpsOutbound.send(&Outgoing {
+            url: format!("http://{}{path}", self.addr),
+            ..request.clone()
+        })
+    }
+}
+
 /// The secret a connector's requests carry: the header and its value, already formatted by the hub. Never shown to
 /// the component, and redacted from anything the component reads back.
 #[derive(Clone)]
