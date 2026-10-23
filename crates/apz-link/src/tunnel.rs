@@ -226,6 +226,7 @@ fn answer(stream: Stream, local: &Local, who: &Who) {
                 let _ = stream.finish();
             }
         }
+        Some("transfer") => carry_transfer(stream, local.transfer),
         Some("port") => {
             let cid = header["cid"].as_u64();
             let port = header["port"].as_u64().and_then(|p| u16::try_from(p).ok());
@@ -258,6 +259,15 @@ fn hello(stream: &Stream, who: &Who, header: &Value) {
     let bytes = serde_json::to_vec(&Value::Object(signed)).unwrap_or_default();
     if stream.send(&bytes).is_ok() {
         let _ = stream.finish();
+    }
+}
+
+/// Carries a brokered transfer to noded's transfer port, both ways, until either side closes: the bytes are the
+/// receiver's TLS session with the sender, which this node does not read.
+fn carry_transfer(stream: Stream, port: u16) {
+    match std::net::TcpStream::connect(("127.0.0.1", port)) {
+        Ok(conn) => apz_transfer::broker::pipe(stream, conn, std::sync::Arc::new(|_| {})),
+        Err(err) => stream.reset(&format!("the node serves no transfers: {err}")),
     }
 }
 

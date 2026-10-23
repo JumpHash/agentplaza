@@ -669,6 +669,7 @@ mod tests {
             forward: 0,
             token: apz_http::auth::InternalToken::none(),
             inbound: inbound_port,
+            transfer: 0,
         };
 
         // The node runs its link: it dials the hub, and listens at its mesh address for the hub's dial.

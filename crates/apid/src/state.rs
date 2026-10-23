@@ -428,6 +428,7 @@ impl App {
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));
         crate::tunnel::spawn_mesh(Arc::clone(&app));
+        crate::transfer::start_broker(Arc::clone(&app));
         crate::steps::spawn(Arc::clone(&app));
         crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));

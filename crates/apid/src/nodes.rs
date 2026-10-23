@@ -148,6 +148,12 @@ pub struct Link {
 /// node does not send is absent, or null where the node sends null; the consoles read this JSON as it is.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Machine {
+    /// The port the node serves node-to-node transfers on (noded's transfer.rs); absent or null when it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_port: Option<u16>,
+    /// The SHA-256 pin of the node's transfer certificate (hex): the grants carry it, and a receiver pins it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_pin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpus: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

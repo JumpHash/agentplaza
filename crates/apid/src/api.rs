@@ -142,6 +142,7 @@ pub fn router() -> Router<App> {
     let router = crate::agent_proposals::routes(router);
     let router = crate::nodes::routes(router);
     let router = crate::mover::routes(router);
+    let router = crate::transfer::routes(router);
     let router = crate::stations::routes(router);
     let router = crate::prices::routes(router);
     let router = crate::usage::routes(router);

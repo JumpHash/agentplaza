@@ -1472,6 +1472,8 @@ CREATE TABLE "node" (
 CREATE TABLE "node_machine" (
     "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
     "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "transfer_port" INTEGER CHECK ("transfer_port" >= 0),
+    "transfer_pin" TEXT,
     "cpus" INTEGER CHECK ("cpus" >= 0),
     "memory_mib" INTEGER CHECK ("memory_mib" >= 0),
     "host" TEXT,

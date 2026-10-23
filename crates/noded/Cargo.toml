@@ -16,6 +16,9 @@ apz-os = { path = "../apz-os" }
 apz-sandbox = { path = "../apz-sandbox" }
 apz-station = { path = "../apz-station" }
 apz-uds = { path = "../apz-uds" }
+# Node-to-node transfers (transfer.rs): the blob store, the grants and the chunks a node lacks.
+apz-blobs = { path = "../apz-blobs" }
+apz-transfer = { path = "../apz-transfer" }
 # Transfers carry their chunks as base64 in JSON (`migrate`).
 base64.workspace = true
 serde.workspace = true
@@ -25,6 +28,10 @@ sha2.workspace = true
 vmm = { path = "../vmm" }
 # Volume sizes everywhere; on hosts other than Linux, the host stats too (Linux reads `/proc`).
 sysinfo = "0.33"
+
+[dev-dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+tempfile = "3"
 
 [lib]
 name = "noded"
