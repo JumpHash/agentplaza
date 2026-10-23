@@ -1,0 +1,25 @@
+meta {
+  name: List the test lab on a fresh hub
+  type: http
+  seq: 40
+}
+
+get {
+  url: {{baseUrl}}/v1/test-lab
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.nodes: isArray
+  res.body.queue: isArray
+}
+
+tests {
+  test("nothing is queued or running yet", function () {
+    expect(res.getBody().queue).to.be.an("array").that.is.empty;
+    expect(res.getBody().running).to.be.an("array").that.is.empty;
+  });
+}

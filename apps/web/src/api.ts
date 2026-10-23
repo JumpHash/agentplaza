@@ -765,6 +765,8 @@ export const api = {
   rotateOwnerToken: () => post<{ token: string }>('/v1/hub/owner-token/rotate'),
 
   nodes: readable<NodeView[]>('/v1/nodes'),
+  setNodeRoles: (id: string, test_share: number, label?: string) => post<NodeView>(`/v1/nodes/${id}/roles`, { test_share, label }),
+  testLab: readable<TestLabOverview>('/v1/test-lab'),
   /** A join code: its token is in this answer only. `ttl_minutes` ≤ 60 (0: the default 15). */
   issueJoinCode: (label: string, ttl_minutes: number) => post<{ id: string; token: string; expires_ms: number }>('/v1/nodes/codes', { label, ttl_minutes }),
   joinCodes: readable<JoinCode[]>('/v1/nodes/codes'),
@@ -905,6 +907,10 @@ export interface NodeView {
   machine: { cpus?: number; memory_mib?: number; host?: string; version?: string; workstation_backends?: string[]; vendor?: string | null; apple?: unknown } | null;
   /** Out of service (stopping or stopped): the field's first name, from when this was only a drain. */
   draining: boolean; revoked: boolean; address: string; online: boolean; agents: number;
+  /** The join code's label, carried onto the node (empty when the code had none). */
+  label: string;
+  /** The percent of the machine the test lab takes (0 work only, 100 test only) and the rest, for work. */
+  test_share: number; work_share: number;
   /** `stopping` while a stopped node still runs agents that must leave (`left`), `stopped` once none is left. */
   state: NodeServiceState; left: number;
   /** The agents that cannot leave a stopping node yet, and why. */
@@ -914,6 +920,21 @@ export type NodeServiceState = 'active' | 'stopping' | 'stopped';
 /** A rebalance: the moves it makes (or would, on a dry run), and whether they started. */
 export interface Rebalance { moves: { cid: number; from: string; to: string }[]; started: boolean }
 export type JoinCodeState = 'active' | 'used' | 'expired' | 'revoked';
+/** A qualification run in the test lab: what it holds on each node while it runs (plan 22.5). */
+export interface LabRun {
+  id: string; project: string; channel: string; state: 'queued' | 'running' | 'done';
+  cpus: number; memory_mib: number; needs: string[];
+  reservations: { node: string; cpus: number; memory_mib: number }[];
+  enqueued_ms: number; started_ms: number | null; ended_ms: number | null; outcome: string | null;
+}
+/** A node in the test lab: its roles, what it has, and what it gives the lab and has free for it. */
+export interface LabNode {
+  id: string; name: string; label: string; test_share: number; work_share: number; online: boolean;
+  cpus: number; memory_mib: number; lab_cpus: number; lab_memory_mib: number; free_cpus: number; free_memory_mib: number;
+  capabilities: string[];
+}
+/** `GET /v1/test-lab`: the lab's nodes, the queue in admission order, the running runs and the last that ended. */
+export interface TestLabOverview { nodes: LabNode[]; queue: LabRun[]; running: LabRun[]; done: LabRun[] }
 export interface JoinCode { id: string; label: string; created_ms: number; expires_ms: number; state: JoinCodeState; used_by: string | null }
 
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used' | 'withdrawn';

@@ -22,6 +22,7 @@ import { mount as lab } from './lab';
 import { mount as mcp } from './mcp';
 import { mount as models } from './models';
 import { mount as nodes } from './nodes';
+import { mount as testLab } from './test-lab';
 import { mount as overview } from './overview';
 import { mount as projects } from './projects';
 import { mount as prompts } from './prompts';
@@ -79,6 +80,7 @@ export const SCREENS: Screen[] = [
   { key: 'volumes', label: 'Volumes', icon: 'wrench', section: 'Setup', mount: volumes },
   { key: 'workstations', label: 'Workstations', icon: 'harness', section: 'Setup', mount: workstations },
   { key: 'nodes', label: 'Nodes', icon: 'link', section: 'Setup', mount: nodes },
+  { key: 'test-lab', label: 'Test lab', icon: 'link', section: 'Setup', mount: testLab },
   { key: 'appearance', label: 'Appearance', icon: 'sparkles', section: 'Setup', mount: appearance },
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },

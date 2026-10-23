@@ -92,6 +92,7 @@ pub mod cpu_baseline;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
+mod lab_caps;
 pub mod mac_sandbox;
 mod mcp_vm;
 pub mod metrics;
@@ -281,6 +282,12 @@ pub struct MachineView {
     /// The launch backends this node can run a workstation VM under: `plaza`, and `qemu` when QEMU and its firmware are here.
     pub workstation_backends: Vec<&'static str>,
     pub started_at_ms: u64,
+    /// The browsers the node has, in the test lab's names (`chromium`, `firefox`, `webkit`).
+    pub browsers: Vec<String>,
+    /// The Android phones attached and authorized, by serial (`adb devices`).
+    pub phones: Vec<String>,
+    /// Whether the node can shape its traffic (`lab_caps::traffic_shaping`).
+    pub traffic_shaping: bool,
 }
 
 impl Node {
@@ -366,6 +373,9 @@ impl Node {
             vsock_mode: "uds-muxer",
             workstation_backends: self.workstations.backends(),
             started_at_ms: self.started_at_ms,
+            browsers: lab_caps::browsers(),
+            phones: lab_caps::phones(),
+            traffic_shaping: lab_caps::traffic_shaping(),
         }
     }
 

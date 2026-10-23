@@ -1,0 +1,25 @@
+[package]
+name = "apz-topology"
+description = "Test topologies (PLAN 22.6): the typed topology file, its guest plan (containers, bridge, egress proxy), the guest's name service and the process runner that stands in for its container runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml = "1"
+
+[[bin]]
+# The guest's topology runner: builds the bridge (--net) and runs the containers' artifacts on it.
+name = "apz-topo-run"
+path = "src/bin/apz-topo-run.rs"
+
+[[bin]]
+# A stand-in service for the topology tests: echoes, or relays to another service by name.
+name = "apz-topo-echo"
+path = "src/bin/apz-topo-echo.rs"
+
+[lints]
+workspace = true

@@ -97,6 +97,13 @@ pub struct Node {
     /// Where it last called from (for the owner's eyes only).
     #[serde(default)]
     pub address: String,
+    /// The join code's label, carried onto the node (empty when the code had none).
+    #[serde(default)]
+    pub label: String,
+    /// The share of its capacity the test lab takes, in percent (0 to 100): 0 is a work-only node, 100 a
+    /// test-only one, and between the two the node does both, with the rest of its capacity for work (`test_lab`).
+    #[serde(default)]
+    pub test_share: u32,
 }
 
 /// The machine a node reports, typed (`node_machine`). A joining node sends the summary (`cpus`, `memory_mib`, `host`,
@@ -187,6 +194,18 @@ pub struct Machine {
     #[serde(default)]
     #[table(flatten)]
     pub mac: Option<MachineMac>,
+    /// The browsers the node has (`chromium`, `firefox`, `webkit`): what a lab run's browser tests need.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "node_machine_browser")]
+    pub browsers: Vec<String>,
+    /// The Android phones attached to the node, by serial (`adb`): what a lab run's device tests need.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "node_machine_phone")]
+    pub phones: Vec<String>,
+    /// Whether the node can shape its traffic (root with the network-admin capability, and `tc` on Linux): what
+    /// a lab run's resilience tests need.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traffic_shaping: Option<bool>,
 }
 
 /// A Mac node's caps on builds and simulators at once, by its cores and memory, with what it runs now (noded's
@@ -328,6 +347,8 @@ pub struct NodeView {
     pub left: u32,
     /// The ones of them that cannot leave yet, each with the reason (`mover`).
     pub waiting: Vec<Waiting>,
+    /// The share of its capacity agents' work takes, in percent: 100 less its test-lab share (`Node::test_share`).
+    pub work_share: u32,
 }
 
 /// An agent that waits to leave a stopping node, and why.
@@ -415,6 +436,8 @@ struct Persisted {
     overrides: BTreeMap<u64, String>,
     /// `n0` is out of service. The hub's own machine has no record here, so its flag has its own field.
     local_stopped: bool,
+    /// `n0`'s test-lab share, in percent (see [`Node::test_share`]); 0 until the owner sets it.
+    local_test_share: u32,
 }
 
 /// The nodes' tables: `nodes`, with its nodes, join codes and moved agents, and each node's machine as a child row.
@@ -592,6 +615,7 @@ impl Store {
             return Err(INVALID_CODE.to_string());
         };
         let code = &mut codes[i];
+        let label = code.label.clone();
         let usable = code.used_by.is_none()
             && !code.revoked
             && now_ms < code.expires_ms
@@ -628,6 +652,8 @@ impl Store {
             draining: false,
             revoked: false,
             address: source.to_string(),
+            label,
+            test_share: 0,
         };
         code.used_by = Some(node.id.clone());
         nodes.push(node.clone());
@@ -652,6 +678,49 @@ impl Store {
             return p.local_stopped;
         }
         p.nodes.iter().any(|n| n.id == id && n.draining)
+    }
+    /// The test-lab share of node `id` in percent (see [`Node::test_share`]); 0 for an unknown node.
+    pub fn test_share(&self, id: &str) -> u32 {
+        let Ok(p) = self.inner.lock() else {
+            return 0;
+        };
+        if id == crate::fleet::LOCAL {
+            return p.local_test_share;
+        }
+        p.nodes
+            .iter()
+            .find(|n| n.id == id)
+            .map_or(0, |n| n.test_share)
+    }
+    /// Sets node `id`'s test-lab share (`test_share`, 0 to 100) and its label (`label`, when given). A revoked node is
+    /// refused (409), an unknown one is 404, and a share out of range is 400. Returns the node as it is now.
+    pub fn set_roles(
+        &self,
+        id: &str,
+        test_share: u32,
+        label: Option<&str>,
+    ) -> Result<Option<Node>, (u16, String)> {
+        if test_share > 100 {
+            return Err((400, "the test share is a percentage from 0 to 100".into()));
+        }
+        let mut p = self.inner.lock().map_err(|e| (500, e.to_string()))?;
+        if id == crate::fleet::LOCAL {
+            p.local_test_share = test_share;
+            return Ok(None);
+        }
+        let node = p
+            .nodes
+            .iter_mut()
+            .find(|n| n.id == id)
+            .ok_or((404, "no such node".to_string()))?;
+        if node.revoked {
+            return Err((409, format!("node {id} is revoked")));
+        }
+        node.test_share = test_share;
+        if let Some(label) = label {
+            node.label = label.trim().chars().take(64).collect();
+        }
+        Ok(Some(node.clone()))
     }
     /// The nodes out of service, `n0` among them when it is.
     pub fn stopped_ids(&self) -> BTreeSet<String> {
@@ -957,6 +1026,7 @@ pub(crate) fn view(node: Node, hosted: &[Hosted], waiting: Vec<Waiting>, now_ms:
         (true, 0) => ("stopped", 0, Vec::new()),
         (true, live) => ("stopping", live, waiting),
     };
+    let work_share = 100u32.saturating_sub(node.test_share);
     NodeView {
         node,
         online,
@@ -964,6 +1034,7 @@ pub(crate) fn view(node: Node, hosted: &[Hosted], waiting: Vec<Waiting>, now_ms:
         state,
         left: u32::try_from(left).unwrap_or(u32::MAX),
         waiting,
+        work_share,
     }
 }
 
@@ -1013,6 +1084,13 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Revoke an unused join code").errors(&[404]))
         .post("/v1/nodes/{id}/revoke", revoke_route)
         .doc(RouteDoc::new("Revoke a node's access").errors(&[404]))
+        .post("/v1/nodes/{id}/roles", roles_route)
+        .doc(
+            RouteDoc::new(
+                "Set a node's roles: its test-lab share (0 work-only, 100 test-only) and its label",
+            )
+            .errors(&[400, 404, 409]),
+        )
         .post("/v1/nodes/join", join_route)
         .doc(
             RouteDoc::new("Join a new node with a join code")
@@ -1073,6 +1151,8 @@ fn local_record(app: &App, up: bool) -> Node {
         draining: app.nodes.is_stopped(crate::fleet::LOCAL),
         revoked: false,
         address: "loopback".into(),
+        label: String::new(),
+        test_share: app.nodes.test_share(crate::fleet::LOCAL),
     }
 }
 
@@ -1190,6 +1270,37 @@ fn revoke_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
             Response::json(200, &view_of(app, node))
         }
         Err(e) => Response::error(404, &e),
+    }
+}
+
+/// The body of `POST /v1/nodes/{id}/roles`.
+#[derive(Debug, Deserialize)]
+struct RolesBody {
+    test_share: u32,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// `POST /v1/nodes/{id}/roles {test_share, label?}`: the owner's roles for a node (see `Store::set_roles`).
+fn roles_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let body: RolesBody = match parse(req) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
+    let id = p.get("id");
+    match app
+        .nodes
+        .set_roles(id, body.test_share, body.label.as_deref())
+    {
+        Ok(Some(node)) => {
+            app.bus.publish("node", &node);
+            Response::json(200, &view_of(app, node))
+        }
+        Ok(None) => match view_by_id(app, id) {
+            Some(view) => Response::json(200, &view),
+            None => Response::error(404, "no such node"),
+        },
+        Err((status, message)) => Response::error(status, &message),
     }
 }
 
@@ -1646,6 +1757,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn roles_set_the_test_share_and_refuse_bad_values() {
+        let store = Store::holding(vec![node("n1")]);
+        let saved = store
+            .set_roles("n1", 40, Some("  lab-box  "))
+            .unwrap()
+            .unwrap();
+        assert_eq!((saved.test_share, saved.label.as_str()), (40, "lab-box"));
+        assert_eq!(store.test_share("n1"), 40);
+        // A label-less call keeps the label; n0 keeps its share on its own field.
+        assert_eq!(
+            store.set_roles("n1", 60, None).unwrap().unwrap().label,
+            "lab-box"
+        );
+        assert!(
+            store
+                .set_roles(crate::fleet::LOCAL, 25, None)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.test_share(crate::fleet::LOCAL), 25);
+        assert_eq!(store.set_roles("n1", 101, None).unwrap_err().0, 400);
+        assert_eq!(store.set_roles("n9", 10, None).unwrap_err().0, 404);
+    }
+
     fn node(id: &str) -> Node {
         Node {
             id: id.into(),
@@ -1659,6 +1795,8 @@ mod tests {
             draining: false,
             revoked: false,
             address: String::new(),
+            label: String::new(),
+            test_share: 0,
         }
     }
 

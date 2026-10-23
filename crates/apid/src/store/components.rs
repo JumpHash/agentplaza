@@ -182,6 +182,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.nodes.load(conn),
         },
         Component {
+            name: "test_lab",
+            def: crate::test_lab::def,
+            rows: |app| app.test_lab.rows(),
+            load: |app, conn| app.test_lab.load(conn),
+        },
+        Component {
             name: "stations",
             def: crate::stations::store_def,
             rows: |app| app.stations.rows(),

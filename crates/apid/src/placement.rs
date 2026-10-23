@@ -308,8 +308,9 @@ fn run_volumes(app: &App, node: &str, run: &str) -> Result<Vec<String>, String> 
 }
 
 /// The nodes that report and are in service, each as a candidate for an agent of `role` that needs the
-/// `needs` volumes: a node that does not hold them all, or that did not say which it holds, is left out.
-/// With a `project`, each candidate says whether it holds the project's base.
+/// `needs` volumes: a node that does not hold them all, or that did not say which it holds, is left out. A test-only
+/// node (its test-lab share is the whole of it, see `Node::test_share`) takes no agent. On a node that does both, only
+/// its work share of the memory counts. With a `project`, each candidate says whether it holds the project's base.
 fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) -> Vec<Candidate> {
     let stopped = app.nodes.stopped_ids();
     let now = Instant::now();
@@ -317,15 +318,17 @@ fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) ->
     fleet::reports(app)
         .into_iter()
         .filter(|(node, _, _)| !stopped.contains(node))
+        .filter(|(node, _, _)| app.nodes.test_share(node) < 100)
         .filter(|(node, _, _)| {
             needs.is_empty()
                 || volumes_on(app, node).is_ok_and(|held| lacking_volumes(&held, needs).is_empty())
         })
         .filter_map(|(node, _status, runs)| {
             let (total, used) = memory_of(app, &node)?;
+            let work = work_share_of(total, app.nodes.test_share(&node));
             let facts = facts_of(app, &node);
             Some(Candidate {
-                free_mib: total
+                free_mib: work
                     .saturating_sub(used)
                     .saturating_sub(reserved_mib(&node, now)),
                 running_vms: running_vms(&runs),
@@ -338,6 +341,13 @@ fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) ->
             })
         })
         .collect()
+}
+
+/// The memory of a node's `total_mib` that agents may use, given its test-lab share in percent (pure): the rest is the
+/// test lab's (`test_lab`).
+pub fn work_share_of(total_mib: u64, test_share: u32) -> u64 {
+    let work = 100u64.saturating_sub(u64::from(test_share.min(100)));
+    total_mib.saturating_mul(work) / 100
 }
 
 /// The nodes that could build a project's targets (targets.rs): every candidate in service, with its pool and whether it
@@ -1284,6 +1294,8 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            label: String::new(),
+            test_share: 0,
         }
     }
 
@@ -1508,6 +1520,8 @@ mod tests {
                 draining: false,
                 revoked: false,
                 address: String::new(),
+                label: String::new(),
+                test_share: 0,
             }]);
             let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
             assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");
@@ -1993,5 +2007,13 @@ mod tests {
         );
         assert_eq!(idle_cpus(None, Some(10.0)), None);
         assert_eq!(idle_cpus(Some(4), None), None);
+    }
+
+    #[test]
+    fn a_node_that_does_both_gives_agents_its_work_share_of_memory() {
+        assert_eq!(work_share_of(8192, 0), 8192);
+        assert_eq!(work_share_of(8192, 25), 6144);
+        assert_eq!(work_share_of(8192, 100), 0);
+        assert_eq!(work_share_of(8192, 250), 0);
     }
 }

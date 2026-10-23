@@ -502,6 +502,8 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            label: String::new(),
+            test_share: 0,
         }
     }
 

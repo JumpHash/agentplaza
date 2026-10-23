@@ -56,7 +56,7 @@ const MOVED: Record<string, (route: Route, hash: string) => string> = {
 // still write with href('models', …), land there with their params.
 const SETTINGS_OF: Record<string, string> = {
   models: 'models', appearance: 'appearance', prompts: 'agents', skills: 'agents', recipes: 'agents', tools: 'connections',
-  mcp: 'connections', platforms: 'connections', vault: 'secrets', egress: 'secrets', nodes: 'compute', workstations: 'compute',
+  mcp: 'connections', platforms: 'connections', vault: 'secrets', egress: 'secrets', nodes: 'compute', 'test-lab': 'compute', workstations: 'compute',
   volumes: 'compute', e2b: 'compute', setup: 'health',
 };
 for (const [screen, group] of Object.entries(SETTINGS_OF)) {
