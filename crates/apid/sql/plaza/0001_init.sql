@@ -1327,6 +1327,7 @@ CREATE TABLE "memory_curation_reading" (
 CREATE TABLE "nodes" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
     "local_stopped" INTEGER NOT NULL CHECK ("local_stopped" IN (0, 1)),
+    "local_test_share" INTEGER NOT NULL CHECK ("local_test_share" >= 0),
     PRIMARY KEY ("pos")
 ) STRICT;
 CREATE TABLE "node" (
@@ -1342,6 +1343,8 @@ CREATE TABLE "node" (
     "draining" INTEGER NOT NULL CHECK ("draining" IN (0, 1)),
     "revoked" INTEGER NOT NULL CHECK ("revoked" IN (0, 1)),
     "address" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "test_share" INTEGER NOT NULL CHECK ("test_share" >= 0),
     PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
     FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
@@ -1390,6 +1393,7 @@ CREATE TABLE "node_machine" (
     "mac_simulators" INTEGER CHECK ("mac_simulators" >= 0),
     "mac_builds_running" INTEGER CHECK ("mac_builds_running" >= 0),
     "mac_simulators_running" INTEGER CHECK ("mac_simulators_running" >= 0),
+    "traffic_shaping" INTEGER CHECK ("traffic_shaping" IN (0, 1)),
     PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
     FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
@@ -1444,6 +1448,22 @@ CREATE TABLE "node_machine_workstation_backend" (
     PRIMARY KEY ("nodes_pos", "nodes_pos_2", "workstation_backends_pos"),
     FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "node_machine_browser" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "browsers_pos" INTEGER NOT NULL CHECK ("browsers_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "browsers_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_phone" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "phones_pos" INTEGER NOT NULL CHECK ("phones_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "phones_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 CREATE TABLE "node_code" (
     "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
     "codes_pos" INTEGER NOT NULL CHECK ("codes_pos" >= 0),
@@ -1464,6 +1484,46 @@ CREATE TABLE "node_override" (
     "value" TEXT NOT NULL,
     PRIMARY KEY ("nodes_pos", "overrides_key"),
     FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component test_lab
+CREATE TABLE "test_lab" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "test_lab_run" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "project" TEXT NOT NULL,
+    "channel" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "cpus" INTEGER NOT NULL CHECK ("cpus" >= 0),
+    "memory_mib" INTEGER NOT NULL CHECK ("memory_mib" >= 0),
+    "enqueued_ms" INTEGER NOT NULL CHECK ("enqueued_ms" >= 0),
+    "started_ms" INTEGER CHECK ("started_ms" >= 0),
+    "ended_ms" INTEGER CHECK ("ended_ms" >= 0),
+    "outcome" TEXT,
+    PRIMARY KEY ("test_lab_pos", "runs_pos"),
+    FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_run_need" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "needs_pos" INTEGER NOT NULL CHECK ("needs_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "runs_pos", "needs_pos"),
+    FOREIGN KEY ("test_lab_pos", "runs_pos") REFERENCES "test_lab_run" ("test_lab_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_reservation" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "reservations_pos" INTEGER NOT NULL CHECK ("reservations_pos" >= 0),
+    "node" TEXT NOT NULL,
+    "cpus" INTEGER NOT NULL CHECK ("cpus" >= 0),
+    "memory_mib" INTEGER NOT NULL CHECK ("memory_mib" >= 0),
+    PRIMARY KEY ("test_lab_pos", "runs_pos", "reservations_pos"),
+    FOREIGN KEY ("test_lab_pos", "runs_pos") REFERENCES "test_lab_run" ("test_lab_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component stations
@@ -2297,6 +2357,81 @@ CREATE TABLE "recipe_version" (
     "toml_content" TEXT,
     "saved_ms" INTEGER NOT NULL CHECK ("saved_ms" >= 0),
     PRIMARY KEY ("recipe", "version")
+) STRICT;
+
+-- component releases
+CREATE TABLE "release" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "repo" TEXT NOT NULL,
+    "version" TEXT NOT NULL,
+    "channel" TEXT NOT NULL,
+    "base" TEXT,
+    "lane" TEXT NOT NULL,
+    "from" TEXT NOT NULL,
+    "state" TEXT NOT NULL CHECK ("state" IN ('draft', 'candidate', 'qualifying', 'qualified', 'published', 'promoted', 'failed', 'abandoned', 'superseded', 'yanked')),
+    "number" INTEGER CHECK ("number" >= 0),
+    "notes_content" TEXT,
+    "run" TEXT,
+    "sbom" TEXT NOT NULL,
+    "provenance" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "release_project" ON "release" ("project");
+CREATE TABLE "release_change" (
+    "release_id" TEXT NOT NULL,
+    "changes_pos" INTEGER NOT NULL CHECK ("changes_pos" >= 0),
+    "change" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "review_run" TEXT,
+    PRIMARY KEY ("release_id", "changes_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "release_artifact" (
+    "release_id" TEXT NOT NULL,
+    "artifacts_pos" INTEGER NOT NULL CHECK ("artifacts_pos" >= 0),
+    "target" TEXT NOT NULL,
+    "artifact" TEXT NOT NULL,
+    "digest" TEXT NOT NULL,
+    "size" INTEGER NOT NULL CHECK ("size" >= 0),
+    "signatures" TEXT NOT NULL,
+    "pool" TEXT NOT NULL,
+    "base" TEXT NOT NULL,
+    "run" TEXT NOT NULL,
+    PRIMARY KEY ("release_id", "artifacts_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "release_verdict" (
+    "release_id" TEXT NOT NULL,
+    "verdicts_pos" INTEGER NOT NULL CHECK ("verdicts_pos" >= 0),
+    "source" TEXT NOT NULL,
+    "verdict" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    PRIMARY KEY ("release_id", "verdicts_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "release_promotion" (
+    "release_id" TEXT NOT NULL,
+    "promotions_pos" INTEGER NOT NULL CHECK ("promotions_pos" >= 0),
+    "environment" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "health" TEXT NOT NULL,
+    PRIMARY KEY ("release_id", "promotions_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "release_sync" (
+    "release_id" TEXT NOT NULL,
+    "sync_pos" INTEGER NOT NULL CHECK ("sync_pos" >= 0),
+    "platform" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "url" TEXT,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("release_id", "sync_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component budgets
