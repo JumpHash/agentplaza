@@ -164,7 +164,7 @@ impl Request {
 /// The launch of an instance: its `KEY=VALUE` pairs (the harness's own, then the owner's that do not
 /// clash with them) and the model the session is given. A catalogue engine takes its own launch; any other
 /// ACP engine runs as a plain agent.
-fn launch(
+pub(crate) fn launch(
     workspace: &Workspace,
     instance: &Instance,
     model: Option<&str>,
@@ -209,7 +209,7 @@ pub fn protocol_offer(engine_transport: &str) -> u16 {
 /// binary, its arguments and `extra` (the call's model, for an engine that takes it on the command
 /// line: see [`engines::acp_args`]). Otherwise the model is not among them: an engine takes it as a
 /// session config option.
-fn argv(instance: &Instance, env: Vec<String>, extra: &[String]) -> Vec<String> {
+pub(crate) fn argv(instance: &Instance, env: Vec<String>, extra: &[String]) -> Vec<String> {
     command(instance, env, &instance.launch_args(extra))
 }
 

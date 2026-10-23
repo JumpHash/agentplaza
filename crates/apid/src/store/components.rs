@@ -250,6 +250,24 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.recipe_runs.load(conn),
         },
         Component {
+            name: "recipe_triggers",
+            def: crate::triggers::def,
+            rows: |app| app.triggers.rows(),
+            load: |app, conn| app.triggers.load(conn),
+        },
+        Component {
+            name: "recipe_trigger_pending",
+            def: crate::triggers::pending_def,
+            rows: |app| app.triggers.pending_rows(),
+            load: |app, conn| app.triggers.load_pending(conn),
+        },
+        Component {
+            name: "recipe_trigger_fired",
+            def: crate::triggers::fired_def,
+            rows: |app| app.triggers.fired_rows(),
+            load: |app, conn| app.triggers.load_fired(conn),
+        },
+        Component {
             name: "recipe_versions",
             def: crate::recipes::runs::versions_def,
             rows: |app| app.recipe_runs.version_rows(),
@@ -339,6 +357,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.platforms.load(conn),
         },
         Component {
+            name: "intake",
+            def: crate::intake::def,
+            rows: |app| app.intake.rows(),
+            load: |app, conn| app.intake.load(conn),
+        },
+        Component {
             name: "hf_imports",
             def: crate::foundry::hf_import::def,
             rows: |app| app.hf.rows(),
@@ -361,6 +385,18 @@ pub fn all() -> Vec<Component> {
             def: crate::e2b_tpl::def,
             rows: |app| app.e2b_templates.rows(),
             load: |app, conn| app.e2b_templates.load(conn),
+        },
+        Component {
+            name: "test_maps",
+            def: crate::test_select::map_def,
+            rows: |app| app.test_select.map_rows(),
+            load: |app, conn| app.test_select.load_maps(conn),
+        },
+        Component {
+            name: "test_misses",
+            def: crate::test_select::miss_def,
+            rows: |app| app.test_select.miss_rows(),
+            load: |app, conn| app.test_select.load_misses(conn),
         },
     ]
 }

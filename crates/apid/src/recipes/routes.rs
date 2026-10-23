@@ -6,6 +6,7 @@
 //! | `GET /v1/recipe-runs/{id}` | a run: its steps, edges, the recipe it ran |
 //! | `GET /v1/recipe-runs/{id}/graph` | a run's graph as the IDE draws it: each step and edge with its state |
 //! | `POST /v1/recipe-runs/{id}/cancel` | stops a run; a task's run stops its task |
+//! | `POST /v1/recipe-runs/ci` `{project, change}` | queues the CI recipe's checks of a change (4.5); the run is listed when the scheduler starts it |
 //!
 //! The recipes themselves are on `/v1/recipes` (review_graph/routes.rs answers for them).
 
@@ -138,4 +139,28 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
         })
         .doc(RouteDoc::new("Stop a recipe run; a task's run stops its task").errors(&[404, 409]))
+        .post("/v1/recipe-runs/ci", |app, req: &Request, _| {
+            let body: Value = match serde_json::from_slice(&req.body) {
+                Ok(body) => body,
+                Err(err) => return Response::error(400, &format!("bad body: {err}")),
+            };
+            let (Some(project), Some(change)) = (body["project"].as_str(), body["change"].as_str())
+            else {
+                return Response::error(400, "a CI run needs a project and a change");
+            };
+            if app.projects.get(project).is_none() {
+                return Response::error(404, "no such project");
+            }
+            crate::checks::request(project, change);
+            Response::json(
+                202,
+                &json!({ "project": project, "change": change, "state": "queued" }),
+            )
+        })
+        .doc(
+            RouteDoc::new(
+                "Start the CI recipe's checks of a change: lint, build, the selected tests and audit in a test fork, and the secret scan; the run is listed under /v1/recipe-runs",
+            )
+            .errors(&[400, 404]),
+        )
 }

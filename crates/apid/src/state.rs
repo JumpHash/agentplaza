@@ -160,6 +160,8 @@ pub struct App {
     pub recipe_runs: crate::recipes::runs::Runs,
     /// The releases of every project, each with its life as Weft's statements made it (releases/).
     pub releases: crate::releases::entity::Store,
+    /// The triggers of the recipes (14.6): the schedules and the event records, and the deliveries in their windows.
+    pub triggers: crate::triggers::Triggers,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
     /// The VMs' workspace reports and the disk quotas' check (disk.rs).
@@ -196,6 +198,8 @@ pub struct App {
     pub usage: crate::usage::Ledger,
     /// The eval records of step sessions (`evals.rs`): written as sessions end, read by `/v1/evals`.
     pub evals: crate::evals::Evals,
+    /// Test selection (PLAN 15.4): the coverage maps per project and commit, and the misses (`test_select.rs`).
+    pub test_select: crate::test_select::TestSelect,
     /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
     pub metrics: crate::metrics::Metrics,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
@@ -216,6 +220,8 @@ pub struct App {
     pub appearance: crate::appearance::Store,
     /// The owner's standing rules, with their versions: part 2 of every session's prompt (standing_rules.rs).
     pub standing_rules: crate::standing_rules::StandingRules,
+    /// The intake records: GitHub, Linear and Notion items, their connections and write-backs (intake/mod.rs).
+    pub intake: crate::intake::Store,
     /// Agents' artifacts (artifacts/), their versions and data blobs.
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
@@ -317,6 +323,7 @@ impl App {
             seats: Default::default(),
             recipe_runs: Default::default(),
             releases: Default::default(),
+            triggers: Default::default(),
             budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
             disk: Default::default(),
@@ -339,6 +346,7 @@ impl App {
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
             evals: crate::evals::Evals::new(Arc::clone(store.db(crate::store::PLAZA))),
+            test_select: crate::test_select::TestSelect::default(),
             metrics: crate::metrics::Metrics::open(
                 Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
@@ -377,6 +385,7 @@ impl App {
                 .with_generations(Arc::clone(&generations)),
             appearance: crate::appearance::Store::new(),
             standing_rules: Default::default(),
+            intake: Default::default(),
             artifacts: Arc::new(crate::artifacts::Store::new(
                 Arc::clone(store.db(crate::store::PLAZA)),
                 Arc::clone(&blobs),
@@ -497,6 +506,7 @@ impl App {
             crate::weft_hub::stop(&app);
         });
         crate::provider_health::spawn(Arc::clone(&app));
+        crate::triggers::ensure_builtins(&app, apz_plaza::now_ms());
         crate::providers::spawn_refresher(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));

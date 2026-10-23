@@ -350,6 +350,10 @@ pub fn presets() -> Vec<Preset> {
         p("moonshot", OpenAiCompatible, "Moonshot Kimi", "moonshot", Some("https://api.moonshot.ai/v1"), env("MOONSHOT_API_KEY"),
           "Mainland China accounts use https://api.moonshot.cn/v1.")
             .with(&["kimi-k3"], None),
+        p("qwen", OpenAiCompatible, "Alibaba Qwen", "alibaba", Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+          env("DASHSCOPE_API_KEY"),
+          "DashScope's OpenAI-compatible mode, international endpoint; the China region is \
+           https://dashscope.aliyuncs.com/compatible-mode/v1. The models come from the provider's /models listing."),
         p("groq", OpenAiCompatible, "Groq", "groq", Some("https://api.groq.com/openai/v1"), env("GROQ_API_KEY"), ""),
         p("mistral", OpenAiCompatible, "Mistral", "mistral", Some("https://api.mistral.ai/v1"), env("MISTRAL_API_KEY"),
           "Magistral's thinking comes back as reasoning; tool-call ids are mapped to Mistral's 9-character form.")
@@ -462,7 +466,7 @@ mod tests {
             ids.contains(&"ollama")
                 && ids.contains(&"mock")
                 && ids.contains(&"meta")
-                && ids.len() == 30,
+                && ids.len() == 31,
             "{ids:?}"
         );
         assert_eq!(ProviderKind::SystemOne.group(), "decisions");
@@ -481,6 +485,7 @@ mod tests {
             "deepseek",
             "zai",
             "moonshot",
+            "alibaba",
             "mistral",
             "groq",
             "openrouter",
@@ -589,6 +594,75 @@ mod tests {
             assert!(oc.config().extra_headers.is_empty());
             let oc_json = serde_json::to_value(&oc).unwrap();
             assert!(oc_json.get("extra_headers").is_none(), "{oc_json}");
+        }
+    }
+
+    #[test]
+    fn the_compatible_presets_pass_a_request_and_a_listing_in_their_wire_format() {
+        use crate::testutil::{FakeServer, Reply, gateway, request, sse_data};
+        use apz_proto::chat::ChatRequest;
+        // The OpenAI-compatible presets of PLAN 11.3, each against a fake server that records what it is sent. A
+        // chat goes to `<base>/chat/completions` with the preset's key as a bearer token (none for a local server),
+        // naming the model without its provider id; the models are listed from `<base>/models`.
+        const PRESETS: &[&str] = &[
+            "xai", "deepseek", "mistral", "moonshot", "zai", "qwen", "vllm", "llamacpp",
+        ];
+        let stream = sse_data(&[
+            r#"{"model":"wire-test-model","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+            "[DONE]",
+        ]);
+        for id in PRESETS {
+            let preset = presets()
+                .into_iter()
+                .find(|p| p.id == *id)
+                .unwrap_or_else(|| panic!("{id} is a preset"));
+            assert_eq!(preset.kind, ProviderKind::OpenAiCompatible, "{id}");
+            // The preset's path prefix (its `/v1`, or `/api/paas/v4`) stays; the host becomes the fake server.
+            let base = preset.base_url.expect("a hosted or local base");
+            let prefix = base
+                .split_once("://")
+                .and_then(|(_, rest)| rest.split_once('/'))
+                .map(|(_, path)| format!("/{path}"))
+                .unwrap_or_default();
+            let server = FakeServer::start(vec![
+                Reply::sse(stream.clone()),
+                Reply::json(200, &json!({"data": [{"id": "listed-model"}]})),
+            ]);
+            let mut cfg = preset.config();
+            cfg.base_url = Some(format!("{}{prefix}", server.url()));
+            let gw = gateway(vec![cfg]);
+            let req = ChatRequest {
+                system_parts: Vec::new(),
+                cache_last_message: false,
+                model: format!("{id}/wire-test-model"),
+                max_tokens: 16,
+                ..request("hi")
+            };
+            let resp = gw.complete(&req, &mut |_| {}).expect("the chat answers");
+            assert!(format!("{:?}", resp.content).contains("ok"), "{id}");
+            let listed = gw.list_models(id).expect("the listing answers");
+            assert!(
+                format!("{listed:?}").contains("listed-model"),
+                "{id}: {listed:?}"
+            );
+
+            let sent = server.requests();
+            assert_eq!(sent.len(), 2, "{id}: one chat, one listing");
+            assert_eq!(sent[0].path, format!("{prefix}/chat/completions"), "{id}");
+            assert_eq!(sent[0].json()["model"], json!("wire-test-model"), "{id}");
+            assert_eq!(sent[1].method, "GET", "{id}");
+            assert_eq!(sent[1].path, format!("{prefix}/models"), "{id}");
+            match &preset.auth {
+                Auth::Env(name) => assert_eq!(
+                    sent[0].header("authorization"),
+                    Some(format!("Bearer env-{name}").as_str()),
+                    "{id} sends its key"
+                ),
+                _ => assert!(
+                    sent[0].header("authorization").is_none(),
+                    "{id} sends no key"
+                ),
+            }
         }
     }
 

@@ -697,6 +697,12 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             if let Some(ms) = v["stall_ms"].as_u64() {
                 opts.stall_ms = ms;
             }
+            // The queue's batch size (its project's), the owner's hold on landings, and the change the owner approved.
+            if let Some(batch) = v["batch"].as_u64() {
+                opts.batch = batch.clamp(1, 16) as usize;
+            }
+            opts.hold = v["hold"].as_bool().unwrap_or(false);
+            opts.approved = v["approved"].as_bool().unwrap_or(false);
             match h.lander.step(&h.store, &h.derived, p.get("repo"), &reference, opts) {
                 Ok(step) => ok(json!(step)),
                 Err(e) => refused(e),
@@ -728,6 +734,19 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             match h.exporter.export(&h.store, &h.derived, p.get("repo"), conn, keys, v["dry_run"].as_bool().unwrap_or(false)) {
                 Ok(r) => ok(json!(r)),
                 Err(e) => fail(502, e),
+            }
+        })
+        .post("/v1/repos/{repo}/lanes/{change}/export", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(conn) = v["connection"].as_str() else { return fail(400, "a lane's export needs a connection") };
+            let Some(branch) = v["branch"].as_str() else { return fail(400, "a lane's export needs a branch") };
+            let keys = crate::export::Keys { token: v["token"].as_str().map(str::to_string), signing: h.signing.as_ref() };
+            match h.exporter.export_lane(&h.store, p.get("repo"), p.get("change"), conn, branch, keys, v["dry_run"].as_bool().unwrap_or(false)) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => refused(e),
             }
         })
         .post("/v1/repos/{repo}/import", |h: &H, req, p| {

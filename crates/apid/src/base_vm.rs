@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use apz_proto::wire::{HostMessage, KIND_BASE};
 use serde_json::{Value, json};
 
-use crate::base_recipe::{self, BaseKind, OS_TEMPLATE, STEP_TIMEOUT_S, Step, VmRunner, WORKSPACE};
+use crate::base_recipe::{
+    self, BaseKind, Command, OS_TEMPLATE, STEP_TIMEOUT_S, Step, VmRunner, WORKSPACE,
+};
 use crate::fleet;
 use crate::state::App;
 
@@ -328,6 +330,60 @@ impl<'a, H: Host> Runner<'a, H> {
     }
 }
 
+/// A test fork (PLAN 21.3): a VM started with a test base's steps but not its snapshot, so the checks of a change (the
+/// CI recipe's lint, build, tests and audit) run their own commands in it, one at a time. The fork is retired, its VM
+/// stopped, when its checks are done.
+pub struct Fork<'a, H: Host> {
+    runner: Runner<'a, H>,
+}
+
+impl<'a, H: Host> Fork<'a, H> {
+    /// Starts the fork's VM and runs `steps` in it, in order (`base_recipe::fork_steps`). The first that fails fails the
+    /// start, which names the step.
+    pub fn start(
+        host: &'a H,
+        node: String,
+        project: String,
+        steps: &[Step],
+    ) -> Result<Self, String> {
+        let mut runner = Runner::new(host, node, project);
+        base_recipe::execute(&mut runner, steps)?;
+        Ok(Self { runner })
+    }
+
+    /// Runs one command in the fork. Its answer is what the command did: a command that fails is an answer, not an error.
+    pub fn exec(&mut self, command: &Command) -> Result<Answer, String> {
+        let env = command
+            .env
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        self.runner.exec(
+            command.argv.clone(),
+            env,
+            command.cwd,
+            command.timeout_s,
+            false,
+        )
+    }
+
+    /// Stops the fork's VM.
+    pub fn retire(self) -> Result<(), String> {
+        let Some(run) = self.runner.run.clone() else {
+            return Ok(());
+        };
+        let path = format!("/v1/runs/{run}/vms/0/stop");
+        let (status, reply) = self
+            .runner
+            .host
+            .noded(&self.runner.node, "POST", &path, None)?;
+        if status >= 300 {
+            return Err(format!("noded: status {status} stopping the fork: {reply}"));
+        }
+        Ok(())
+    }
+}
+
 impl<H: Host> VmRunner for Runner<'_, H> {
     fn run(&mut self, step: &Step) -> Result<(), String> {
         match step {
@@ -505,6 +561,51 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|call| call.ends_with("/stop"))
+        );
+    }
+
+    #[test]
+    fn a_test_fork_runs_its_checks_in_a_vm_without_the_build_or_the_snapshot_and_is_retired() {
+        let host = host_that_hello(700);
+        let stack = parse(RUST).unwrap();
+        let steps = base_recipe::fork_steps(&stack, "repo-1", "c1");
+        let mut fork = Fork::start(&host, "n-fork-1".into(), "pr-fork".into(), &steps).unwrap();
+        let check = Command {
+            label: "lint".into(),
+            argv: argv(&["cargo", "clippy", "--workspace"]),
+            cwd: WORKSPACE,
+            timeout_s: 60,
+            env: Vec::new(),
+        };
+        let answer = fork.exec(&check).unwrap();
+        assert!(answer.ok);
+        fork.retire().unwrap();
+
+        let argvs: Vec<Vec<String>> = host
+            .sent()
+            .iter()
+            .filter_map(|message| match message {
+                HostMessage::Exec { argv, .. } => Some(argv.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(argvs.contains(&argv(&["cargo", "fetch"])), "{argvs:?}");
+        assert!(
+            !argvs.contains(&argv(&["cargo", "build", "--all-targets"])),
+            "the build is the check's"
+        );
+        assert_eq!(
+            argvs.last(),
+            Some(&argv(&["cargo", "clippy", "--workspace"]))
+        );
+        let calls = host.calls.lock().unwrap().clone();
+        assert!(
+            calls.iter().all(|call| !call.contains("checkpoints")),
+            "{calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.ends_with("/vms/0/stop")),
+            "{calls:?}"
         );
     }
 

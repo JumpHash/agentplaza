@@ -76,6 +76,18 @@ fn project_missing(app: &App, id: &str) -> bool {
     app.projects.get(id).is_none()
 }
 
+/// A landing on a project that releases continuously cuts a draft holding the change (4.6, 22.3); its version is
+/// numbered from the change since the project's newest release.
+pub fn continuous(app: &App, project: &str, change: &str) -> Result<Release, String> {
+    let repo = crate::weft_hub::ensure_repo(app, project)?;
+    let cut = Cut {
+        changes: vec![change.to_string()],
+        base: app.releases.list(project).into_iter().next().map(|r| r.id),
+        ..Cut::default()
+    };
+    flow::draft(&deps(app), project, &repo, &cut)
+}
+
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/projects/{id}/releases", |app, _, p: &Params<'_>| {

@@ -9,7 +9,7 @@
 //! land as soon as the head does. When the head stalls, a later item that shares no file with it may land first
 //! (the two commute). After a landing, lanes stacked on the landed change move onto it.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
 
 use serde::Serialize;
@@ -31,7 +31,10 @@ pub struct Candidate {
     /// tree, which the head's landing makes the ref's).
     pub onto: RevId,
     pub onto_tree: Hash,
+    /// The changes the candidate's tree makes on `onto`: its own, stacked on the candidates below it in its batch.
     pub deltas: Vec<Delta>,
+    /// What this lane alone changes (relative to the tree below it): what its landing writes.
+    pub own: Vec<Delta>,
     pub digest: Hash,
     pub merged: Vec<String>,
     /// Whether it lands on a tree other than the one it was reviewed on (so a re-check applies).
@@ -62,6 +65,11 @@ pub enum Step {
         change: String,
         digest: Hash,
     },
+    /// The head would land, but the owner has not approved it yet (`Options::hold`).
+    Held {
+        change: String,
+        digest: Hash,
+    },
     Conflict {
         change: String,
         files: Vec<String>,
@@ -73,10 +81,21 @@ pub enum Step {
     },
 }
 
+/// A batch being bisected: its items (head first), and how many of them, from the head, are known to pass (`good`)
+/// and the shortest prefix known to fail (`bad`).
+#[derive(Clone, Debug)]
+struct Bisect {
+    names: Vec<String>,
+    good: usize,
+    bad: usize,
+}
+
 #[derive(Default)]
 pub struct Lander {
-    /// Per `repo|ref`: the candidates, head first.
+    /// Per `repo|ref`: the candidates, head first; the speculative ones after it, stacked in queue order.
     candidates: Mutex<HashMap<String, Vec<Candidate>>>,
+    /// Per `repo|ref`: the batch being bisected, if its top failed.
+    bisects: Mutex<HashMap<String, Bisect>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -85,6 +104,14 @@ pub struct Options {
     pub recheck: bool,
     /// How long a head may wait on its checks before a commuting item may pass it.
     pub stall_ms: u64,
+    /// How many queued items (head first) are tested together. A batch is checked as its top (the tree of every item
+    /// in it); a batch that passes lands in order, and one that fails is bisected to the item that breaks it. 1 tests
+    /// each item on its own.
+    pub batch: usize,
+    /// The owner approves landings: a step that would land returns [`Step::Held`] unless `approved` is set. The
+    /// caller sets it only for the change a held step named, once the owner has approved that change.
+    pub hold: bool,
+    pub approved: bool,
 }
 
 impl Default for Options {
@@ -92,7 +119,34 @@ impl Default for Options {
         Options {
             recheck: false,
             stall_ms: 10 * 60 * 1000,
+            batch: 1,
+            hold: false,
+            approved: false,
         }
+    }
+}
+
+/// `over` written onto `base`: a path `over` names takes its change, the others keep `base`'s.
+fn overlay(base: &[Delta], over: &[Delta]) -> Vec<Delta> {
+    let mut by_path: BTreeMap<String, Delta> = BTreeMap::new();
+    for d in base.iter().chain(over) {
+        by_path.insert(d.path.clone(), d.clone());
+    }
+    by_path.into_values().collect()
+}
+
+/// Each candidate's changes and digest from its place in the list: a speculative one stacks on those before it, and a
+/// head starts afresh. Called when a landing moves the ref, so the speculative ones sit on the new head.
+fn restack(list: &mut [Candidate]) {
+    let mut cum: Vec<Delta> = Vec::new();
+    for c in list.iter_mut() {
+        cum = if c.speculative {
+            overlay(&cum, &c.own)
+        } else {
+            c.own.clone()
+        };
+        c.digest = crate::state::digest(&c.onto, &cum);
+        c.deltas = cum.clone();
     }
 }
 
@@ -112,27 +166,17 @@ impl Lander {
 
     /// The tree a candidate would land (for the checks to run on).
     pub fn candidate_tree(&self, store: &Store, digest: &Hash) -> Result<Tree, String> {
-        let all = self
+        let c = self
             .candidates
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .values()
             .flatten()
-            .cloned()
-            .collect::<Vec<_>>();
-        let c = all
-            .iter()
             .find(|c| c.digest == *digest)
+            .cloned()
             .ok_or("no such candidate")?;
+        // A candidate's deltas are cumulative: the batch below it included.
         let mut tree = (*store.tree(&c.onto)?).clone();
-        // A speculative candidate sits on the head candidate's tree.
-        if c.speculative
-            && let Some(head) = all
-                .iter()
-                .find(|h| !h.speculative && h.onto == c.onto && h.change != c.change)
-        {
-            apply_deltas(&mut tree, &head.deltas);
-        }
         apply_deltas(&mut tree, &c.deltas);
         Ok(tree)
     }
@@ -232,9 +276,29 @@ impl Lander {
             },
         };
         let needs_check = opts.recheck && cand.rebased;
-        match (needs_check, cand.checked) {
-            (false, _) | (true, Some(true)) => self.land(store, derived, repo, reference, &cand),
-            (true, Some(false)) => {
+        if !needs_check || cand.checked == Some(true) {
+            return self.land_if_approved(store, derived, repo, reference, &cand, opts);
+        }
+        // The batch: the head and the next items stacked on it, up to `opts.batch`. Its top's check covers the whole
+        // stack, so a passing batch lands in order, and a failing one is bisected to the item that breaks it.
+        let chain = self.batch(
+            store,
+            derived,
+            repo,
+            reference,
+            &order,
+            &cand,
+            opts.batch.max(1),
+        );
+        let top = chain.last().cloned().unwrap_or_else(|| cand.clone());
+        match top.checked {
+            Some(true) => {
+                for c in &chain {
+                    self.set_checked(repo, reference, &c.digest, true);
+                }
+                self.land_if_approved(store, derived, repo, reference, &cand, opts)
+            }
+            Some(false) if chain.len() == 1 => {
                 store.hub_append("queue.remove", json!({ "repo": repo, "ref": reference, "change": cand.change, "n": cand.n, "reason": "the re-check on the merged revision failed" }))?;
                 self.forget(repo, reference, &cand.change);
                 Ok(Step::Failed {
@@ -242,23 +306,8 @@ impl Lander {
                     reason: "the re-check failed".into(),
                 })
             }
-            (true, None) => {
-                // Speculatively merge the next item on top of the head's candidate.
-                if let Some(next) = order.get(1)
-                    && !self
-                        .candidates(repo, reference)
-                        .iter()
-                        .any(|c| c.change == next.1)
-                    && let Ok(Ok(c)) =
-                        self.make(store, derived, repo, &next.1, next.2, &head, Some(&cand))
-                {
-                    self.candidates
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .entry(key(repo, reference))
-                        .or_default()
-                        .push(c);
-                }
+            Some(false) => self.bisect(store, repo, reference, &chain),
+            None => {
                 // A stalled head lets a commuting item pass.
                 if now_ms().saturating_sub(cand.made_ms) >= opts.stall_ms {
                     for item in order.iter().skip(1) {
@@ -268,32 +317,195 @@ impl Lander {
                             continue;
                         };
                         if !c.rebased && c.files.is_disjoint(&cand.files) {
-                            return self.land(store, derived, repo, reference, &c);
+                            return self
+                                .land_if_approved(store, derived, repo, reference, &c, opts);
                         }
                     }
                 }
-                let first_ask = {
-                    let mut all = self.candidates.lock().unwrap_or_else(|p| p.into_inner());
-                    let c = all
-                        .entry(key(repo, reference))
-                        .or_default()
-                        .iter_mut()
-                        .find(|c| c.digest == cand.digest);
-                    c.map(|c| !std::mem::replace(&mut c.announced, true))
-                        .unwrap_or(false)
-                };
-                Ok(if first_ask {
+                Ok(if self.first_ask(repo, reference, &top.digest) {
                     Step::Recheck {
-                        change: cand.change,
-                        digest: cand.digest,
+                        change: top.change,
+                        digest: top.digest,
                     }
                 } else {
                     Step::Waiting {
-                        change: cand.change,
-                        digest: cand.digest,
+                        change: top.change,
+                        digest: top.digest,
                     }
                 })
             }
+        }
+    }
+
+    /// Lands `c`, unless the owner holds landings and has not approved this one: then the step is [`Step::Held`].
+    fn land_if_approved(
+        &self,
+        store: &Store,
+        derived: &Derived,
+        repo: &str,
+        reference: &str,
+        c: &Candidate,
+        opts: Options,
+    ) -> Result<Step, String> {
+        if opts.hold && !opts.approved {
+            return Ok(Step::Held {
+                change: c.change.clone(),
+                digest: c.digest,
+            });
+        }
+        self.land(store, derived, repo, reference, c)
+    }
+
+    /// The batch of the queue's head: `head_cand` and the next items stacked on it, `size` at most. Stacked candidates
+    /// the list already holds (with their checks) are kept; the speculative ones of the list are replaced by this chain.
+    #[allow(clippy::too_many_arguments)]
+    fn batch(
+        &self,
+        store: &Store,
+        derived: &Derived,
+        repo: &str,
+        reference: &str,
+        order: &[&(u64, String, u32, String)],
+        head_cand: &Candidate,
+        size: usize,
+    ) -> Vec<Candidate> {
+        let head = head_cand.onto.clone();
+        let mut chain = vec![head_cand.clone()];
+        for item in order.iter().skip(1).take(size - 1) {
+            let below = chain.last().cloned().expect("the head is in the chain");
+            let Ok(Ok(made)) =
+                self.make(store, derived, repo, &item.1, item.2, &head, Some(&below))
+            else {
+                // A clash ends the batch: the items below it are tested on their own.
+                break;
+            };
+            let kept = self
+                .candidates(repo, reference)
+                .into_iter()
+                .find(|c| c.speculative && c.digest == made.digest);
+            chain.push(kept.unwrap_or(made));
+        }
+        let mut all = self.candidates.lock().unwrap_or_else(|p| p.into_inner());
+        let list = all.entry(key(repo, reference)).or_default();
+        list.retain(|c| !c.speculative);
+        list.extend(chain.iter().skip(1).cloned());
+        chain
+    }
+
+    /// A failing batch: its breaker is found by bisecting its prefixes (a prefix's check covers every item below it),
+    /// and it leaves the queue with the failure. The batch's other speculative candidates go; the next step tests the
+    /// items that remain from the head.
+    fn bisect(
+        &self,
+        store: &Store,
+        repo: &str,
+        reference: &str,
+        chain: &[Candidate],
+    ) -> Result<Step, String> {
+        let k = key(repo, reference);
+        let names: Vec<String> = chain.iter().map(|c| c.change.clone()).collect();
+        let (mut good, mut bad) = {
+            let mut state = self.bisects.lock().unwrap_or_else(|p| p.into_inner());
+            let fresh = !matches!(state.get(&k), Some(b) if b.names == names);
+            if fresh {
+                state.insert(
+                    k.clone(),
+                    Bisect {
+                        names: names.clone(),
+                        good: 0,
+                        bad: names.len(),
+                    },
+                );
+            }
+            let b = &state[&k];
+            (b.good, b.bad)
+        };
+        while bad - good > 1 {
+            let probe = &chain[(good + bad) / 2 - 1];
+            match self.checked_of(repo, reference, &probe.digest) {
+                Some(passed) => {
+                    let mid = (good + bad) / 2;
+                    if passed {
+                        good = mid;
+                    } else {
+                        bad = mid;
+                    }
+                }
+                None => {
+                    if let Some(b) = self
+                        .bisects
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get_mut(&k)
+                    {
+                        b.good = good;
+                        b.bad = bad;
+                    }
+                    let digest = probe.digest;
+                    let change = probe.change.clone();
+                    return Ok(if self.first_ask(repo, reference, &digest) {
+                        Step::Recheck { change, digest }
+                    } else {
+                        Step::Waiting { change, digest }
+                    });
+                }
+            }
+        }
+        self.bisects
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&k);
+        let breaker = &chain[bad - 1];
+        store.hub_append("queue.remove", json!({ "repo": repo, "ref": reference, "change": breaker.change, "n": breaker.n, "reason": "bisected: this change breaks its batch" }))?;
+        self.forget(repo, reference, &breaker.change);
+        self.drop_speculative(repo, reference);
+        Ok(Step::Failed {
+            change: breaker.change.clone(),
+            reason: format!(
+                "it breaks its batch of {} queued changes: bisecting the batch finds it",
+                names.len()
+            ),
+        })
+    }
+
+    /// Whether the candidate for `digest` was given its first check request (and marks it asked).
+    fn first_ask(&self, repo: &str, reference: &str, digest: &Hash) -> bool {
+        let mut all = self.candidates.lock().unwrap_or_else(|p| p.into_inner());
+        all.entry(key(repo, reference))
+            .or_default()
+            .iter_mut()
+            .find(|c| c.digest == *digest)
+            .map(|c| !std::mem::replace(&mut c.announced, true))
+            .unwrap_or(false)
+    }
+
+    fn checked_of(&self, repo: &str, reference: &str, digest: &Hash) -> Option<bool> {
+        self.candidates(repo, reference)
+            .into_iter()
+            .find(|c| c.digest == *digest)
+            .and_then(|c| c.checked)
+    }
+
+    fn set_checked(&self, repo: &str, reference: &str, digest: &Hash, ok: bool) {
+        let mut all = self.candidates.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(c) = all
+            .entry(key(repo, reference))
+            .or_default()
+            .iter_mut()
+            .find(|c| c.digest == *digest)
+        {
+            c.checked = Some(ok);
+        }
+    }
+
+    fn drop_speculative(&self, repo: &str, reference: &str) {
+        if let Some(list) = self
+            .candidates
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_mut(&key(repo, reference))
+        {
+            list.retain(|c| !c.speculative);
         }
     }
 
@@ -334,7 +546,7 @@ impl Lander {
             apply_deltas(&mut theirs, &b.deltas);
         }
         let onto_tree = tree_hash(&theirs);
-        let (deltas, merged, rebased) = if base_id == head && below.is_none() {
+        let (own, merged, rebased) = if base_id == head && below.is_none() {
             (rev_deltas, vec![], false)
         } else {
             let base = store.tree(&base_id)?;
@@ -355,7 +567,11 @@ impl Lander {
             };
             (m.deltas, merged, rebased)
         };
-        let files = deltas.iter().map(|d| d.path.clone()).collect();
+        let files = own.iter().map(|d| d.path.clone()).collect();
+        let deltas = match below {
+            Some(b) => overlay(&b.deltas, &own),
+            None => own.clone(),
+        };
         let digest = crate::state::digest(head, &deltas);
         Ok(Ok(Candidate {
             change: change.into(),
@@ -363,6 +579,7 @@ impl Lander {
             onto: head.into(),
             onto_tree,
             deltas,
+            own,
             digest,
             merged,
             rebased,
@@ -383,7 +600,7 @@ impl Lander {
         c: &Candidate,
     ) -> Result<Step, String> {
         let head = store.state().repo(repo)?.head(reference);
-        store.hub_append("land", json!({ "repo": repo, "ref": reference, "change": c.change, "n": c.n, "expected": head, "deltas": c.deltas, "merged": c.merged }))?;
+        store.hub_append("land", json!({ "repo": repo, "ref": reference, "change": c.change, "n": c.n, "expected": head, "deltas": c.own, "merged": c.merged }))?;
         let landed = format!("{}.l", c.change);
         let digest = store
             .state()
@@ -407,8 +624,8 @@ impl Lander {
             {
                 n.speculative = false;
                 n.onto = landed.clone();
-                n.digest = crate::state::digest(&landed, &n.deltas);
             }
+            restack(list);
         }
         let _ = derived.learn(store, repo, reference);
         self.move_stacked(store, derived, &c.change)?;

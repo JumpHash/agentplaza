@@ -677,6 +677,9 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             let ms = duration_ms.unwrap_or(0);
             app.evals.tool(cid, &tool, ms, ok);
             collect::tool_call(app, cid, &tool, ms as f64, ok);
+            if tool.starts_with(crate::library::PREFIX) {
+                crate::tool_life::reported(app, &tool, ok, ms);
+            }
             let snap = app.context.on_tool(cid, work, &tool, ok, output.len());
             crate::context_track::publish(app, &snap);
             if crate::library::take_package_call(cid, &call)
@@ -1244,14 +1247,19 @@ fn decide_call(
         }
         (approvals::Gate::Held { refusal, .. }, _) => (Decision::Deny, refusal, true),
         (approvals::Gate::Run, Err(reason)) => (Decision::Deny, reason, true),
-        // An agent-made tool from the library: allowed with its program, which the guest runs.
+        // An agent-made tool from the library: one that uses a connector's secret runs on the hub's glue tier; any other
+        // is allowed with its program, which the guest runs.
         (approvals::Gate::Run, Ok(Runs::Guest)) if name.starts_with(crate::library::PREFIX) => {
-            match crate::library::program(app, cid, name) {
-                Some(found) => {
-                    program = Some(found);
-                    (Decision::Allow, String::new(), false)
+            if let Some((is_error, output)) = crate::tool_life::glue_call(app, cid, name, input) {
+                (Decision::Done, output, is_error)
+            } else {
+                match crate::library::program(app, cid, name) {
+                    Some(found) => {
+                        program = Some(found);
+                        (Decision::Allow, String::new(), false)
+                    }
+                    None => (Decision::Deny, "no such library tool".to_string(), true),
                 }
-                None => (Decision::Deny, "no such library tool".to_string(), true),
             }
         }
         (approvals::Gate::Run, Ok(Runs::Guest)) => {
@@ -1271,7 +1279,11 @@ fn decide_call(
             }
         }
         (approvals::Gate::Run, Ok(Runs::Host)) => {
-            let (is_error, output) = run_host(app, agent, work, name, input);
+            // A built-in tool a library version replaces runs as that replacement's stage says (PLAN 14.2); otherwise
+            // it runs as before.
+            let host = || run_host(app, agent, work, name, input);
+            let (is_error, output) =
+                crate::tool_life::replaced_call(app, cid, name, input, &host).unwrap_or_else(host);
             (Decision::Done, output, is_error)
         }
     };

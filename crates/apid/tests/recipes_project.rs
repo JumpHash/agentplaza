@@ -231,5 +231,5 @@ fn a_project_copy_that_does_not_check_is_named_and_the_built_in_recipe_runs() {
     });
     let run = &runs["runs"][0];
     assert_eq!(run["source"], "built_in", "{runs}");
-    assert_eq!(run["version"], 1, "{runs}");
+    assert_eq!(run["version"], 2, "{runs}");
 }

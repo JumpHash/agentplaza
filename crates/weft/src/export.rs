@@ -48,10 +48,28 @@ pub struct ExportReport {
     pub objects: usize,
 }
 
-/// Remembers git blob ids by Weft hash, so a file is hashed for git once.
+/// What a lane's export did: the branch it pushed to, the commit the branch is at, and the state (`pushed`, `in-step`
+/// when the lane's tree is what the branch already holds, `moved` when the remote's main is not where Weft last left
+/// it, `dry-run`).
+#[derive(Debug, Serialize)]
+pub struct LaneExport {
+    pub repo: String,
+    pub change: String,
+    pub branch: String,
+    pub state: String,
+    pub detail: String,
+    /// The branch's commit on the remote (git), after the export.
+    pub head: Option<String>,
+    /// The remote's main (git), as the export found it.
+    pub main: Option<String>,
+    pub remote: String,
+}
+
+/// Remembers git blob ids by Weft hash, so a file is hashed for git once; and the tree each lane branch last got.
 #[derive(Default)]
 pub struct Exporter {
     blob_ids: Mutex<HashMap<Hash, Oid>>,
+    lane_trees: Mutex<HashMap<String, Hash>>,
 }
 
 /// What an export needs that the store does not hold: the remote's credential and the signing key.
@@ -435,6 +453,163 @@ impl Exporter {
             let head = commits.last().map(|c| c.git.clone()).unwrap_or_default();
             store.hub_append("export", json!({ "repo": repo, "connection": connection, "change": change, "commits": commits, "head": head }))?;
         }
+        report.state = "pushed".into();
+        Ok(report)
+    }
+
+    /// Pushes an open lane to `refs/heads/<branch>` on the connection's remote, for a platform to review (a pull request;
+    /// `ci` mode, PLAN 21.5). The branch's tree is the repo's head with the lane's own deltas applied (its base's
+    /// differences from its head revision), committed on the branch's last commit, or on the remote's main when the
+    /// branch is new: always a fast-forward. The lane is not landed. Refused as `moved` when the remote's main is not
+    /// the commit Weft last left there (its connection's head), so nothing is pushed over history Weft does not know.
+    pub fn export_lane(
+        &self,
+        store: &Store,
+        repo: &str,
+        change: &str,
+        connection: &str,
+        branch: &str,
+        keys: Keys,
+        dry_run: bool,
+    ) -> Result<LaneExport, String> {
+        let (conn, main_head, rev, base, title, at_ms, rules) = {
+            let st = store.state();
+            let r = st.repo(repo)?;
+            let c = r
+                .connections
+                .get(connection)
+                .ok_or_else(|| format!("{repo} has no connection {connection}"))?
+                .clone();
+            let ch = st.change(change)?;
+            let rev = ch
+                .latest()
+                .or(ch.drafts.last())
+                .cloned()
+                .ok_or_else(|| format!("{change} has no revision to export"))?;
+            let at_ms = st.revisions.get(&rev).map(|v| v.at_ms).unwrap_or(0);
+            (
+                c,
+                r.head("main"),
+                rev,
+                ch.base.clone(),
+                ch.title.clone(),
+                at_ms,
+                r.rules.clone(),
+            )
+        };
+        let keep = |p: &str| {
+            !rules
+                .iter()
+                .any(|r| !r.export && crate::derived::glob(&r.glob, p))
+        };
+        let remote =
+            Remote::for_platform(&conn.conn.remote, &conn.conn.platform, keys.token.clone());
+        let refs = gitwire::list_refs(&remote, "git-receive-pack")?;
+        let main_ref = format!("refs/heads/{}", conn.conn.branch);
+        let branch_ref = format!("refs/heads/{branch}");
+        let remote_main = refs.get(&main_ref).copied();
+        let branch_head = refs.get(&branch_ref).copied();
+        let mut report = LaneExport {
+            repo: repo.into(),
+            change: change.into(),
+            branch: branch.into(),
+            state: String::new(),
+            detail: String::new(),
+            head: branch_head.map(|h| git::hex(&h)),
+            main: remote_main.map(|h| git::hex(&h)),
+            remote: remote.describe(),
+        };
+        if let Some(known) = conn.head.as_deref()
+            && remote_main.map(|h| git::hex(&h)).as_deref() != Some(known)
+        {
+            report.state = "moved".into();
+            report.detail = format!(
+                "the remote's {} is at {} but Weft last left it at {known}",
+                conn.conn.branch,
+                remote_main
+                    .map(|h| git::hex(&h))
+                    .unwrap_or("nothing".into())
+            );
+            return Ok(report);
+        }
+        // The lane's own deltas: its head revision against its base.
+        let lane = (*store.tree(&rev)?).clone();
+        let base_tree = (*store.tree(&base)?).clone();
+        let mut deltas = Vec::new();
+        for (path, e) in &lane {
+            match base_tree.get(path) {
+                Some(b) if b.hash == e.hash && b.mode == e.mode => {}
+                _ => deltas.push(Delta {
+                    path: path.clone(),
+                    after: Some(e.hash),
+                    mode: e.mode,
+                }),
+            }
+        }
+        for path in base_tree.keys().filter(|p| !lane.contains_key(*p)) {
+            deltas.push(Delta {
+                path: path.clone(),
+                after: None,
+                mode: 0o100644,
+            });
+        }
+        let mut tree = (*store.tree(&main_head)?).clone();
+        apply_deltas(&mut tree, &deltas);
+        let tree_hash = crate::store::tree_hash(&tree);
+        if self
+            .lane_trees
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(branch)
+            == Some(&tree_hash)
+            && branch_head.is_some()
+        {
+            report.state = "in-step".into();
+            return Ok(report);
+        }
+        let mut objects: Vec<(Oid, Kind, Vec<u8>)> = Vec::new();
+        let mut all = HashSet::new();
+        let root = self.git_tree(store, &tree, &keep, &HashSet::new(), &mut objects, &mut all)?;
+        let who = Person {
+            name: conn.conn.author_name.clone(),
+            email: conn.conn.author_email.clone(),
+            time: (at_ms / 1000) as i64,
+            tz: "+0000".into(),
+        };
+        let commit = Commit {
+            tree: root,
+            parents: branch_head.or(remote_main).into_iter().collect(),
+            author: who.clone(),
+            committer: who,
+            extra: vec![],
+            message: format!("{}\n", title.trim()),
+        };
+        let unsigned = git::write_commit(&commit, None);
+        let bytes = match keys.signing {
+            Some(k) => git::write_commit(&commit, Some(&crate::sshsig::sign(k, "git", &unsigned))),
+            None => unsigned,
+        };
+        let id = git::oid(Kind::Commit, &bytes);
+        objects.push((id, Kind::Commit, bytes));
+        report.head = Some(git::hex(&id));
+        if dry_run {
+            report.state = "dry-run".into();
+            return Ok(report);
+        }
+        let send: Vec<(Kind, Vec<u8>)> = objects.into_iter().map(|(_, k, d)| (k, d)).collect();
+        gitwire::push(
+            &remote,
+            &[Update {
+                name: branch_ref,
+                old: branch_head,
+                new: id,
+            }],
+            &send,
+        )?;
+        self.lane_trees
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(branch.to_string(), tree_hash);
         report.state = "pushed".into();
         Ok(report)
     }

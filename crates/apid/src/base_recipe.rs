@@ -149,6 +149,29 @@ pub trait VmRunner {
 
 /// The steps that build a base of `kind` from `stack`, checked out at `commit` of the Weft repository `repo`.
 pub fn steps(stack: &Stack, kind: BaseKind, repo: &str, commit: &str) -> Vec<Step> {
+    steps_of(stack, kind, repo, commit, true)
+}
+
+/// The steps of a test fork (PLAN 21.3): the test base's steps without its build and without its snapshot, so the
+/// fork's checks (the CI recipe's lint, build, tests and audit) run their own commands in the VM, one by one.
+pub fn fork_steps(stack: &Stack, repo: &str, commit: &str) -> Vec<Step> {
+    let mut steps = steps_of(stack, BaseKind::Test, repo, commit, false);
+    steps.retain(|step| !matches!(step, Step::Snapshot { .. }));
+    steps
+}
+
+/// The build's commands: the declaration's, or each toolchain's default (what a base builds, and a CI build checks).
+pub fn build_commands(stack: &Stack) -> Vec<Vec<String>> {
+    commands(stack.build.build.as_ref(), stack, Toolchain::build)
+}
+
+fn steps_of(
+    stack: &Stack,
+    kind: BaseKind,
+    repo: &str,
+    commit: &str,
+    with_build: bool,
+) -> Vec<Step> {
     let env = cache_env(stack);
     // Every command of the base runs with the environment of the base's cache (16.5).
     let command = |label: &str, argv: &[&str]| {
@@ -182,8 +205,10 @@ pub fn steps(stack: &Stack, kind: BaseKind, repo: &str, commit: &str) -> Vec<Ste
     for argv in commands(stack.build.fetch.as_ref(), stack, Toolchain::fetch) {
         steps.push(Step::Run(command("fetch dependencies", &argv_refs(&argv))));
     }
-    for argv in commands(stack.build.build.as_ref(), stack, Toolchain::build) {
-        steps.push(Step::Run(command("build", &argv_refs(&argv))));
+    if with_build {
+        for argv in build_commands(stack) {
+            steps.push(Step::Run(command("build", &argv_refs(&argv))));
+        }
     }
     // Each server runs behind its socket for the VM's life (PLAN 3.8), and is warmed before the snapshot: the warm-up
     // waits until the server has indexed, so a fork restored from the base finds it running and indexed.

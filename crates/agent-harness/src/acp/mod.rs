@@ -22,5 +22,6 @@ pub mod link;
 pub mod mcp;
 pub mod run;
 pub mod session;
+pub mod shim;
 pub mod stream;
 pub mod terminal;

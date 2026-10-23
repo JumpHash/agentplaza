@@ -47,12 +47,12 @@ law "T-006" "The reviewer rules on work" {
   tier statute
   enforcement preventive
   severity info
-  statement "Only the reviewer may give a verdict on a piece of work."
-  rationale "A verdict decides whether the work is accepted, so one role holds it, and no builder judges its own work."
+  statement "Only a reviewer or a verifier may give a verdict on a piece of work."
+  rationale "A verdict decides whether the work is accepted, so the review roles hold it, and no builder judges its own work."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name == "plaza_verdict" and principal.role == "reviewer"
+  when resource.name == "plaza_verdict" and (principal.role == "reviewer" or principal.role == "verifier")
 }
 
 law "T-007" "Projects move by their lead and planner" {
@@ -167,12 +167,24 @@ law "T-021" "An agent given a review step reports on it" {
   tier statute
   enforcement preventive
   severity info
-  statement "Any agent may read, score and rule on the review step the review graph gave it, and add sub-reviews within that step's limit."
-  rationale "A review recipe names the role of each step; the step's tools act only on the step the agent was given, and its verdict is signed with its own key."
+  statement "Any agent may read, score and rule on the review step the review graph gave it, add sub-reviews within that step's limit, and the verifier of a review rules on its findings; the author may contest one confirmed finding."
+  rationale "A review recipe names the role of each step; the step's tools act only on the step the agent was given, and its verdict is signed with its own key. A finding is confirmed only with its proof, and the verifier's ruling and the author's contest are the only ways a finding changes."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["review_tree", "review_score", "review_verdict", "review_spawn"]
+  when resource.name in ["review_tree", "review_score", "review_verdict", "review_spawn", "finding_verify", "finding_contest"]
+}
+
+law "T-033" "Only the planner rules on a contested finding" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A contested finding the verifier held is ruled on by the planner, on a model other than the author's and the verifier's, or by the owner."
+  rationale "A contest that the verifier holds goes to a judge who did neither the review nor the fix; the model rule keeps the judge independent of both."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "finding_arbitrate" and principal.role == "planner"
 }
 
 law "T-022" "The orchestrator proposes recipes" {
@@ -304,4 +316,16 @@ law "T-032" "The planner sizes the team" {
   principal is Agent
   resource is Tool
   when resource.name == "team_set" and principal.role == "planner"
+}
+
+law "T-035" "Every agent may ask which tests a change needs" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may ask, for a change it names, which tests the project's coverage map selects: a read that runs nothing."
+  rationale "The selection tells an agent what to run and changes nothing: the tests it names are run by run_tests, under the laws that govern a run."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "tests_select"
 }

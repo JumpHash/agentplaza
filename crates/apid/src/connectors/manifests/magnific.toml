@@ -1,0 +1,11 @@
+id = "magnific"
+kind = ["tool"]
+version = "1.0.0"
+scopes = []
+egress = []
+secrets = ["MAGNIFIC_API_KEY"]
+events = []
+actions = []
+webhook = false
+auth_header = ""
+auth_format = ""

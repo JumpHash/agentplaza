@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Value, json};
 
 use crate::acp::layout;
+use crate::acp::shim;
 
 use crate::bash;
 use crate::files::Workspace;
@@ -235,6 +236,15 @@ fn route_launch(
         "kilo" => {
             let (route, model_id) = opencode_schema_launch("KILO_CONFIG_CONTENT", model)?;
             return Ok((engine_env(home, &route), model_id));
+        }
+        // A thin adapter (acp/shim.rs) runs the engine's own command from the install's folder, so that folder is on
+        // its PATH; the adapter takes the turn's text, not a model argument, so none is given here.
+        id if shim::shim(id).is_some() => {
+            let mut env = engine_env(home, &Route::default());
+            env.push(format!(
+                "PATH={NPM_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin"
+            ));
+            return Ok((env, None));
         }
         _ => {}
     }

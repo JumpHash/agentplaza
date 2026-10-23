@@ -95,6 +95,35 @@ fn estimated() -> String {
     "estimated".into()
 }
 
+/// A finding's verdict (8.3): pending until the verifier rules on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    #[default]
+    Pending,
+    Confirmed,
+    Dropped,
+}
+
+/// Who acted: the seat, the model and the session (8.3's `by` and `verified_by`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
+pub struct By {
+    pub seat: String,
+    pub model: String,
+    #[serde(default)]
+    pub session: String,
+}
+
+/// Which model filled a node in a run: the author's (`author`) and each reviewer's and verifier's (8.3's `models`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, apz_store::Table)]
+pub struct ModelUse {
+    pub node: String,
+    pub cid: u64,
+    pub model: String,
+    #[serde(default)]
+    pub session: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Finding {
     pub symbol: String,
@@ -109,6 +138,37 @@ pub struct Finding {
     /// The round it was found in; a finding follows its definition into later rounds.
     #[serde(default)]
     pub round: u32,
+    /// `f<n>`, unique in its run: what the verifier and the author name it by.
+    #[serde(default)]
+    pub id: String,
+    /// The failure: the inputs or state, and the wrong outcome they cause. A finding is refused without one.
+    #[serde(default)]
+    pub scenario: String,
+    /// The kind of defect (the reviewer's axis unless it says): pitfalls are kinds confirmed twice.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub verdict: Verdict,
+    /// For a confirmed finding: the test, the run or the lines that show it.
+    #[serde(default)]
+    pub proof: String,
+    /// For a dropped finding: why it is not a defect (or the planner's reason for accepting it).
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    #[table(child)]
+    pub by: Option<By>,
+    #[serde(default)]
+    #[table(child)]
+    pub verified_by: Option<By>,
+    /// The author's contest of a confirmed finding (its reason); empty when not contested.
+    #[serde(default)]
+    pub contest: String,
+    /// The planner's ruling on a contested finding: `fix`, `accept` or `drop`.
+    #[serde(default)]
+    pub ruling: String,
+    #[serde(default)]
+    pub ruling_reason: String,
 }
 
 fn minor() -> String {
@@ -211,6 +271,11 @@ pub struct Run {
     /// For a re-check: the repo whose queue waits on it.
     #[serde(default)]
     pub repo: String,
+    /// Which model filled each seat of the run (the author's, then each reviewer's and verifier's), for the gate and
+    /// for evals that score reviewers.
+    #[serde(default)]
+    #[table(child = "review_graph_run_model")]
+    pub models: Vec<ModelUse>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -303,6 +368,163 @@ impl Run {
             _ => "No step found anything against it.".into(),
         }
     }
+}
+
+impl Run {
+    /// Every finding of the run, with the node that made it.
+    pub fn findings(&self) -> impl Iterator<Item = &Finding> {
+        self.nodes.iter().flat_map(|n| n.findings.iter())
+    }
+
+    fn finding_mut(&mut self, id: &str) -> Option<&mut Finding> {
+        self.nodes
+            .iter_mut()
+            .flat_map(|n| n.findings.iter_mut())
+            .find(|f| f.id == id)
+    }
+
+    /// A contested finding the verifier holds, which the planner has yet to rule on: the gate waits for the ruling.
+    pub fn awaiting_ruling(&self) -> bool {
+        self.findings().any(|f| {
+            f.verdict == Verdict::Confirmed && !f.contest.is_empty() && f.ruling.is_empty()
+        })
+    }
+}
+
+/// The reviewers' and the verifier's model differs from the author's (8.2): the gap, named, or `None` when they all
+/// differ. Fails closed: a run without its author's model has no gap it can show, so it is not admitted. The author
+/// is recorded as `author`; every other entry is a reviewer or the verifier.
+pub fn cross_model_gap(run: &Run) -> Option<String> {
+    let Some(author) = run.models.iter().find(|m| m.node == "author") else {
+        return Some("the author's model is not recorded".into());
+    };
+    if author.model.is_empty() {
+        return Some("the author's model is not known".into());
+    }
+    run.models
+        .iter()
+        .filter(|m| m.node != "author")
+        .find(|m| m.model == author.model)
+        .map(|m| format!("{} ran on {}, the author's own model", m.node, m.model))
+}
+
+/// Records what a reviewer's step reports, with its findings (8.2, 8.3): a finding names its scenario, and gets its
+/// `f<n>` id, its `by` and a pending verdict. Refused before anything is recorded when one has no scenario.
+pub fn check_findings(findings: &[Finding]) -> Result<(), String> {
+    for f in findings {
+        if f.scenario.trim().is_empty() {
+            return Err(format!(
+                "{}: a finding names its scenario (the inputs or state, and the wrong outcome they cause)",
+                f.symbol
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The verifier's ruling on finding `id` (8.2): confirmed with a proof (a test, a run, or the lines), or dropped with
+/// its reason. A finding the author contested is ruled on again: a verifier that holds it leaves it to the planner.
+pub fn rule_finding(
+    run: &mut Run,
+    id: &str,
+    verdict: Verdict,
+    proof: &str,
+    reason: &str,
+    by: By,
+) -> Result<(), String> {
+    let round = run.round;
+    let f = run
+        .finding_mut(id)
+        .ok_or_else(|| format!("no finding {id} in this review"))?;
+    if f.verdict != Verdict::Pending {
+        return Err(format!("{id} is already ruled on"));
+    }
+    match verdict {
+        Verdict::Confirmed if proof.trim().is_empty() => Err(
+            "a confirmed finding names its proof: a failing test, a run, or the exact lines and the reasoning".into(),
+        ),
+        Verdict::Dropped if reason.trim().is_empty() => {
+            Err("a dropped finding names its reason".into())
+        }
+        Verdict::Pending => Err("a ruling is confirmed or dropped".into()),
+        Verdict::Confirmed => {
+            f.verdict = Verdict::Confirmed;
+            f.round = round;
+            f.proof = proof.trim().into();
+            f.verified_by = Some(by);
+            Ok(())
+        }
+        Verdict::Dropped => {
+            f.verdict = Verdict::Dropped;
+            f.reason = reason.trim().into();
+            f.verified_by = Some(by);
+            Ok(())
+        }
+    }
+}
+
+/// The author contests a confirmed finding, once (8.5): the finding goes back to the verifier, and the run reopens
+/// for the verifier's second look and the gate's next decision.
+pub fn contest_finding(run: &mut Run, id: &str, reason: &str) -> Result<(), String> {
+    if reason.trim().is_empty() {
+        return Err("a contest names its reason".into());
+    }
+    let f = run
+        .finding_mut(id)
+        .ok_or_else(|| format!("no finding {id} in this review"))?;
+    if f.verdict != Verdict::Confirmed {
+        return Err(format!(
+            "{id} is not confirmed, so there is nothing to contest"
+        ));
+    }
+    if !f.contest.is_empty() {
+        return Err(format!("{id} was contested already: a contest is once"));
+    }
+    f.contest = reason.trim().into();
+    f.verdict = Verdict::Pending;
+    Ok(())
+}
+
+/// Reopens a review-graph run for the verifier's second look at a contested finding: the run runs again and its
+/// verifier and gate wait.
+pub fn reopen_review(run: &mut Run) {
+    run.state = RunState::Running;
+    for n in run.nodes.iter_mut() {
+        if n.def.role.as_deref() == Some("verifier") || n.def.kind == "gate" {
+            n.state = NodeState::Waiting;
+            n.ended_ms = 0;
+        }
+    }
+}
+
+/// The planner's ruling on a contested finding the verifier held (8.5): `fix` keeps it confirmed for the author,
+/// `accept` and `drop` drop it with the planner's reason.
+pub fn arbitrate_finding(
+    run: &mut Run,
+    id: &str,
+    ruling: &str,
+    reason: &str,
+) -> Result<(), String> {
+    let f = run
+        .finding_mut(id)
+        .ok_or_else(|| format!("no finding {id} in this review"))?;
+    if !(f.verdict == Verdict::Confirmed && !f.contest.is_empty() && f.ruling.is_empty()) {
+        return Err(format!("{id} is not waiting for a ruling"));
+    }
+    if reason.trim().is_empty() {
+        return Err("a ruling names its reason".into());
+    }
+    match ruling {
+        "fix" => {}
+        "accept" | "drop" => {
+            f.verdict = Verdict::Dropped;
+            f.reason = reason.trim().into();
+        }
+        other => return Err(format!("{other} is not a ruling: fix, accept or drop")),
+    }
+    f.ruling = ruling.into();
+    f.ruling_reason = reason.trim().into();
+    Ok(())
 }
 
 /// The review graph's book: one row of `review_graph`, its runs, recipes and proposals as child rows.
@@ -407,6 +629,20 @@ impl Reviews {
         f(&mut book)
     }
 
+    /// Edits run `id` under the book's lock: what `f` refuses leaves the run as it was.
+    fn edit<T>(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut Run) -> Result<T, String>,
+    ) -> Result<T, String> {
+        self.with(|b| {
+            let r = b.runs.get_mut(id).ok_or("no such review")?;
+            let out = f(r)?;
+            r.updated_ms = apz_plaza::now_ms();
+            Ok(out)
+        })
+    }
+
     pub fn run(&self, id: &str) -> Option<Run> {
         self.book.lock().ok()?.runs.get(id).cloned()
     }
@@ -421,6 +657,30 @@ impl Reviews {
             .collect();
         v.sort_by_key(|r| std::cmp::Reverse(r.created_ms));
         v
+    }
+
+    /// How many confirmed findings of kind `kind` the project's runs hold (a pitfall is a kind confirmed twice).
+    pub fn confirmed_of_kind(&self, project: &str, kind: &str) -> usize {
+        let book = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        book.runs
+            .values()
+            .filter(|r| r.project == project)
+            .flat_map(|r| r.findings())
+            .filter(|f| f.verdict == Verdict::Confirmed && f.kind == kind)
+            .count()
+    }
+
+    /// The task's latest run, when it is in rework: the only one an author may contest a finding of.
+    pub fn reworked_run_of(&self, task: &str) -> Option<Run> {
+        self.runs_of(task)
+            .into_iter()
+            .next()
+            .filter(|r| r.state == RunState::Rework)
+    }
+
+    /// The task's review run on the work loop's seats (purpose `seat`): one run for the task, reopened per round.
+    pub fn seat_run(&self, task: &str) -> Option<Run> {
+        self.runs_of(task).into_iter().find(|r| r.purpose == "seat")
     }
 
     pub fn active(&self, task: &str) -> Option<Run> {
@@ -623,6 +883,7 @@ pub fn start(app: &App, task: &str) -> Option<String> {
     let kind = recipe::kind_of(&tree, &project_kind).to_string();
     let recipe = pick_recipe(app, &kind, record.role().unwrap_or(""))?;
     let (nodes, owner) = plan(&recipe, &tree);
+    let author = model_use(app, "author", worker);
     let now = apz_plaza::now_ms();
     // The checks above ran unlocked, and the scheduler (`handles`) and the review tick both start runs: they are made
     // again under the book's lock, which also numbers the round, so two callers cannot start the same round twice.
@@ -658,6 +919,7 @@ pub fn start(app: &App, task: &str) -> Option<String> {
                 summary: view.note.unwrap_or_default(),
                 purpose: review_purpose(),
                 repo: String::new(),
+                models: vec![author.clone()],
                 created_ms: now,
                 updated_ms: now,
             },
@@ -823,6 +1085,18 @@ fn plan(recipe: &Recipe, tree: &Value) -> (Vec<NodeRun>, bool) {
             spawned: 0,
         });
     }
+    // The verifier proves what the reviewers found, so it waits for every other node (the added reviewers too).
+    let others: Vec<String> = nodes
+        .iter()
+        .filter(|n| n.def.kind != "gate" && n.def.role.as_deref() != Some("verifier"))
+        .map(|n| n.def.id.clone())
+        .collect();
+    for n in nodes
+        .iter_mut()
+        .filter(|n| n.def.role.as_deref() == Some("verifier"))
+    {
+        n.def.after = others.clone();
+    }
     // Added nodes only exist when their first rule hit.
     let present: Vec<String> = nodes.iter().map(|n| n.def.id.clone()).collect();
     for n in nodes.iter_mut().filter(|n| n.def.kind == "gate") {
@@ -860,7 +1134,7 @@ pub fn tick(app: &App) {
         .map(|b| {
             b.runs
                 .values()
-                .filter(|r| r.state == RunState::Running)
+                .filter(|r| r.state == RunState::Running && r.purpose != "seat")
                 .cloned()
                 .collect()
         })
@@ -886,6 +1160,7 @@ pub fn tick(app: &App) {
                 .iter()
                 .filter(|n| n.def.kind != "gate")
                 .all(|n| n.state.done())
+            && !run.awaiting_ruling()
         {
             gate(app, &run.id);
         }
@@ -934,13 +1209,27 @@ fn start_node(app: &App, run: &Run, node: &str) {
             });
         }
         "agent" | "check" => {
+            if n.def.role.as_deref() == Some("verifier")
+                && !run.findings().any(|f| f.verdict == Verdict::Pending)
+            {
+                // Nothing to prove: the verifier has no session to start.
+                app.reviews.update(&run.id, |r| {
+                    if let Some(n) = r.node_mut(node) {
+                        n.state = NodeState::Passed;
+                        n.notes = "no finding to prove".into();
+                        n.ended_ms = apz_plaza::now_ms();
+                    }
+                });
+                return;
+            }
             let role = n
                 .def
                 .role
                 .clone()
                 .unwrap_or_else(|| crate::scheduler::REVIEWER_ROLE.into());
             let taken: Vec<u64> = run.nodes.iter().filter_map(|x| x.assignee).collect();
-            let Some(cid) = pick_agent(app, &run.project, &role, run.worker, &taken) else {
+            let avoid = avoid_models(run, &n.def);
+            let Some(cid) = pick_agent(app, &run.project, &role, run.worker, &taken, &avoid) else {
                 // No agent of that role: a reviewer takes it, else it waits for the next tick (the timeout raises the
                 // owner's card).
                 if role != crate::scheduler::REVIEWER_ROLE
@@ -950,6 +1239,7 @@ fn start_node(app: &App, run: &Run, node: &str) {
                         crate::scheduler::REVIEWER_ROLE,
                         run.worker,
                         &taken,
+                        &avoid,
                     )
                 {
                     assign(app, run, node, cid);
@@ -976,10 +1266,52 @@ fn unclaim(app: &App, run: &str, node: &str) {
     });
 }
 
-/// An agent of `role` working on `project`, not the worker, preferring one not already on this run and idle.
-fn pick_agent(app: &App, project: &str, role: &str, worker: u64, taken: &[u64]) -> Option<u64> {
+/// The models a node's agent should not run on: the author's, and for the verifier the reviewers' too (8.2: the
+/// verifier is a fourth model where one exists). A preference: the gate at the queue is what refuses a same-model review.
+fn avoid_models(run: &Run, def: &NodeDef) -> Vec<String> {
+    let mut out: Vec<String> = run
+        .models
+        .iter()
+        .filter(|m| m.node == "author" && !m.model.is_empty())
+        .map(|m| m.model.clone())
+        .collect();
+    if def.role.as_deref() == Some("verifier") {
+        out.extend(
+            run.models
+                .iter()
+                .filter(|m| m.node != "author")
+                .map(|m| m.model.clone()),
+        );
+    }
+    out
+}
+
+/// The model and session of the agent `cid`, as a run records the seat it fills.
+fn model_use(app: &App, node: &str, cid: u64) -> ModelUse {
+    ModelUse {
+        node: node.into(),
+        cid,
+        model: app
+            .agents
+            .get(cid)
+            .map(|a| crate::agents::model_of(app, &a))
+            .unwrap_or_default(),
+        session: app.sessions.by_cid(cid).map(|s| s.id).unwrap_or_default(),
+    }
+}
+
+/// An agent of `role` working on `project`, not the worker, preferring one not already on this run, one whose model is
+/// not in `avoid`, and one idle.
+fn pick_agent(
+    app: &App,
+    project: &str,
+    role: &str,
+    worker: u64,
+    taken: &[u64],
+    avoid: &[String],
+) -> Option<u64> {
     let on_project = crate::projects::agents_of(app, project);
-    let mut candidates = app.agents.select(|a| {
+    let found = app.agents.select(|a| {
         (a.role == role
             && a.cid != worker
             && on_project.contains(&a.cid)
@@ -987,7 +1319,18 @@ fn pick_agent(app: &App, project: &str, role: &str, worker: u64, taken: &[u64]) 
             && a.kind != "model")
             .then(|| (a.cid, a.status == crate::agents::Status::Idle))
     });
-    candidates.sort_by_key(|(cid, idle)| (taken.contains(cid), !idle, *cid));
+    let mut candidates: Vec<(u64, bool, usize)> = found
+        .into_iter()
+        .map(|(cid, idle)| {
+            let model = app
+                .agents
+                .get(cid)
+                .map(|a| crate::agents::model_of(app, &a))
+                .unwrap_or_default();
+            (cid, idle, usize::from(avoid.contains(&model)))
+        })
+        .collect();
+    candidates.sort_by_key(|(cid, idle, same)| (taken.contains(cid), *same, !idle, *cid));
     candidates.first().map(|c| c.0)
 }
 
@@ -1016,15 +1359,86 @@ fn assign(app: &App, run: &Run, node: &str, cid: u64) {
         prompt,
         origin,
     );
+    let used = model_use(app, node, cid);
     app.reviews.update(&run.id, |r| {
         if let Some(n) = r.node_mut(node) {
             n.work = Some(work);
+        }
+        // Agent nodes (reviewers and the verifier) are what the cross-model gate compares with the author's model.
+        if n.def.kind == "agent" {
+            r.models.retain(|m| m.node != node);
+            r.models.push(used);
         }
     });
     app.bus.publish(
         "review_node",
         &json!({ "run": run.id, "node": node, "state": "running", "cid": cid }),
     );
+}
+
+/// A reviewer's standing instructions: the change is for breaking, every finding names its scenario, and the project's
+/// pitfalls (8.2, 8.6). The review graph's nodes and the work loop's review seats both read it.
+pub fn sceptic_text(app: &App, project: &str) -> String {
+    let mut p = String::from(
+        "Your posture is a sceptic's: look for how this change breaks, not for reasons to pass it. Every finding names its scenario: the inputs or the state, and the wrong outcome they cause. A finding without one is refused.\n",
+    );
+    let pitfalls: Vec<String> = crate::project_memory::entries(app, project)
+        .into_iter()
+        .filter(|e| e.kind == "pitfall" && (e.status == "active" || e.status == "flagged"))
+        .take(20)
+        .map(|e| format!("- {}: {}", e.title, e.body))
+        .collect();
+    if !pitfalls.is_empty() {
+        p.push_str(&format!(
+            "This project's pitfalls (confirmed before; check the change against them):\n{}\n",
+            pitfalls.join("\n")
+        ));
+    }
+    p
+}
+
+/// A verifier's instructions, and the findings it rules on now (pending), with the contests the author made.
+pub fn verifier_text(run: &Run) -> String {
+    let mut p = String::from(
+        "You verify; you do not review. For each finding below, prove it or drop it with finding_verify: confirmed (with the proof: a failing test you wrote, a reproduction you ran, or the exact lines and the reasoning you checked) or dropped (with the reason it is not a defect). Read the change with review_tree first. Finish with your verdict, pass, once every finding is ruled on.\n",
+    );
+    for f in run.findings().filter(|f| f.verdict == Verdict::Pending) {
+        p.push_str(&format!(
+            "- {} {} ({}, {}): {}\n  Scenario: {}\n",
+            f.id, f.symbol, f.node, f.severity, f.text, f.scenario
+        ));
+    }
+    for f in run
+        .findings()
+        .filter(|f| !f.contest.is_empty() && f.verdict == Verdict::Pending)
+    {
+        p.push_str(&format!(
+            "The author contests {}: {}. Look again at it: the verdict stands or falls on your proof.\n",
+            f.id, f.contest
+        ));
+    }
+    p
+}
+
+/// The findings of a run's current round as its author reads them: the confirmed ones with their scenario and proof,
+/// and the dropped ones with their reason (nothing to change for those).
+fn findings_text(run: &Run) -> (Vec<String>, Vec<String>) {
+    let confirmed = run
+        .findings()
+        .filter(|f| f.verdict == Verdict::Confirmed && f.round == run.round)
+        .map(|f| {
+            format!(
+                "- {} {} ({}, {}): {} Scenario: {} Proof: {}",
+                f.id, f.symbol, f.node, f.severity, f.text, f.scenario, f.proof
+            )
+        })
+        .collect();
+    let dropped = run
+        .findings()
+        .filter(|f| f.verdict == Verdict::Dropped && f.round == run.round)
+        .map(|f| format!("- {} {}: not a defect: {}", f.id, f.symbol, f.reason))
+        .collect();
+    (confirmed, dropped)
 }
 
 fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
@@ -1075,7 +1489,10 @@ fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
             n.def.commands.iter().map(|c| format!("  - {c}")).collect::<Vec<_>>().join("\n"),
             if axes.is_empty() { "tst".into() } else { axes.join(", ") }
         ));
+    } else if n.def.role.as_deref() == Some("verifier") {
+        p.push_str(&verifier_text(run));
     } else {
+        p.push_str(&sceptic_text(app, &run.project));
         if n.def.constraints {
             p.push_str("Read the project's invariants (its brief and its design documents: plaza_projects, then the files) and fail this step if the change breaks one; name which and where.\n");
         }
@@ -1171,10 +1588,26 @@ pub fn report(
         .step_for(cid, work)
         .ok_or("you have no review step to report on")?;
     let r = app.reviews.run(&run).ok_or("no such review")?;
-    let axes = r
+    let (axes, verifier) = r
         .node(&node)
-        .map(|n| n.def.axes.clone())
+        .map(|n| {
+            (
+                n.def.axes.clone(),
+                n.def.role.as_deref() == Some("verifier"),
+            )
+        })
         .unwrap_or_default();
+    if verifier && !findings.is_empty() {
+        return Err("a verifier rules on findings (finding_verify); it records none".into());
+    }
+    check_findings(&findings)?;
+    let used = model_use(app, &node, cid);
+    let by = By {
+        seat: node.clone(),
+        model: used.model,
+        session: used.session,
+    };
+    let default_kind = axes.first().cloned().unwrap_or_else(|| "review".into());
     for s in &scores {
         if !(-5..=5).contains(&s.level) {
             return Err(format!("{}: a level is between -5 and 5", s.symbol));
@@ -1192,6 +1625,8 @@ pub fn report(
     let n_scores = scores.len();
     app.reviews.update(&run, |r| {
         let round = r.round;
+        // `f<n>` numbers the run's findings, so the verifier and the author can name each one.
+        let base: usize = r.nodes.iter().map(|n| n.findings.len()).sum();
         if let Some(n) = r.node_mut(&node) {
             for mut s in scores {
                 s.node = node.clone();
@@ -1200,9 +1635,15 @@ pub fn report(
                     .retain(|x| !(x.symbol == s.symbol && x.axis == s.axis));
                 n.scores.push(s);
             }
-            for mut f in findings {
+            for (i, mut f) in findings.into_iter().enumerate() {
                 f.node = node.clone();
                 f.round = round;
+                f.id = format!("f{}", base + i + 1);
+                f.verdict = Verdict::Pending;
+                f.by = Some(by.clone());
+                if f.kind.is_empty() {
+                    f.kind = default_kind.clone();
+                }
                 f.lineage = f.lineage.or_else(|| lineage(&f.symbol));
                 n.findings.push(f);
             }
@@ -1237,6 +1678,19 @@ pub fn verdict(app: &App, cid: u64, work: u64, pass: bool, notes: &str) -> Resul
         .ok_or("you have no review step to give a verdict on")?;
     let r = app.reviews.run(&run).ok_or("no such review")?;
     let n = r.node(&node).ok_or("no such step")?;
+    if pass && n.def.role.as_deref() == Some("verifier") {
+        let open: Vec<&str> = r
+            .findings()
+            .filter(|f| f.verdict == Verdict::Pending)
+            .map(|f| f.id.as_str())
+            .collect();
+        if !open.is_empty() {
+            return Err(format!(
+                "rule on every finding first (finding_verify): {}",
+                open.join(", ")
+            ));
+        }
+    }
     let scores_digest = weft::hash::Hash::of(
         serde_json::to_string(&n.scores)
             .unwrap_or_default()
@@ -1273,6 +1727,597 @@ pub fn verdict(app: &App, cid: u64, work: u64, pass: bool, notes: &str) -> Resul
         "{node}: {}",
         if pass { "passed" } else { "failed" }
     ))
+}
+
+/// The verifier's ruling on a finding (`finding_verify`, 8.2): confirmed with its proof, or dropped with its reason. A
+/// confirmed finding that the author contested goes to the planner (8.5); a kind confirmed for the second time in the
+/// project proposes a pitfall (8.6).
+pub fn verify(
+    app: &App,
+    cid: u64,
+    work: u64,
+    finding: &str,
+    verdict: Verdict,
+    proof: &str,
+    reason: &str,
+) -> Result<String, String> {
+    let (run_id, node) = app
+        .reviews
+        .step_for(cid, work)
+        .ok_or("you have no review step to rule in")?;
+    let run = app.reviews.run(&run_id).ok_or("no such review")?;
+    let is_verifier = run
+        .node(&node)
+        .is_some_and(|n| n.def.role.as_deref() == Some("verifier"));
+    if !is_verifier {
+        return Err("only the verifier of a review rules on its findings".into());
+    }
+    let used = model_use(app, &node, cid);
+    let by = By {
+        seat: node.clone(),
+        model: used.model,
+        session: used.session,
+    };
+    app.reviews.edit(&run_id, |r| {
+        rule_finding(r, finding, verdict, proof, reason, by.clone())
+    })?;
+    let run = app.reviews.run(&run_id).ok_or("no such review")?;
+    let f = run
+        .findings()
+        .find(|f| f.id == finding)
+        .cloned()
+        .ok_or("no such finding")?;
+    if verdict == Verdict::Confirmed {
+        if f.contest.is_empty() {
+            // The second confirmation of one kind in the project is a pitfall the curator may land (8.6).
+            if app.reviews.confirmed_of_kind(&run.project, &f.kind) == 2 {
+                propose_pitfall(app, &run, &f, cid);
+            }
+        } else {
+            request_ruling(app, &run, &f);
+        }
+    }
+    tick(app);
+    Ok(format!(
+        "{finding}: {}",
+        match verdict {
+            Verdict::Confirmed => "confirmed",
+            _ => "dropped",
+        }
+    ))
+}
+
+/// A pitfall proposal (2.2's `memory_propose`, kind `pitfall`) anchored to the finding's definition.
+fn propose_pitfall(app: &App, run: &Run, f: &Finding, cid: u64) {
+    let proposal = crate::project_memory::Proposal {
+        id: String::new(),
+        project: run.project.clone(),
+        kind: "pitfall".into(),
+        text: clip(
+            &format!(
+                "Findings of kind {} are confirmed here: {}",
+                f.kind, f.scenario
+            ),
+            1000,
+        ),
+        anchors: vec![f.symbol.clone()],
+        why: clip(
+            &format!(
+                "{} confirmed twice in this project (review {}, finding {}): {}",
+                f.kind, run.id, f.id, f.text
+            ),
+            400,
+        ),
+        by_cid: cid,
+        by: app
+            .agents
+            .get(cid)
+            .map(|a| a.label())
+            .unwrap_or_else(|| format!("agent {cid}")),
+        created_ms: apz_plaza::now_ms(),
+    };
+    app.project_memory.add_proposal(proposal);
+}
+
+fn clip(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// A confirmed finding the author contested and the verifier held: the planner rules on it, on a model other than the
+/// author's and the verifier's. Without a planner on another model, the owner rules (a `review` card).
+fn request_ruling(app: &App, run: &Run, f: &Finding) {
+    let author = run
+        .models
+        .iter()
+        .find(|m| m.node == "author")
+        .map(|m| m.model.clone())
+        .unwrap_or_default();
+    let verifier = f
+        .verified_by
+        .as_ref()
+        .map(|b| b.model.clone())
+        .unwrap_or_default();
+    let planner =
+        crate::work_loop::planner_cid(app, &run.project).map(|cid| model_use(app, "planner", cid));
+    let on_other = planner
+        .as_ref()
+        .is_some_and(|p| !p.model.is_empty() && p.model != author && p.model != verifier);
+    let text = format!(
+        "Finding {} of review {} (task {}) is contested. The author says: {}. The verifier holds it: {}. Rule with finding_arbitrate (run {}, finding {}): fix, accept or drop, with your reason.",
+        f.id, run.id, run.task, f.contest, f.proof, run.id, f.id
+    );
+    let now = apz_plaza::now_ms();
+    if run.purpose == "seat" {
+        // The walk holds for the ruling: the planner's when it can rule, else the owner's card.
+        if on_other {
+            crate::work_loop::to_planner(app, &run.project, &text);
+            crate::work_loop::notice(
+                app,
+                &crate::work_loop::task_chat(app, &run.task, &run.project, now),
+                &format!(
+                    "Task {} holds a contested finding {}: the planner rules on it.",
+                    run.task, f.id
+                ),
+                now,
+            );
+        } else {
+            contest_card(app, run, f);
+        }
+        return;
+    }
+    match planner {
+        Some(_) if on_other => {
+            crate::work_loop::to_planner(app, &run.project, &text);
+            crate::work_loop::notice(
+                app,
+                &crate::work_loop::task_chat(app, &run.task, &run.project, now),
+                &format!(
+                    "Task {} has a contested finding: the planner rules on it.",
+                    run.task
+                ),
+                now,
+            );
+        }
+        _ => {
+            app.reviews.update(&run.id, |r| {
+                r.state = RunState::Owner;
+                r.owner_asked = true;
+            });
+            if let Some(updated) = app.reviews.run(&run.id) {
+                ask_owner(app, &updated);
+            }
+        }
+    }
+}
+
+/// The author contests a confirmed finding of the review it was given in rework (`finding_contest`, 8.5): once, before
+/// the author seals a newer revision. The finding goes back to the verifier, and the review reopens.
+pub fn contest(app: &App, cid: u64, finding: &str, reason: &str) -> Result<String, String> {
+    let item = app
+        .work
+        .current(cid)
+        .ok_or("you are not working on a task")?;
+    let task = item.origin.task.ok_or("your current work is not a task")?;
+    let run = app
+        .reviews
+        .reworked_run_of(&task)
+        .ok_or("the task has no review in rework to contest")?;
+    let seat_path = run.purpose == "seat";
+    let author = if seat_path {
+        app.sessions.by_cid(cid).and_then(|s| s.seat).as_deref() == Some("builder")
+    } else {
+        run.worker == cid
+    };
+    if !author {
+        return Err("only the author of the change contests a finding".into());
+    }
+    // A newer seal is reviewed as its own round: a contest comes before it (a review-graph run only; a seat's round
+    // goes on from its rework and its verifier re-rules at the next round).
+    let latest = if seat_path {
+        None
+    } else {
+        app.weft
+            .get(&format!("/changes/{}", run.change))
+            .ok()
+            .and_then(|d| {
+                d["rounds"]
+                    .as_array()
+                    .and_then(|r| r.last().cloned())
+                    .and_then(|r| r.as_str().map(str::to_string))
+            })
+    };
+    if !seat_path && latest.as_deref() != Some(run.revision.as_str()) {
+        return Err("the lane has a newer revision: contest before you seal it".into());
+    }
+    app.reviews
+        .edit(&run.id, |r| contest_finding(r, finding, reason))?;
+    if !seat_path {
+        app.reviews.update(&run.id, reopen_review);
+    }
+    tick(app);
+    Ok(format!("{finding} is contested: the verifier looks again"))
+}
+
+/// The planner's ruling on a contested finding (`finding_arbitrate`, 8.5): `fix`, `accept` or `drop`.
+pub fn arbitrate(
+    app: &App,
+    cid: u64,
+    run_id: &str,
+    finding: &str,
+    ruling: &str,
+    reason: &str,
+) -> Result<String, String> {
+    let run = app.reviews.run(run_id).ok_or("no such review")?;
+    let f = run
+        .findings()
+        .find(|f| f.id == finding)
+        .cloned()
+        .ok_or("no such finding")?;
+    // The ruler is on a model other than the author's and the verifier's, or the owner rules.
+    let me = model_use(app, "planner", cid).model;
+    let author = run
+        .models
+        .iter()
+        .find(|m| m.node == "author")
+        .map(|m| m.model.clone())
+        .unwrap_or_default();
+    let verifier = f
+        .verified_by
+        .as_ref()
+        .map(|b| b.model.clone())
+        .unwrap_or_default();
+    if me.is_empty() || me == author || me == verifier {
+        return Err("a planner on a model other than the author's and the verifier's rules on it; without one, the owner does".into());
+    }
+    settle_ruling(app, run_id, finding, ruling, reason, "the planner")
+}
+
+/// A contested finding is ruled (the planner's, or the owner's on a card): the finding settles, and the task's chat says
+/// how. A seat's round goes on from its walk (a held verdict settles there); a review-graph run ticks.
+pub fn settle_ruling(
+    app: &App,
+    run_id: &str,
+    finding: &str,
+    ruling: &str,
+    reason: &str,
+    by: &str,
+) -> Result<String, String> {
+    let run = app.reviews.run(run_id).ok_or("no such review")?;
+    app.reviews
+        .edit(run_id, |r| arbitrate_finding(r, finding, ruling, reason))?;
+    let consequence = match ruling {
+        "fix" => "the builder goes back with it",
+        "accept" => "the risk is accepted and the review goes on",
+        _ => "it is dropped and the review goes on",
+    };
+    let now = apz_plaza::now_ms();
+    crate::work_loop::notice(
+        app,
+        &crate::work_loop::task_chat(app, &run.task, &run.project, now),
+        &format!(
+            "{by} ruled {ruling} on {finding} of task {}: {reason}; {consequence}.",
+            run.task
+        ),
+        now,
+    );
+    if run.purpose == "seat" {
+        crate::work_loop::resume_held_review(app, &run.task);
+    } else {
+        tick(app);
+    }
+    Ok(format!("{finding}: {ruling}"))
+}
+
+/// The owner's card for a contested finding the walk holds, when no planner can rule: fix, accept or drop.
+fn contest_card(app: &App, run: &Run, f: &Finding) {
+    let detail = json!({
+        "gate": "contest",
+        "task": run.task,
+        "run": run.id,
+        "finding": f.id,
+        "cid": run.worker,
+        "worker": app.agents.get(run.worker).map(|a| a.label()).unwrap_or_default(),
+        "goal": app.plaza.tasks.find(&run.task).map(|t| t.goal().to_string()).unwrap_or_default(),
+        "summary": f.text,
+        "verdict": format!("{} is confirmed; the author contests it: {}", f.id, f.contest),
+        "needs_you": format!("the verifier holds {}: {}", f.id, f.proof),
+        "readings": [],
+        "choices": ["fix", "accept", "drop"],
+    });
+    let item = app.approvals.submit(
+        run.worker,
+        "review",
+        &format!("contest of {} on task {}", f.id, run.task),
+        detail,
+    );
+    crate::approvals::announce(app, &item);
+    crate::work_loop::notice(
+        app,
+        &crate::work_loop::task_chat(app, &run.task, &run.project, apz_plaza::now_ms()),
+        &format!(
+            "Task {} holds a contested finding {}: the owner rules on it.",
+            run.task, f.id
+        ),
+        apz_plaza::now_ms(),
+    );
+}
+
+// ── the seat path: a task's review round on the work loop's seats (8.2) ─────────────────────────────────────────────
+
+/// The latest revision of `change` Weft has sealed.
+pub fn latest_revision(app: &App, change: &str) -> String {
+    app.weft
+        .get(&format!("/changes/{change}"))
+        .ok()
+        .and_then(|d| {
+            d["rounds"]
+                .as_array()
+                .and_then(|r| r.last().cloned())
+                .and_then(|r| r.as_str().map(str::to_string))
+        })
+        .unwrap_or_default()
+}
+
+/// A review round on the seats starts (a reviewer seat is about to run): the task's review run is made for it, or,
+/// after a rework, reopened for the next round. Its findings stay; its review nodes wait again. Idempotent within a
+/// round: the first reviewer to start opens it, the others find it open.
+pub fn open_round(app: &App, task: &str) {
+    let Some(record) = app.plaza.tasks.find(task) else {
+        return;
+    };
+    let Some(project) = record.project().map(str::to_string) else {
+        return;
+    };
+    let worker = record.view().agent_cid.unwrap_or(0);
+    let Some(change) = app.weft.lane_of(task) else {
+        return;
+    };
+    let revision = latest_revision(app, &change);
+    let seats = app.seats.of_task(task);
+    let author = seats
+        .iter()
+        .find(|s| s.role == "builder")
+        .and_then(|s| s.last_model.clone())
+        .unwrap_or_default();
+    let defs: Vec<NodeDef> = seats
+        .iter()
+        .filter(|s| s.role == "reviewer" || s.role == "verifier")
+        .map(|s| NodeDef {
+            id: s.name.clone(),
+            kind: "agent".into(),
+            role: Some(s.role.clone()),
+            ..Default::default()
+        })
+        .collect();
+    if defs.is_empty() {
+        return;
+    }
+    let author_use = ModelUse {
+        node: "author".into(),
+        cid: worker,
+        model: author,
+        session: String::new(),
+    };
+    let now = apz_plaza::now_ms();
+    app.reviews.with(|b| {
+        let open = b
+            .runs
+            .values()
+            .filter(|r| r.task == task && r.purpose == "seat")
+            .max_by_key(|r| r.created_ms)
+            .map(|r| r.id.clone());
+        match open {
+            Some(id) => {
+                let Some(r) = b.runs.get_mut(&id) else {
+                    return;
+                };
+                if r.state != RunState::Rework {
+                    return;
+                }
+                r.state = RunState::Running;
+                r.round += 1;
+                r.revision = revision;
+                r.worker = worker;
+                for def in defs {
+                    if r.node(&def.id).is_none() {
+                        r.nodes.push(NodeRun {
+                            def,
+                            parent: None,
+                            state: NodeState::Waiting,
+                            assignee: None,
+                            work: None,
+                            tries: 0,
+                            scores: vec![],
+                            findings: vec![],
+                            touches: vec![],
+                            notes: String::new(),
+                            record: None,
+                            started_ms: 0,
+                            ended_ms: 0,
+                            spawned: 0,
+                        });
+                    } else if let Some(n) = r.node_mut(&def.id) {
+                        n.state = NodeState::Waiting;
+                        n.assignee = None;
+                        n.work = None;
+                        n.tries = 0;
+                        n.notes.clear();
+                        n.ended_ms = 0;
+                    }
+                }
+                r.models.retain(|m| m.node != "author");
+                r.models.push(author_use);
+                r.updated_ms = now;
+            }
+            None => {
+                b.next += 1;
+                let id = format!("rv{}", b.next);
+                let nodes = defs
+                    .into_iter()
+                    .map(|def| NodeRun {
+                        def,
+                        parent: None,
+                        state: NodeState::Waiting,
+                        assignee: None,
+                        work: None,
+                        tries: 0,
+                        scores: vec![],
+                        findings: vec![],
+                        touches: vec![],
+                        notes: String::new(),
+                        record: None,
+                        started_ms: 0,
+                        ended_ms: 0,
+                        spawned: 0,
+                    })
+                    .collect();
+                b.runs.insert(
+                    id.clone(),
+                    Run {
+                        id,
+                        task: task.into(),
+                        project,
+                        worker,
+                        change,
+                        revision,
+                        recipe: "change@2".into(),
+                        round: 1,
+                        rounds: 3,
+                        kind: "code".into(),
+                        state: RunState::Running,
+                        nodes,
+                        rules: vec![],
+                        owner_asked: false,
+                        outcome: None,
+                        tree_blob: None,
+                        summary: String::new(),
+                        purpose: "seat".into(),
+                        repo: String::new(),
+                        models: vec![author_use],
+                        created_ms: now,
+                        updated_ms: now,
+                    },
+                );
+            }
+        }
+    });
+}
+
+/// Whether the task's seat round holds a contested finding the planner or the owner has yet to rule on.
+pub fn contested_held(app: &App, task: &str) -> bool {
+    app.reviews
+        .seat_run(task)
+        .is_some_and(|r| r.awaiting_ruling())
+}
+
+/// A review seat's session started on `cid` with `model`: its node is its (the review's reviewer or verifier).
+pub fn seat_started(app: &App, task: &str, seat: &str, cid: u64, model: &str, session: &str) {
+    let Some(run) = app.reviews.seat_run(task) else {
+        return;
+    };
+    app.reviews.update(&run.id, |r| {
+        if let Some(n) = r.node_mut(seat) {
+            n.state = NodeState::Running;
+            n.assignee = Some(cid);
+            n.started_ms = apz_plaza::now_ms();
+            n.tries += 1;
+        }
+        r.models.retain(|m| m.node != seat);
+        r.models.push(ModelUse {
+            node: seat.into(),
+            cid,
+            model: model.into(),
+            session: session.into(),
+        });
+    });
+}
+
+/// Whether the seat path's round is on a model other than its author's, every reviewer's and the verifier's: the gap,
+/// named (the same rule as the review graph's gate, see [`cross_model_gap`]).
+pub fn seat_gap(app: &App, task: &str) -> Option<String> {
+    cross_model_gap(&app.reviews.seat_run(task)?)
+}
+
+/// The walk moved on: a rewind reopens the round for rework, and the walk's end closes the review run.
+pub fn seat_settled(app: &App, task: &str, moves: &[crate::recipes::Move]) {
+    use crate::recipes::Move;
+    let state = moves.iter().find_map(|m| match m {
+        Move::Rewind(_) => Some(RunState::Rework),
+        Move::Done => Some(RunState::Passed),
+        Move::Failed(_) => Some(RunState::Failed),
+        _ => None,
+    });
+    let (Some(state), Some(run)) = (state, app.reviews.seat_run(task)) else {
+        return;
+    };
+    app.reviews.update(&run.id, |r| r.state = state);
+}
+
+/// The confirmed findings of the seat round's current round: the count the verifier's step reports to the walk.
+pub fn seat_findings(app: &App, task: &str) -> u32 {
+    app.reviews
+        .seat_run(task)
+        .map(|r| {
+            r.findings()
+                .filter(|f| {
+                    f.verdict == Verdict::Confirmed && f.severity != "info" && f.round == r.round
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
+}
+
+/// What the builder is sent back with: the round's confirmed findings, and the dropped ones with their reasons.
+pub fn seat_said(app: &App, task: &str) -> String {
+    let Some(run) = app.reviews.seat_run(task) else {
+        return String::new();
+    };
+    let (confirmed, dropped) = findings_text(&run);
+    let mut out = format!(
+        "The verifier confirmed these findings (fix them, each with its scenario in mind):\n{}",
+        confirmed.join("\n")
+    );
+    if !dropped.is_empty() {
+        out.push_str(&format!(
+            "\nDropped (not defects, nothing to change):\n{}",
+            dropped.join("\n")
+        ));
+    }
+    out
+}
+
+/// The findings a verifier has yet to rule on (its verdict is refused while any is open).
+pub fn pending_findings(app: &App, task: &str) -> Vec<String> {
+    app.reviews
+        .seat_run(task)
+        .map(|r| {
+            r.findings()
+                .filter(|f| f.verdict == Verdict::Pending)
+                .map(|f| f.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A review seat's standing instructions in its prompt: a reviewer's posture and the project's pitfalls, or a
+/// verifier's findings to rule on.
+pub fn seat_brief(app: &App, task: &str, role: &str) -> String {
+    if role == "verifier" {
+        return app
+            .reviews
+            .seat_run(task)
+            .map(|r| verifier_text(&r))
+            .unwrap_or_default();
+    }
+    let project = app
+        .plaza
+        .tasks
+        .find(task)
+        .and_then(|t| t.project().map(str::to_string))
+        .unwrap_or_default();
+    let mut p = sceptic_text(app, &project);
+    p.push_str("Record each finding with review_score: its findings (symbol, text, severity, and the scenario). Then plaza_verdict with pass true once you have reviewed the change, or false when you cannot review it.\n");
+    p
 }
 
 /// A sub-review the agent on a node adds, within its node's limit.
@@ -1369,8 +2414,9 @@ pub fn work_ended(app: &App, work: u64) {
             .role
             .clone()
             .unwrap_or_else(|| crate::scheduler::REVIEWER_ROLE.into());
-        if let Some(cid) = pick_agent(app, &r.project, &role, r.worker, &taken)
-            .or_else(|| pick_agent(app, &r.project, &role, r.worker, &[]))
+        let avoid = avoid_models(&r, &n.def);
+        if let Some(cid) = pick_agent(app, &r.project, &role, r.worker, &taken, &avoid)
+            .or_else(|| pick_agent(app, &r.project, &role, r.worker, &[], &avoid))
         {
             assign(app, &r, &node, cid);
             return;
@@ -1400,6 +2446,20 @@ pub fn decide(run: &Run) -> Outcome {
             continue;
         };
         let fired = match &cond {
+            Condition::ConfirmedFindings => {
+                let confirmed: Vec<&str> = run
+                    .findings()
+                    .filter(|f| f.verdict == Verdict::Confirmed && f.severity != "info")
+                    .map(|f| f.id.as_str())
+                    .collect();
+                (!confirmed.is_empty()).then(|| {
+                    format!(
+                        "{} confirmed finding(s): {}",
+                        confirmed.len(),
+                        confirmed.join(", ")
+                    )
+                })
+            }
             Condition::AnyFailed => {
                 let failed: Vec<&str> = run
                     .nodes
@@ -1459,6 +2519,9 @@ pub fn decide(run: &Run) -> Outcome {
                 owner
             },
         )
+    } else if let Some(gap) = cross_model_gap(run) {
+        // A pass needs reviewers on another model than the author's: with none, the owner rules (and says so).
+        ("owner", vec![format!("no review on another model: {gap}")])
     } else {
         ("pass", vec![])
     };
@@ -1549,6 +2612,19 @@ fn gate(app: &App, run_id: &str) {
 fn passed(app: &App, run: &Run, _notes: &str) {
     let detail = app.weft.get(&format!("/changes/{}", run.change)).ok();
     if let Some(d) = detail {
+        // The lane sealed a newer revision while this run went on: only the one reviewed is admitted, and the newer
+        // one gets its own run (the scheduler starts it once this one ends).
+        let latest = d["rounds"]
+            .as_array()
+            .and_then(|r| r.last())
+            .and_then(|r| r.as_str());
+        if run.purpose == "review" && latest.is_some_and(|l| l != run.revision) {
+            eprintln!(
+                "apid: {} passed on {}, but the lane has moved on: not queued",
+                run.id, run.revision
+            );
+            return;
+        }
         let n = d["rounds"].as_array().map(|r| r.len()).unwrap_or(0);
         if let Err(e) = app.weft.hub(
             "queue.add",
@@ -1569,12 +2645,7 @@ fn send_back(app: &App, run: &Run, reasons: &[String]) {
     let Some(task) = app.plaza.tasks.find(&run.task) else {
         return;
     };
-    let findings: Vec<String> = run
-        .nodes
-        .iter()
-        .flat_map(|n| n.findings.iter())
-        .map(|f| format!("- {} ({}, {}): {}", f.symbol, f.node, f.severity, f.text))
-        .collect();
+    let (findings, dropped) = findings_text(run);
     let note = format!(
         "Sent back by review {} (round {}): {}",
         run.id,
@@ -1594,10 +2665,18 @@ fn send_back(app: &App, run: &Run, reasons: &[String]) {
         apz_proto::wire::WorkLane { change, repo }
     });
     let prompt = format!(
-        "{goal}\n\n{note}\n\nWhat the review found:\n{found}\n\nFix these in your lane{lane} and finish again; the next review round reads your next revision.",
+        "{goal}\n\n{note}\n\nWhat the review found (confirmed by its verifier):\n{found}{dropped}\n\nFix the confirmed findings in your lane{lane} and finish again; the next review round reads your next revision. A confirmed finding you think is wrong can be contested once, with finding_contest (its id and your reason): the verifier looks again.",
         goal = task.goal(),
+        dropped = if dropped.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\n\nDropped (not defects, nothing to change):\n{}",
+                dropped.join("\n")
+            )
+        },
         found = if findings.is_empty() {
-            "- (no findings beyond the reasons above)".into()
+            "- (no confirmed findings beyond the reasons above)".into()
         } else {
             findings.join("\n")
         },
@@ -1656,6 +2735,39 @@ pub fn owner_ruled(
     approve: bool,
     action: Option<&str>,
 ) -> Result<(), String> {
+    if item.detail.get("gate").and_then(Value::as_str) == Some("contest") {
+        // The owner rules on a contested finding the walk holds: fix, accept or drop (the card's choices).
+        let run_id = item.detail["run"].as_str().ok_or("no run on the card")?;
+        let finding = item.detail["finding"]
+            .as_str()
+            .ok_or("no finding on the card")?;
+        let ruling = action.map(str::to_string).unwrap_or_else(|| {
+            if approve {
+                "accept".into()
+            } else {
+                "fix".into()
+            }
+        });
+        let reason = item
+            .reason
+            .clone()
+            .unwrap_or_else(|| "the owner ruled".into());
+        return settle_ruling(app, run_id, finding, &ruling, &reason, "the owner").map(|_| ());
+    }
+    if item.detail.get("gate").and_then(Value::as_str) == Some("cross_model") {
+        // The reviewer ran on the builder's own model: the owner admits the change or fails the review (8.2).
+        let task = item.detail["task"].as_str().ok_or("no task on the card")?;
+        let now = apz_plaza::now_ms();
+        if approve {
+            crate::work_loop::admit(app, task, now);
+            return Ok(());
+        }
+        let notes = item
+            .reason
+            .clone()
+            .unwrap_or_else(|| "the owner did not admit the review".into());
+        return app.work.owner_verdict(app, task, false, &notes).map(|_| ());
+    }
     let Some(run_id) = item.detail.get("run").and_then(Value::as_str) else {
         // A card from before the review graph (no run): the old path.
         if action == Some("rework") {
@@ -1819,6 +2931,7 @@ fn check_run(
                 summary: String::new(),
                 purpose: purpose.into(),
                 repo: repo.into(),
+                models: vec![],
                 created_ms: now,
                 updated_ms: now,
             },
@@ -2033,6 +3146,7 @@ mod tests {
             summary: String::new(),
             purpose: "review".into(),
             repo: String::new(),
+            models: vec![],
             created_ms: 0,
             updated_ms: 0,
         }
@@ -2104,5 +3218,330 @@ mod tests {
             format!("{:?}", reviews.run("rv1").unwrap())
         );
         assert_eq!(fresh.tree(&back), tree);
+    }
+
+    fn agent_node(id: &str, role: &str, axes: &[&str]) -> NodeRun {
+        NodeRun {
+            def: NodeDef {
+                id: id.into(),
+                kind: "agent".into(),
+                role: Some(role.into()),
+                axes: axes.iter().map(|a| a.to_string()).collect(),
+                ..Default::default()
+            },
+            parent: None,
+            state: NodeState::Waiting,
+            assignee: None,
+            work: None,
+            tries: 0,
+            scores: vec![],
+            findings: vec![],
+            touches: vec![],
+            notes: String::new(),
+            record: None,
+            started_ms: 0,
+            ended_ms: 0,
+            spawned: 0,
+        }
+    }
+
+    fn finding(symbol: &str, scenario: &str) -> Finding {
+        Finding {
+            symbol: symbol.into(),
+            lineage: None,
+            text: format!("{symbol} is wrong"),
+            severity: "major".into(),
+            node: "function".into(),
+            round: 1,
+            id: String::new(),
+            scenario: scenario.into(),
+            kind: "tst".into(),
+            verdict: Verdict::Pending,
+            proof: String::new(),
+            reason: String::new(),
+            by: None,
+            verified_by: None,
+            contest: String::new(),
+            ruling: String::new(),
+            ruling_reason: String::new(),
+        }
+    }
+
+    fn model(node: &str, cid: u64, model: &str) -> ModelUse {
+        ModelUse {
+            node: node.into(),
+            cid,
+            model: model.into(),
+            session: String::new(),
+        }
+    }
+
+    fn by(seat: &str, model: &str) -> By {
+        By {
+            seat: seat.into(),
+            model: model.into(),
+            session: format!("s-{seat}"),
+        }
+    }
+
+    /// A code review's shape: a reviewer, the verifier after it, and the gate; the models of the author, the reviewer
+    /// and the verifier are given in that order.
+    fn chain_run(round: u32, models: [&str; 3]) -> Run {
+        let mut run = run_with(RunState::Running);
+        run.round = round;
+        run.rounds = 3;
+        let mut gate = agent_node("gate", "reviewer", &[]);
+        gate.def.kind = "gate".into();
+        gate.def.role = None;
+        gate.def.after = vec!["function".into(), "verify".into()];
+        run.nodes = vec![
+            agent_node("function", "reviewer", &["fea"]),
+            agent_node("verify", "verifier", &[]),
+            gate,
+        ];
+        run.models = vec![
+            model("author", 300, models[0]),
+            model("function", 301, models[1]),
+            model("verify", 303, models[2]),
+        ];
+        run.rules = vec![
+            recipe::Rule {
+                when: "confirmed findings".into(),
+                then: "rework".into(),
+            },
+            recipe::Rule {
+                when: "failed".into(),
+                then: "rework".into(),
+            },
+        ];
+        run
+    }
+
+    /// Records findings the way `report` numbers them: `f1`, `f2`, … in the run's order, pending.
+    fn record(run: &mut Run, node: &str, findings: Vec<Finding>) {
+        let base: usize = run.nodes.iter().map(|n| n.findings.len()).sum();
+        let n = run.nodes.iter_mut().find(|n| n.def.id == node).unwrap();
+        for (i, mut f) in findings.into_iter().enumerate() {
+            f.id = format!("f{}", base + i + 1);
+            f.by = Some(by(node, "mock/echo"));
+            n.findings.push(f);
+        }
+    }
+
+    #[test]
+    fn a_finding_without_its_scenario_is_refused() {
+        assert!(check_findings(&[finding("q.rs::next", "")]).is_err());
+        assert!(check_findings(&[finding("q.rs::next", "   ")]).is_err());
+        assert!(check_findings(&[finding("q.rs::next", "an empty queue panics")]).is_ok());
+    }
+
+    #[test]
+    fn the_seeded_bug_is_proved_and_fixed_and_the_false_alarm_is_dropped_with_its_reason() {
+        let verifier = by("verify", "mock/third");
+        // Round 1: the reviewer (on another model than the author's) finds the seeded bug and a false alarm.
+        let mut r1 = chain_run(1, ["mock/agent", "mock/echo", "mock/third"]);
+        record(
+            &mut r1,
+            "function",
+            vec![
+                finding("q.rs::Queue::next", "an empty queue → next() panics"),
+                finding("q.rs::Queue::next", "items come out newest first"),
+            ],
+        );
+        // The verifier proves the bug with a test it ran, and drops the false alarm with the reason.
+        rule_finding(
+            &mut r1,
+            "f1",
+            Verdict::Confirmed,
+            "test next_on_empty: Queue { items: vec![] }.next() panics",
+            "",
+            verifier.clone(),
+        )
+        .unwrap();
+        rule_finding(
+            &mut r1,
+            "f2",
+            Verdict::Dropped,
+            "",
+            "the test shows the oldest item first: pop() on a vector of pushes is the oldest",
+            verifier.clone(),
+        )
+        .unwrap();
+        assert!(
+            rule_finding(&mut r1, "f1", Verdict::Dropped, "", "no", verifier.clone()).is_err(),
+            "a ruling is made once"
+        );
+        let f2 = r1.findings().find(|f| f.id == "f2").unwrap();
+        assert_eq!(f2.verdict, Verdict::Dropped);
+        assert!(f2.reason.contains("oldest"));
+        assert_eq!(f2.by.as_ref().unwrap().seat, "function");
+        assert_eq!(f2.verified_by.as_ref().unwrap().model, "mock/third");
+        // The confirmed bug sends the author back with its scenario; the false alarm does not.
+        let out = decide(&r1);
+        assert_eq!(out.decision, "rework", "{:?}", out.reasons);
+        assert!(out.reasons.join(" ").contains("f1"));
+
+        // Round 2: the author fixed it, the chain re-ran on the new revision, and nothing confirmed is left.
+        let r2 = chain_run(2, ["mock/agent", "mock/echo", "mock/third"]);
+        assert_eq!(decide(&r2).decision, "pass");
+    }
+
+    #[test]
+    fn a_verifier_confirms_with_a_proof_and_drops_with_a_reason_and_no_other_way() {
+        let mut run = chain_run(1, ["mock/agent", "mock/echo", "mock/third"]);
+        record(&mut run, "function", vec![finding("q.rs::next", "a state")]);
+        assert!(
+            rule_finding(
+                &mut run,
+                "f1",
+                Verdict::Confirmed,
+                "",
+                "",
+                by("verify", "m")
+            )
+            .is_err()
+        );
+        assert!(rule_finding(&mut run, "f1", Verdict::Dropped, "", "", by("verify", "m")).is_err());
+        assert!(
+            rule_finding(
+                &mut run,
+                "f1",
+                Verdict::Pending,
+                "x",
+                "y",
+                by("verify", "m")
+            )
+            .is_err()
+        );
+        assert!(
+            rule_finding(&mut run, "f9", Verdict::Dropped, "", "r", by("verify", "m")).is_err()
+        );
+    }
+
+    #[test]
+    fn a_contest_is_once_and_the_verifier_holds_it_for_the_planner_to_rule() {
+        let verifier = by("verify", "mock/third");
+        let mut run = chain_run(1, ["mock/agent", "mock/echo", "mock/third"]);
+        record(
+            &mut run,
+            "function",
+            vec![finding("q.rs::next", "an empty queue panics")],
+        );
+        rule_finding(
+            &mut run,
+            "f1",
+            Verdict::Confirmed,
+            "a failing test",
+            "",
+            verifier.clone(),
+        )
+        .unwrap();
+        run.state = RunState::Rework;
+
+        // The author contests the confirmed bug: the review reopens for the verifier's second look.
+        contest_finding(&mut run, "f1", "the queue is never empty at this call").unwrap();
+        reopen_review(&mut run);
+        assert_eq!(run.state, RunState::Running);
+        assert!(run.node("verify").unwrap().state == NodeState::Waiting);
+        assert!(contest_finding(&mut run, "f1", "again").is_err(), "once");
+
+        // The verifier holds it: the planner rules, and the gate waits for the ruling.
+        rule_finding(
+            &mut run,
+            "f1",
+            Verdict::Confirmed,
+            "the same test, on the call",
+            "",
+            verifier.clone(),
+        )
+        .unwrap();
+        assert!(run.awaiting_ruling());
+        assert!(arbitrate_finding(&mut run, "f1", "maybe", "x").is_err());
+        arbitrate_finding(&mut run, "f1", "fix", "the test is right").unwrap();
+        assert!(!run.awaiting_ruling());
+        assert_eq!(decide(&run).decision, "rework");
+    }
+
+    #[test]
+    fn a_contested_finding_the_verifier_drops_is_dropped_and_needs_no_planner() {
+        let verifier = by("verify", "mock/third");
+        let mut run = chain_run(1, ["mock/agent", "mock/echo", "mock/third"]);
+        record(&mut run, "function", vec![finding("q.rs::next", "a state")]);
+        rule_finding(
+            &mut run,
+            "f1",
+            Verdict::Confirmed,
+            "a test",
+            "",
+            verifier.clone(),
+        )
+        .unwrap();
+        contest_finding(&mut run, "f1", "the state cannot occur").unwrap();
+        rule_finding(
+            &mut run,
+            "f1",
+            Verdict::Dropped,
+            "",
+            "the state cannot occur: checked",
+            verifier,
+        )
+        .unwrap();
+        assert!(!run.awaiting_ruling());
+        assert_eq!(decide(&run).decision, "pass");
+    }
+
+    #[test]
+    fn a_pass_needs_reviewers_and_the_verifier_on_models_other_than_the_authors() {
+        let other = ["mock/agent", "mock/echo", "mock/third"];
+        assert_eq!(decide(&chain_run(1, other)).decision, "pass");
+        assert_eq!(cross_model_gap(&chain_run(1, other)), None);
+
+        let same_reviewer = chain_run(1, ["mock/agent", "mock/agent", "mock/third"]);
+        let out = decide(&same_reviewer);
+        assert_eq!(out.decision, "owner");
+        assert!(
+            out.reasons[0].contains("the author's own model"),
+            "{:?}",
+            out.reasons
+        );
+        assert_eq!(
+            decide(&chain_run(1, ["mock/agent", "mock/echo", "mock/agent"])).decision,
+            "owner"
+        );
+
+        // A run without its author's model is not admitted (it fails closed).
+        let mut unknown = chain_run(1, other);
+        unknown.models[0].model = String::new();
+        assert_eq!(decide(&unknown).decision, "owner");
+        let mut none = chain_run(1, other);
+        none.models.retain(|m| m.node != "author");
+        assert!(cross_model_gap(&none).is_some());
+    }
+
+    #[test]
+    fn a_kind_confirmed_twice_in_a_project_is_counted_for_its_pitfall() {
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = reviews_in(&dir);
+        let confirmed = |id: &str, project: &str| {
+            let mut run = chain_run(1, ["mock/agent", "mock/echo", "mock/third"]);
+            run.id = id.into();
+            run.project = project.into();
+            record(&mut run, "function", vec![finding("q.rs::next", "s")]);
+            rule_finding(
+                &mut run,
+                "f1",
+                Verdict::Confirmed,
+                "p",
+                "",
+                by("verify", "m"),
+            )
+            .unwrap();
+            reviews.with(|b| b.runs.insert(id.into(), run));
+        };
+        confirmed("rv1", "p1");
+        assert_eq!(reviews.confirmed_of_kind("p1", "tst"), 1);
+        confirmed("rv2", "p1");
+        assert_eq!(reviews.confirmed_of_kind("p1", "tst"), 2);
+        assert_eq!(reviews.confirmed_of_kind("p2", "tst"), 0);
     }
 }

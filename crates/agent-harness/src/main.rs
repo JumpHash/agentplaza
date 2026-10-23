@@ -174,6 +174,13 @@ fn main() -> ExitCode {
             }
         };
     }
+    // An engine's thin adapter (acp/shim.rs), started by the launch in place of a native ACP binary: its stdout is
+    // the protocol, so it is served before anything else prints.
+    if let [_, command, engine] = args.as_slice()
+        && command == "acp-shim"
+    {
+        return acp::shim::serve_engine(engine);
+    }
     // A Claude Code hook call, from the settings the adapter renders (hooks.rs): not the vsock session.
     if let [_, command, rest @ ..] = args.as_slice()
         && command == "apz-hook"

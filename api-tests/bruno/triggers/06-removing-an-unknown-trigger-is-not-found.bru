@@ -1,0 +1,15 @@
+meta {
+  name: Removing an unknown trigger is not found
+  type: http
+  seq: 6
+}
+
+delete {
+  url: {{baseUrl}}/v1/recipes/intake/triggers/rt-0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

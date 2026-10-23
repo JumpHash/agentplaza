@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::{EdgeRec, EdgeState, Move, Outcome, Report, StepRec, StepState, Walk};
 
-use super::model::{Model, Recipe, builtin};
+use super::model::{Fan, Model, Recipe, Risk, builtin};
 
 /// Where a run is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -57,6 +57,9 @@ pub struct RecipeRun {
     pub steps: Vec<StepRow>,
     #[table(child)]
     pub edges: Vec<EdgeRow>,
+    /// The results of a CI run's checks (4.5): one per step that ran, in the order they ended.
+    #[table(child)]
+    pub checks: Vec<CheckRow>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -83,6 +86,19 @@ pub struct EdgeRow {
     pub to: String,
     pub state: EdgeState,
     pub taken: u32,
+}
+
+/// One check of a CI run (PLAN 21.3): a step that ran its commands in a test fork, or read a result of the hub (the
+/// secret scan), and what it found. A gate reads the report built from it, and the run keeps the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct CheckRow {
+    #[table(key)]
+    pub step: String,
+    pub passed: bool,
+    /// The commands the step ran, joined by ` && ` (empty when it ran none).
+    pub commands: String,
+    /// What the check found, in a line: the output's end of a failing command, a count of tests or findings.
+    pub summary: String,
 }
 
 /// A version of a recipe the owner saved.
@@ -189,6 +205,7 @@ impl Runs {
             outcome: None,
             steps: Vec::new(),
             edges: Vec::new(),
+            checks: Vec::new(),
             created_ms: now,
             updated_ms: now,
         };
@@ -269,6 +286,28 @@ impl Runs {
         }
     }
 
+    /// Sets the items of a step of the task's active run (see [`Walk::set_items`]).
+    pub fn set_items_task(&self, task: &str, step: &str, items: u32, now: u64) {
+        if let Some(run) = self.active_of_task(task) {
+            self.update(&run, now, |e| e.walk.set_items(step, items));
+        }
+    }
+
+    /// A step's fixed fan-out count and its risk, in the task's active run's recipe.
+    pub fn sizing_of_task(&self, task: &str, step: &str) -> Option<(u32, Option<Risk>)> {
+        let inner = self.lock();
+        let entry = inner
+            .runs
+            .values()
+            .find(|e| e.run.task.as_deref() == Some(task) && e.walk.outcome.is_none())?;
+        let s = entry.recipe.step(step)?;
+        let count = match s.fan_out {
+            Fan::Count(n) => n,
+            Fan::Named(_) => 1,
+        };
+        Some((count, s.risk.clone()))
+    }
+
     /// The model a step of the task's active run is to use, as its recipe file says.
     pub fn step_model(&self, task: &str, step: &str) -> Option<Model> {
         let inner = self.lock();
@@ -332,6 +371,41 @@ impl Runs {
                 e.run.outcome = Some(outcome.to_string());
             });
         }
+    }
+
+    /// Ends a run whose checks ran outside the hub (GitHub's check runs in `ci` mode, PLAN 21.5): its rows are the checks
+    /// it was given, and its outcome is `passed`, or failed with `why`. A run that has an outcome already is left as it is.
+    pub fn close_external(
+        &self,
+        run: &str,
+        checks: Vec<CheckRow>,
+        passed: bool,
+        why: &str,
+        now: u64,
+    ) {
+        self.update(run, now, |e| {
+            if e.walk.outcome.is_none() {
+                e.run.checks = checks;
+                e.walk.outcome = Some(if passed {
+                    Outcome::Passed
+                } else {
+                    Outcome::Failed(why.to_string())
+                });
+                e.run.outcome = Some(if passed {
+                    "passed".to_string()
+                } else {
+                    why.to_string()
+                });
+            }
+        });
+    }
+
+    /// Records a check's result on run `run`, replacing the one the same step recorded before.
+    pub fn record_check(&self, run: &str, check: CheckRow, now: u64) {
+        self.update(run, now, |e| {
+            e.run.checks.retain(|c| c.step != check.step);
+            e.run.checks.push(check);
+        });
     }
 
     /// Stops the task's active run (its task ended): it is cancelled, and its walk ends.
@@ -693,7 +767,7 @@ max = 2
         runs.task_step_started("t1", "build", 2);
         runs.settle_task("t1", "build", &Report::verdict(true), 3);
         let mut v2 = recipe.clone();
-        v2.version = 2;
+        v2.version = 3;
         runs.put_version(v2, 4).unwrap();
 
         let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
@@ -708,7 +782,7 @@ max = 2
         let view = loaded.view(&id).unwrap();
         assert_eq!(view.walk.steps["review"].state, StepState::Ready);
         assert_eq!(view.walk.steps["build"].state, StepState::Passed);
-        assert_eq!(loaded.recipe("change", None).unwrap().version, 2);
+        assert_eq!(loaded.recipe("change", None).unwrap().version, 3);
         // The next run takes a new id, after the stored ones.
         let (next, _) = loaded.start(&recipe, "built_in", "task", Some("t2"), None, None, 9);
         assert_eq!(next, "rr-2");

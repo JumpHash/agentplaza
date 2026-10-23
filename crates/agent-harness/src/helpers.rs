@@ -240,6 +240,8 @@ impl Board {
                 ..tool.clone()
             })
             .collect();
+        // The id is taken and the start queued under one lock, so helpers spawned by parallel tool calls queue in the
+        // order of their ids.
         let id = {
             let mut state = locked(&self.state);
             state.last += 1;
@@ -252,19 +254,19 @@ impl Board {
                     phase: Phase::Queued,
                 },
             );
+            self.send(Event::Start(Box::new(Start {
+                id,
+                job,
+                edits,
+                report_bytes: (tokens * BYTES_PER_TOKEN) as usize,
+                work,
+                policy,
+                system_parts: profile.system_parts.clone(),
+                tools,
+                max_turns: profile.max_turns,
+            })))?;
             id
         };
-        self.send(Event::Start(Box::new(Start {
-            id,
-            job,
-            edits,
-            report_bytes: (tokens * BYTES_PER_TOKEN) as usize,
-            work,
-            policy,
-            system_parts: profile.system_parts.clone(),
-            tools,
-            max_turns: profile.max_turns,
-        })))?;
         let isolation = if edits {
             format!(
                 "It edits its own worktree on branch helper/h{id}; merge what you keep with run."

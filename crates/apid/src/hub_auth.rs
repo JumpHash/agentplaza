@@ -187,9 +187,16 @@ pub fn is_public(method: &str, path: &str) -> bool {
             | ("GET", "/v1/acp")
             // A git platform sends the owner's browser back here; it acts only on a state an owner's call made.
             | ("GET", "/v1/platforms/callback")
+            // An issue tracker's webhooks: each one checks its own signature (`intake`).
+            | ("POST", "/v1/intake/github" | "/v1/intake/linear")
     ) || (path.starts_with("/v1/platforms/flows/") && path.ends_with("/go") && method == "GET")
         // A project's ingest address: the token in the path names the project (`maintenance`).
         || (method == "POST" && path.starts_with("/v1/ingest/") && path.len() > "/v1/ingest/".len())
+        // A connector's webhook: the token in the path names the connector (`triggers::hooks`).
+        || (method == "POST"
+            && path
+                .strip_prefix("/v1/hooks/")
+                .is_some_and(|rest| rest.split_once('/').is_some_and(|(c, t)| !c.is_empty() && !t.is_empty())))
         || (path.starts_with("/v1/nodes/n")
             && (path.ends_with("/commands")
                 || path.ends_with("/results")
@@ -238,7 +245,7 @@ fn allowance(req: &Request, internal_token: &str, owner: impl FnOnce() -> bool) 
 /// The most a node's report (results, commands, heartbeats) may carry.
 pub const NODE_BODY: usize = 64 << 20;
 
-/// The most any other caller of a public route may send: joins, ingest, callbacks, sessions.
+/// The most any other caller of a public route may send: joins, ingest, webhooks, callbacks, sessions.
 pub const PUBLIC_BODY: usize = 256 << 10;
 
 /// Whether a request is the owner's: the machine's own (a loopback or unknown peer under a local `Host`), the owner
@@ -580,6 +587,14 @@ mod tests {
             allowance(&req("/v1/ingest/abc", None), "t0k", not_owner),
             PUBLIC_BODY
         );
+    }
+
+    #[test]
+    fn a_connector_webhook_is_public_with_its_token_and_its_setup_is_not() {
+        assert!(is_public("POST", "/v1/hooks/github/tok"));
+        assert!(!is_public("POST", "/v1/hooks/github"));
+        assert!(!is_public("GET", "/v1/hooks/github/tok"));
+        assert!(!is_public("POST", "/v1/connectors/github/webhook"));
     }
 
     #[test]

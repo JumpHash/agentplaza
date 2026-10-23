@@ -71,12 +71,25 @@ pub struct ProjectSettings {
     /// How long a finished task waits for a reviewer before the owner is asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_timeout_minutes: Option<u32>,
+    /// The minutes between the full suite's runs on main (the coverage map and the misses, PLAN 15.4). 0 turns the
+    /// schedule off; [`crate::full_run::DEFAULT_MINUTES`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_suite_minutes: Option<u32>,
     /// The most tasks of the project that run at once (its team's maximum); [`DEFAULT_TEAM_MAX`] when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_max: Option<u32>,
     /// The team the planner aims for when the graph allows, never above the maximum; [`DEFAULT_TEAM_TARGET`] when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_target: Option<u32>,
+    /// How many of the project's lanes the merge queue tests together (a batch, 4.6); [`DEFAULT_QUEUE_BATCH`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_batch: Option<u32>,
+    /// Whether the owner approves each landing (a `land` approval, 4.6). Off by default: the plaza lands what passed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub land_approval: bool,
+    /// Whether the project releases continuously: each landing starts the release recipe (22; a stub until then, 4.6).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub release_continuous: bool,
     /// The project's hooks: checks and formatters that run around its agents' edits and commands (`apz_proto::hooks`).
     /// The JSON names them as a list under `hooks`; `"hooks": "defaults"` sets `hook_defaults` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -85,6 +98,28 @@ pub struct ProjectSettings {
     /// Whether the project's hooks start from the defaults (`apz_proto::hooks::default_hooks`), before its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hook_defaults: bool,
+    /// The intake rules: which outside items (GitHub, Linear, Notion) become this project's tasks, by repository,
+    /// label, team or database, and on which recipe. The JSON names them as a list under `intake`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
+    pub intake: Vec<IntakeRule>,
+}
+
+/// One intake rule: an outside item whose `field` is `value` becomes a task of the project on `recipe`. The field is
+/// a repository or a label (GitHub), a team's key or a label (Linear), a database's id (Notion). An item from a public
+/// repository starts work only when `allow_public` is set; otherwise it waits for the owner (`held`). The Notion fields
+/// name the database's status property and its options (empty: `Status`, `In progress`, `Done`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[serde(default, deny_unknown_fields)]
+pub struct IntakeRule {
+    pub source: String,
+    pub field: String,
+    pub value: String,
+    pub recipe: String,
+    pub allow_public: bool,
+    pub status_property: String,
+    pub started: String,
+    pub done: String,
 }
 
 /// Every project's overrides, by project id.
@@ -98,6 +133,14 @@ impl Store {
         self.by_project
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Every project's overrides, by project id (the intake routes read every project's rules).
+    pub fn all(&self) -> Vec<(String, ProjectSettings)> {
+        self.guard()
+            .iter()
+            .map(|(id, settings)| (id.clone(), settings.clone()))
+            .collect()
     }
 
     /// Project `id`'s overrides (none set when it has none).
@@ -151,13 +194,19 @@ struct SettingsRow {
     task_budget: Option<u64>,
     permission_mode: Option<Mode>,
     review_timeout_minutes: Option<u32>,
+    full_suite_minutes: Option<u32>,
     team_max: Option<u32>,
     team_target: Option<u32>,
+    queue_batch: Option<u32>,
+    land_approval: bool,
+    release_continuous: bool,
     hook_defaults: bool,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
     #[table(child)]
     hooks: Vec<HookRow>,
+    #[table(child)]
+    intake: Vec<IntakeRule>,
 }
 
 /// One hook of a project as its row: the action is a kind and, for a rule, the rule's id, and its paths and languages
@@ -217,11 +266,16 @@ impl SettingsRow {
             task_budget: settings.task_budget,
             permission_mode: settings.permission_mode,
             review_timeout_minutes: settings.review_timeout_minutes,
+            full_suite_minutes: settings.full_suite_minutes,
             team_max: settings.team_max,
             team_target: settings.team_target,
+            queue_batch: settings.queue_batch,
+            land_approval: settings.land_approval,
+            release_continuous: settings.release_continuous,
             hook_defaults: settings.hook_defaults,
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
+            intake: settings.intake.clone(),
         }
     }
 
@@ -237,9 +291,14 @@ impl SettingsRow {
             task_budget: self.task_budget,
             permission_mode: self.permission_mode,
             review_timeout_minutes: self.review_timeout_minutes,
+            full_suite_minutes: self.full_suite_minutes,
             team_max: self.team_max,
             team_target: self.team_target,
+            queue_batch: self.queue_batch,
+            land_approval: self.land_approval,
+            release_continuous: self.release_continuous,
             hooks: self.hooks,
+            intake: self.intake,
             hook_defaults: self.hook_defaults,
         };
         (self.project, settings)
@@ -254,6 +313,12 @@ pub fn def() -> &'static TableDef {
 /// Checks a project's overrides against the plaza: models the roles may run (the plaza's model policy), roles it
 /// has, an effort it knows, and limits within the harness's bounds.
 pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
+    if let Some(batch) = settings.queue_batch
+        && !(1..=16).contains(&batch)
+    {
+        return Err("queue_batch: a batch holds from 1 to 16 lanes".into());
+    }
+    crate::intake::check_rules(&settings.intake)?;
     if let Some(model) = &settings.default_model {
         app.settings
             .allowed(Tier::Worker, model)
@@ -306,6 +371,11 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         && !(1..=10_080).contains(&minutes)
     {
         return Err("review_timeout_minutes must be 1 to 10080 (a week)".into());
+    }
+    if let Some(minutes) = settings.full_suite_minutes
+        && minutes > 10_080
+    {
+        return Err("full_suite_minutes must be 0 (off) to 10080 (a week)".into());
     }
     check_team(settings)?;
     let hooks: Vec<Hook> = settings.hooks.iter().cloned().map(Hook::from).collect();
@@ -448,6 +518,14 @@ pub fn model_for(app: &App, agent: &Agent) -> Option<String> {
         .or(settings.default_model)
 }
 
+/// The minutes between a project's full suite runs: its setting, or the default (0 turns the schedule off).
+pub fn full_suite_minutes(app: &App, pid: &str) -> u32 {
+    app.project_settings
+        .get(pid)
+        .full_suite_minutes
+        .unwrap_or(crate::full_run::DEFAULT_MINUTES)
+}
+
 /// The amount (in the project budget's unit) a task of project `pid` reserves when it names none.
 pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
     pid.and_then(|pid| app.project_settings.get(pid).task_budget)
@@ -456,6 +534,8 @@ pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
 /// The most tasks a project runs at once when it sets no maximum, and the team its planner aims for when it sets no
 /// target (PLAN 7.1, W25). The largest either may be set to is [`TEAM_LIMIT`].
 pub const DEFAULT_TEAM_MAX: u32 = 20;
+/// The lanes the merge queue tests together when the project sets no batch size (4.6).
+pub const DEFAULT_QUEUE_BATCH: u32 = 4;
 pub const DEFAULT_TEAM_TARGET: u32 = 10;
 pub const TEAM_LIMIT: u32 = 100;
 
@@ -600,6 +680,7 @@ pub fn effective(app: &App, id: &str) -> Value {
             },
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
+            "full_suite_minutes": pick(own.full_suite_minutes.map(Value::from), json!(crate::full_run::DEFAULT_MINUTES)),
             "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
             "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },

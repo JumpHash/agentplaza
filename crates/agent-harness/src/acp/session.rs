@@ -924,6 +924,122 @@ mod tests {
         serde_json::from_str(&text).expect("the log is JSON")
     }
 
+    /// The harness binary, which serves the thin adapters (`acp-shim <engine>`): built beside this test binary when a
+    /// run of this crate alone has not built it, as [`fake_agent`] is.
+    fn harness_binary() -> PathBuf {
+        static BUILT: Once = Once::new();
+        let exe = env::current_exe().expect("the test binary's path");
+        let target = exe
+            .parent()
+            .and_then(Path::parent)
+            .expect("the target directory");
+        let bin = target.join("agent-harness");
+        if bin.exists() {
+            return bin;
+        }
+        BUILT.call_once(|| {
+            let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let status = Command::new(cargo)
+                .args([
+                    "build",
+                    "--offline",
+                    "-p",
+                    "agent-harness",
+                    "--bin",
+                    "agent-harness",
+                ])
+                .status()
+                .expect("cargo runs");
+            assert!(status.success(), "cannot build the harness binary");
+        });
+        bin
+    }
+
+    #[test]
+    fn a_shim_engine_launches_through_the_relay_and_its_stand_in_answers_a_turn() {
+        // 5.6: the launch the run builds for `amp` starts the harness's `acp-shim amp` in place of a native ACP
+        // binary. The relay runs the engine's command (a stand-in named `amp`, first on the path) for the turn, and
+        // the stand-in's steps come back through the ACP session.
+        let dir = scratch("shim-launch");
+        let workspace = Workspace::at(&dir);
+        let stand_in_dir = dir.join("bin");
+        std::fs::create_dir_all(&stand_in_dir).expect("the stand-in folder");
+        let amp = stand_in_dir.join("amp");
+        std::fs::write(&amp, crate::acp::shim::STAND_IN).expect("the stand-in");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&amp, std::fs::Permissions::from_mode(0o755))
+                .expect("executable");
+        }
+        let session_dir = dir.join("session");
+        std::fs::create_dir_all(&session_dir).expect("the session folder");
+        // The engine runs as its own user (`Privilege::Engine`), which writes the folder it works in.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&session_dir, std::fs::Permissions::from_mode(0o777))
+                .expect("the session folder is writable by the engine");
+        }
+
+        let instance = Instance::from_catalogue("amp").expect("the amp engine");
+        let (pairs, _) = crate::acp::run::launch(
+            &workspace,
+            &instance,
+            None,
+            crate::engines::Compaction::default(),
+        )
+        .expect("the launch");
+        let mut argv = crate::acp::run::argv(&instance, pairs, &[]);
+        // The launch names this test binary as the shim program; the harness binary is the one that serves it.
+        let shim_at = argv
+            .iter()
+            .position(|arg| *arg == crate::acp::shim::program().display().to_string())
+            .expect("the launch starts the shim");
+        argv[shim_at] = harness_binary().display().to_string();
+        assert_eq!(argv[shim_at + 1..], ["acp-shim", "amp"]);
+        for pair in argv.iter_mut().filter(|arg| arg.starts_with("PATH=")) {
+            *pair = format!("PATH={}:/usr/bin:/bin", stand_in_dir.display());
+        }
+
+        let options = Options {
+            entry: &instance,
+            workspace: &workspace,
+            cwd: session_dir.clone(),
+            argv,
+            model: None,
+            mode: None,
+            resume: None,
+            context: None,
+            deadline: Instant::now() + Duration::from_secs(60),
+            protocol: 1,
+        };
+        let link = TestLink::new(Verdict::Allow, None);
+        let outcome = prompt_turn(&options, "fix the failing test", &link).expect("the turn runs");
+        assert_eq!(outcome.stop_reason, "end_turn");
+        for step in [
+            "start: ok",
+            "read: ok",
+            "edit: ok",
+            "test: ok",
+            "mcp: plaza tool called",
+            "handover: written",
+            "end: ok",
+        ] {
+            assert!(
+                outcome.turn.message.contains(step),
+                "{step}: {}",
+                outcome.turn.message
+            );
+        }
+        assert!(
+            session_dir.join("edited.txt").exists(),
+            "in {}; the turn said: {}",
+            session_dir.display(),
+            outcome.turn.message
+        );
+        assert!(session_dir.join("HANDOVER.md").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_turn_ends_with_the_engines_stop_reason() {
         let dir = scratch("stop-reason");

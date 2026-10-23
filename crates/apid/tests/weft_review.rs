@@ -3,13 +3,18 @@
 //! pushes to it (through the agent gateway), and plays what its harness does: the `weft` commands (through the gateway,
 //! where apid signs with the VM's key) and the tool calls its model makes.
 //!
-//! - A code task: the builder's session opens the task's lane at its hello, writes files over two turns (drafts),
-//!   describes its intents and finishes (sealed, with a `written` attestation). The reviewer's session, on another
-//!   model, sends it back with a finding (`plaza_verdict` with pass false). The builder's next session, on a VM of its
-//!   own, fixes it; the reviewer's second session passes it, and the change lands. It is exported to a git remote as
-//!   one commit per intent, authored by the owner, with no AI credits.
-//! - A research brief (no code): the reviewer's first verdict sends it back over a wrong number, the second passes it,
-//!   and it lands.
+//! The change recipe's review is the adversarial chain, through the seats (8.2): two sceptic reviewers on models other
+//! than the builder's review the sealed change in parallel; a verifier then proves each finding or drops it, and a
+//! confirmed finding sends the builder back with it. Then the chain re-reviews what changed.
+//!
+//! - A code task: the builder's queue has a seeded bug (next() takes the newest item). One reviewer finds it (with its
+//!   scenario); the other reports a false alarm (next() on an empty queue panics: it does not, pop() returns None). The
+//!   verifier proves the bug with a failing test and drops the false alarm with its reason. The builder is sent back
+//!   with the confirmed finding and the dropped one, fixes the queue and adds the test; the second round passes, the
+//!   verifier finds nothing to prove, and the change lands. It is exported to a git remote as one commit per intent,
+//!   authored by the owner, with no AI credits.
+//! - A research brief (no code): a reviewer finds the wrong number, the verifier confirms it with the data's own
+//!   lines, the builder corrects it, and the second round passes it, and it lands.
 //! - Every record verifies, from each signature to the owner's key.
 
 mod common;
@@ -30,6 +35,8 @@ const WAIT: Duration = Duration::from_secs(40);
 /// The models a project's seats use: the reviewer's differs from the builder's.
 const BUILDER_MODEL: &str = "mock/agent";
 const REVIEWER_MODEL: &str = "mock/echo";
+/// The verifier's model: a third one, which no other seat of the task runs on.
+const VERIFIER_MODEL: &str = "mock/third";
 
 const QUEUE: &str = "pub struct Queue {\n    pub items: Vec<u64>,\n}\n\nimpl Queue {\n    pub fn next(&mut self) -> Option<u64> {\n        self.items.pop()\n    }\n}\n";
 const BRIEF_WRONG: &str = "# Edge caching\n\n## Findings\n\n- 93% of reads repeat within a task.\n\n## Recommendation\n\nCache on every node.\n";
@@ -45,6 +52,7 @@ fn roles() -> Value {
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
     } })
 }
 
@@ -125,16 +133,24 @@ fn first_work(hub: &Hub, gateway: &FakeDaemon, cid: u64) -> Value {
 
 /// The session of `seat` on `task` that runs on a VM `known` does not have: forking, its CID set.
 fn next_session(hub: &Hub, task: &str, seat: &str, known: &HashSet<u64>) -> Value {
+    // A seat of several items is named `reviewer#1`, `reviewer#2`, …: a session of any of them is `seat`'s.
+    let of_seat = |name: &str| name == seat || name.starts_with(&format!("{seat}#"));
     let fresh = |s: &Value| {
-        s["seat"] == seat
+        s["seat"].as_str().is_some_and(of_seat)
             && s["state"] == "forking"
             && s["cid"].as_u64().is_some_and(|cid| !known.contains(&cid))
     };
     let list = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |list| {
         list.as_array().is_some_and(|l| l.iter().any(&fresh))
     });
+    // The first of the fresh sessions by seat name: `reviewer#1` before `reviewer#2`.
     list.as_array()
-        .and_then(|l| l.iter().find(|s| fresh(s)).cloned())
+        .and_then(|l| {
+            l.iter()
+                .filter(|s| fresh(s))
+                .min_by_key(|s| s["seat"].as_str().unwrap_or("").to_string())
+                .cloned()
+        })
         .unwrap_or_else(|| {
             panic!(
                 "no new {seat} session for task {task}: {list}\n{}",
@@ -343,8 +359,27 @@ fn add_packs(hub: &Hub) {
     }
 }
 
+/// The next session of `seat` on `task`, on a VM of its own: hellos it and reads its first work. Returns the VM's cid,
+/// the work item, the session, and the work the hub pushed to the VM.
+fn seat_vm(
+    hub: &Hub,
+    gateway: &FakeDaemon,
+    task: &str,
+    seat: &str,
+    known: &mut HashSet<u64>,
+) -> (u64, u64, Value, Value) {
+    let session = next_session(hub, task, seat, known);
+    let cid = session["cid"].as_u64().expect("its VM");
+    known.insert(cid);
+    hello(hub, cid, seat);
+    let work = first_work(hub, gateway, cid);
+    let id = work["work"].as_u64().expect("the work item");
+    (cid, id, session, work)
+}
+
 #[test]
-fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_landed_change() {
+fn a_code_change_through_the_adversarial_chain_finds_a_seeded_bug_proves_it_fixes_it_and_drops_a_false_alarm()
+ {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
     let scratch = Scratch::new("weft-review");
@@ -370,7 +405,7 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
         .status()
         .is_ok_and(|s| s.success());
 
-    // A code project, its builder and reviewer on two models, and the task.
+    // A code project: its builder, its reviewers and its verifier, on models of their own, and the task.
     let (status, project) = hub.call(
         "POST",
         "/v1/projects",
@@ -381,7 +416,7 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
     let (status, settings) = hub.call(
         "PATCH",
         &format!("/v1/projects/{pid}/settings"),
-        Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL } })),
+        Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL, "verifier": VERIFIER_MODEL } })),
     );
     assert_eq!(status, 200, "{settings}");
     let (status, task) = hub.call(
@@ -392,15 +427,10 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
     assert_eq!(status, 201, "{task}");
     let tid = text(&task["id"]);
 
-    // The builder's session: its VM hellos, and its step's work carries the task's lane.
+    // The builder's session writes the queue, with the seeded bug (next() takes the newest item), and seals it.
     let mut known = HashSet::new();
-    let b1 = next_session(&hub, &tid, "builder", &known);
-    let b1_cid = b1["cid"].as_u64().expect("its VM");
-    known.insert(b1_cid);
-    assert_eq!(b1["model"], BUILDER_MODEL, "{b1}");
-    hello(&hub, b1_cid, "builder");
-    let w1 = first_work(&hub, &gateway, b1_cid);
-    let w1_id = w1["work"].as_u64().expect("the work item");
+    let (b1_cid, w1_id, b1_session, w1) = seat_vm(&hub, &gateway, &tid, "builder", &mut known);
+    assert_eq!(b1_session["model"], BUILDER_MODEL, "{b1_session}");
     let change = text(&w1["lane"]["change"]);
     let repo = text(&w1["lane"]["repo"]);
     assert!(
@@ -419,8 +449,6 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
         );
         assert_eq!(status, 200, "{body}");
     }
-
-    // The builder's first session: a checkout in its workspace, two turns (drafts), its intents, and its done.
     let b1_vm = vm_of(&hub, b1_cid, &home, &token);
     let ws1 = b1_vm.checkout(&change, &repo);
     b1_vm.write(&format!("{repo}/src/queue.rs"), QUEUE);
@@ -436,23 +464,6 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
             "claude-opus-5-5",
         ],
     );
-    b1_vm.write(&format!("{repo}/src/queue.rs"), &fixed_queue());
-    b1_vm.write(
-        &format!("{repo}/README.md"),
-        "# Queues\n\nnext() takes the oldest item.\n",
-    );
-    b1_vm.weft(
-        &ws1,
-        &[
-            "snapshot",
-            "--turn",
-            "2",
-            "--tool-call",
-            "toolu_b",
-            "--model",
-            "claude-opus-5-5",
-        ],
-    );
     b1_vm.tool(
         w1_id,
         "weft_describe",
@@ -460,8 +471,7 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
     );
     let status = b1_vm.tool(w1_id, "weft_status", json!({}));
     assert!(text(&status["output"]).contains("src/queue.rs"), "{status}");
-    hub.work_done(b1_cid, w1_id, "done", "next() now takes the oldest item");
-    // Sealed for review, with the builder's `written` attestation.
+    hub.work_done(b1_cid, w1_id, "done", "next() takes the oldest item");
     let sealed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(20),
@@ -473,58 +483,118 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
         "{sealed}\n{}",
         hub.log()
     );
-    assert!(has_record(&sealed, "written"), "{sealed}");
 
-    // The reviewer's session, on another model: its first read is the builder's handover. Its verdict sends it back.
-    let r1 = next_session(&hub, &tid, "reviewer", &known);
-    let r1_cid = r1["cid"].as_u64().expect("its VM");
-    known.insert(r1_cid);
-    assert_eq!(
-        r1["model"], REVIEWER_MODEL,
-        "a model other than the builder's: {r1}"
+    // Round 1: two sceptic reviewers, in parallel, on models other than the builder's. The first records the seeded
+    // bug with the scenario that shows it; the second records a false alarm (next() on an empty queue panics: it
+    // does not, pop() returns None).
+    let (r1a_cid, r1a_work, r1a_session, r1a) =
+        seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
+    assert_eq!(r1a_session["model"], REVIEWER_MODEL, "{r1a_session}");
+    assert!(text(&r1a["prompt"]).contains("sceptic"), "{r1a}");
+    let r1a_vm = vm_of(&hub, r1a_cid, &home, &token);
+    r1a_vm.tool(
+        r1a_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "src/queue.rs::Queue::next",
+            "text": "next() takes the newest item, not the oldest",
+            "severity": "major",
+            "kind": "order",
+            "scenario": "push 1, then push 2: next() returns 2, and the oldest item, 1, waits behind it"
+        }] }),
     );
-    hello(&hub, r1_cid, "reviewer");
-    let rw1 = first_work(&hub, &gateway, r1_cid);
-    let rw1_id = rw1["work"].as_u64().expect("the work item");
-    assert!(
-        text(&rw1["prompt"]).contains("The builder's handover"),
-        "{rw1}"
-    );
-    let r1_vm = vm_of(&hub, r1_cid, &home, &token);
-    let verdict = r1_vm.tool(
-        rw1_id,
+    let reported = r1a_vm.tool(
+        r1a_work,
         "plaza_verdict",
-        json!({ "task": tid, "pass": false, "notes": "next() has no test: add one that checks the oldest item comes out first." }),
+        json!({ "task": tid, "pass": true, "notes": "one defect: the order" }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    hub.work_done(r1a_cid, r1a_work, "done", "reviewed");
+
+    let (r1b_cid, r1b_work, r1b_session, _) = seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
+    assert_ne!(r1b_session["model"], BUILDER_MODEL, "{r1b_session}");
+    let r1b_vm = vm_of(&hub, r1b_cid, &home, &token);
+    r1b_vm.tool(
+        r1b_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "src/queue.rs::Queue::next",
+            "text": "next() panics on an empty queue",
+            "severity": "minor",
+            "kind": "panic",
+            "scenario": "next() on an empty queue calls unwrap() on None and panics"
+        }] }),
+    );
+    let reported = r1b_vm.tool(
+        r1b_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "one finding" }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    hub.work_done(r1b_cid, r1b_work, "done", "reviewed");
+
+    // The verifier, on a third model, proves the defect with a test and drops the false alarm with its reason.
+    let (v1_cid, v1_work, v1_session, v1) = seat_vm(&hub, &gateway, &tid, "verifier", &mut known);
+    assert_eq!(v1_session["model"], VERIFIER_MODEL, "{v1_session}");
+    assert!(
+        text(&v1["prompt"]).contains("f1") && text(&v1["prompt"]).contains("f2"),
+        "{v1}"
+    );
+    let v1_vm = vm_of(&hub, v1_cid, &home, &token);
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "a test: push 1, push 2, next() returns 2, so the oldest item does not come out first" }),
+    );
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f2", "verdict": "dropped", "reason": "pop() on an empty Vec returns None: next() does not panic on an empty queue" }),
+    );
+    let verdict = v1_vm.tool(
+        v1_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "f1 is real, f2 is not" }),
     );
     assert!(
         text(&verdict["output"]).contains("goes back to its builder"),
         "{verdict}"
     );
-    hub.work_done(r1_cid, rw1_id, "done", "sent back: next() has no test");
+    hub.work_done(v1_cid, v1_work, "done", "f1 confirmed, f2 dropped");
     let sent_back = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| {
         t["state"] == "rework"
     });
     assert_eq!(sent_back["state"], "rework", "{sent_back}\n{}", hub.log());
 
-    // The builder's next session runs on a VM of its own, with the finding in its prompt. It checks its lane out in
-    // its own workspace, writes the test and finishes: the change is sealed for a second review.
-    let b2 = next_session(&hub, &tid, "builder", &known);
-    let b2_cid = b2["cid"].as_u64().expect("its VM");
-    known.insert(b2_cid);
-    hello(&hub, b2_cid, "builder");
-    let w2 = first_work(&hub, &gateway, b2_cid);
-    let w2_id = w2["work"].as_u64().expect("the work item");
-    assert!(text(&w2["prompt"]).contains("next() has no test"), "{w2}");
+    // The builder's next session is sent the confirmed finding with its scenario and proof, and the dropped one with its
+    // reason. It fixes the queue, adds the test, and seals a second revision.
+    let (b2_cid, w2_id, _, w2) = seat_vm(&hub, &gateway, &tid, "builder", &mut known);
+    let prompt2 = text(&w2["prompt"]);
+    assert!(prompt2.contains("Scenario: push 1, then push 2"), "{w2}");
+    assert!(
+        prompt2.contains("not a defect: pop() on an empty Vec returns None"),
+        "{w2}"
+    );
     assert_eq!(w2["lane"]["change"], change.as_str(), "{w2}");
     let b2_vm = vm_of(&hub, b2_cid, &home, &token);
+    // The author contests the first finding in its rework session: the verifier looks again in the next round.
+    b2_vm.tool(
+        w2_id,
+        "finding_contest",
+        json!({ "finding": "f1", "reason": "the scenario does not hold for this queue" }),
+    );
     let ws2 = b2_vm.checkout(&change, &repo);
     b2_vm.write(&format!("{repo}/src/queue.rs"), &tested_queue());
+    b2_vm.write(
+        &format!("{repo}/README.md"),
+        "# Queues\n\nnext() takes the oldest item.\n",
+    );
     b2_vm.weft(
         &ws2,
         &[
             "snapshot",
             "--turn",
-            "3",
+            "2",
             "--tool-call",
             "toolu_c",
             "--model",
@@ -549,25 +619,59 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
         hub.log()
     );
 
-    // The second review passes it: the change joins its repo's landing queue and lands.
-    let r2 = next_session(&hub, &tid, "reviewer", &known);
-    let r2_cid = r2["cid"].as_u64().expect("its VM");
-    known.insert(r2_cid);
-    hello(&hub, r2_cid, "reviewer");
-    let rw2 = first_work(&hub, &gateway, r2_cid);
-    let rw2_id = rw2["work"].as_u64().expect("the work item");
+    // Round 2: the reviewers pass the fix. The verifier re-rules the contested finding: its proof holds, so the verifier
+    // holds the contest, and the walk waits for a ruling. No planner is free on another model, so the owner's card
+    // rules: the finding is accepted, the walk goes on, and the change passes the chain.
+    for _ in 0..2 {
+        let (cid, work, session, _) = seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
+        assert_ne!(session["model"], BUILDER_MODEL, "{session}");
+        let vm = vm_of(&hub, cid, &home, &token);
+        let reported = vm.tool(
+            work,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "fine" }),
+        );
+        assert!(text(&reported["output"]).contains("reported"), "{reported}");
+        hub.work_done(cid, work, "done", "passed");
+    }
+    let (v2_cid, v2_work, v2_session, v2) = seat_vm(&hub, &gateway, &tid, "verifier", &mut known);
+    assert_eq!(v2_session["model"], VERIFIER_MODEL, "{v2_session}");
     assert!(
-        text(&rw2["prompt"]).contains("The builder's handover:\ntested\n"),
-        "{rw2}"
+        text(&v2["prompt"]).contains("The author contests f1"),
+        "{v2}"
     );
-    let r2_vm = vm_of(&hub, r2_cid, &home, &token);
-    let verdict = r2_vm.tool(
-        rw2_id,
+    let v2_vm = vm_of(&hub, v2_cid, &home, &token);
+    v2_vm.tool(
+        v2_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "the same test: next() returns 2, so the oldest item is not first" }),
+    );
+    let held = v2_vm.tool(
+        v2_work,
         "plaza_verdict",
-        json!({ "task": tid, "pass": true, "notes": "fine" }),
+        json!({ "task": tid, "pass": true, "notes": "the contest does not hold" }),
     );
-    assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
-    hub.work_done(r2_cid, rw2_id, "done", "passed");
+    assert!(text(&held["output"]).contains("Held"), "{held}");
+    let card = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter()
+                .any(|x| x["detail"]["gate"] == "contest" && x["state"] == "pending")
+        })
+    });
+    let card = card
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["detail"]["gate"] == "contest").cloned())
+        .unwrap_or_else(|| panic!("a contest card: {card}\n{}", hub.log()));
+    let (status, decided) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&card["id"])),
+        Some(json!({ "approve": true, "action": "accept", "reason": "the scenario does not hold for this queue" })),
+    );
+    assert_eq!(status, 200, "{decided}\n{}", hub.log());
+    eventually(&hub, "the task's chat says the owner ruled", || {
+        chat_says(&hub, &format!("task-{tid}"), "the owner ruled accept on f1")
+    });
+    hub.work_done(v2_cid, v2_work, "done", "held, then ruled");
 
     // It lands: the change is on main, the task is done, its chats say so, and the change is exported to the remote.
     let landed = hub.wait_for(
@@ -718,7 +822,7 @@ fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_la
 }
 
 #[test]
-fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
+fn a_research_brief_is_sent_back_over_a_wrong_number_through_the_chain_and_lands() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
     let scratch = Scratch::new("weft-brief");
@@ -736,7 +840,7 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
     std::fs::write(&token, hub.token()).unwrap();
     let home = scratch.0.join("vms");
 
-    // A project without code, its builder and reviewer on two models, and the brief's task.
+    // A project without code, its builder, reviewers and verifier on models of their own, and the brief's task.
     let (status, project) = hub.call(
         "POST",
         "/v1/projects",
@@ -747,7 +851,7 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
     let (status, settings) = hub.call(
         "PATCH",
         &format!("/v1/projects/{pid}/settings"),
-        Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL } })),
+        Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL, "verifier": VERIFIER_MODEL } })),
     );
     assert_eq!(status, 200, "{settings}");
     let (status, task) = hub.call(
@@ -760,12 +864,7 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
 
     // The builder writes the brief and its data, and says what the brief measures.
     let mut known = HashSet::new();
-    let b1 = next_session(&hub, &tid, "builder", &known);
-    let b1_cid = b1["cid"].as_u64().expect("its VM");
-    known.insert(b1_cid);
-    hello(&hub, b1_cid, "builder");
-    let w1 = first_work(&hub, &gateway, b1_cid);
-    let w1_id = w1["work"].as_u64().expect("the work item");
+    let (b1_cid, w1_id, _, w1) = seat_vm(&hub, &gateway, &tid, "builder", &mut known);
     let change = text(&w1["lane"]["change"]);
     let repo = text(&w1["lane"]["repo"]);
     assert!(
@@ -798,42 +897,66 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
         hub.log()
     );
 
-    // The reviewer's first verdict: 166 of 200 reads repeat, which is 83%, not the brief's 93%.
-    let r1 = next_session(&hub, &tid, "reviewer", &known);
-    let r1_cid = r1["cid"].as_u64().expect("its VM");
-    known.insert(r1_cid);
-    assert_eq!(r1["model"], REVIEWER_MODEL, "{r1}");
-    hello(&hub, r1_cid, "reviewer");
-    let rw1 = first_work(&hub, &gateway, r1_cid);
-    let rw1_id = rw1["work"].as_u64().expect("the work item");
-    assert!(
-        text(&rw1["prompt"]).contains("The builder's handover:\nbrief written\n"),
-        "{rw1}"
+    // Round 1: a reviewer finds the wrong number (166 of 200 reads repeat, which is 83%, not the brief's 93%); the other
+    // passes the brief. The verifier confirms the finding from the data's own lines.
+    let (r1a_cid, r1a_work, r1a_session, r1a) =
+        seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
+    assert_eq!(r1a_session["model"], REVIEWER_MODEL, "{r1a_session}");
+    assert!(text(&r1a["prompt"]).contains("sceptic"), "{r1a}");
+    let r1a_vm = vm_of(&hub, r1a_cid, &home, &token);
+    r1a_vm.tool(
+        r1a_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "briefs/edge-caching.md::Findings",
+            "text": "93% of reads repeat, but the data says 83%",
+            "severity": "major",
+            "kind": "number",
+            "scenario": "the brief's 93% against data/reads.csv: 166 of 200 reads repeat, which is 83%"
+        }] }),
     );
-    let r1_vm = vm_of(&hub, r1_cid, &home, &token);
-    let verdict = r1_vm.tool(
-        rw1_id,
+    let reported = r1a_vm.tool(
+        r1a_work,
         "plaza_verdict",
-        json!({ "task": tid, "pass": false, "notes": "the data says 83%, not 93%: data/reads.csv has 166 of 200 reads repeating" }),
+        json!({ "task": tid, "pass": true, "notes": "one wrong number" }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    hub.work_done(r1a_cid, r1a_work, "done", "reviewed");
+    let (r1b_cid, r1b_work, _, _) = seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
+    let r1b_vm = vm_of(&hub, r1b_cid, &home, &token);
+    let reported = r1b_vm.tool(
+        r1b_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "the sources are fine" }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    hub.work_done(r1b_cid, r1b_work, "done", "reviewed");
+
+    let (v1_cid, v1_work, _, v1) = seat_vm(&hub, &gateway, &tid, "verifier", &mut known);
+    assert!(text(&v1["prompt"]).contains("f1"), "{v1}");
+    let v1_vm = vm_of(&hub, v1_cid, &home, &token);
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "data/reads.csv: 166 of 200 reads repeat, which is 83%; the brief says 93%" }),
+    );
+    let verdict = v1_vm.tool(
+        v1_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "the number is wrong" }),
     );
     assert!(
         text(&verdict["output"]).contains("goes back to its builder"),
         "{verdict}"
     );
-    hub.work_done(r1_cid, rw1_id, "done", "sent back: the number is wrong");
+    hub.work_done(v1_cid, v1_work, "done", "sent back: the number is wrong");
     let sent_back = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| {
         t["state"] == "rework"
     });
     assert_eq!(sent_back["state"], "rework", "{sent_back}\n{}", hub.log());
 
-    // The builder's next session, on a VM of its own, is sent the finding; it corrects the number in its own
-    // workspace, and the brief is sealed for a second review.
-    let b2 = next_session(&hub, &tid, "builder", &known);
-    let b2_cid = b2["cid"].as_u64().expect("its VM");
-    known.insert(b2_cid);
-    hello(&hub, b2_cid, "builder");
-    let w2 = first_work(&hub, &gateway, b2_cid);
-    let w2_id = w2["work"].as_u64().expect("the work item");
+    // The builder corrects the number and seals a second revision.
+    let (b2_cid, w2_id, _, w2) = seat_vm(&hub, &gateway, &tid, "builder", &mut known);
     assert!(text(&w2["prompt"]).contains("83%"), "{w2}");
     let b2_vm = vm_of(&hub, b2_cid, &home, &token);
     let ws2 = b2_vm.checkout(&change, &repo);
@@ -842,7 +965,12 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
         &ws2,
         &["snapshot", "--turn", "2", "--model", "claude-opus-5-5"],
     );
-    hub.work_done(b2_cid, w2_id, "done", "fixed the number");
+    b2_vm.tool(
+        w2_id,
+        "weft_describe",
+        json!({ "intents": [{ "title": "Measure how often reads repeat", "kind": "research", "covers": ["briefs/**", "data/**"] }] }),
+    );
+    hub.work_done(b2_cid, w2_id, "done", "corrected");
     let resealed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(20),
@@ -855,63 +983,36 @@ fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
         hub.log()
     );
 
-    // The second verdict passes it, and it lands.
-    let r2 = next_session(&hub, &tid, "reviewer", &known);
-    let r2_cid = r2["cid"].as_u64().expect("its VM");
-    known.insert(r2_cid);
-    hello(&hub, r2_cid, "reviewer");
-    let rw2 = first_work(&hub, &gateway, r2_cid);
-    let rw2_id = rw2["work"].as_u64().expect("the work item");
-    let r2_vm = vm_of(&hub, r2_cid, &home, &token);
-    let verdict = r2_vm.tool(
-        rw2_id,
+    // Round 2 passes it, and the brief lands.
+    for _ in 0..2 {
+        let (cid, work, _, _) = seat_vm(&hub, &gateway, &tid, "reviewer", &mut known);
+        let vm = vm_of(&hub, cid, &home, &token);
+        vm.tool(
+            work,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "the number is right" }),
+        );
+        hub.work_done(cid, work, "done", "passed");
+    }
+    let (v2_cid, v2_work, _, _) = seat_vm(&hub, &gateway, &tid, "verifier", &mut known);
+    let v2_vm = vm_of(&hub, v2_cid, &home, &token);
+    let verdict = v2_vm.tool(
+        v2_work,
         "plaza_verdict",
-        json!({ "task": tid, "pass": true, "notes": "the number matches data/reads.csv" }),
+        json!({ "task": tid, "pass": true, "notes": "nothing to prove" }),
     );
     assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
-    hub.work_done(r2_cid, rw2_id, "done", "passed");
+    hub.work_done(v2_cid, v2_work, "done", "passed");
     let landed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(30),
-        // The landing's own sign-off record follows the landing itself.
-        |c| c["state"] == "landed" && has_record(c, "landed"),
+        |c| c["state"] == "landed",
     );
     assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
-    assert!(
-        has_record(&landed, "written") && has_record(&landed, "landed"),
-        "{landed}"
-    );
     let done = hub.wait_for(&format!("/v1/tasks/{tid}"), Duration::from_secs(20), |t| {
         t["state"] == "done"
     });
     assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
-
-    // Who wrote the corrected line: the second builder session's VM.
-    let (_, blame) = hub.call(
-        "GET",
-        &format!("/v1/weft/repos/{repo}/blame?path=briefs/edge-caching.md"),
-        None,
-    );
-    let line = blame["lines"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|l| text(&l["text"]).contains("83%"))
-        .cloned()
-        .unwrap_or_else(|| panic!("no corrected line: {blame}"));
-    assert_eq!(line["by"]["by"]["cid"], b2_cid, "{line}");
-
-    let signers = verified_signers(&hub, &change);
-    for who in [
-        format!("agent:{b1_cid}"),
-        format!("agent:{b2_cid}"),
-        "hub".to_string(),
-    ] {
-        assert!(
-            signers.contains(&who),
-            "{who} signed something: {signers:?}"
-        );
-    }
 }
 
 fn sample(name: &str, v: &Value) {
@@ -923,4 +1024,457 @@ fn sample(name: &str, v: &Value) {
             serde_json::to_string_pretty(v).unwrap_or_default(),
         );
     }
+}
+
+/// The planner's model in the held-contest tests: a fourth model, which neither the author nor the verifier runs on.
+const PLANNER_MODEL: &str = "mock/fourth";
+
+/// The roles of the held-contest tests: the seats' and a project's planner.
+fn roles_with_planner() -> Value {
+    let mut roles = roles();
+    roles["roles"]["planner"] =
+        json!({ "role": "planner", "title": "Planner", "tools": ["run", "run_tests", "read"] });
+    roles
+}
+
+/// A code task held at the verifier's contest of f1: the author contested it in its rework, and the verifier held it.
+struct Held {
+    pid: String,
+    tid: String,
+    change: String,
+    repo: String,
+    verifier: (u64, u64),
+    known: HashSet<u64>,
+}
+
+/// Plays a code task through the chain to the verifier's held verdict on f1: the seeded bug is found and confirmed, the
+/// false alarm is dropped, the builder fixes the queue and contests f1 in its rework, and the second round's verifier
+/// holds the contest. With `planner`, the project's planner runs on [`PLANNER_MODEL`].
+fn held_contest(hub: &Hub, gateway: &FakeDaemon, home: &Path, token: &Path, planner: bool) -> Held {
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Queues", "goal": "A work queue", "kind": "code" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let mut models =
+        json!({ "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL, "verifier": VERIFIER_MODEL });
+    if planner {
+        models["planner"] = json!(PLANNER_MODEL);
+    }
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": models })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Give the queue a fair next()", "acceptance": "next() takes the oldest item; tested", "project": pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let tid = text(&task["id"]);
+
+    // Round 0: the builder writes the queue with the seeded bug, and seals it.
+    let mut known = HashSet::new();
+    let (b1_cid, w1_id, _, w1) = seat_vm(hub, gateway, &tid, "builder", &mut known);
+    let change = text(&w1["lane"]["change"]);
+    let repo = text(&w1["lane"]["repo"]);
+    let b1_vm = vm_of(hub, b1_cid, home, token);
+    let ws1 = b1_vm.checkout(&change, &repo);
+    b1_vm.write(&format!("{repo}/src/queue.rs"), QUEUE);
+    b1_vm.weft(
+        &ws1,
+        &[
+            "snapshot",
+            "--turn",
+            "1",
+            "--tool-call",
+            "toolu_a",
+            "--model",
+            "claude-opus-5-5",
+        ],
+    );
+    b1_vm.tool(
+        w1_id,
+        "weft_describe",
+        code_intents("next() takes from the front."),
+    );
+    hub.work_done(b1_cid, w1_id, "done", "next() takes the oldest item");
+    hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 1) && has_record(c, "written"),
+    );
+
+    // Round 1: two sceptic reviewers. One finds the seeded bug, the other a false alarm; the verifier confirms the first
+    // with a proof and drops the second with its reason, and the builder goes back.
+    let (r1a_cid, r1a_work, _, _) = seat_vm(hub, gateway, &tid, "reviewer", &mut known);
+    let r1a_vm = vm_of(hub, r1a_cid, home, token);
+    r1a_vm.tool(
+        r1a_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "src/queue.rs::Queue::next",
+            "text": "next() takes the newest item, not the oldest",
+            "severity": "major",
+            "kind": "order",
+            "scenario": "push 1, then push 2: next() returns 2, and the oldest item, 1, waits behind it"
+        }] }),
+    );
+    r1a_vm.tool(
+        r1a_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "one defect: the order" }),
+    );
+    hub.work_done(r1a_cid, r1a_work, "done", "reviewed");
+    let (r1b_cid, r1b_work, _, _) = seat_vm(hub, gateway, &tid, "reviewer", &mut known);
+    let r1b_vm = vm_of(hub, r1b_cid, home, token);
+    r1b_vm.tool(
+        r1b_work,
+        "review_score",
+        json!({ "scores": [], "findings": [{
+            "symbol": "src/queue.rs::Queue::next",
+            "text": "next() panics on an empty queue",
+            "severity": "minor",
+            "kind": "panic",
+            "scenario": "next() on an empty queue calls unwrap() on None and panics"
+        }] }),
+    );
+    r1b_vm.tool(
+        r1b_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "one finding" }),
+    );
+    hub.work_done(r1b_cid, r1b_work, "done", "reviewed");
+    let (v1_cid, v1_work, _, _) = seat_vm(hub, gateway, &tid, "verifier", &mut known);
+    let v1_vm = vm_of(hub, v1_cid, home, token);
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "a test: push 1, push 2, next() returns 2, so the oldest item does not come out first" }),
+    );
+    v1_vm.tool(
+        v1_work,
+        "finding_verify",
+        json!({ "finding": "f2", "verdict": "dropped", "reason": "pop() on an empty Vec returns None: next() does not panic on an empty queue" }),
+    );
+    v1_vm.tool(
+        v1_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "f1 is real, f2 is not" }),
+    );
+    hub.work_done(v1_cid, v1_work, "done", "f1 confirmed, f2 dropped");
+
+    // Round 2: the builder contests f1 in its rework and fixes the queue; the reviewers pass it, and the verifier holds
+    // its contest of f1.
+    let (b2_cid, w2_id, _, _) = seat_vm(hub, gateway, &tid, "builder", &mut known);
+    let b2_vm = vm_of(hub, b2_cid, home, token);
+    b2_vm.tool(
+        w2_id,
+        "finding_contest",
+        json!({ "finding": "f1", "reason": "the scenario does not hold for this queue" }),
+    );
+    let ws2 = b2_vm.checkout(&change, &repo);
+    b2_vm.write(&format!("{repo}/src/queue.rs"), &tested_queue());
+    b2_vm.write(
+        &format!("{repo}/README.md"),
+        "# Queues\n\nnext() takes the oldest item.\n",
+    );
+    b2_vm.weft(
+        &ws2,
+        &[
+            "snapshot",
+            "--turn",
+            "2",
+            "--tool-call",
+            "toolu_c",
+            "--model",
+            "claude-opus-5-5",
+        ],
+    );
+    b2_vm.tool(
+        w2_id,
+        "weft_describe",
+        code_intents("next() takes from the front, with a test."),
+    );
+    hub.work_done(b2_cid, w2_id, "done", "tested");
+    hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 2),
+    );
+    for _ in 0..2 {
+        let (cid, work, _, _) = seat_vm(hub, gateway, &tid, "reviewer", &mut known);
+        let vm = vm_of(hub, cid, home, token);
+        vm.tool(
+            work,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "fine" }),
+        );
+        hub.work_done(cid, work, "done", "passed");
+    }
+    let (v2_cid, v2_work, _, v2) = seat_vm(hub, gateway, &tid, "verifier", &mut known);
+    assert!(
+        text(&v2["prompt"]).contains("The author contests f1"),
+        "{v2}"
+    );
+    let v2_vm = vm_of(hub, v2_cid, home, token);
+    v2_vm.tool(
+        v2_work,
+        "finding_verify",
+        json!({ "finding": "f1", "verdict": "confirmed", "proof": "the same test: next() returns 2, so the oldest item is not first" }),
+    );
+    let held = v2_vm.tool(
+        v2_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "the contest does not hold" }),
+    );
+    assert!(text(&held["output"]).contains("Held"), "{held}");
+    Held {
+        pid,
+        tid,
+        change,
+        repo,
+        verifier: (v2_cid, v2_work),
+        known,
+    }
+}
+
+/// The planner rules `fix` on the held contest: the walk holds for it, the ruling is told to the task's chat, and the
+/// builder goes back to fix the finding it was told of, not the walk on.
+#[test]
+fn a_planner_ruling_fix_on_a_held_contest_rewinds_the_builder() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-review-planner");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles_with_planner()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    add_packs(&hub);
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+    let mut held = held_contest(&hub, &gateway, &home, &token, true);
+
+    // No seat rules on the contest: the project's planner, on a fourth model, does.
+    let planners = hub.wait_for(&format!("/v1/sessions?project={}", held.pid), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["role"] == "planner" && s["cid"].is_u64())
+        })
+    });
+    let planner_cid = planners
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["role"] == "planner"))
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a planner session: {planners}\n{}", hub.log()));
+    hello(&hub, planner_cid, "planner");
+    let ask = first_work(&hub, &gateway, planner_cid);
+    let prompt = text(&ask["prompt"]);
+    assert!(
+        prompt.contains("is contested") && prompt.contains("finding_arbitrate"),
+        "{ask}"
+    );
+    let run = prompt
+        .split("(run ")
+        .nth(1)
+        .and_then(|r| r.split(',').next())
+        .expect("the review's run in the ruling request");
+    let planner_vm = vm_of(&hub, planner_cid, &home, &token);
+    let ruled = planner_vm.tool(
+        ask["work"].as_u64().expect("the work item"),
+        "finding_arbitrate",
+        json!({ "run": run, "finding": "f1", "ruling": "fix", "reason": "the scenario holds: the builder fixes the order" }),
+    );
+    assert!(text(&ruled["output"]).contains("f1"), "{ruled}");
+    eventually(&hub, "the task's chat says the planner ruled", || {
+        chat_says(
+            &hub,
+            &format!("task-{}", held.tid),
+            &format!("the planner ruled fix on f1 of task {}", held.tid),
+        )
+    });
+
+    // The walk resumed on the fix: the task is back with its builder, which is told of f1 with its scenario.
+    let rework = hub.wait_for(&format!("/v1/tasks/{}", held.tid), WAIT, |t| {
+        t["state"] == "rework"
+    });
+    assert_eq!(rework["state"], "rework", "{rework}\n{}", hub.log());
+    let (_, _, _, builder) = seat_vm(&hub, &gateway, &held.tid, "builder", &mut held.known);
+    assert!(
+        text(&builder["prompt"]).contains("Scenario: push 1, then push 2"),
+        "{builder}"
+    );
+}
+
+/// The owner drops the contested finding on the card: the walk goes on, the verifier's held verdict settles as a pass,
+/// and the change lands.
+#[test]
+fn a_drop_ruling_on_a_held_contest_lets_the_walk_go_on_to_the_landing() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-review-drop");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    add_packs(&hub);
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+    let held = held_contest(&hub, &gateway, &home, &token, false);
+
+    // No planner on another model: the owner's card rules on the contest.
+    let card = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter()
+                .any(|x| x["detail"]["gate"] == "contest" && x["state"] == "pending")
+        })
+    });
+    let card = card
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["detail"]["gate"] == "contest").cloned())
+        .unwrap_or_else(|| panic!("a contest card: {card}\n{}", hub.log()));
+    let (status, decided) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&card["id"])),
+        Some(json!({ "approve": true, "action": "drop", "reason": "the scenario does not hold for this queue" })),
+    );
+    assert_eq!(status, 200, "{decided}\n{}", hub.log());
+    eventually(&hub, "the task's chat says the owner dropped f1", || {
+        chat_says(
+            &hub,
+            &format!("task-{}", held.tid),
+            "the owner ruled drop on f1",
+        )
+    });
+    hub.work_done(
+        held.verifier.0,
+        held.verifier.1,
+        "done",
+        "held, then dropped",
+    );
+
+    // The walk goes on past the held verdict: the change passes the chain and lands, and the task is done.
+    let landed = hub.wait_for(
+        &format!("/v1/weft/changes/{}", held.change),
+        Duration::from_secs(30),
+        |c| c["state"] == "landed" && has_record(c, "landed"),
+    );
+    assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
+    let done = hub.wait_for(
+        &format!("/v1/tasks/{}", held.tid),
+        Duration::from_secs(20),
+        |t| t["state"] == "done",
+    );
+    assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
+    let _ = (&held.pid, &held.repo);
+}
+
+/// A project whose owner approves each landing: the change passes the chain (the owner drops the contested finding), and
+/// it waits in the queue for a `land` approval until the owner answers it; the approval lands it.
+#[test]
+fn a_landing_the_owner_must_approve_waits_for_the_approval_then_lands() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-review-land");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    add_packs(&hub);
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+    let held = held_contest(&hub, &gateway, &home, &token, false);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{}/settings", held.pid),
+        Some(json!({ "land_approval": true })),
+    );
+    assert_eq!(status, 200, "{settings}");
+
+    // The owner drops the contested finding: the walk goes on, and the change is held for its landing approval.
+    let card = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter()
+                .any(|x| x["detail"]["gate"] == "contest" && x["state"] == "pending")
+        })
+    });
+    let card = card
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["detail"]["gate"] == "contest").cloned())
+        .unwrap_or_else(|| panic!("a contest card: {card}\n{}", hub.log()));
+    let (status, decided) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&card["id"])),
+        Some(json!({ "approve": true, "action": "drop", "reason": "the scenario does not hold for this queue" })),
+    );
+    assert_eq!(status, 200, "{decided}\n{}", hub.log());
+    hub.work_done(
+        held.verifier.0,
+        held.verifier.1,
+        "done",
+        "held, then dropped",
+    );
+    let landing = hub.wait_for("/v1/approvals", WAIT, |a| {
+        a.as_array().is_some_and(|a| {
+            a.iter().any(|x| {
+                x["kind"] == "land"
+                    && x["detail"]["change"] == held.change.as_str()
+                    && x["state"] == "pending"
+            })
+        })
+    });
+    let landing = landing
+        .as_array()
+        .and_then(|a| a.iter().find(|x| x["kind"] == "land").cloned())
+        .unwrap_or_else(|| panic!("a landing approval: {landing}\n{}", hub.log()));
+    // Held: the change stays in the queue, unlanded, while the approval is pending.
+    std::thread::sleep(Duration::from_secs(3));
+    let waiting = hub
+        .call("GET", &format!("/v1/weft/changes/{}", held.change), None)
+        .1;
+    assert_ne!(waiting["state"], "landed", "{waiting}");
+
+    let (status, approved) = hub.call(
+        "POST",
+        &format!("/v1/approvals/{}", text(&landing["id"])),
+        Some(json!({ "approve": true })),
+    );
+    assert_eq!(status, 200, "{approved}\n{}", hub.log());
+    let landed = hub.wait_for(
+        &format!("/v1/weft/changes/{}", held.change),
+        Duration::from_secs(30),
+        |c| c["state"] == "landed",
+    );
+    assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
+    let done = hub.wait_for(
+        &format!("/v1/tasks/{}", held.tid),
+        Duration::from_secs(20),
+        |t| t["state"] == "done",
+    );
+    assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
 }
