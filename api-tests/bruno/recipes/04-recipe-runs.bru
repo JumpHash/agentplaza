@@ -1,0 +1,22 @@
+meta {
+  name: List recipe runs
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/recipe-runs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the runs answer as a list", function () {
+    expect(res.getBody().runs).to.be.an("array");
+  });
+}

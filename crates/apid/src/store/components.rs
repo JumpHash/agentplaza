@@ -232,6 +232,18 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.seats.load(conn),
         },
         Component {
+            name: "recipe_runs",
+            def: crate::recipes::runs::def,
+            rows: |app| app.recipe_runs.rows(),
+            load: |app, conn| app.recipe_runs.load(conn),
+        },
+        Component {
+            name: "recipe_versions",
+            def: crate::recipes::runs::versions_def,
+            rows: |app| app.recipe_runs.version_rows(),
+            load: |app, conn| app.recipe_runs.load_versions(conn),
+        },
+        Component {
             name: "budgets",
             def: crate::budgets::def,
             rows: |app| app.budgets.rows(),

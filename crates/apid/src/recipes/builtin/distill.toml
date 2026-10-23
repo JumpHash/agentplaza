@@ -1,0 +1,14 @@
+# The distill recipe (PLAN 9.4, 21.1): the curator turns a project's finished journals and memory proposals into the
+# entries the project keeps. One curator session answers once (memory_land).
+id = "distill"
+name = "Distill"
+version = 1
+inputs = ["journals", "proposals"]
+outputs = ["memory"]
+triggers = ["schedule", "task.ended"]
+
+[[steps]]
+id = "curate"
+engine = "curator"
+gate = ["passed"]
+output = "memory"

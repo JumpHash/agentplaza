@@ -154,6 +154,8 @@ pub struct App {
     /// waiting for the owner (cards.rs), the chats (chats.rs) and the seats' threads (threads.rs).
     pub sessions: crate::sessions::Sessions,
     pub seats: crate::seats::Seats,
+    /// The recipe engine's runs and the owner's recipe versions (recipes/runs.rs).
+    pub recipe_runs: crate::recipes::runs::Runs,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
     /// The VMs' workspace reports and the disk quotas' check (disk.rs).
@@ -303,6 +305,7 @@ impl App {
             saved: crate::store::saver::Ledger::default(),
             sessions: Default::default(),
             seats: Default::default(),
+            recipe_runs: Default::default(),
             budgets: Default::default(),
             cards: Default::default(),
             disk: Default::default(),

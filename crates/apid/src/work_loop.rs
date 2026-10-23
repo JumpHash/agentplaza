@@ -26,6 +26,7 @@ use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
 use crate::journal;
+use crate::recipes::{self, Report};
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
 use crate::sessions::{Kind, NewSession, PausedBy, Session, State};
@@ -98,6 +99,28 @@ fn reserve_for(app: &App, task: &str, project: &str) -> u64 {
     }
 }
 
+/// A seat's step ended. A crashed session is the seat's own business; otherwise the task's recipe run settles the step
+/// and its moves (what starts, what rewinds, what ends) are the seats' next.
+fn step_ended(
+    app: &App,
+    task: &str,
+    seat: &str,
+    passed: bool,
+    crashed: bool,
+    said: &str,
+    now: u64,
+) -> Option<Next> {
+    let moves = if crashed {
+        Vec::new()
+    } else {
+        let step = app.seats.get(task, seat)?.step;
+        app.recipe_runs
+            .settle_task(task, &step, &Report::verdict(passed), now)
+    };
+    app.seats
+        .ended(task, seat, passed, crashed, said, now, &moves)
+}
+
 /// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats): a task that is ready to run gets its
 /// recipe's seats and reserves its budget; its seats get sessions on the loop's next steps.
 fn assign_tasks(app: &App, now: u64) {
@@ -116,7 +139,26 @@ fn assign_tasks(app: &App, now: u64) {
             ask_budget(app, &short, Some(task.id()), &project, now);
             continue;
         }
-        app.seats.open(task.id(), &seats::CHANGE, now);
+        let (recipe, source) = task_recipe(app, &project, "change");
+        if let Err(why) = app.seats.open(task.id(), &recipe, now) {
+            app.budgets.end_task(task.id(), now);
+            notice(
+                app,
+                &task_chat(app, task.id(), &project, now),
+                &format!("Task {} cannot start: {why}.", task.id()),
+                now,
+            );
+            continue;
+        }
+        app.recipe_runs.start(
+            &recipe,
+            source,
+            "task",
+            Some(task.id()),
+            Some(&project),
+            None,
+            now,
+        );
         notice(
             app,
             &task_chat(app, task.id(), &project, now),
@@ -127,6 +169,43 @@ fn assign_tasks(app: &App, now: u64) {
             now,
         );
     }
+}
+
+/// The recipe a task of `project` runs (`id`): the project's own copy at main (`.plaza/recipes/`), else the newest
+/// version the owner saved, else the built-in. A copy that cannot be read or checked is named in the log, and the next
+/// one runs. Returns the recipe and where it came from.
+fn task_recipe(app: &App, project: &str, id: &str) -> (recipes::Recipe, &'static str) {
+    match project_copy(app, project, id) {
+        Ok(Some(recipe)) => return (recipe, "project"),
+        Ok(None) => {}
+        Err(why) => eprintln!("apid: recipe {id} of {project}: {why}"),
+    }
+    let recipe = app
+        .recipe_runs
+        .recipe(id, None)
+        .expect("a built-in recipe is always there");
+    let source = if recipes::model::builtin_named(id).as_ref() == Some(&recipe) {
+        "built_in"
+    } else {
+        "owner"
+    };
+    (recipe, source)
+}
+
+/// The project's copy of recipe `id` in its repo at main, when it keeps one.
+fn project_copy(app: &App, project: &str, id: &str) -> Result<Option<recipes::Recipe>, String> {
+    let Some(repo) = app.projects.get(project).and_then(|p| p.repo) else {
+        return Ok(None);
+    };
+    let detail = app.weft.get(&format!("/repos/{repo}"))?;
+    let rev = detail["refs"]["main"]
+        .as_str()
+        .ok_or_else(|| format!("{repo} has no main"))?;
+    let listing = app.weft.get(&format!("/revisions/{rev}/files"))?;
+    let client = app.weft.client("hub")?;
+    recipes::model::in_listing(id, &listing, |path| {
+        client.get_bytes(&format!("/revisions/{rev}/file?path={path}"))
+    })
 }
 
 /// The models a seat may use, best first: the project's model for the role, the project's default, the plaza's model for
@@ -223,6 +302,8 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     );
     app.seats
         .fill(&seat.task, &seat.name, &session.id, Some(&model), now);
+    app.recipe_runs
+        .task_step_started(&seat.task, &seat.step, now);
     app.evals
         .begin(&session.id, &seat.recipe, &seat.step, seat.round);
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
@@ -252,7 +333,7 @@ pub fn fail_session(app: &App, session: &Session, why: &str, now: u64) {
         retire(app, cid);
     }
     if let (Some(task), Some(seat)) = (&session.task, &session.seat)
-        && let Some(next) = app.seats.ended(task, seat, false, true, why, now)
+        && let Some(next) = step_ended(app, task, seat, false, true, why, now)
     {
         apply(app, task, next, now);
     }
@@ -446,7 +527,8 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
         if session.verdict.is_some() {
             None
         } else {
-            app.seats.ended(
+            step_ended(
+                app,
                 &task,
                 &seat,
                 false,
@@ -463,7 +545,7 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
             crate::weft_hub::seal(app, &task, cid, summary);
             let _ = t.await_review(Some(summary.to_string()));
         }
-        app.seats.ended(&task, &seat, passed, crashed, summary, now)
+        step_ended(app, &task, &seat, passed, crashed, summary, now)
     };
     end_session(app, &session, summary, status == WorkStatus::Failed, now);
     app.threads.output(&task);
@@ -482,7 +564,7 @@ pub fn on_verdict(app: &App, cid: u64, task: &str, pass: bool, notes: &str) -> O
     }
     let now = now();
     let _ = app.sessions.update(&session.id, |s| s.verdict = Some(pass));
-    let next = app.seats.ended(task, "reviewer", pass, false, notes, now)?;
+    let next = step_ended(app, task, "reviewer", pass, false, notes, now)?;
     apply(app, task, next, now);
     Some(if pass {
         format!("Recorded: task {task} passes. End your turn now.")
@@ -644,7 +726,7 @@ pub fn project_chat(app: &App, project: &str, now: u64) -> String {
 /// sent it back would.
 pub fn clashed(app: &App, task: &str, prompt: &str) {
     let now = now();
-    if let Some(next) = app.seats.ended(task, "reviewer", false, false, prompt, now) {
+    if let Some(next) = step_ended(app, task, "reviewer", false, false, prompt, now) {
         apply(app, task, next, now);
     }
 }
@@ -666,6 +748,7 @@ fn close_task(app: &App, task: &str, now: u64) {
     }) {
         end_session(app, &s, "the task ended", false, now);
     }
+    app.recipe_runs.cancel_task(task, now);
     app.seats.close(task);
     app.budgets.end_task(task, now);
     for thread in app.threads.of_task(task) {
@@ -701,6 +784,17 @@ fn finish_session(app: &App, id: &str, outcome: &str, failed: bool, now: u64) {
         && !was_final
     {
         crate::evals::ended(app, &ended);
+        // A project's curator session is the run of its `distill` recipe: the session's end settles it.
+        if ended.seat.as_deref() == Some(crate::curator::SEAT) && ended.task.is_none() {
+            app.recipe_runs.finish_subject(
+                "curator",
+                &ended.project,
+                &Report::verdict(!failed),
+                outcome,
+                false,
+                now,
+            );
+        }
     }
 }
 
@@ -719,9 +813,7 @@ pub fn stop(app: &App, id: &str) -> Result<Session, String> {
     }
     end_session(app, &session, "", false, now);
     if let (Some(task), Some(seat)) = (&session.task, &session.seat)
-        && let Some(next) = app
-            .seats
-            .ended(task, seat, false, true, "stopped by the owner", now)
+        && let Some(next) = step_ended(app, task, seat, false, true, "stopped by the owner", now)
     {
         apply(app, task, next, now);
     }
@@ -770,7 +862,7 @@ pub fn hand_over_for_pool(app: &App, cid: u64) -> bool {
     let now = now();
     let why = "its machine is stopping and no other machine in its pool has room; the step starts again in a new session";
     end_session(app, &session, why, false, now);
-    if let Some(next) = app.seats.ended(&task, &seat, false, true, why, now) {
+    if let Some(next) = step_ended(app, &task, &seat, false, true, why, now) {
         apply(app, &task, next, now);
     }
     true
