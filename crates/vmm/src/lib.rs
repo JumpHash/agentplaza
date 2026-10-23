@@ -124,7 +124,7 @@ pub mod acpi;
 #[cfg(any(
     target_os = "linux",
     target_os = "macos",
-    all(windows, target_arch = "x86_64")
+    all(windows, any(target_arch = "x86_64", target_arch = "aarch64"))
 ))]
 pub mod arch;
 

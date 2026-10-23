@@ -697,7 +697,7 @@ pub(crate) mod tests {
     // Only where a backend lays out memory for the host architecture (not Intel macOS).
     #[cfg(any(
         all(any(target_os = "linux", windows), target_arch = "x86_64"),
-        all(not(windows), target_arch = "aarch64")
+        target_arch = "aarch64"
     ))]
     pub(crate) fn arch_mem(mem_size_bytes: usize) -> GuestMemoryMmap {
         // Upstream resolves this through `crate::arch::arch_memory_regions`; the

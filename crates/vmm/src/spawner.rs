@@ -1686,10 +1686,16 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
         crate::whp::boot(spec, runtime)
     }
 
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    {
+        crate::whp::arm64::boot(spec, runtime)
+    }
+
     #[cfg(not(any(
         target_os = "linux",
         all(target_os = "macos", target_arch = "aarch64"),
-        all(windows, target_arch = "x86_64")
+        all(windows, target_arch = "x86_64"),
+        all(windows, target_arch = "aarch64")
     )))]
     {
         let _ = (spec, runtime);
