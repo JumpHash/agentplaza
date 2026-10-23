@@ -55,6 +55,9 @@ pub struct Topology {
     pub observe: Observe,
     #[serde(default)]
     pub traffic: Option<Traffic>,
+    /// The test steps the run's observations must pass (PLAN 22.7), each over its logs, traces and series.
+    #[serde(rename = "assert", default)]
+    pub assertions: Vec<Assertion>,
     #[serde(default)]
     pub egress: Egress,
 }
@@ -244,6 +247,187 @@ pub struct Traffic {
     pub profile: String,
 }
 
+/// A test step over what a run observed (PLAN 22.7). Each names its `kind`; `id` names it in findings (default: the kind).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Assertion {
+    /// No ERROR line outside the allowlist (each entry a substring of the line).
+    NoErrors {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default)]
+        allow: Vec<String>,
+    },
+    /// Every request is traced: the requests counted by `http.server.requests` are at most the server spans, and every
+    /// span has a trace id.
+    EveryRequestTraced {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// The 95th percentile of a route's server spans, in milliseconds, is under `ms` (`*` is every route).
+    P95Under {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default = "every_route")]
+        route: String,
+        ms: u64,
+    },
+    /// The hit rate of `hits` over `hits` plus `misses` is above `floor_percent`, counting from `after_secs` into the run
+    /// (the warm-up).
+    HitRateAbove {
+        #[serde(default)]
+        id: Option<String>,
+        #[serde(default = "cache_hits")]
+        hits: String,
+        #[serde(default = "cache_misses")]
+        misses: String,
+        floor_percent: u32,
+        #[serde(default)]
+        after_secs: u64,
+    },
+    /// No personal data pattern (an email, a phone number, a card number that passes Luhn, a national id) in any log.
+    NoPersonalData {
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// The log lines per request are at most `max_lines_per_request`.
+    LogVolumePerRequest {
+        #[serde(default)]
+        id: Option<String>,
+        max_lines_per_request: u64,
+    },
+    /// Each expected audit event (a log line whose `event.name` attribute is it) is present.
+    AuditEvents {
+        #[serde(default)]
+        id: Option<String>,
+        expected: Vec<String>,
+    },
+}
+
+fn every_route() -> String {
+    "*".into()
+}
+
+fn cache_hits() -> String {
+    "cache.hits".into()
+}
+
+fn cache_misses() -> String {
+    "cache.misses".into()
+}
+
+impl Assertion {
+    /// The name the assertion's findings carry: its `id`, or its kind.
+    pub fn id(&self) -> String {
+        match self {
+            Assertion::NoErrors { id, .. }
+            | Assertion::EveryRequestTraced { id }
+            | Assertion::P95Under { id, .. }
+            | Assertion::HitRateAbove { id, .. }
+            | Assertion::NoPersonalData { id }
+            | Assertion::LogVolumePerRequest { id, .. }
+            | Assertion::AuditEvents { id, .. } => id.clone().unwrap_or_else(|| self.kind().into()),
+        }
+    }
+
+    /// The kind's name as the file writes it.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Assertion::NoErrors { .. } => "no_errors",
+            Assertion::EveryRequestTraced { .. } => "every_request_traced",
+            Assertion::P95Under { .. } => "p95_under",
+            Assertion::HitRateAbove { .. } => "hit_rate_above",
+            Assertion::NoPersonalData { .. } => "no_personal_data",
+            Assertion::LogVolumePerRequest { .. } => "log_volume_per_request",
+            Assertion::AuditEvents { .. } => "audit_events",
+        }
+    }
+
+    /// What the step asserts, in a sentence (the finding's scenario says it).
+    pub fn describe(&self) -> String {
+        match self {
+            Assertion::NoErrors { allow, .. } => format!(
+                "no ERROR line outside the allowlist ({} entries)",
+                allow.len()
+            ),
+            Assertion::EveryRequestTraced { .. } => {
+                "every request is traced, and every span has a trace id".into()
+            }
+            Assertion::P95Under { route, ms, .. } => {
+                format!("the p95 latency of {route} is under {ms} ms")
+            }
+            Assertion::HitRateAbove {
+                floor_percent,
+                after_secs,
+                ..
+            } => format!(
+                "the cache hit rate is above {floor_percent} % after {after_secs} s of warm-up"
+            ),
+            Assertion::NoPersonalData { .. } => {
+                "no personal data pattern appears in any log".into()
+            }
+            Assertion::LogVolumePerRequest {
+                max_lines_per_request,
+                ..
+            } => format!("at most {max_lines_per_request} log lines per request"),
+            Assertion::AuditEvents { expected, .. } => {
+                format!("the audit events {} are present", expected.join(", "))
+            }
+        }
+    }
+
+    /// What the assertion itself must make sense of (the topology's check refuses the rest).
+    fn check(&self) -> Result<(), String> {
+        match self {
+            Assertion::NoErrors { allow, .. } => {
+                if allow.iter().any(String::is_empty) {
+                    return Err(
+                        "no_errors allows an empty substring, which allows every line".into(),
+                    );
+                }
+            }
+            Assertion::EveryRequestTraced { .. } | Assertion::NoPersonalData { .. } => {}
+            Assertion::P95Under { route, ms, .. } => {
+                if route.trim().is_empty() {
+                    return Err("p95_under names no route (\"*\" is every route)".into());
+                }
+                if *ms == 0 {
+                    return Err(format!("p95_under for {route} has a threshold of 0 ms"));
+                }
+            }
+            Assertion::HitRateAbove {
+                hits,
+                misses,
+                floor_percent,
+                ..
+            } => {
+                if hits.is_empty() || misses.is_empty() || hits == misses {
+                    return Err("hit_rate_above names two different series, hits and misses".into());
+                }
+                if *floor_percent > 100 {
+                    return Err(format!(
+                        "hit_rate_above floor {floor_percent} is over 100 %"
+                    ));
+                }
+            }
+            Assertion::LogVolumePerRequest {
+                max_lines_per_request,
+                ..
+            } => {
+                if *max_lines_per_request == 0 {
+                    return Err("log_volume_per_request allows 0 lines per request".into());
+                }
+            }
+            Assertion::AuditEvents { expected, .. } => {
+                if expected.is_empty() || expected.iter().any(String::is_empty) {
+                    return Err("audit_events names no event (or an empty one)".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The hosts the topology may reach through the egress proxy, beyond the images and the artifacts it already holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -342,6 +526,17 @@ impl Topology {
         for host in &self.egress.allow {
             if !is_host(host) {
                 return Err(format!("egress allow entry {host:?} is not a host name"));
+            }
+        }
+        let mut ids: BTreeSet<String> = BTreeSet::new();
+        for assertion in &self.assertions {
+            assertion.check()?;
+            if !ids.insert(assertion.id()) {
+                return Err(format!(
+                    "topology {} has two assertions named {}",
+                    self.name,
+                    assertion.id()
+                ));
             }
         }
         Ok(())

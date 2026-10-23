@@ -71,6 +71,8 @@ pub enum Group {
     Code,
     /// Tests: `run_tests`, run in the VM.
     Tests,
+    /// Observations: the logs, metric series and traces of the project's lab runs.
+    Observe,
     /// The library: the approved `x_` tools, through `tool_search`.
     Library,
     /// Skills: the skills the seat may use, listed and read.
@@ -96,6 +98,7 @@ pub fn group_of(name: &str) -> Option<Group> {
         | "finding_contest" | "finding_arbitrate" => Group::Review,
         "symbols" | "definition" | "references" | "diagnostics" | "outline" => Group::Code,
         "run_tests" | "tests_select" => Group::Tests,
+        "logs_query" | "metrics_query" | "traces_query" => Group::Observe,
         "plaza_skills" | "plaza_skill_read" => Group::Skills,
         "spawn_helper" | "await_helper" => Group::Helpers,
         "plaza_message_seat" | "thread_read" | "thread_answer" => Group::Talk,
@@ -600,6 +603,7 @@ mod tests {
         assert_eq!(group_of("diagnostics"), Some(Group::Code));
         assert_eq!(group_of("run_tests"), Some(Group::Tests));
         assert_eq!(group_of("tests_select"), Some(Group::Tests));
+        assert_eq!(group_of("traces_query"), Some(Group::Observe));
         assert_eq!(group_of("x_lint"), Some(Group::Library));
         assert_eq!(group_of("plaza_skill_read"), Some(Group::Skills));
         assert_eq!(group_of("await_helper"), Some(Group::Helpers));

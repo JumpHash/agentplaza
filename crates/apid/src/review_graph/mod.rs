@@ -34,7 +34,9 @@ use serde_json::{Value, json};
 use crate::scheduler::Origin;
 use crate::state::App;
 use apz_proto::wire::WorkKind;
-use recipe::{Condition, NodeDef, Recipe};
+/// A node's definition (its id, kind and role), as a recipe and a run keep it.
+pub use recipe::NodeDef;
+use recipe::{Condition, Recipe};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
@@ -670,6 +672,31 @@ impl Reviews {
             .collect();
         v.sort_by_key(|r| r.round);
         v
+    }
+
+    /// Attaches a finding to a change's latest review run, on its first agent node: a failing step of a lab run (PLAN
+    /// 22.7) is a confirmed finding with its evidence as the proof. Returns the run's id and the finding's `f<n>` id;
+    /// None when the change has no review run yet, so nothing says where the finding goes.
+    pub fn attach_finding(&self, change: &str, mut finding: Finding) -> Option<(String, String)> {
+        self.with(|book| {
+            let run = book
+                .runs
+                .values_mut()
+                .filter(|r| r.change == change)
+                .max_by_key(|r| (r.round, r.created_ms))?;
+            let at = run
+                .nodes
+                .iter()
+                .position(|n| n.def.kind == "agent")
+                .or((!run.nodes.is_empty()).then_some(0))?;
+            let id = format!("f{}", run.findings().count() + 1);
+            finding.id = id.clone();
+            finding.round = run.round;
+            finding.node = run.nodes[at].def.id.clone();
+            let node = &mut run.nodes[at];
+            node.findings.push(finding);
+            Some((run.id.clone(), id))
+        })
     }
 
     /// Stores a run as the review chain stores one (the flows that wait for a review are tested with a run of theirs).

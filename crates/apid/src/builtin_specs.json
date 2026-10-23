@@ -1688,5 +1688,118 @@
         "id"
       ]
     }
+  },
+  "logs_query": {
+    "description": "Read the log lines a lab run of your project kept (its topology's services write them, its collector ships them), to explain a failure. Filter by service, severity or a text. Returns the matching lines and their total: the most recent `limit` of them, in the order they were written.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "description": "the lab run's id, such as q12"
+        },
+        "service": {
+          "type": "string",
+          "description": "the container's name, such as api-1"
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR",
+            "FATAL"
+          ]
+        },
+        "contains": {
+          "type": "string",
+          "description": "a text the line holds"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500,
+          "description": "how many lines (100 by default)"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "metrics_query": {
+    "description": "Read a metric's series of a lab run of your project (what its services reported, in 10-second windows). Each point is [window start ms, sum, count, last, min, max]; a counter's sum is its increase in the window.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "description": "the lab run's id, such as q12"
+        },
+        "metric": {
+          "type": "string",
+          "description": "the metric's name, such as http.server.requests or cache.hits"
+        },
+        "service": {
+          "type": "string",
+          "description": "one container's name (every container's series by default)"
+        },
+        "from_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "to_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "run",
+        "metric"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "traces_query": {
+    "description": "Read the spans a lab run of your project kept (its services' traces): a trace's spans, the slow ones, or the failed ones. Returns the matching spans and their total: the most recent `limit`, in the order they arrived.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "string",
+          "description": "the lab run's id, such as q12"
+        },
+        "trace_id": {
+          "type": "string",
+          "description": "a trace's id, as 32 hex digits"
+        },
+        "name": {
+          "type": "string",
+          "description": "a span's name, such as GET /items"
+        },
+        "service": {
+          "type": "string"
+        },
+        "min_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "only spans at least this long"
+        },
+        "errors_only": {
+          "type": "boolean"
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "additionalProperties": false
+    }
   }
 }

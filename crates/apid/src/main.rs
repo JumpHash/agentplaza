@@ -66,6 +66,7 @@ mod inference;
 mod intake;
 mod internal;
 mod journal;
+mod lab_observe;
 mod laws;
 mod library;
 mod lifecycle;

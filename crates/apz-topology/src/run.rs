@@ -9,6 +9,11 @@
 //! - `APZ_TOPO_SERVICE`, `APZ_TOPO_CONTAINER`: its service and its container name.
 //! - `APZ_TOPO_BIND`: the address it listens on; `APZ_TOPO_PORTS`: its ports, comma separated.
 //! - `APZ_TOPO_RESOLVER`: the runner's resolver, where a name is asked for.
+//! - `OTEL_SERVICE_NAME` (the container's name), and with OTLP on, `OTEL_EXPORTER_OTLP_ENDPOINT` (the collector) and
+//!   `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`.
+//!
+//! A container's standard output and error go to `<container>.log` in the run's log directory ([`Observed::logs_dir`],
+//! the scratch directory's `logs` by default), which the lab VM's collector tails ([`crate::collector`]).
 //!
 //! Services start in dependency order: a service with `depends_on` starts once its dependencies' ports accept connections
 //! (their readiness here; a dependency without ports starts without a wait). A named volume is a directory under the run's
@@ -19,8 +24,9 @@
 //! check that runs one on a KVM host is named in the report.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -50,7 +56,18 @@ pub struct Standin {
     pub env: BTreeMap<String, String>,
 }
 
-/// A started plan: its containers' processes and its resolver. Dropping it stops them all and removes its volumes.
+/// What a run observes beyond its exit status (PLAN 22.7): where the containers' output goes, and where their OTLP goes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Observed {
+    /// The directory the containers' output goes to, one `<container>.log` each, for the collector to tail. The run's
+    /// scratch directory when None (it goes with the run).
+    pub logs_dir: Option<PathBuf>,
+    /// The OTLP endpoint the containers export to, as JSON (`OTEL_EXPORTER_OTLP_ENDPOINT`). The plan's when None.
+    pub otlp: Option<String>,
+}
+
+/// A started plan: its containers' processes and its resolver. Dropping it stops them all and removes its scratch root
+/// (its volumes and, unless the caller gave a directory, its logs).
 pub struct Running {
     server: resolver::Server,
     children: Vec<(String, Child)>,
@@ -58,10 +75,12 @@ pub struct Running {
     placed: Vec<(String, String, Ipv4Addr, Vec<u16>)>,
     /// The containers' names in the order they were started.
     started: Vec<String>,
-    /// The run's scratch root, holding its named volumes (None when the plan has none).
-    scratch: Option<PathBuf>,
+    /// The run's scratch root, holding its named volumes and, unless given, its logs.
+    scratch: PathBuf,
     /// Each named volume's directory.
     volumes: BTreeMap<String, PathBuf>,
+    /// The directory of the containers' output.
+    logs_dir: PathBuf,
 }
 
 /// Starts every container of `plan`. A service with a stand-in runs the stand-in; otherwise its artifact runs. An image
@@ -70,6 +89,16 @@ pub fn start(
     plan: &GuestPlan,
     addressing: Addressing,
     standins: &BTreeMap<String, Standin>,
+) -> Result<Running, String> {
+    start_observed(plan, addressing, standins, &Observed::default())
+}
+
+/// [`start`], with what the run observes: the containers' output in `observed`'s directory, and their OTLP endpoint.
+pub fn start_observed(
+    plan: &GuestPlan,
+    addressing: Addressing,
+    standins: &BTreeMap<String, Standin>,
+    observed: &Observed,
 ) -> Result<Running, String> {
     let mut table = Table::default();
     let mut launches = Vec::new();
@@ -99,7 +128,14 @@ pub fn start(
     }
     let server = resolver::serve(table).map_err(|e| format!("resolver: {e}"))?;
     let resolver_addr = server.addr();
-    let (volumes, scratch) = volume_dirs(plan)?;
+    let scratch = scratch_root()?;
+    let volumes = volume_dirs(plan, &scratch)?;
+    let logs_dir = observed
+        .logs_dir
+        .clone()
+        .unwrap_or_else(|| scratch.join("logs"));
+    std::fs::create_dir_all(&logs_dir).map_err(|e| format!("logs {}: {e}", logs_dir.display()))?;
+    let otlp = observed.otlp.clone().or_else(|| plan.otlp.clone());
     let mut running = Running {
         server,
         children: Vec::new(),
@@ -110,12 +146,25 @@ pub fn start(
         started: Vec::new(),
         scratch,
         volumes: volumes.clone(),
+        logs_dir: logs_dir.clone(),
     };
     for index in start_order(plan)? {
         let (container, addr, argv, standin) = &launches[index];
         wait_for_dependencies(&running, container)?;
         let extra = volume_env(container, &volumes);
-        let child = spawn(container, *addr, argv, *standin, resolver_addr, &extra)?;
+        let output = Output {
+            logs: &logs_dir,
+            otlp: otlp.as_deref(),
+        };
+        let child = spawn(
+            container,
+            *addr,
+            argv,
+            *standin,
+            resolver_addr,
+            &extra,
+            &output,
+        )?;
         running.children.push((container.name.clone(), child));
         running.started.push(container.name.clone());
     }
@@ -190,28 +239,31 @@ fn wait_for_dependencies(running: &Running, container: &Container) -> Result<(),
     Ok(())
 }
 
-/// Makes the directory of each named volume the plan mounts, under one scratch root (None when there is none).
-fn volume_dirs(plan: &GuestPlan) -> Result<(BTreeMap<String, PathBuf>, Option<PathBuf>), String> {
-    let names: BTreeSet<&str> = plan
-        .containers
-        .iter()
-        .flat_map(|c| c.volumes.iter().map(|v| v.name.as_str()))
-        .collect();
-    if names.is_empty() {
-        return Ok((BTreeMap::new(), None));
-    }
+/// A new scratch root for a run: unique in this process, made now.
+fn scratch_root() -> Result<PathBuf, String> {
     let root = std::env::temp_dir().join(format!(
         "apz-topo-{}-{}",
         std::process::id(),
         RUNS.fetch_add(1, Ordering::Relaxed)
     ));
+    std::fs::create_dir_all(&root).map_err(|e| format!("scratch {}: {e}", root.display()))?;
+    Ok(root)
+}
+
+/// Makes the directory of each named volume the plan mounts, under the scratch root.
+fn volume_dirs(plan: &GuestPlan, root: &Path) -> Result<BTreeMap<String, PathBuf>, String> {
+    let names: BTreeSet<&str> = plan
+        .containers
+        .iter()
+        .flat_map(|c| c.volumes.iter().map(|v| v.name.as_str()))
+        .collect();
     let mut dirs = BTreeMap::new();
     for name in names {
-        let dir = root.join(name);
+        let dir = root.join("volumes").join(name);
         std::fs::create_dir_all(&dir).map_err(|e| format!("volume {name}: {e}"))?;
         dirs.insert(name.to_string(), dir);
     }
-    Ok((dirs, Some(root)))
+    Ok(dirs)
 }
 
 /// The volume variables a container gets: the directory of each volume it mounts, and the mounts as `name=target`.
@@ -235,6 +287,12 @@ fn volume_env(container: &Container, dirs: &BTreeMap<String, PathBuf>) -> Vec<(S
     env
 }
 
+/// Where a container's output and OTLP go.
+struct Output<'a> {
+    logs: &'a Path,
+    otlp: Option<&'a str>,
+}
+
 fn spawn(
     container: &Container,
     addr: Ipv4Addr,
@@ -242,6 +300,7 @@ fn spawn(
     standin: Option<&Standin>,
     resolver_addr: SocketAddr,
     extra: &[(String, String)],
+    output: &Output<'_>,
 ) -> Result<Child, String> {
     let (program, args) = argv
         .split_first()
@@ -258,13 +317,31 @@ fn spawn(
         .env("APZ_TOPO_BIND", addr.to_string())
         .env("APZ_TOPO_PORTS", ports.join(","))
         .env("APZ_TOPO_RESOLVER", resolver_addr.to_string())
+        .env("OTEL_SERVICE_NAME", &container.name)
         .envs(extra.iter().map(|(key, value)| (key, value)))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
+        .stdin(Stdio::null());
+    if let Some(endpoint) = output.otlp {
+        // The services export JSON to the collector, which reads JSON (observe.rs).
+        command
+            .env("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+            .env("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json");
+    }
     if let Some(standin) = standin {
         command.envs(&standin.env);
     }
+    // The container's output goes to its log file, which the collector tails (`<container>.log`).
+    let log = output.logs.join(format!("{}.log", container.name));
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .map_err(|e| format!("{}: its log {}: {e}", container.name, log.display()))?;
+    let errors = file
+        .try_clone()
+        .map_err(|e| format!("{}: its log: {e}", container.name))?;
+    command
+        .stdout(Stdio::from(file))
+        .stderr(Stdio::from(errors));
     command
         .spawn()
         .map_err(|e| format!("{}: cannot start {program}: {e}", container.name))
@@ -292,6 +369,11 @@ impl Running {
             wait_ports(name, *addr, ports, deadline)?;
         }
         Ok(())
+    }
+
+    /// The directory the containers' output goes to: `<container>.log` for each container, while the run lasts.
+    pub fn log_dir(&self) -> &Path {
+        &self.logs_dir
     }
 
     /// The directory of a named volume of the plan, while the run lasts.
@@ -343,8 +425,6 @@ impl Drop for Running {
             let _ = child.kill();
             let _ = child.wait();
         }
-        if let Some(scratch) = self.scratch.take() {
-            let _ = std::fs::remove_dir_all(scratch);
-        }
+        let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }

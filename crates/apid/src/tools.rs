@@ -86,6 +86,9 @@ const ALWAYS: &[&str] = &[
     "weft_change_tree",
     "weft_touches",
     "tests_select",
+    "logs_query",
+    "metrics_query",
+    "traces_query",
     "plaza_maintenance",
     "plaza_maintenance_map",
     "plaza_maintenance_propose",
@@ -236,6 +239,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::test_select::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::lab_observe::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
@@ -1084,6 +1088,9 @@ fn host_call(
         }
         other if crate::test_select::TOOLS.contains(&other) => {
             crate::test_select::run(app, agent, input)
+        }
+        other if crate::lab_observe::TOOLS.contains(&other) => {
+            crate::lab_observe::run(app, agent, other, input)
         }
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {

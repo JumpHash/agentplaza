@@ -329,3 +329,15 @@ law "T-035" "Every agent may ask which tests a change needs" {
   resource is Tool
   when resource.name == "tests_select"
 }
+
+law "T-036" "Every agent may read its project's lab observations" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may read the logs, the metric series and the traces that its project's test-lab runs kept, to explain a failure: reads that change nothing, and only of runs of its own project (the hub checks the run's project)."
+  rationale "A failing assertion is a finding that cites these observations; an agent reads them to say why a run failed. Writing to a run is the collector's, with the run's own token, and no agent may do it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["logs_query", "metrics_query", "traces_query"]
+}
