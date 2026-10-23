@@ -6,11 +6,13 @@
 //! Each prompt names its role on its first line (`ROLE: planner plan`, `ROLE: driver tier fast`, …): a script keys on
 //! that line and on the goal or screen the prompt names.
 //!
-//! Vision: the screenshot goes to the model as its text (the stand-in's screenshots are SVG, which is text). A raster
-//! screenshot needs an image block in apz-proto's chat types, which there is not yet: the checker is text-only until then.
+//! Vision: a screenshot goes to the model as an image block (its media type and its bytes in base64). The providers whose
+//! wire format has no image block refuse such a call, so a step whose checker or escalated driver is one of them fails
+//! with the gateway's reason.
 
 use apz_gateway::Gateway;
 use apz_proto::chat::{Block, ChatRequest, Message, Role, blocks_text};
+use base64::Engine as _;
 use serde_json::Value;
 
 use super::scenario::Scenario;
@@ -91,7 +93,7 @@ pub struct GatewayModels<'a> {
 }
 
 impl GatewayModels<'_> {
-    /// One answer as JSON: `role` on the first line, then `body`, and the screenshot's text when there is one.
+    /// One answer as JSON: `role` on the first line, then `body`, and the screenshot as an image block when there is one.
     fn ask(
         &self,
         model: &str,
@@ -99,13 +101,14 @@ impl GatewayModels<'_> {
         body: &str,
         shot: Option<&Screenshot>,
     ) -> Result<Value, String> {
-        let mut text = format!("{role}\n{body}");
+        let mut content = vec![Block::Text {
+            text: format!("{role}\n{body}"),
+        }];
         if let Some(shot) = shot {
-            text.push_str(&format!(
-                "\nSCREENSHOT ({}):\n{}",
-                shot.mime,
-                String::from_utf8_lossy(&shot.bytes)
-            ));
+            content.push(Block::Image {
+                media_type: shot.mime.clone(),
+                data: base64::engine::general_purpose::STANDARD.encode(&shot.bytes),
+            });
         }
         let req = ChatRequest {
             model: model.to_string(),
@@ -113,7 +116,7 @@ impl GatewayModels<'_> {
             system_parts: Vec::new(),
             messages: vec![Message {
                 role: Role::User,
-                content: vec![Block::Text { text }],
+                content,
             }],
             tools: Vec::new(),
             cache_last_message: false,

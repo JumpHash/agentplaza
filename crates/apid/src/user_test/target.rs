@@ -4,8 +4,8 @@
 //! beside the stand-in without a change to it.
 //!
 //! The stand-in ([`StandIn`]) is a scripted target: a set of screens, each with its elements, and the links an action on
-//! an element follows. Its tree changes on the actions that the loop takes, its screenshot is an SVG of the screen (text,
-//! so a text model reads it), and its clock advances by a scripted latency per action, so a timing has something to
+//! an element follows. Its tree changes on the actions that the loop takes, its screenshot is a small PNG of the screen
+//! (`render`), and its clock advances by a scripted latency per action, so a timing has something to
 //! measure. A seeded bug is a link to the wrong screen, or a latency over a budget.
 
 use std::collections::BTreeMap;
@@ -228,23 +228,9 @@ impl Target for Stand {
 
     fn screenshot(&mut self) -> Result<Screenshot, String> {
         let tree = self.tree()?;
-        let mut svg = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\"><title>{}</title>",
-            escape(&tree.title)
-        );
-        for (row, e) in tree.elements.iter().enumerate() {
-            svg.push_str(&format!(
-                "<text x=\"8\" y=\"{}\">[{}] {} {}</text>",
-                24 + row * 20,
-                escape(&e.role),
-                escape(&e.label),
-                escape(&e.value)
-            ));
-        }
-        svg.push_str("</svg>");
         Ok(Screenshot {
-            mime: "image/svg+xml".into(),
-            bytes: svg.into_bytes(),
+            mime: "image/png".into(),
+            bytes: render(&tree)?,
         })
     }
 
@@ -288,10 +274,49 @@ impl Target for Stand {
     }
 }
 
-fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+/// The stand-in's picture of a screen: a small PNG (160 by 96). The background is a colour of the screen's title, so two
+/// screens look different; each of the first six elements is a band, light when a person can act on it and dark when it
+/// is text. A checker reads the picture, not the names: the tree is what the driver reads.
+pub fn render(tree: &Tree) -> Result<Vec<u8>, String> {
+    const W: usize = 160;
+    const H: usize = 96;
+    let hash = tree
+        .title
+        .bytes()
+        .fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+    let background = [
+        (hash >> 16) as u8 | 0x40,
+        (hash >> 8) as u8 | 0x40,
+        hash as u8 | 0x40,
+    ];
+    let mut pixels: Vec<u8> = background.iter().copied().cycle().take(W * H * 3).collect();
+    for (row, e) in tree.elements.iter().take(6).enumerate() {
+        let colour = if e.actionable() {
+            [255, 255, 255]
+        } else {
+            [24, 24, 24]
+        };
+        for y in (8 + row * 14)..(18 + row * 14) {
+            for x in 8..W - 8 {
+                let i = (y * W + x) * 3;
+                pixels[i..i + 3].copy_from_slice(&colour);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, W as u32, H as u32);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| format!("the screenshot's PNG header: {e}"))?;
+    writer
+        .write_image_data(&pixels)
+        .map_err(|e| format!("the screenshot's PNG data: {e}"))?;
+    writer
+        .finish()
+        .map_err(|e| format!("the screenshot's PNG end: {e}"))?;
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -346,8 +371,11 @@ mod tests {
         assert!(tree.shows("Back to shop"));
         assert_eq!(stand.clock_ms(), Some(300));
         let shot = stand.screenshot().unwrap();
-        assert_eq!(shot.mime, "image/svg+xml");
-        assert!(String::from_utf8(shot.bytes).unwrap().contains("Receipt"));
+        assert_eq!(shot.mime, "image/png");
+        assert!(shot.bytes.starts_with(&[0x89, b'P', b'N', b'G']), "a PNG");
+        // The picture follows the screen: the cart and the receipt are different pictures.
+        let cart = shop().open().screenshot().unwrap();
+        assert_ne!(cart.bytes, shot.bytes);
     }
 
     #[test]

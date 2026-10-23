@@ -59,6 +59,20 @@ impl ProviderKind {
         ProviderKind::Mock,
     ];
 
+    /// Whether the kind's wire format carries an image block: the Anthropic messages format (and Vertex's), and the
+    /// OpenAI-compatible chat format with `image_url` data URLs. The mock takes images too, so scripts can see them.
+    pub fn takes_images(self) -> bool {
+        matches!(
+            self,
+            ProviderKind::Anthropic
+                | ProviderKind::VertexAnthropic
+                | ProviderKind::OpenAi
+                | ProviderKind::OpenAiCompatible
+                | ProviderKind::AzureOpenAi
+                | ProviderKind::Mock
+        )
+    }
+
     /// The JSON name (`"openai-responses"`, …).
     pub fn as_str(self) -> &'static str {
         match self {

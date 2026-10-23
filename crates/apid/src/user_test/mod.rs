@@ -512,7 +512,9 @@ mod tests {
                 { "when": ["ROLE: planner judge"], "turns": [{ "text": "{\"verdict\": \"defect\", \"reason\": \"the receipt is not shown\"}" }] },
                 { "when": ["ROLE: driver tier fast", "GOAL: press Pay"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.9, \"why\": \"Pay is the button\"}" }] },
                 { "when": ["ROLE: driver tier fast", "GOAL: settle"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.2, \"why\": \"unsure\"}" }] },
+                { "when": ["ROLE: driver tier strong", "GOAL: settle", "IMAGE: image/png"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.95, \"why\": \"Pay settles it, from the picture\"}" }] },
                 { "when": ["ROLE: driver tier strong", "GOAL: settle"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.95, \"why\": \"Pay settles it\"}" }] },
+                { "when": ["ROLE: checker", "IMAGE: image/png"], "turns": [{ "text": "{\"holds\": true, \"reason\": \"the screenshot arrived\"}" }] },
                 { "when": ["ROLE: checker"], "turns": [{ "text": "{\"holds\": true, \"reason\": \"the screen shows it\"}" }] }
             ]);
             std::fs::write(&path, entries.to_string()).expect("the test script is written");
@@ -667,17 +669,39 @@ mod tests {
             0.6,
             &mut |s| Box::new(s.open()),
         );
+        // The stronger model's answer names the picture: the screenshot went to it as an image.
         let escalated = exec
             .evidence
             .iter()
             .find(|r| r.action == "click pay")
             .expect("the strong model's pick is taken");
         assert!(
-            escalated.note.starts_with("escalated: Pay settles it"),
+            escalated
+                .note
+                .starts_with("escalated: Pay settles it, from the picture"),
             "{}",
             escalated.note
         );
         assert!(exec.found.is_empty());
+    }
+
+    #[test]
+    fn the_checker_is_sent_the_screenshot_as_an_image() {
+        let gw = gateway();
+        let roles = roles("mock/script");
+        let models = GatewayModels {
+            gateway: &gw,
+            roles: &roles,
+        };
+        let mut stand = shop("receipt", 0).open();
+        let shot = stand.screenshot().unwrap();
+        assert_eq!(shot.mime, "image/png");
+        // The script answers for the picture only when an image block arrived (the mock names it in the text it reads).
+        let look = models
+            .look("Does the screen show the receipt?", &shot)
+            .unwrap();
+        assert!(look.holds);
+        assert_eq!(look.reason, "the screenshot arrived");
     }
 
     #[test]

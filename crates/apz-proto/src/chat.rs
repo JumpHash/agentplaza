@@ -88,6 +88,12 @@ pub enum Block {
         kind: String,
         raw: Value,
     },
+    /// An image the user sends (a screenshot, say): its media type (`image/png`, …) and its bytes in base64.
+    /// Only the providers whose wire format has an image block take it; the others refuse the call.
+    Image {
+        media_type: String,
+        data: String,
+    },
 }
 
 /// The concatenated text of `blocks`' text blocks, newline-joined.
@@ -152,6 +158,13 @@ pub struct ChatRequest {
 }
 
 impl ChatRequest {
+    /// Whether any message carries an image block.
+    pub fn has_images(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. })))
+    }
+
     /// The system prompt as one text: the parts joined by a blank line, or `system`. `None` when it is empty.
     pub fn system_text(&self) -> Option<String> {
         if self.system_parts.is_empty() {

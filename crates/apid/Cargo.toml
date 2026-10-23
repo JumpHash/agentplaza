@@ -67,6 +67,8 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # The relay's signatures (shares/relay.rs), matching crates/apz-trust.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1.1"
+# The stand-in target's screenshots (user_test/target.rs): PNG encoding; the crate is already in Cargo.lock.
+png = "0.18"
 # The stdio servers' OS sandbox (crates/apz-sandbox) and the archives of the runtimes and binary packages.
 apz-sandbox = { path = "../apz-sandbox" }
 tar = "0.4"

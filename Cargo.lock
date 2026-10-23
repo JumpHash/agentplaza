@@ -372,6 +372,7 @@ dependencies = [
  "hmac",
  "jhrl",
  "libc",
+ "png 0.18.1",
  "rcgen",
  "ring",
  "schemars 1.2.3",
