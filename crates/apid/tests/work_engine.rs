@@ -309,6 +309,37 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         text(&note["output"]).contains("waits for the next session"),
         "{note}"
     );
+    // The builder reads the thread its note opened, by the id the send reported. Nobody else has written in
+    // it, so there is no one for the builder's own answer to go to.
+    let thread_id = text(&note["output"])
+        .split_whitespace()
+        .nth(3)
+        .unwrap_or_default()
+        .trim_end_matches(':')
+        .to_string();
+    let read = tool(
+        &hub,
+        builder_cid,
+        work,
+        "thread_read",
+        json!({ "thread": thread_id }),
+    );
+    assert!(
+        text(&read["output"]).contains("Check the upgrade section first."),
+        "{read}"
+    );
+    let answer = tool(
+        &hub,
+        builder_cid,
+        work,
+        "thread_answer",
+        json!({ "thread": thread_id, "text": "Noted." }),
+    );
+    assert_eq!(answer["is_error"], true, "{answer}");
+    assert!(
+        text(&answer["output"]).contains("waits for an answer from you"),
+        "{answer}"
+    );
 
     // A tool the builder ran reports how long it took: the hub keeps each tool's latency.
     let report = json!({
@@ -1099,4 +1130,111 @@ fn a_planner_sizes_its_projects_team_and_a_size_out_of_bounds_is_refused() {
         None,
     );
     assert_eq!(effective["settings"]["team_max"]["value"], 6, "{effective}");
+}
+
+/// A helper's model call: `helper` names the helper, `tools` what its request offers.
+fn helper_call(hub: &Hub, cid: u64, req: u64, helper: u64, tools: Value) -> Value {
+    let request = json!({
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Read the file." }] }],
+        "tools": tools,
+    });
+    let message = json!({ "type": "model_call", "req": req, "work": 1, "request": request, "helper": helper });
+    let (status, body) = hub.guest(cid, "message", message);
+    assert_eq!(status, 200, "{body}");
+    body["reply"].clone()
+}
+
+#[test]
+fn a_helpers_model_call_is_held_on_its_sessions_budget_and_recorded_on_a_helper_session() {
+    let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+    } });
+    let scratch = Scratch::new("work-engine-helper");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+    let (status, budget) = hub.call(
+        "PUT",
+        "/v1/projects/plaza/budget",
+        Some(json!({ "unit": "tokens", "cap": 300 })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    let (status, _) = hub.guest(
+        ORCHESTRATOR,
+        "hello",
+        json!({ "role": "orchestrator", "vm": 0 }),
+    );
+    assert_eq!(status, 200);
+    let (_, plaza) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    let main = plaza
+        .as_array()
+        .and_then(|s| s.first().cloned())
+        .unwrap_or_else(|| panic!("the main orchestrator's session: {plaza}"));
+    let main_id = text(&main["id"]);
+
+    // A helper may not be offered the tools that start helpers: refused, and nothing is held.
+    let refused = helper_call(
+        &hub,
+        ORCHESTRATOR,
+        1,
+        1,
+        json!([{ "name": "spawn_helper", "description": "start a helper", "input_schema": { "type": "object" } }]),
+    );
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        text(&refused["error"]).contains("cannot start or await helpers"),
+        "{refused}"
+    );
+
+    // Its call does not fit the plaza's 300 tokens: it waits, as the session's own call would.
+    let paused = helper_call(&hub, ORCHESTRATOR, 2, 1, json!([]));
+    assert_eq!(paused["ok"], false, "{paused}");
+    assert!(text(&paused["error"]).starts_with("paused: "), "{paused}");
+
+    // The helper is a session of its own under the main orchestrator's, on the plaza's budget.
+    let (_, listed) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    let helper = listed
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["kind"] == "helper").cloned())
+        .unwrap_or_else(|| panic!("a helper session: {listed}"));
+    assert_eq!(helper["parent"], main_id, "{helper}");
+    assert_eq!(helper["project"], "plaza", "{helper}");
+
+    // The owner raises the plaza's budget: the helper's call gets past the hold to the model (the orchestrator tier
+    // has no mock model here, so the provider refuses it for want of a key).
+    let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
+    let card = cards
+        .as_array()
+        .and_then(|c| c.iter().find(|c| c["kind"] == "budget").cloned())
+        .unwrap_or_else(|| panic!("a budget card: {cards}"));
+    let (status, answered) = hub.call(
+        "POST",
+        &format!("/v1/cards/{}", text(&card["id"])),
+        Some(json!({ "choice": "raise_to", "amount": 1_000_000 })),
+    );
+    assert_eq!(status, 200, "{answered}");
+    let reply = helper_call(&hub, ORCHESTRATOR, 3, 1, json!([]));
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(
+        text(&reply["error"]).contains("ANTHROPIC_API_KEY"),
+        "the call reached the provider: {reply}"
+    );
+    let (_, listed) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    assert!(
+        listed.as_array().is_some_and(|s| s
+            .iter()
+            .any(|s| s["kind"] == "helper" && s["parent"] == main_id)),
+        "the helper session is still the orchestrator's: {listed}"
+    );
+    every_save_succeeded(&hub);
 }

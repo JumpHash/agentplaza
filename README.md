@@ -118,8 +118,8 @@ systems marked yes:
 | Windows 11 (or 10 2004+), x64 | yes | yes, with the Windows Hypervisor Platform feature |
 | Windows, arm64 | yes (the node link) | not yet: run them on a node elsewhere |
 
-The desktop app's "Start locally" and "Host a hub" also need Docker, for the Postgres 17 container, and the ports
-7700 (hub), 8899 (node daemon), 19080 (node agent gateway) and 5434 (the container).
+The desktop app's "Start locally" and "Host a hub" need no Docker and no database server: the hub keeps its state in
+SQLite files in its state folder. They use the ports 7700 (hub), 8899 (node daemon) and 19080 (node agent gateway).
 The macOS builds are not notarized yet, and the MSI is not code-signed yet.
 
 ## Quick start
@@ -127,8 +127,7 @@ The macOS builds are not notarized yet, and the MSI is not code-signed yet.
 1. **Set up a plaza.** Open the desktop app and choose *Start locally*. It checks the requirements and sets up the
    containers. On Linux you can instead start the services with
    `systemctl --user enable --now agentplaza-hub agentplaza-node`, or run `apid` in a terminal on any system. The hub
-   keeps its state in files unless
-   `APZ_DATABASE_URL` points it at Postgres.
+   keeps its state in SQLite files in its state folder.
 2. **Open the console** at <http://127.0.0.1:7700>. The owner token is written once to the state folder
    (`owner-token`), and the console on this machine signs in without a password.
 3. **Add a model key.** On the Models screen, add a key to a provider card. From the command line:
@@ -361,14 +360,10 @@ The test commands:
 
 ```sh
 cargo test --workspace                       # the Rust tests (CI runs them with nextest)
-scripts/test-db.sh db                        # apid's database tests, against a throwaway Postgres 17 container
-scripts/test-db.sh all                       # every apid test with the database set
 cd apps/web && npm run check                 # typecheck, build and the console's tests
 python3 -I tests/acceptance/run.py all       # the acceptance matrix (hosts its own stacks; see --help)
 cd trainer && uv sync --locked --extra cpu && uv run --extra cpu pytest -q
 ```
-
-`scripts/test-db.sh` needs the `postgres:17` image already present locally; it never pulls.
 
 The CI workflows, and when each one runs, are described in [docs/dev/ci.md](docs/dev/ci.md). The repository's folders
 are listed in [docs/repository-layout.md](docs/repository-layout.md).

@@ -11,12 +11,12 @@ law "T-001" "Every agent may use its own workspace tools" {
   tier statute
   enforcement preventive
   severity info
-  statement "Any agent may use the tools of its own VM: run commands and scripts that call those tools, read and write its files, look up its code's symbols, definitions, references and diagnostics, fetch and download over the hub's egress, install packages, keep todos and checkpoints. An ACP engine's own actions inside its code_engine run (engine.read, engine.edit, engine.exec, engine.fetch, engine.other) are the agent's own, and each is checked as its own call."
+  statement "Any agent may use the tools of its own VM: run commands and scripts that call those tools, read and write its files, look up its code's symbols, definitions, references and diagnostics, fetch and download over the hub's egress, install packages, keep todos and checkpoints, start and await helpers that run in the same VM. An ACP engine's own actions inside its code_engine run (engine.read, engine.edit, engine.exec, engine.fetch, engine.other) are the agent's own, and each is checked as its own call."
   rationale "Inside its own microVM an agent may do anything; the sandbox laws keep that VM its own. An engine's request is the same kind of action as the tool it stands for, so it is checked one by one like any other."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["run", "run_tests", "run_script", "read", "edit", "find", "search", "share_file", "fetch_url", "download", "install_packages", "todo_write", "code_engine", "deliver_file", "artifact_create", "artifact_update", "artifact_attach_data", "artifact_share_request", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list", "symbols", "definition", "references", "diagnostics", "outline", "engine.read", "engine.edit", "engine.exec", "engine.fetch", "engine.other"]
+  when resource.name in ["run", "run_tests", "run_script", "read", "edit", "find", "search", "share_file", "fetch_url", "download", "install_packages", "todo_write", "code_engine", "deliver_file", "artifact_create", "artifact_update", "artifact_attach_data", "artifact_share_request", "tool_package", "checkpoint_diff", "checkpoint_restore", "checkpoint_list", "symbols", "definition", "references", "diagnostics", "outline", "spawn_helper", "await_helper", "engine.read", "engine.edit", "engine.exec", "engine.fetch", "engine.other"]
 }
 
 law "T-002" "Every agent may use the plaza's shared tools" {
@@ -28,7 +28,7 @@ law "T-002" "Every agent may use the plaza's shared tools" {
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_message_seat", "plaza_get_file", "plaza_connector_propose"]
+  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_message_seat", "thread_read", "thread_answer", "plaza_get_file", "plaza_connector_propose"]
 }
 
 law "T-003" "Only the orchestrator plans and delegates" {
@@ -160,7 +160,7 @@ law "T-020" "Every agent may use Weft on its own work and its project's history"
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["weft_status", "weft_diff", "weft_describe", "weft_log", "weft_show", "weft_blame", "weft_map"]
+  when resource.name in ["weft_status", "weft_diff", "weft_describe", "weft_log", "weft_show", "weft_blame", "weft_map", "weft_change_tree", "weft_touches"]
 }
 
 law "T-021" "An agent given a review step reports on it" {

@@ -5,13 +5,15 @@
 //!
 //! The state is in memory: a restart forgets the finished bases, and the next landing builds again.
 //!
-//! The recipe's commands run in the base's VM through noded. noded has no route that runs a command in a VM yet, so
-//! every build fails at its first step until one exists ([`NodeRunner`]).
+//! The recipe's commands run in the base's VM, through the base runner (base_vm.rs): noded starts the VM, its harness
+//! answers the exec items, and the snapshot holds the base on the node that built it.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::base_recipe::{self, BaseKind, Step, VmRunner};
+use crate::base_recipe::{self, BaseKind};
+use crate::base_vm::{Live, Runner};
+use crate::placement;
 use crate::project_stack::{self, FILE, Stack};
 use crate::state::App;
 
@@ -158,18 +160,12 @@ fn build_once(app: &App, key: &Key, repo: &str) -> Result<String, String> {
     let stack =
         project_stack::read(app, &key.project)?.ok_or_else(|| format!("{FILE} is not on main"))?;
     let steps = base_recipe::steps(&stack, BaseKind::Build, repo, &commit);
-    base_recipe::execute(&mut NodeRunner, &steps)?;
+    let node = placement::base_node(app, &key.project, &key.pool, &base_recipe::volumes(&stack))
+        .ok_or_else(|| format!("no node in the pool {} has room for a base", key.pool))?;
+    let host = Live(app);
+    let mut runner = Runner::new(&host, node, key.project.clone());
+    base_recipe::execute(&mut runner, &steps)?;
     Ok(commit)
-}
-
-/// Runs a base's steps on noded. noded has no route that runs a command in a VM yet, so every step fails until one
-/// exists.
-struct NodeRunner;
-
-impl VmRunner for NodeRunner {
-    fn run(&mut self, _step: &Step) -> Result<(), String> {
-        Err("noded has no route that runs a base's steps yet".into())
-    }
 }
 
 /// The pool keys a stack's base is built for: one per declared pool (`aarch64-kvm`), or [`ANY_POOL`] when it declares

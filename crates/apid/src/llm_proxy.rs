@@ -580,7 +580,7 @@ fn record_usage(
         },
     );
     if let Some(held) = hold {
-        work_loop::settle_call(app, cid, held, t, metered.cost_usd);
+        work_loop::settle_call(app, cid, held, t, metered.cost_usd, None);
     }
     crate::usage::meter_charged(app, cid, model, t, metered.cost_usd, charge, "gateway");
     if let Some(timing) = timing {

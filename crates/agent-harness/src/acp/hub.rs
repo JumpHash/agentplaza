@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use apz_proto::chat::ToolSpec;
-use apz_proto::wire::{Decision, GuestMessage, HostMessage};
+use apz_proto::wire::{Decision, GuestMessage, HostMessage, Program};
 use serde_json::Value;
 
 use super::link::{EngineLink, Verdict};
@@ -19,6 +19,11 @@ use crate::lane::Shared;
 
 /// How long a decision wait sleeps between checks of the cancel flag.
 const DECISION_POLL: Duration = Duration::from_millis(50);
+
+/// Runs a plaza tool the hub let run in the VM: the tool's name, its input and the library program it
+/// runs (for an agent-made tool), if the hub named one. The agent's own VM tools run through it.
+pub type LocalRun<'x> =
+    dyn Fn(&str, &Value, Option<&Program>) -> Result<String, String> + Send + Sync + 'x;
 
 /// One `code_engine` call's path to the hub. Its requests carry ids `<call>.e<n>`, and its
 /// updates go out under `call`.
@@ -38,15 +43,21 @@ pub struct HubLink<'a, 'l, S, W> {
     ended: AtomicBool,
     /// The profile's tools, which the engine's plaza MCP server offers (see [`mcp::plaza_tools`]).
     tools: Vec<ToolSpec>,
+    /// Runs the tools the hub lets run in this VM (see [`HubLink::in_vm`]); none means they are refused here.
+    local: Option<Box<LocalRun<'a>>>,
+    /// The prompt parts the engine is told, as text (see [`HubLink::with_instructions`]).
+    instructions: Vec<String>,
 }
 
 /// How a nested request ended, as the hub or the owner answered it.
 enum Settled {
-    /// The hub's final tool decision (`Allow`, `Done` or `Deny`) and the output it came with.
+    /// The hub's final tool decision (`Allow`, `Done` or `Deny`) and the output it came with, and the
+    /// library program the hub named for it.
     Final {
         decision: Decision,
         output: String,
         is_error: bool,
+        program: Option<Program>,
     },
     /// The owner's answer to a request the hub held.
     Owner { allow: bool, reason: Option<String> },
@@ -75,7 +86,25 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
             cancel,
             ended: AtomicBool::new(false),
             tools,
+            local: None,
+            instructions: Vec::new(),
         }
+    }
+
+    /// Lets the tools the hub allows to run in this VM run through `local`, as the agent's own calls
+    /// run here. Without it they are refused, as the plaza's MCP server does not run them.
+    pub fn in_vm(
+        mut self,
+        local: impl Fn(&str, &Value, Option<&Program>) -> Result<String, String> + Send + Sync + 'a,
+    ) -> Self {
+        self.local = Some(Box::new(local));
+        self
+    }
+
+    /// The prompt parts the engine is told before it starts (see [`EngineLink::instructions`]).
+    pub fn with_instructions(mut self, parts: Vec<String>) -> Self {
+        self.instructions = parts;
+        self
     }
 
     /// Sends one nested `tool_request` for `name` and waits for how it ends. Both [`EngineLink::decide`]
@@ -102,6 +131,7 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
                 decision: Decision::Deny,
                 output: format!("cannot reach the hub: {err}"),
                 is_error: true,
+                program: None,
             },
         };
         self.shared.nested().unregister(&id);
@@ -128,6 +158,7 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
                     output,
                     is_error,
                     approval,
+                    program,
                     ..
                 }) => match decision {
                     Decision::Allow | Decision::Done | Decision::Deny => {
@@ -135,6 +166,7 @@ impl<'a, 'l, S: Write, W: Write> HubLink<'a, 'l, S, W> {
                             decision,
                             output,
                             is_error,
+                            program,
                         };
                     }
                     Decision::Pending => self.shared.note(&format!(
@@ -189,26 +221,36 @@ impl<S: Write + Send, W: Write + Send> EngineLink for HubLink<'_, '_, S, W> {
 
     fn call(&self, name: &str, input: &Value, deadline: Instant) -> Result<String, String> {
         match self.request(name, input, deadline) {
+            // The hub lets the call run in this VM: here, when the link has a VM to run it in.
+            Settled::Final {
+                decision: Decision::Allow,
+                program,
+                ..
+            } => match &self.local {
+                Some(local) => local(name, input, program.as_ref()),
+                None => Err(format!(
+                    "{name} runs in the VM, not through the plaza's MCP server"
+                )),
+            },
             Settled::Final {
                 decision: Decision::Done,
                 output,
                 is_error: false,
+                ..
             } => Ok(output),
             Settled::Final {
                 decision: Decision::Done,
                 output,
                 is_error: true,
+                ..
             } => Err(output),
             Settled::Final {
                 decision: Decision::Deny,
                 output,
                 ..
             } => Err(denial(output)),
-            // The hub let the call run in the VM: only the harness's own tools are allowed that,
-            // and they are not offered through the plaza's MCP server.
-            Settled::Final { .. } => Err(format!(
-                "{name} runs in the VM, not through the plaza's MCP server"
-            )),
+            // A final answer is never pending, so the wait returns none of these; they are refusals.
+            Settled::Final { .. } => Err(format!("{name} is not decided")),
             // The owner approved a held call: the engine calls it again to run it.
             Settled::Owner { allow: true, .. } => Err("approved; call it again".to_string()),
             Settled::Owner { reason, .. } => {
@@ -222,6 +264,10 @@ impl<S: Write + Send, W: Write + Send> EngineLink for HubLink<'_, '_, S, W> {
 
     fn plaza_tools(&self) -> Vec<ToolSpec> {
         mcp::plaza_tools(&self.tools)
+    }
+
+    fn instructions(&self) -> Vec<String> {
+        self.instructions.clone()
     }
 
     fn end_turn(&self) {
@@ -251,6 +297,7 @@ mod tests {
     use super::*;
     use crate::session::testing::{next, pair};
     use apz_proto::line::Lines;
+    use apz_proto::wire::Program;
     use serde_json::json;
     use std::thread;
 
@@ -539,6 +586,56 @@ mod tests {
             verdict,
             Err("run runs in the VM, not through the plaza's MCP server".to_string())
         );
+    }
+
+    #[test]
+    fn a_call_the_hub_lets_run_in_the_vm_runs_in_the_link_when_it_has_a_vm() {
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let here = |name: &str, input: &Value, program: Option<&Program>| {
+            assert!(program.is_none(), "no library program for a built-in tool");
+            Ok(format!("{name} ran here with {input}"))
+        };
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new()).in_vm(here);
+        let verdict = thread::scope(|scope| {
+            scope.spawn(|| {
+                let request = next(&mut host);
+                assert!(request.contains(r#""name":"diagnostics""#), "{request}");
+                shared
+                    .nested()
+                    .route(tool_decision("toolu_1.e1", Decision::Allow, "", false));
+            });
+            link.call(
+                "diagnostics",
+                &json!({"path": "a.rs"}),
+                Instant::now() + Duration::from_secs(5),
+            )
+        });
+        assert_eq!(
+            verdict,
+            Ok(r#"diagnostics ran here with {"path":"a.rs"}"#.to_string())
+        );
+    }
+
+    #[test]
+    fn the_link_tells_the_engine_the_prompt_parts_it_was_given() {
+        let (guest, _host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let cancel = AtomicBool::new(false);
+        let link = HubLink::new(&shared, 7, "toolu_1".to_string(), &cancel, Vec::new())
+            .with_instructions(vec!["Be brief.".to_string(), "Test first.".to_string()]);
+        assert_eq!(link.instructions(), ["Be brief.", "Test first."]);
+        let bare = HubLink::new(&shared, 7, "toolu_2".to_string(), &cancel, Vec::new());
+        assert!(bare.instructions().is_empty());
     }
 
     #[test]

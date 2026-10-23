@@ -1058,7 +1058,6 @@ pub fn self_cost() -> SelfCost {
             cost_row("hub ingest + rollups CPU", 0.62, 1.0, "% of a core"),
             cost_row("hub metrics memory", 38.0, 64.0, "MB"),
             cost_row("heartbeat payload", 2.3, 4.0, "KB avg"),
-            cost_row("Postgres growth", 41.0, 100.0, "MB / day"),
             cost_row("console while live", 1.1, 2.0, "% CPU"),
             cost_row("alert rule evaluation", 0.04, 0.2, "% of a core"),
             cost_row("kept traces", 120.0, 2048.0, "MB of 2 GB cap"),
@@ -1090,7 +1089,7 @@ pub fn report(node: &str) -> serde_json::Value {
                 ["rustc", "r12/1", 92, 1400],
                 ["cargo", "r12/1", 34, 860],
                 ["qemu-system-x86_64", "r15/2", 27, 2100],
-                ["postgres", "hub", 3, 310]
+                ["sqlite", "hub", 3, 310]
             ],
             "gpus": [
                 {"name": "GPU 0", "util_pct": 64, "mem_used_mb": 9120, "mem_total_mb": 24576}
@@ -1099,7 +1098,7 @@ pub fn report(node: &str) -> serde_json::Value {
         "n0" => json!({
             "top_processes": [
                 ["hub", "hub", 18, 640],
-                ["postgres", "hub", 7, 1480]
+                ["sqlite", "hub", 7, 1480]
             ],
             "gpus": []
         }),

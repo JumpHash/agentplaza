@@ -1191,6 +1191,30 @@
       "additionalProperties": false
     }
   },
+  "thread_read": {
+    "description": "Read a seat thread of your task: its subject, state and every message, each with the seat it came from and the seat it went to. Read a thread before you answer it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thread": {"type": "string", "description": "the thread's id, `th<n>`"}
+      },
+      "required": ["thread"],
+      "additionalProperties": false
+    }
+  },
+  "thread_answer": {
+    "description": "Answer a seat thread of your task: the message goes to the seat that last wrote to it, in the same thread. Set `close` when the answer settles the question.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thread": {"type": "string", "description": "the thread's id, `th<n>`"},
+        "text": {"type": "string", "minLength": 1},
+        "close": {"type": "boolean", "description": "close the thread with this answer"}
+      },
+      "required": ["thread", "text"],
+      "additionalProperties": false
+    }
+  },
   "plaza_message_seat": {
     "description": "Send a message to a seat, not to an agent: `reviewer` or `builder` (a seat of your own task), `T12/reviewer` (a seat of another task), or `planner` (your project's planner). The session filling the seat now reads it next; with none, it waits and is the first thing the seat's next session reads. To answer a message, send to the seat it came from with its `thread`. Messages that go back and forth without either seat producing an output are reported to the planner.",
     "input_schema": {
@@ -1613,6 +1637,56 @@
         }
       },
       "additionalProperties": false
+    }
+  },
+  "spawn_helper": {
+    "description": "Start a helper for one bounded job, in this VM, alongside you. It has its own conversation and reads what its job needs; with edits it works in its own git worktree on the branch helper/<id>. It returns at once with the helper's id; await_helper gives its report. Its report is its final answer, capped (max_report_tokens, 2000 by default), not its transcript. A helper cannot start helpers. A helper still running when your work item ends is stopped. To keep an edit, merge its branch into your tree with run (git merge or git cherry-pick); its report names the branch and its diff stat.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "job": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The job, in full: what to find or change, and what to report."
+        },
+        "edits": {
+          "type": "boolean",
+          "description": "Whether the helper may edit, run and test, in its own worktree and branch. Without it the helper only reads."
+        },
+        "model": {
+          "type": "string",
+          "description": "The model the helper runs on: only the one your step allows, which is the default."
+        },
+        "max_report_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8000,
+          "description": "The report's size in tokens (2000 by default)."
+        }
+      },
+      "required": [
+        "job"
+      ]
+    }
+  },
+  "await_helper": {
+    "description": "Wait for a helper started with spawn_helper and get its report. It returns the report as soon as the helper ends, or 'still running' when the wait (timeout_s, 300 by default, at most 3600) ends first. A helper that edited names its branch and diff stat: merge what you keep with run.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The helper's id, as spawn_helper returned it (h1, h2, …)."
+        },
+        "timeout_s": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600
+        }
+      },
+      "required": [
+        "id"
+      ]
     }
   }
 }

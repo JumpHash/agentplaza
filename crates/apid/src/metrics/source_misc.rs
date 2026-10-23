@@ -170,12 +170,6 @@ pub fn self_cost(src: &LiveSource<'_>) -> SelfCost {
             "KB avg".to_string(),
         ),
         (
-            "Postgres growth".to_string(),
-            latest_or_zero(src, "self.pg_bytes_day", EntityKind::Hub, HUB) / 1e6,
-            100.0,
-            "MB / day".to_string(),
-        ),
-        (
             "alert rule evaluation".to_string(),
             latest_or_zero(src, "self.alert_eval_ms", EntityKind::Hub, HUB),
             200.0,

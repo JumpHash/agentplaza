@@ -152,3 +152,18 @@ export function withStrictPermits(settings: Settings, on: boolean): Settings {
 export function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+// ---- The standing rules (PLAN 9.8) -------------------------------------------
+
+/** The longest standing-rules text the hub keeps, in characters after trimming (standing_rules.rs MAX_TEXT). */
+export const STANDING_MAX = 20_000;
+
+/** Why a standing-rules text cannot be saved, or null when it can. */
+export function standingProblem(text: string): string | null {
+  return Array.from(text.trim()).length > STANDING_MAX ? `At most ${STANDING_MAX} characters.` : null;
+}
+
+/** Whether the draft differs from the text in force (surrounding space does not count). */
+export function standingChanged(draft: string, saved: string): boolean {
+  return draft.trim() !== saved.trim();
+}

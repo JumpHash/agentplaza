@@ -11,10 +11,9 @@
 # when the host's disk is short, so a second copy of the compiled crates there would only add to
 # that pressure and be deleted with the build directory.
 #
-# Passed through when set: VERSION, APZ_TEST_DATABASE_URL, APZ_ALLOW_NO_GUEST, APZ_REQUIRE_ENGINE, CROSS_COMPILE,
+# Passed through when set: VERSION, APZ_ALLOW_NO_GUEST, APZ_REQUIRE_ENGINE, CROSS_COMPILE,
 # APZ_BUSYBOX, APZ_PERF_SLACK, CI (the tests' timing budgets read it), GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA.
-# APZ_CI_NETWORK joins a docker network
-# (the tests' Postgres).
+# APZ_CI_NETWORK joins a docker network.
 set -eu
 
 : "${CI_IMAGE:?CI_IMAGE names the CI image}"
@@ -46,7 +45,7 @@ exec docker run --rm \
   $target_args \
   -v "$cache/npm:/ci-npm" -e npm_config_cache=/ci-npm -e npm_config_prefer_offline=true \
   -e CARGO_TERM_COLOR=always -e CARGO_NET_RETRY=10 \
-  -e VERSION -e APZ_TEST_DATABASE_URL -e APZ_ALLOW_NO_GUEST -e APZ_REQUIRE_ENGINE -e CROSS_COMPILE -e APZ_BUSYBOX \
+  -e VERSION -e APZ_ALLOW_NO_GUEST -e APZ_REQUIRE_ENGINE -e CROSS_COMPILE -e APZ_BUSYBOX \
   -e APZ_PERF_SLACK -e CI \
   -e GH_TOKEN -e GITHUB_REPOSITORY -e GITHUB_SHA ${GITHUB_REPOSITORY:+-e GH_REPO=$GITHUB_REPOSITORY} \
   "$CI_IMAGE" bash -euo pipefail -c "$*"

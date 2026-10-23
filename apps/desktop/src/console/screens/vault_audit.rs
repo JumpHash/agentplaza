@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn vault_import_scans_names_and_sends_only_the_picked_lines() {
-        let raw = "# keys\nexport API_KEY=abc\nlower=2\nNOEQ\nAPI_KEY=dup\n\nDB_URL=postgres://x\n";
+        let raw = "# keys\nexport API_KEY=abc\nlower=2\nNOEQ\nAPI_KEY=dup\n\nDB_URL=redis://x\n";
         let (valid, invalid, skipped) = scan_names(raw);
         assert_eq!(valid, vec!["API_KEY".to_string(), "DB_URL".to_string()]);
         assert_eq!(invalid, vec!["lower".to_string()]);
@@ -919,7 +919,7 @@ mod tests {
             &BTreeMap::new(),
         );
         assert_eq!(body["format"], "dotenv");
-        assert_eq!(body["text"], "DB_URL=postgres://x");
+        assert_eq!(body["text"], "DB_URL=redis://x");
         assert_eq!(body["scope"]["kind"], "plaza");
     }
 }

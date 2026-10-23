@@ -176,7 +176,7 @@ mod tests {
         for need in Need::ALL {
             assert_eq!(need.name().parse::<Need>(), Ok(need));
         }
-        for gone in ["docker", "docker-running", "postgres", "garage"] {
+        for gone in ["docker", "docker-running", "garage"] {
             assert!(
                 gone.parse::<Need>().is_err(),
                 "{gone} is no longer a requirement"

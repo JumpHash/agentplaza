@@ -8,8 +8,8 @@
 //!                             answers, usage}; provider and model default to the saved one
 //!
 //! The owner's calls and the agents' (`POST /internal/v1/agents/{cid}/gateway/decisions`, which
-//! an agent reaches as `http://plaza.gateway/decisions`) are refused with 409 while STOP ALL holds the plaza. The saved default lives in Postgres under the
-//! "decisions_default" key, next to the other plaza state.
+//! an agent reaches as `http://plaza.gateway/decisions`) are refused with 409 while STOP ALL holds the plaza. The saved
+//! default is one row of `decisions_default` in plaza.db (the `decisions` component).
 
 use std::sync::Mutex;
 
@@ -18,63 +18,68 @@ use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::db::Db;
 use crate::providers::{Failure, failure, lock};
 use crate::state::App;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 
-/// The Postgres key the saved default lives under.
-const KEY: &str = "decisions_default";
 const HELD: &str = "the plaza is held (STOP ALL); waiting for the owner to resume";
 
-/// A decision model: a provider and one of its models.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A decision model: a provider and one of its models. Also the saved default's row (`decisions_default`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "decisions_default")]
 pub struct Pick {
     pub provider: String,
     pub model: String,
 }
 
-/// The saved default. The first read loads it from Postgres; a write saves it there.
-#[derive(Default)]
-pub struct DefaultStore {
-    state: Mutex<DefaultState>,
+/// The table of the saved default: one row, none while no default is saved.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Pick)
 }
 
+/// The saved default, kept in the hub's store (component `decisions`).
 #[derive(Default)]
-struct DefaultState {
-    loaded: bool,
-    pick: Option<Pick>,
+pub struct DefaultStore {
+    pick: Mutex<Option<Pick>>,
 }
 
 impl DefaultStore {
-    fn get(&self, db: &Db) -> Option<Pick> {
-        let mut state = lock(&self.state);
-        if !state.loaded {
-            state.loaded = true;
-            state.pick = db
-                .load(KEY)
-                .and_then(|text| serde_json::from_str(&text).ok());
-        }
-        state.pick.clone()
+    fn get(&self) -> Option<Pick> {
+        lock(&self.pick).clone()
     }
 
-    fn set(&self, pick: Pick) {
-        let mut state = lock(&self.state);
-        state.loaded = true;
-        state.pick = Some(pick);
+    /// Makes `pick` the default and returns the one it replaced.
+    fn replace(&self, pick: Option<Pick>) -> Option<Pick> {
+        std::mem::replace(&mut *lock(&self.pick), pick)
+    }
+
+    /// The row the saver keeps (none while no default is saved).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        match self.get() {
+            Some(pick) => RowSet::one(def(), &pick),
+            None => Ok(RowSet::new()),
+        }
+    }
+
+    /// Replaces the default with what the store holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        *lock(&self.pick) = apz_store::table::load_one::<Pick>(conn, def())?;
+        Ok(())
     }
 }
 
 fn current(app: &App) -> Option<Pick> {
-    app.providers.decisions.get(&app.db)
+    app.providers.decisions.get()
 }
 
-/// Saves the default in Postgres, then makes it the live one.
+/// Makes `pick` the default and saves it to plaza.db now. A save that fails leaves the previous default in place.
 fn save(app: &App, pick: &Pick) -> Result<(), Failure> {
-    let json = serde_json::to_string(pick).map_err(|e| (500, e.to_string()))?;
-    app.db
-        .store(KEY, &json)
-        .map_err(|e| (500, format!("cannot save: {e}")))?;
-    app.providers.decisions.set(pick.clone());
+    let previous = app.providers.decisions.replace(Some(pick.clone()));
+    if !crate::store::saver::save_now(app, "decisions") {
+        app.providers.decisions.replace(previous);
+        return Err((500, "cannot save".into()));
+    }
     Ok(())
 }
 

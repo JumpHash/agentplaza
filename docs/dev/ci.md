@@ -24,7 +24,6 @@ the hub compiles them in or tests against them, so they count as code.
 |---|---|---|
 | `changes` | always | What the change touches (`changes.sh`) |
 | `lint` | code or CI changed | `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo deny check` (advisories, licences, sources: `deny.toml`) |
-| `migrations` | code or CI changed | Applied migrations unchanged, new ones numbered in order (`scripts/check-migrations.sh`) |
 | `console` | the console or what it compiles from changed | The web console's type-check, build and tests (`console.yml`) |
 | `linux` | code or CI changed | The Linux tests (`linux.yml`). x86_64 runs the whole workspace. arm64 runs natively on its own runners, for the packages whose code differs there (`vmm`, `vmctl`, `noded`, `vsockd`, `apz-setup`, `acpi_tables`). Nightly runs arm64's full suite on x86_64 under qemu |
 | `windows`, `macos` | platform code changed | The Windows and macOS tests |
@@ -52,7 +51,7 @@ minute. That happens when the pull request was up to date with main and alone in
 On a pull request, `cargo check` only checks that they compile. The merge queue, nightly and
 releases build and link them in full.
 
-**The light runner.** `changes`, `migrations`, `ci-ok`, the release's `version` job and nightly's
+**The light runner.** `changes`, `ci-ok`, the release's `version` job and nightly's
 `changes` check take seconds. They run on the org's light runner (`[self-hosted, light]`, 1 vCPU),
 so they never wait behind a build.
 
@@ -127,7 +126,7 @@ run:
 
 - **Tests:** every platform's tests in one table (passed, failed, time), with each failure's output.
   Windows arm64 and Apple Silicon only build, and say so.
-- **Lint:** rustfmt, clippy, cargo deny and the migrations check, with a failed check's last output.
+- **Lint:** rustfmt, clippy and cargo deny, with a failed check's last output.
 - **Web console:** type-check, build with the wasm engine, tests.
 - **Hub API (Bruno):** requests passing, operations covered, fuzzing findings, and a link to the full
   report on Pages (below).

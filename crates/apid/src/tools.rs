@@ -48,6 +48,8 @@ const ALWAYS: &[&str] = &[
     "plaza_send_message",
     "plaza_message_seat",
     "team_set",
+    "thread_read",
+    "thread_answer",
     "share_file",
     "plaza_get_file",
     "fetch_url",
@@ -78,6 +80,8 @@ const ALWAYS: &[&str] = &[
     "weft_show",
     "weft_blame",
     "weft_map",
+    "weft_change_tree",
+    "weft_touches",
     "plaza_maintenance",
     "plaza_maintenance_map",
     "plaza_maintenance_propose",
@@ -132,6 +136,8 @@ const IN_VM: &[&str] = &[
     "references",
     "diagnostics",
     "outline",
+    "spawn_helper",
+    "await_helper",
 ];
 
 /// Host tools offered only by tier (see [`permitted`]).
@@ -190,7 +196,9 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "definition"
         | "references"
         | "diagnostics"
-        | "outline" => Some(Runs::Guest),
+        | "outline"
+        | "spawn_helper"
+        | "await_helper" => Some(Runs::Guest),
         "transcript_search"
         | "submit_claim"
         | "plaza_tasks"
@@ -200,6 +208,8 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_send_message"
         | "plaza_message_seat"
         | "team_set"
+        | "thread_read"
+        | "thread_answer"
         | "plaza_agents"
         | "plaza_post_task"
         | "plaza_tasks_post"
@@ -1002,6 +1012,14 @@ fn host_call(
             }))
         }
         "team_set" => crate::work_loop::team_set(app, agent, input),
+        "thread_read" => crate::work_loop::thread_read(app, agent.cid, str_arg(input, "thread")?),
+        "thread_answer" => crate::work_loop::thread_answer(
+            app,
+            agent.cid,
+            str_arg(input, "thread")?,
+            str_arg(input, "text")?,
+            input.get("close").and_then(Value::as_bool).unwrap_or(false),
+        ),
         "plaza_message_seat" => crate::work_loop::message_seat(
             app,
             agent.cid,

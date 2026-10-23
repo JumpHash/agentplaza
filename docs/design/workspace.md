@@ -140,7 +140,7 @@ context to expected spans), so the three apps recognise the same things.
 - Providers are an allow-list: GitHub (`api.github.com`, with the owner's GitHub token when one is in the vault or a
   connector, anonymous otherwise), the plaza's git (Forgejo API), plaza agents, tasks, files and library items. The hub
   never fetches arbitrary URLs (no SSRF path).
-- Cache in Postgres (`unfurl_cache`: key, data, fetched_ms, ok) with the file fallback; 10 minutes for open items,
+- Cache in SQLite (`unfurl_cache`: key, data, fetched_ms, ok); 10 minutes for open items,
   1 hour for merged or closed ones, 1 minute for failures. Rate limits are respected and reported as "preview
   unavailable".
 - Workspace file previews go through the IDE routes that exist (`/v1/ide/...` read, first 12 lines).

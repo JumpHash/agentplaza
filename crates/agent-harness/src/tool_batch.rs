@@ -73,6 +73,9 @@ pub fn touch(workspace: &Workspace, name: &str, input: &Value) -> Touch {
         // A script may read or write anything in the workspace, and makes its own calls under their decisions: it runs
         // alone, as a command in the workspace root.
         "run_script" => Touch::Command(workspace.dir().to_path_buf()),
+        // A helper is started or awaited without touching a path: it runs beside the calls around it (its worktree
+        // is its own, see `helpers`).
+        "spawn_helper" | "await_helper" => Touch::Many(Vec::new()),
         "run" | "run_tests" => match input.get("cwd") {
             None | Some(Value::Null) => Touch::Command(workspace.dir().to_path_buf()),
             Some(Value::String(raw)) => match workspace.resolve(raw) {

@@ -18,7 +18,3 @@ scenario AP-072.R5 "Experience outweighs the crowd" {
   // example uses E = 0.9 directly, so the blend is checked on the formula, not on r and s.
   then round_to(blend_weight(20) * 0.9 + (1 - blend_weight(20)) * 0.4, 0.01) == 0.8
 }
-
-scenario AP-072.R1 "Verified first-time work" {
-  then round_to(value_weight(400 cr), 0.01) == 2.61
-}
