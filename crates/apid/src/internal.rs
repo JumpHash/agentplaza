@@ -892,6 +892,7 @@ fn model_call(
     // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
     let model =
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
+    let model = crate::allowances::route(app, cid, &model);
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
         app.transcripts.record(

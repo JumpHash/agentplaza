@@ -8,7 +8,7 @@
 //! `allowances` list, one entry per window (see [`parse`]). The ticker reads every provider again every five minutes.
 //! Every rule takes the time as an argument, so a test runs them on a fake clock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -73,15 +73,15 @@ pub fn vendor_of(name: &str) -> String {
     }
 }
 
-/// The windows in a usage answer: an `allowances` list at its top or under `usage`. Each entry names its `provider` (or
-/// `vendor`), its `window`, its `limit`, and optionally its `used` (0 when absent), its `account` and its `resets_at`
-/// (epoch milliseconds, or an RFC 3339 time in UTC). An entry with no window or no limit is skipped.
+/// The windows in a usage answer. This is the one place the allowance field names are read. They are read from the
+/// `usage` object that `usage_providers.rs` already reads the totals from (the answer itself when it has none), as its
+/// `allowances` list. ASSUMED, not seen in CLIProxyAPI's answer: the list, and each entry's `provider` (or `vendor`),
+/// `window`, `limit`, `used` (0 when absent), `account` (optional) and `resets_at` (epoch milliseconds, or an RFC 3339
+/// UTC time). An entry with no provider, window or limit is skipped. The test fixture in `tests/subscriptions.rs`
+/// answers this same shape.
 pub fn parse(answer: &Value, checked_ms: u64) -> Vec<Allowance> {
-    let list = answer
-        .get("allowances")
-        .or_else(|| answer.pointer("/usage/allowances"))
-        .and_then(Value::as_array);
-    let Some(items) = list else {
+    let usage = answer.get("usage").unwrap_or(answer);
+    let Some(items) = usage.get("allowances").and_then(Value::as_array) else {
         return Vec::new();
     };
     items
@@ -161,15 +161,60 @@ pub fn is_subscription(policy: &ModelPolicy, model: &str) -> bool {
     policy.subscription.iter().any(|m| bare(m) == model)
 }
 
-/// The sessions an allowance paused, each with the vendor it waits on. Held in memory: a session paused before a
-/// restart waits on no vendor and resumes once no allowance blocks at all.
+/// What the allowances hold in memory: the sessions an allowance paused, each with the vendor it waits on (a session
+/// paused before a restart waits on no vendor and resumes once no allowance blocks at all), and the projects whose
+/// owner chose the API-key route for their subscription calls.
 #[derive(Default)]
-pub struct Waits(Mutex<BTreeMap<String, String>>);
+pub struct Waits {
+    waiting: Mutex<BTreeMap<String, String>>,
+    api_key: Mutex<BTreeSet<String>>,
+}
 
 impl Waits {
     fn lock(&self) -> MutexGuard<'_, BTreeMap<String, String>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.waiting.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    fn api_key(&self) -> MutexGuard<'_, BTreeSet<String>> {
+        self.api_key.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// An allowance card's subject: `allowance:<vendor>:<project>`, one card per vendor and project.
+fn subject(vendor: &str, project: &str) -> String {
+    format!("{SUBJECT}{vendor}:{project}")
+}
+
+/// The (vendor, project) of an allowance card's subject.
+fn of_subject(subject: &str) -> Option<(&str, &str)> {
+    subject.strip_prefix(SUBJECT)?.split_once(':')
+}
+
+/// The policy's fallback for a subscription model: its first worker model that is not a subscription. The API-key
+/// route a project switches to goes there.
+pub fn fallback(policy: &ModelPolicy) -> Option<String> {
+    policy
+        .worker
+        .iter()
+        .map(|m| bare(m).to_string())
+        .find(|m| !is_subscription(policy, m))
+}
+
+/// The model a session's call really goes to. A subscription model of a project whose owner chose the API-key route
+/// goes to the policy's fallback instead; any other call keeps the model it asked for. The gateway's engine calls are
+/// not rerouted: their model is the engine's own.
+pub fn route(app: &App, cid: u64, model: &str) -> String {
+    let policy = app.settings.get().model_policy;
+    if !is_subscription(&policy, model) {
+        return model.to_string();
+    }
+    let Some(session) = app.sessions.by_cid(cid) else {
+        return model.to_string();
+    };
+    if !app.allowance_waits.api_key().contains(&session.project) {
+        return model.to_string();
+    }
+    fallback(&policy).unwrap_or_else(|| model.to_string())
 }
 
 /// Before a model call of agent `cid` is held or sent: a call of a subscription model waits while its vendor's
@@ -240,7 +285,7 @@ pub fn tick(app: &App, now: u64) {
         .into_iter()
         .filter(|c| c.kind == cards::Kind::Allowance)
     {
-        let Some(vendor) = card.subject.strip_prefix(SUBJECT) else {
+        let Some((vendor, _)) = of_subject(&card.subject) else {
             continue;
         };
         if blocking(&allowances, vendor, now).is_none() {
@@ -278,6 +323,7 @@ fn ask(app: &App, vendor: &str, window: &Allowance, session: Option<&Session>, n
         window.limit,
         reset_words(window, now)
     );
+    let key = subject(vendor, &project);
     let (card, created) = app.cards.open(
         NewCard {
             kind: cards::Kind::Allowance,
@@ -285,7 +331,7 @@ fn ask(app: &App, vendor: &str, window: &Allowance, session: Option<&Session>, n
             project: Some(project),
             task,
             session: None,
-            subject: format!("{SUBJECT}{vendor}"),
+            subject: key,
             title: title.clone(),
             body: Some(body.clone()),
             choices: choices(),
@@ -325,6 +371,16 @@ fn choices() -> Vec<Choice> {
             takes_amount: false,
         },
         Choice {
+            id: "api_key".into(),
+            label: "Use an API key for this project".into(),
+            detail: Some(
+                "this project's subscription calls go to the policy's first model that is not a subscription, \
+                 and its waiting sessions resume now"
+                    .into(),
+            ),
+            takes_amount: false,
+        },
+        Choice {
             id: "stop".into(),
             label: "Stop the waiting tasks".into(),
             detail: Some("their tasks end with a handover; nothing more is spent".into()),
@@ -352,23 +408,41 @@ fn sentence(vendor: &str, window: &Allowance, now: u64) -> String {
     )
 }
 
-/// The owner's answer to an allowance card: `wait` leaves the sessions to resume at the reset; `stop` ends the tasks
-/// whose sessions wait on the vendor.
+/// The sessions of `project` that an allowance of `vendor` paused.
+fn waiting_on(app: &App, vendor: &str, project: &str) -> Vec<String> {
+    let waits = lock_waits(app).clone();
+    waits
+        .into_iter()
+        .filter(|(_, waiting)| waiting.as_str() == vendor)
+        .map(|(id, _)| id)
+        .filter(|id| app.sessions.get(id).is_some_and(|s| s.project == project))
+        .collect()
+}
+
+/// The owner's answer to an allowance card. `wait` leaves the sessions to resume at the reset. `api_key` switches the
+/// project's subscription calls to the policy's fallback (see [`route`]) and resumes its waiting sessions now. `stop`
+/// ends the tasks whose sessions wait on the vendor.
 pub fn card_answered(app: &App, card: &Card) -> String {
     let now = apz_plaza::now_ms();
-    let Some(vendor) = card.subject.strip_prefix(SUBJECT) else {
+    let Some((vendor, project)) = of_subject(&card.subject) else {
         return "recorded".into();
     };
     match card.answer.as_deref().unwrap_or("") {
+        "api_key" => {
+            app.allowance_waits.api_key().insert(project.to_string());
+            let waiting = waiting_on(app, vendor, project);
+            for id in &waiting {
+                resume(app, id, now);
+            }
+            format!(
+                "{project}'s {vendor} calls use the policy's API-key model; {} sessions resumed",
+                waiting.len()
+            )
+        }
         "stop" => {
-            let waits = lock_waits(app).clone();
             let mut stopped = 0;
-            for id in waits
-                .iter()
-                .filter(|(_, waiting)| waiting.as_str() == vendor)
-                .map(|(id, _)| id)
-            {
-                let Some(task) = app.sessions.get(id).and_then(|s| s.task) else {
+            for id in waiting_on(app, vendor, project) {
+                let Some(task) = app.sessions.get(&id).and_then(|s| s.task) else {
                     continue;
                 };
                 crate::work_loop::stop_task(
@@ -485,6 +559,14 @@ mod tests {
         assert_eq!(windows[1].used, 0);
         assert_eq!(windows[1].resets_ms, Some(1_800_000_000_000));
         assert!(parse(&json!({ "usage": {} }), 1).is_empty());
+        assert!(
+            parse(
+                &json!({ "usage": {}, "allowances": answer["usage"]["allowances"] }),
+                1
+            )
+            .is_empty(),
+            "the usage object is read, as the totals are: a root list is read only when there is none"
+        );
     }
 
     #[test]
@@ -517,6 +599,24 @@ mod tests {
             blocking(&[window(10, None)], "anthropic", 1).is_some(),
             "no reset time blocks until a reading says otherwise"
         );
+    }
+
+    #[test]
+    fn the_fallback_is_the_first_worker_model_that_is_not_a_subscription() {
+        let policy = ModelPolicy {
+            orchestrator: vec![],
+            worker: vec![
+                "anthropic/claude-haiku-5-5@low".into(),
+                "openai/gpt-6-luna".into(),
+            ],
+            subscription: vec!["anthropic/claude-haiku-5-5".into()],
+        };
+        assert_eq!(fallback(&policy).as_deref(), Some("openai/gpt-6-luna"));
+        let only_subscriptions = ModelPolicy {
+            worker: vec!["anthropic/claude-haiku-5-5".into()],
+            ..policy
+        };
+        assert_eq!(fallback(&only_subscriptions), None);
     }
 
     #[test]

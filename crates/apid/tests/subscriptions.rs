@@ -22,14 +22,16 @@ use common::{FakeDaemon, Hub, Scratch, text};
 const FIRST_CID: u64 = 500;
 const WAIT: Duration = Duration::from_secs(20);
 
-/// The default orchestrator list, as the policy starts with it, and the worker list with the mock agent added.
+/// The default orchestrator list, as the policy starts with it, and the worker list with the mock agent added. The mock
+/// echo comes first: it is the policy's fallback for a subscription model (`allowances::fallback`).
 const ORCHESTRATOR: [&str; 4] = [
     "anthropic/claude-opus-5-5",
     "anthropic/claude-fable-5-1",
     "openai/gpt-6-astra",
     "xai/grok-4.7",
 ];
-const WORKER: [&str; 7] = [
+const WORKER: [&str; 8] = [
+    "mock/echo",
     "deepseek/deepseek-flash",
     "anthropic/claude-haiku-5-5",
     "anthropic/claude-opus-5-5@low",
@@ -46,10 +48,12 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// The fake CLIProxyAPI: a usage answer with its one window used up, reset a few seconds after the first reading.
-fn usage_hub() -> FakeDaemon {
+/// The fake CLIProxyAPI. Its usage answer carries the allowance windows inside the `usage` object, the object
+/// `usage_providers.rs` reads the totals from (the shape `allowances::parse` reads, assumed: see its doc). The one
+/// window is used up, and it resets `reset_in_ms` after the first reading (scaled by the slack of a slow run).
+fn usage_hub(reset_in_ms: u64) -> FakeDaemon {
     let reset: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
-    let reset_in = (8_000.0 * common::slack()) as u64;
+    let reset_in = (reset_in_ms as f64 * common::slack()) as u64;
     FakeDaemon::serve(move |method, path, _| {
         if method != "GET" {
             return (405, "{}".into());
@@ -61,12 +65,14 @@ fn usage_hub() -> FakeDaemon {
                 (
                     200,
                     json!({
-                        "usage": { "total_requests": 40, "success_count": 40, "failure_count": 0,
-                                   "total_tokens": 9000, "apis": {} },
-                        "allowances": [{
-                            "provider": "mock", "account": "owner@example.com", "window": "5h",
-                            "used": 40, "limit": 40, "resets_at": resets_at
-                        }]
+                        "usage": {
+                            "total_requests": 40, "success_count": 40, "failure_count": 0,
+                            "total_tokens": 9000, "apis": {},
+                            "allowances": [{
+                                "provider": "mock", "account": "owner@example.com", "window": "5h",
+                                "used": 40, "limit": 40, "resets_at": resets_at
+                            }]
+                        }
                     })
                     .to_string(),
                 )
@@ -178,9 +184,16 @@ fn open_cards(hub: &Hub) -> Vec<Value> {
     cards.as_array().cloned().unwrap_or_default()
 }
 
-#[test]
-fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_the_reset() {
-    let usage = usage_hub();
+/// A hub with the roles a builder, a reviewer and a verifier need, and the work engine's stand-ins.
+struct Rig {
+    hub: Hub,
+    gateway: FakeDaemon,
+    usage: FakeDaemon,
+    _noded: FakeDaemon,
+    _scratch: Scratch,
+}
+
+fn rig(name: &str, reset_in_ms: u64) -> Rig {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
     let roles = json!({ "roles": {
@@ -189,7 +202,7 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
         "reviewer": { "role": "reviewer", "title": "Reviewer", "tools": ["run", "read"] },
         "verifier": { "role": "verifier", "title": "Verifier", "tools": ["run", "read"] },
     } });
-    let scratch = Scratch::new("subscriptions");
+    let scratch = Scratch::new(name);
     let no_weft = scratch.0.join("no-weft");
     let hub = Hub::start_with_env(
         &scratch,
@@ -198,9 +211,29 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
         Some(&roles),
         &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
     );
+    Rig {
+        hub,
+        gateway,
+        usage: usage_hub(reset_in_ms),
+        _noded: noded,
+        _scratch: scratch,
+    }
+}
 
-    // The policy names the mock agent (its vendor is `mock`, the stand-in for a subscription's vendor). A subscription
-    // entry that the policy does not name is refused.
+/// A builder whose first call waited on its subscription's allowance.
+struct Waiting {
+    pid: String,
+    tid: String,
+    session_id: String,
+    cid: u64,
+    work: u64,
+}
+
+/// The policy names the mock agent as a subscription, a fake CLIProxyAPI is the usage provider, and a project and a
+/// task run its builder on the mock agent. The builder's first call waits (paused by its allowance, card asked).
+fn waiting_builder(rig: &Rig) -> Waiting {
+    let hub = &rig.hub;
+    // A subscription entry the policy does not name is refused; the named one is saved.
     let (status, refused) = hub.call(
         "PUT",
         "/v1/settings",
@@ -223,11 +256,10 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
         "{saved}"
     );
 
-    // The usage provider: the fake CLIProxyAPI, with a key the vault holds. Its first reading shows the window used up.
     let (status, provider) = hub.call(
         "POST",
         "/v1/usage-providers",
-        Some(json!({ "id": "fake-hub", "url": format!("http://127.0.0.1:{}", usage.port), "key": "test-management-key", "label": "Fake hub" })),
+        Some(json!({ "id": "fake-hub", "url": format!("http://127.0.0.1:{}", rig.usage.port), "key": "test-management-key", "label": "Fake hub" })),
     );
     assert_eq!(status, 201, "{provider}");
     assert_eq!(provider["last"]["status"], "ok", "{provider}");
@@ -238,8 +270,7 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
     assert_eq!(windows[0]["blocking"], true, "{windows}");
     assert_eq!(windows[0]["models"], json!(["mock/agent"]), "{windows}");
 
-    // A task of the project: its builder's session has a VM, and its first call waits on the allowance.
-    let pid = project(&hub);
+    let pid = project(hub);
     let (status, task) = hub.call(
         "POST",
         "/v1/tasks",
@@ -264,7 +295,7 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
     let (work, prompt) = {
         let deadline = std::time::Instant::now() + WAIT;
         loop {
-            if let Some(found) = pushed(&gateway, cid).into_iter().next() {
+            if let Some(found) = pushed(&rig.gateway, cid).into_iter().next() {
                 break found;
             }
             assert!(
@@ -276,60 +307,61 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
     };
     assert!(prompt.contains("Update the changelog"), "{prompt}");
 
-    let reply = model_call(&hub, cid, work, 1);
+    let reply = model_call(hub, cid, work, 1);
     assert_eq!(reply["ok"], false, "{reply}");
     let error = text(&reply["error"]);
     assert!(error.starts_with("paused: "), "{reply}");
     assert!(error.contains("allowance"), "{reply}");
     let (_, paused) = hub.call("GET", &format!("/v1/sessions/{session_id}"), None);
-    assert_eq!(
-        paused["state"],
-        "paused",
-        "the reset came before the pause: {paused}\n{}",
-        hub.log()
-    );
+    assert_eq!(paused["state"], "paused", "{paused}\n{}", hub.log());
     assert_eq!(paused["paused_by"], "allowance", "{paused}");
-    let card = open_cards(&hub)
+    let card = open_cards(hub)
         .into_iter()
-        .find(|c| c["subject"] == "allowance:mock")
+        .find(|c| c["subject"] == format!("allowance:mock:{pid}"))
         .unwrap_or_else(|| panic!("an allowance card: {}", hub.log()));
     assert_eq!(card["kind"], "allowance", "{card}");
     assert_eq!(card["task"], tid, "{card}");
     assert!(
         card["body"].as_str().unwrap_or("").contains("resets in"),
-        "the card says when: {card}"
+        "{card}"
     );
+    Waiting {
+        pid,
+        tid,
+        session_id,
+        cid,
+        work,
+    }
+}
+
+#[test]
+fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_the_reset() {
+    let rig = rig("subscriptions", 8_000);
+    let hub = &rig.hub;
+    let waiting = waiting_builder(&rig);
 
     // The window resets: the ticker resumes the session without anyone asking, and the card is withdrawn.
-    let resumed = hub.wait_for(&format!("/v1/sessions/{session_id}"), WAIT, |s| {
+    let resumed = hub.wait_for(&format!("/v1/sessions/{}", waiting.session_id), WAIT, |s| {
         s["state"] == "running"
     });
     assert_eq!(resumed["paused_by"], Value::Null, "{resumed}");
-    let cleared = {
-        let deadline = std::time::Instant::now() + WAIT;
-        loop {
-            if !open_cards(&hub)
-                .iter()
-                .any(|c| c["subject"] == "allowance:mock")
-            {
-                break true;
-            }
-            if std::time::Instant::now() > deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    };
-    assert!(
-        cleared,
-        "the allowance card is withdrawn at the reset: {}",
-        hub.log()
-    );
+    let deadline = std::time::Instant::now() + WAIT;
+    while open_cards(hub)
+        .iter()
+        .any(|c| c["subject"] == format!("allowance:mock:{}", waiting.pid))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the allowance card is withdrawn at the reset: {}",
+            hub.log()
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 
     // Its next call goes through to the model, and its usage is charged to the task.
-    let reply = model_call(&hub, cid, work, 2);
+    let reply = model_call(hub, waiting.cid, waiting.work, 2);
     assert_eq!(reply["ok"], true, "{reply}");
-    let (_, budget) = hub.call("GET", &format!("/v1/tasks/{tid}/budget"), None);
+    let (_, budget) = hub.call("GET", &format!("/v1/tasks/{}/budget", waiting.tid), None);
     assert!(
         budget["spent"].as_u64().unwrap_or(0) > 0,
         "charged: {budget}"
@@ -337,7 +369,67 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
 }
 
 #[test]
-fn the_login_bridge_is_off_by_default_and_offered_only_for_its_vendors() {
+fn the_api_key_choice_moves_the_project_to_the_policys_fallback_and_resumes_its_session_at_once() {
+    // The window stays used up for ten minutes: only the API-key route can get the call through.
+    let rig = rig("subscriptions-api-key", 600_000);
+    let hub = &rig.hub;
+    let waiting = waiting_builder(&rig);
+
+    let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
+    let card = cards
+        .as_array()
+        .and_then(|c| {
+            c.iter()
+                .find(|c| c["subject"] == format!("allowance:mock:{}", waiting.pid))
+                .cloned()
+        })
+        .unwrap_or_else(|| panic!("the allowance card: {cards}"));
+    let choices: Vec<&str> = card["choices"]
+        .as_array()
+        .map(|c| c.iter().filter_map(|c| c["id"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(choices, ["wait", "api_key", "stop"], "{card}");
+
+    let (status, answered) = hub.call(
+        "POST",
+        &format!("/v1/cards/{}", text(&card["id"])),
+        Some(json!({ "choice": "api_key" })),
+    );
+    assert_eq!(status, 200, "{answered}\n{}", hub.log());
+    assert_eq!(answered["card"]["answer"], "api_key", "{answered}");
+
+    // The session runs again at once (the window has not reset), and its call goes to the fallback model.
+    let resumed = hub.wait_for(
+        &format!("/v1/sessions/{}", waiting.session_id),
+        Duration::from_secs(5),
+        |s| s["state"] == "running",
+    );
+    assert_eq!(resumed["paused_by"], Value::Null, "{resumed}");
+    let reply = model_call(hub, waiting.cid, waiting.work, 3);
+    assert_eq!(
+        reply["ok"],
+        true,
+        "the fallback answered: {reply}\n{}",
+        hub.log()
+    );
+    let (_, budget) = hub.call("GET", &format!("/v1/tasks/{}/budget", waiting.tid), None);
+    assert!(
+        budget["spent"].as_u64().unwrap_or(0) > 0,
+        "charged: {budget}"
+    );
+    let (_, open) = hub.call("GET", "/v1/cards?open=true", None);
+    assert!(
+        !open
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|c| c["subject"] == format!("allowance:mock:{}", waiting.pid)),
+        "the card is answered: {open}"
+    );
+}
+
+#[test]
+fn the_login_bridge_is_off_by_default_offered_per_vendor_and_owner_only_over_http() {
     // Switching a vendor on writes the `login_bridge` table, which 0001_init.sql does not create yet (the lead merges
     // `p133-schema.sql` after review); until then the save is refused with 500. The switch's on path and its refusals
     // are unit-tested in `login_bridge.rs`; this test covers what the hub answers without a save.
@@ -363,6 +455,40 @@ fn the_login_bridge_is_off_by_default_and_offered_only_for_its_vendors() {
             "labelled with the terms: {bridge}"
         );
     }
+
+    // Not the owner: a page of another origin reaching the hub on loopback gets no loopback trust, and the hub's
+    // agent token is a credential of the machine, not of its owner. The hub's `/v1` gate answers it 401 before the
+    // route runs; the route's own 403 (`refused`) is the second line. Both the read and the switch are refused, and the
+    // switch stays off.
+    let agent = format!("Bearer {}", hub.token());
+    let cross_site = [
+        ("authorization", agent.as_str()),
+        ("origin", "https://elsewhere.example"),
+        ("sec-fetch-site", "cross-site"),
+    ];
+    let (status, refused) = hub.send_with_headers("GET", "/v1/login-bridges", &cross_site, &[]);
+    assert_eq!(status, 401, "{refused}");
+    let (status, refused) = hub.send_with_headers(
+        "PUT",
+        "/v1/login-bridges/anthropic",
+        &[
+            ("authorization", agent.as_str()),
+            ("origin", "https://elsewhere.example"),
+            ("sec-fetch-site", "cross-site"),
+            ("content-type", "application/json"),
+        ],
+        br#"{"enabled":true}"#,
+    );
+    assert_eq!(status, 401, "{refused}");
+    let (_, bridges) = hub.call("GET", "/v1/login-bridges", None);
+    assert!(
+        bridges
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|b| b["enabled"] == false),
+        "a refused switch changes nothing: {bridges}"
+    );
 
     let (status, unknown) = hub.call(
         "PUT",
