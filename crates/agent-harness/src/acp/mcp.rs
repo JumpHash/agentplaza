@@ -94,7 +94,7 @@ pub fn group_of(name: &str) -> Option<Group> {
         | "weft_map" | "weft_change_tree" | "weft_touches" => Group::Weft,
         "review_tree" | "review_score" | "review_verdict" | "review_spawn" => Group::Review,
         "symbols" | "definition" | "references" | "diagnostics" | "outline" => Group::Code,
-        "run_tests" => Group::Tests,
+        "run_tests" | "tests_select" => Group::Tests,
         "plaza_skills" | "plaza_skill_read" => Group::Skills,
         "spawn_helper" | "await_helper" => Group::Helpers,
         "plaza_message_seat" | "thread_read" | "thread_answer" => Group::Talk,
@@ -598,6 +598,7 @@ mod tests {
         assert_eq!(group_of("review_verdict"), Some(Group::Review));
         assert_eq!(group_of("diagnostics"), Some(Group::Code));
         assert_eq!(group_of("run_tests"), Some(Group::Tests));
+        assert_eq!(group_of("tests_select"), Some(Group::Tests));
         assert_eq!(group_of("x_lint"), Some(Group::Library));
         assert_eq!(group_of("plaza_skill_read"), Some(Group::Skills));
         assert_eq!(group_of("await_helper"), Some(Group::Helpers));

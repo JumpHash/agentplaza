@@ -17,9 +17,12 @@ id = "build"
 engine = "check"
 gate = ["passed"]
 
+# The tests are the ones `tests_select` picks for the change from the project's coverage map on main (the full suite when no
+# map is recorded): the same selection an agent asks for, and the scheduled full run on main records the map (4.5).
 [[steps]]
 id = "tests"
 engine = "check"
+tools = ["tests_select"]
 gate = ["passed", "tests green"]
 
 [[steps]]

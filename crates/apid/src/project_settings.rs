@@ -71,6 +71,10 @@ pub struct ProjectSettings {
     /// How long a finished task waits for a reviewer before the owner is asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_timeout_minutes: Option<u32>,
+    /// The minutes between the full suite's runs on main (the coverage map and the misses, PLAN 15.4). 0 turns the
+    /// schedule off; [`crate::full_run::DEFAULT_MINUTES`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_suite_minutes: Option<u32>,
     /// The most tasks of the project that run at once (its team's maximum); [`DEFAULT_TEAM_MAX`] when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_max: Option<u32>,
@@ -151,6 +155,7 @@ struct SettingsRow {
     task_budget: Option<u64>,
     permission_mode: Option<Mode>,
     review_timeout_minutes: Option<u32>,
+    full_suite_minutes: Option<u32>,
     team_max: Option<u32>,
     team_target: Option<u32>,
     hook_defaults: bool,
@@ -217,6 +222,7 @@ impl SettingsRow {
             task_budget: settings.task_budget,
             permission_mode: settings.permission_mode,
             review_timeout_minutes: settings.review_timeout_minutes,
+            full_suite_minutes: settings.full_suite_minutes,
             team_max: settings.team_max,
             team_target: settings.team_target,
             hook_defaults: settings.hook_defaults,
@@ -237,6 +243,7 @@ impl SettingsRow {
             task_budget: self.task_budget,
             permission_mode: self.permission_mode,
             review_timeout_minutes: self.review_timeout_minutes,
+            full_suite_minutes: self.full_suite_minutes,
             team_max: self.team_max,
             team_target: self.team_target,
             hooks: self.hooks,
@@ -306,6 +313,11 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         && !(1..=10_080).contains(&minutes)
     {
         return Err("review_timeout_minutes must be 1 to 10080 (a week)".into());
+    }
+    if let Some(minutes) = settings.full_suite_minutes
+        && minutes > 10_080
+    {
+        return Err("full_suite_minutes must be 0 (off) to 10080 (a week)".into());
     }
     check_team(settings)?;
     let hooks: Vec<Hook> = settings.hooks.iter().cloned().map(Hook::from).collect();
@@ -446,6 +458,14 @@ pub fn model_for(app: &App, agent: &Agent) -> Option<String> {
         .get(&agent.role)
         .cloned()
         .or(settings.default_model)
+}
+
+/// The minutes between a project's full suite runs: its setting, or the default (0 turns the schedule off).
+pub fn full_suite_minutes(app: &App, pid: &str) -> u32 {
+    app.project_settings
+        .get(pid)
+        .full_suite_minutes
+        .unwrap_or(crate::full_run::DEFAULT_MINUTES)
 }
 
 /// The amount (in the project budget's unit) a task of project `pid` reserves when it names none.
@@ -600,6 +620,7 @@ pub fn effective(app: &App, id: &str) -> Value {
             },
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
+            "full_suite_minutes": pick(own.full_suite_minutes.map(Value::from), json!(crate::full_run::DEFAULT_MINUTES)),
             "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
             "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },

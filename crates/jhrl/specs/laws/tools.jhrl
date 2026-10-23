@@ -305,3 +305,15 @@ law "T-032" "The planner sizes the team" {
   resource is Tool
   when resource.name == "team_set" and principal.role == "planner"
 }
+
+law "T-035" "Every agent may ask which tests a change needs" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may ask, for a change it names, which tests the project's coverage map selects: a read that runs nothing."
+  rationale "The selection tells an agent what to run and changes nothing: the tests it names are run by run_tests, under the laws that govern a run."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "tests_select"
+}

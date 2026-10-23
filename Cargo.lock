@@ -356,6 +356,7 @@ dependencies = [
  "apz-skill",
  "apz-station",
  "apz-store",
+ "apz-testsel",
  "apz-theme",
  "apz-trust",
  "apz-uds",
@@ -813,6 +814,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "apz-testsel"
+version = "0.1.0"
+dependencies = [
+ "apz-store",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
