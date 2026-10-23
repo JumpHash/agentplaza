@@ -154,7 +154,7 @@ steps installed and what the start command left running.
   matches a ready build of the same template reuses that build's snapshot at once, and is ready without a sandbox
   ("Build cached" in its log). `force` (the SDK's `skip_cache`, or a step's `force`) builds afresh. There is no
   per-step cache: a changed build runs every step.
-- **Records.** Templates are kept in `<state>/e2b-templates.json`. Build logs are kept in memory; a build the hub was
+- **Records.** Templates are kept in `plaza.db` (the `e2b_templates` component). Build logs are kept in memory; a build the hub was
   running when it stopped is marked failed at the next start, and its sandbox is ended.
 - **Failures.** A failed build ends its sandbox and deletes any snapshot it took; so does a build that panics, or one
   whose result cannot be saved. A template is not deleted while one of its builds runs, or while a running build starts

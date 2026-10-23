@@ -206,9 +206,10 @@ pub fn run(
             }
             diff = json!(unified);
             let earlier = super::carried_findings(app, &run);
+            let tree = app.reviews.tree(&run);
             Ok(text(&json!({
                 "run": run.id, "round": run.round, "step": node, "axes": n.def.axes, "ask": n.def.ask, "recipe": run.recipe,
-                "intents": run.tree["intents"], "unsorted": run.tree["unsorted"], "files": run.tree["files"], "divergence": run.tree["divergence"],
+                "intents": tree["intents"], "unsorted": tree["unsorted"], "files": tree["files"], "divergence": tree["divergence"],
                 "earlier_findings": earlier, "diff": diff,
             })))
         }

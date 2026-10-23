@@ -12,7 +12,7 @@ below are the ones it serves. The tests named at the end are in `vault/tests.rs`
 
 ## Goals
 
-- **Encrypted at rest.** A copy of the state directory, a Postgres dump or a backup holds only ciphertext.
+- **Encrypted at rest.** A copy of the state directory, a database dump or a backup holds only ciphertext.
   The key that opens it is not stored next to it.
 - **Write-only.** No route, log, event, error, transcript, metric or panic message carries a secret's value.
   The console shows a name, a fingerprint and the last four characters, never more.

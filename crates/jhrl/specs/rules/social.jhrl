@@ -8,9 +8,6 @@ import agentplaza.kinds
 
 // ------------------------------------------------------------------ evidence (AP-072.R1)
 
-fn value_weight(x: Credits) -> Number "Evidence weight of an interaction worth x: 1 + ln(1 + x / 100 cr)" =
-  1 + ln(1 + x / 100 cr)
-
 table outcome_value(kind: String) -> Number {
   axes kind: exact
   out_of_range error

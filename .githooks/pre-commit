@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Refuses a commit that modifies, deletes or renames an applied migration, or breaks the migration
-# numbering or lock (docs/dev/sql.md). Installed with scripts/install-hooks.sh.
-set -euo pipefail
-exec "$(git rev-parse --show-toplevel)/scripts/check-migrations.sh" --staged

@@ -13,7 +13,7 @@
 //!   already), its history is imported once when the Weft repo has none, and exported commits are by the owner as
 //!   the platform knows them (W19). The hub's signing key can be registered on that account at the same time.
 //! - **Secrets** (client secrets, the app's private key, tokens) are vault entries bound to `hub:git-platforms`; the
-//!   record (`<state>/platforms.json`) holds none. Weft gets a token when it pushes or fetches ([`credential`]):
+//!   record (plaza.db, table `platforms` and its child tables) holds none. Weft gets a token when it pushes or fetches ([`credential`]):
 //!   minted for an installation, refreshed for an OAuth sign-in, as pasted for a token.
 //! - **The browser's way back.** The platforms send the owner's browser to `/v1/platforms/callback`, a public route
 //!   that acts only on a `state` an owner's call created (once, within 15 minutes). Starting a flow gives a `go` URL
@@ -48,10 +48,10 @@ pub mod http;
 pub mod model;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::{RowSet, StoreError, TableDef};
 use base64::Engine;
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,7 @@ const CALLBACK: &str = "/v1/platforms/callback";
 const EARLY_MS: u64 = 60 * 1000;
 
 /// An app the plaza is registered as on a host: the plaza's GitHub App, or an OAuth app the owner registered.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Registration {
     pub id: String,
     pub kind: Kind,
@@ -83,11 +83,12 @@ pub struct Registration {
     pub client_id: String,
     /// Set for the plaza's GitHub App.
     #[serde(default)]
+    #[table(child)]
     pub app: Option<GitHubApp>,
     pub created_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct GitHubApp {
     pub id: u64,
     pub slug: String,
@@ -97,7 +98,7 @@ pub struct GitHubApp {
 }
 
 /// One authorization of the plaza on a platform.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Integration {
     pub id: String,
     pub kind: Kind,
@@ -120,12 +121,15 @@ pub struct Integration {
     pub target: Option<String>,
     /// The account it is: the owner, a group's bot, or (for an installation) the user or organisation it is on.
     #[serde(default)]
+    #[table(flatten)]
     pub account: Account,
     #[serde(default)]
+    #[table(list)]
     pub scopes: Vec<String>,
     #[serde(default)]
     pub expires_ms: Option<u64>,
     #[serde(default)]
+    #[table(child)]
     pub grants: Grants,
     pub created_ms: u64,
     #[serde(default)]
@@ -134,12 +138,21 @@ pub struct Integration {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+/// The platforms' record: the apps and the authorizations, and the counter that names new ones. Its table is
+/// `platforms`; the lists are its children `platforms_registrations` and `platforms_integrations`.
+#[derive(Debug, Clone, Default, apz_store::Table)]
+#[table(name = "platforms")]
 struct Saved {
+    #[table(child)]
     registrations: Vec<Registration>,
+    #[table(child)]
     integrations: Vec<Integration>,
     next: u64,
+}
+
+/// The platforms' table definition: the record's root table (component `platforms`).
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Saved)
 }
 
 /// What a started flow waits for.
@@ -169,7 +182,6 @@ struct Flow {
 
 /// The platforms' record, the flows under way and the installation tokens minted so far.
 pub struct Store {
-    path: PathBuf,
     saved: Mutex<Saved>,
     flows: Mutex<HashMap<String, Flow>>,
     minted: Mutex<HashMap<String, (String, u64)>>,
@@ -185,36 +197,38 @@ fn now_ms() -> u64 {
 }
 
 impl Store {
-    pub fn load(state_dir: &Path) -> Store {
-        Store::with_http(state_dir, Arc::new(Ureq))
+    /// An empty record, with the platforms called over HTTP; [`Store::load`] fills it at start.
+    pub fn new() -> Store {
+        Store::with_http(Arc::new(Ureq))
     }
 
-    pub fn with_http(state_dir: &Path, http: Arc<dyn Http>) -> Store {
-        let path = state_dir.join("platforms.json");
-        // A missing record means nothing was authorized yet.
-        let saved = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
+    /// An empty record, with the platforms called through `http` (the tests' fake).
+    pub fn with_http(http: Arc<dyn Http>) -> Store {
         Store {
-            path,
-            saved: Mutex::new(saved),
+            saved: Mutex::new(Saved::default()),
             flows: Mutex::new(HashMap::new()),
             minted: Mutex::new(HashMap::new()),
             http,
         }
     }
 
-    /// Changes the record and writes it (through a temporary file, so a crash leaves the old one).
+    /// Replaces the record with what plaza.db holds (at start). Nothing stored means nothing was authorized yet.
+    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), StoreError> {
+        let stored: Option<Saved> = apz_store::table::load_one(conn, def())?;
+        *lock(&self.saved) = stored.unwrap_or_default();
+        Ok(())
+    }
+
+    /// The record as rows of its tables, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::one(def(), &*lock(&self.saved))
+    }
+
+    /// Changes the record in memory; the saver writes it. Where the owner's answer depends on the write (a vault
+    /// entry and its record), [`persist`] writes it first.
     fn update<R>(&self, change: impl FnOnce(&mut Saved) -> R) -> Result<R, String> {
         let mut saved = lock(&self.saved);
-        let out = change(&mut saved);
-        let text = serde_json::to_vec_pretty(&*saved).map_err(|e| e.to_string())?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)
-            .and_then(|_| std::fs::rename(&tmp, &self.path))
-            .map_err(|e| format!("writing {}: {e}", self.path.display()))?;
-        Ok(out)
+        Ok(change(&mut saved))
     }
 
     pub fn registrations(&self) -> Vec<Registration> {
@@ -322,6 +336,16 @@ impl Store {
         if let Some(f) = lock(&self.flows).get_mut(state) {
             f.outcome = Some(outcome);
         }
+    }
+}
+
+/// Writes the record now, for an answer that a vault entry and its record belong to: the owner is told it is done
+/// only once both are saved.
+fn persist(app: &App) -> Result<(), String> {
+    if crate::store::saver::save_now(app, "platforms") {
+        Ok(())
+    } else {
+        Err("the platforms' record could not be saved; try again".into())
     }
 }
 
@@ -551,6 +575,7 @@ fn manifest_done(app: &App, host: &str, code: &str) -> Result<(String, Option<St
     };
     app.platforms
         .update(|saved| saved.registrations.push(reg.clone()))?;
+    persist(app)?;
     publish(app, "registered", &reg_id);
     let state = app.platforms.start(Step::Install {
         registration: reg_id,
@@ -684,6 +709,7 @@ fn signed_in(app: &App, reg: &Registration, tokens: &model::Tokens) -> Result<St
             && i.account.id == account.id
     })?;
     keep_tokens(app, &saved.id, tokens)?;
+    persist(app)?;
     publish(app, "authorized", &saved.id);
     Ok(saved.id)
 }
@@ -1240,11 +1266,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Record an OAuth app the owner registered on a platform").errors(&[400]))
         .delete("/v1/platforms/registrations/{id}", |app, _, p| {
             let id = p.get("id").to_string();
-            let gone = app.platforms.update(|saved| {
-                let n = saved.registrations.len();
-                saved.registrations.retain(|r| r.id != id);
-                n != saved.registrations.len()
-            });
+            // The record is written before the app's secrets are forgotten, so a crash keeps both or neither.
+            let gone = app
+                .platforms
+                .update(|saved| {
+                    let n = saved.registrations.len();
+                    saved.registrations.retain(|r| r.id != id);
+                    n != saved.registrations.len()
+                })
+                .and_then(|found| persist(app).map(|()| found));
             match gone {
                 Ok(true) => {
                     forget_secret(app, &id, "SECRET");
@@ -1315,11 +1345,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Read an authorization's account again").errors(&[404, 502]))
         .delete("/v1/platforms/{id}", |app, _, p| {
             let id = p.get("id").to_string();
-            let removed = app.platforms.update(|saved| {
-                let n = saved.integrations.len();
-                saved.integrations.retain(|i| i.id != id);
-                n != saved.integrations.len()
-            });
+            // The record is written before the tokens are forgotten, so a crash keeps both or neither.
+            let removed = app
+                .platforms
+                .update(|saved| {
+                    let n = saved.integrations.len();
+                    saved.integrations.retain(|i| i.id != id);
+                    n != saved.integrations.len()
+                })
+                .and_then(|found| persist(app).map(|()| found));
             match removed {
                 Ok(true) => {
                     forget_secret(app, &id, "TOKEN");
@@ -1386,7 +1420,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 }
             };
             integ.grants = grants;
-            match app.platforms.set(&integ) {
+            match app.platforms.set(&integ).and_then(|()| persist(app)) {
                 Ok(()) => {
                     publish(app, "granted", &integ.id);
                     Response::json(200, &view(app, &integ))
@@ -1481,6 +1515,7 @@ fn register(app: &App, v: &Value) -> Result<Value, String> {
     };
     app.platforms
         .update(|saved| saved.registrations.push(reg.clone()))?;
+    persist(app)?;
     publish(app, "registered", &id);
     Ok(json!(reg))
 }
@@ -1571,6 +1606,7 @@ fn by_token(app: &App, v: &Value) -> Result<Value, String> {
         &format!("{} token for {}", kind.label(), account.login),
         token,
     )?;
+    persist(app)?;
     publish(app, "authorized", &saved.id);
     Ok(view(app, &saved))
 }
@@ -1729,13 +1765,76 @@ mod tests {
     }
 
     #[test]
-    fn a_flow_is_taken_once_and_not_after_it_expires() {
-        let dir = std::env::temp_dir().join(format!("apz-platforms-flow-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::with_http(
-            &dir,
-            Arc::new(http::Fake::new(|_, _, _| (404, Value::Null))),
+    fn a_record_round_trips_through_its_tables() {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let mut grants = Grants::default();
+        grants.namespaces.insert(
+            "JumpHash".into(),
+            NamespaceGrant {
+                all: false,
+                repos: ["notes".to_string()].into(),
+            },
         );
+        let saved = Saved {
+            registrations: vec![Registration {
+                id: "github-app-1".into(),
+                kind: Kind::Github,
+                host: "https://github.com".into(),
+                client_id: "Iv1.abc".into(),
+                app: Some(GitHubApp {
+                    id: 7,
+                    slug: "agentplaza".into(),
+                    name: "AgentPlaza".into(),
+                    owner: "JumpHash".into(),
+                    html_url: "https://github.com/apps/agentplaza".into(),
+                }),
+                created_ms: 1,
+            }],
+            integrations: vec![Integration {
+                id: "github-2".into(),
+                kind: Kind::Github,
+                host: "https://github.com".into(),
+                via: Via::App,
+                level: Level::Org,
+                registration: Some("github-app-1".into()),
+                installation: Some(42),
+                repository_selection: Some("selected".into()),
+                manage_url: None,
+                target: Some("JumpHash".into()),
+                account: Account {
+                    id: 9,
+                    login: "JumpHash".into(),
+                    name: "JumpHash".into(),
+                    email: String::new(),
+                    avatar_url: String::new(),
+                },
+                scopes: vec!["repo".into()],
+                expires_ms: None,
+                grants,
+                created_ms: 2,
+                checked_ms: 3,
+                error: None,
+            }],
+            next: 2,
+        };
+        apz_store::table::replace(&conn, def(), &RowSet::one(def(), &saved).unwrap()).unwrap();
+
+        let store = Store::with_http(Arc::new(http::Fake::new(|_, _, _| (404, Value::Null))));
+        store.load(&conn).unwrap();
+        assert_eq!(store.registrations(), saved.registrations);
+        assert_eq!(store.integrations(), saved.integrations);
+        assert_eq!(lock(&store.saved).next, 2);
+        // Nothing stored is an empty record.
+        let empty = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        empty.execute_batch(&def().ddl()).unwrap();
+        store.load(&empty).unwrap();
+        assert!(store.registrations().is_empty() && store.integrations().is_empty());
+    }
+
+    #[test]
+    fn a_flow_is_taken_once_and_not_after_it_expires() {
+        let store = Store::with_http(Arc::new(http::Fake::new(|_, _, _| (404, Value::Null))));
         let state = store
             .start(Step::Install {
                 registration: "github-app-1".into(),
@@ -1751,6 +1850,5 @@ mod tests {
             .unwrap();
         lock(&store.flows).get_mut(&old).unwrap().created_ms = 0;
         assert!(store.claim(&old).is_none(), "an expired state does nothing");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,11 +1,11 @@
-//! The hub's metrics: what it records itself (model calls, tools, turns, agent states, its own API, database and
+//! The hub's metrics: what it records itself (model calls, tools, turns, agent states, its own API, store and
 //! bus), what nodes send in their heartbeats, where it is kept, and the `/v1/metrics/*` routes the consoles read.
 //!
 //! * [`store`] — the [`store::Store`] trait: closed windows, events, model calls, kept traces and the saved values;
 //!   [`sqlite`] keeps them in `metrics.db` (typed tables, sql/metrics/0001_init.sql).
 //! * [`settings`] — the owner's choices: collection level, retention, budgets, outside endpoints.
 //! * [`ingest`] — node batches: clock-offset correction, columns and histograms into the rollup, events, reports.
-//! * [`collect`] — the hub's own collectors: API route timer, database timer, bus lag, socket count, queue and
+//! * [`collect`] — the hub's own collectors: API route timer, bus lag, socket count, queue and
 //!   approval gauges, agent states, store sizes, and the metrics system's own cost.
 //! * [`traces`] — per-agent span rings, the tail sampler, kept traces.
 //! * [`alerting`] — rules, their evaluation as windows update, mute/acknowledge, history, notifications.

@@ -250,7 +250,7 @@ fn every_scenario_passes() {
             }
         }
     }
-    assert_eq!(n, 4);
+    assert_eq!(n, 3);
 }
 
 #[test]

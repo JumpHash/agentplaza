@@ -112,3 +112,50 @@ fn every_query_prepares_against_its_file_and_passes_the_lint() {
         assert!(problems.is_empty(), "{problems:?}");
     }
 }
+
+/// Every file of `sql/queries` is included by exactly one const of `store/sql.rs`, every include is a file of the folder,
+/// and every file is a statement that opens with a `--` comment naming its parameters (docs/dev/sql.md).
+#[test]
+fn every_query_file_has_one_const_and_every_const_has_a_file() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("sql")
+        .join("queries");
+    let files: std::collections::BTreeSet<String> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| {
+            entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.ends_with(".sql"))
+        .collect();
+    let included: Vec<String> = include_str!("sql.rs")
+        .split("include_str!(\"../../sql/queries/")
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap_or_default().to_string())
+        .collect();
+    let distinct: std::collections::BTreeSet<&String> = included.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        included.len(),
+        "a query file is included twice"
+    );
+    let included: std::collections::BTreeSet<String> = included.into_iter().collect();
+    let orphans: Vec<&String> = files.difference(&included).collect();
+    let missing: Vec<&String> = included.difference(&files).collect();
+    assert!(
+        orphans.is_empty(),
+        "query files with no const in store/sql.rs: {orphans:?}"
+    );
+    assert!(missing.is_empty(), "consts with no query file: {missing:?}");
+    for file in &files {
+        let text = std::fs::read_to_string(dir.join(file)).expect("read query file");
+        assert!(!text.trim().is_empty(), "{file} is empty");
+        assert!(
+            text.starts_with("--"),
+            "{file} must open with a -- comment naming its parameters"
+        );
+    }
+}

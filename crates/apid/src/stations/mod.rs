@@ -2,7 +2,7 @@
 //! the enrollment (join codes, the registry, drain, revoke), the link socket each station's daemon holds open,
 //! leases with the pixel-session queue, the station audit, and STOP ALL's freeze.
 //!
-//! - `registry`: the stations and the join codes (the `stations` component of plaza_state), the link table.
+//! - `registry`: the stations and the join codes (the `stations` component of plaza.db), the link table.
 //! - `link`: one station's live link: requests and their answers by id, event fan-out, the loop that serves it.
 //! - `leases`: an agent's claim on a station, the pixel capacity of a machine, and the queue.
 //! - `ops`: the actions with the rest of the hub: the audit, the hello and events, grants, STOP ALL, the ticker.

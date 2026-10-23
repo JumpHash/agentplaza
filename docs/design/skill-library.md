@@ -94,7 +94,7 @@ skill_findings   (skill_id, version, seq) PK, rule, severity, path, line, messag
 skill_events     id, skill_id, action, version, actor, at                                   append-only
 ```
 
-**File contents** are blobs and stay out of Postgres (plaza rule). They sit in the hub's object store (`apz-blobs`),
+**File contents** are blobs and stay out of the database (plaza rule). They sit in the hub's object store (`apz-blobs`),
 the same store the Library uses, content-addressed by their BLAKE3 hash.
 
 Without Postgres, `MemorySkills` keeps the rows in `<state_dir>/skills.json`, as `MemoryPrompts` does.
