@@ -2,10 +2,10 @@
 //! coverage map and the misses recorded from it. The map is what `tests_select` and the CI recipe's `tests` step read;
 //! a miss is a test the selection for the head's landing skipped that the full run failed.
 //!
-//! The entry point is [`tick`], which the scheduler calls on each pass (every 2 s). A project's full run is due when its
-//! newest map is older than its interval (`full_suite_minutes` in its settings, a day by default, 0 to turn it off), or
-//! when it has no map at all; a run that failed (a project without a declaration, a fork that did not start) waits out
-//! the interval before it is tried again.
+//! The schedule is a trigger (`triggers/mod.rs`): [`sync`] keeps each project's full-suite schedule at its interval
+//! (`full_suite_minutes` in its settings, a day by default, 0 to turn it off) after its newest run or map, and the
+//! scheduler's pass fires it through [`start`]. A project with no map runs at once; a run that failed (a project
+//! without a declaration, a fork that did not start) waits out the interval before it is tried again.
 //!
 //! What the fork runs, in order (all in the Rust toolchain's commands, through `base_vm::Fork`):
 //! 1. `cargo metadata`: the build graph (`apz_testsel::graph`);
@@ -198,40 +198,35 @@ pub fn failed_tests(output: &str, tests: &[TestEntry]) -> Vec<String> {
     failed.into_iter().collect()
 }
 
-/// Whether a project's full run is due: it has no map yet, or its newest attempt or map is at least `minutes` old.
-pub fn due(last: Option<u64>, minutes: u32, now: u64) -> bool {
-    last.is_none_or(|at| now >= at + u64::from(minutes) * 60_000)
+/// The runs under way (one per project). The schedule is the trigger's (`triggers::Triggers::keep_full_suite`).
+static RUNNING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Keeps every project's full-suite schedule in step with its settings and its newest map (once a pass): a project
+/// whose full run is off, paused, archived or without a repository has no schedule that fires.
+pub fn sync(app: &App, now: u64) {
+    for project in app.projects.list() {
+        let minutes = project_settings::full_suite_minutes(app, &project.id);
+        let eligible = !project.paused && !project.archived && project.repo.is_some();
+        let mapped = app.test_select.latest(&project.id).map(|m| m.recorded_ms);
+        app.triggers
+            .keep_full_suite(&project.id, minutes, eligible, mapped, now);
+    }
 }
 
-/// The runs under way (one per project) and the last attempt of each project, in milliseconds.
-static RUNNING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
-static ATTEMPTED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
-
-/// The scheduler's entry point (every pass): starts the full run of each project whose run is due, on its own thread.
-pub fn tick(app: &Arc<App>, now: u64) {
-    for project in app.projects.list() {
-        if project.paused || project.archived || project.repo.is_none() {
-            continue;
-        }
-        let minutes = project_settings::full_suite_minutes(app, &project.id);
-        if minutes == 0 {
-            continue;
-        }
-        let attempted = lock(&ATTEMPTED).get(&project.id).copied();
-        let mapped = app.test_select.latest(&project.id).map(|m| m.recorded_ms);
-        let last = attempted.into_iter().chain(mapped).max();
-        if !due(last, minutes, now) || !lock(&RUNNING).insert(project.id.clone()) {
-            continue;
-        }
-        lock(&ATTEMPTED).insert(project.id.clone(), now);
-        let (app, id) = (Arc::clone(app), project.id.clone());
-        thread::spawn(move || {
-            if let Err(why) = run(&app, &id, apz_plaza::now_ms()) {
-                eprintln!("apid: full suite of {id}: {why}");
-            }
-            lock(&RUNNING).remove(&id);
-        });
+/// Starts the full run of `project` on its own thread, when none is under way. The trigger that calls it records the
+/// attempt, so a run that failed waits out the interval. False when a run of the project is already under way.
+pub fn start(app: &Arc<App>, project: &str) -> bool {
+    if !lock(&RUNNING).insert(project.to_string()) {
+        return false;
     }
+    let (app, id) = (Arc::clone(app), project.to_string());
+    thread::spawn(move || {
+        if let Err(why) = run(&app, &id, apz_plaza::now_ms()) {
+            eprintln!("apid: full suite of {id}: {why}");
+        }
+        lock(&RUNNING).remove(&id);
+    });
+    true
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -473,13 +468,5 @@ mod tests {
         let why = record(&mut exec, "p", "c1", None, None, 9).unwrap_err();
         assert!(why.starts_with("metadata failed (exit 101)"), "{why}");
         assert!(why.contains("no metadata"));
-    }
-
-    #[test]
-    fn a_run_is_due_when_there_is_no_map_or_the_interval_has_passed() {
-        assert!(due(None, 60, 0));
-        assert!(!due(Some(0), 60, 59 * 60_000));
-        assert!(due(Some(0), 60, 60 * 60_000));
-        assert!(due(Some(1_000), 1, 61_000));
     }
 }

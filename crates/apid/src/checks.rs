@@ -486,6 +486,10 @@ pub fn start(app: &App, project: &str, change: &str, now: u64) -> Result<String,
     {
         eprintln!("apid: the checks' fork of {change}: {why}");
     }
+    // A CI run that ended is an event of the triggers (14.6).
+    if let Ok(run) = &outcome {
+        crate::triggers::ci_run_ended(app, project, change, run);
+    }
     outcome
 }
 

@@ -398,6 +398,10 @@ fn relay_events(app: &Arc<App>) {
                     _ => "weft_op",
                 };
                 app.bus.publish(topic, &json!({ "seq": v["seq"], "kind": kind, "summary": v["summary"], "change": v["body"]["change"], "repo": v["body"]["repo"] }));
+                // The triggers take the landings, the lanes and the proposed releases (14.6), each once by its sequence.
+                if let Some(seq) = v["seq"].as_u64() {
+                    crate::triggers::weft_event(app, seq, kind, &v["body"]);
+                }
                 after_event(app, kind, &v["body"]);
             }
         }
