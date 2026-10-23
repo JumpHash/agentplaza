@@ -84,6 +84,18 @@ pub const BUILTINS: &[Builtin] = &[
     ),
     b("auggie", "Auggie", "npm", "@augmentcode/auggie", "0.36.0"),
     b("vibe", "Mistral Vibe", "pip", "mistral-vibe", "2.25.0"),
+    b(
+        "amp",
+        "Amp",
+        "npm",
+        "@sourcegraph/amp",
+        "0.0.1792756861-g6187a2",
+    ),
+    b("crush", "Crush", "npm", "@charmland/crush", "0.98.1"),
+    b("junie", "Junie", "npm", "@jetbrains/junie-cli", "1468.30.0"),
+    b("droid", "Factory Droid", "npm", "@factory/cli", "0.248.0"),
+    b("aider", "Aider", "pip", "aider-chat", "0.86.2"),
+    b("openhands", "OpenHands", "pip", "openhands-ai", "1.11.0"),
 ];
 
 const fn b(

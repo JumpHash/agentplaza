@@ -293,6 +293,89 @@ pub const ENGINES: &[Entry] = &[
         refused_exact_modes: &[],
         refused_modes: &["auto-approve", "bypass"],
     },
+    // The six engines of 5.6 run through their thin adapters (`acp/shim.rs`): each entry's binary is the engine's
+    // own command, which the adapter runs per turn. The adapter is not yet launched by the VM, so these do not start
+    // until that wiring lands; their flags are unverified (see `shim::SHIMS`).
+    Entry {
+        id: "amp",
+        install: Install::Npm {
+            package: "@sourcegraph/amp",
+            version: "0.0.1792756861-g6187a2",
+            integrity: "sha512-NM7rGueC/eUiffTtS2A56NFYyOryOTocKJ1CWBuPzwuP9eA1U9CeqxB2c1P5EP9JS5g7IiNKnRN8OHZZ+8S6bA==",
+        },
+        binary: "amp",
+        args: &[],
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        refused_modes: &[],
+    },
+    Entry {
+        id: "crush",
+        install: Install::Npm {
+            package: "@charmland/crush",
+            version: "0.98.1",
+            integrity: "sha512-TWjk5My+NLi+iNidiYNde4s05g85sOC97IiBs6aXywuFP2pZ9C+wjih985StTvmY3lJgPd9oKrtgbPRGT2SQ8g==",
+        },
+        binary: "crush",
+        args: &[],
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        refused_modes: &[],
+    },
+    Entry {
+        id: "junie",
+        install: Install::Npm {
+            package: "@jetbrains/junie-cli",
+            version: "1468.30.0",
+            integrity: "sha512-qWMbKcebGprv2d4pBzbgPdbsipkqNhOFAM2FA0RjBqGUrsARsESAvz7nSxptcnavr/krCMCe4XUQd7hV/5TAgA==",
+        },
+        binary: "junie",
+        args: &[],
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        refused_modes: &[],
+    },
+    Entry {
+        id: "droid",
+        install: Install::Npm {
+            package: "@factory/cli",
+            version: "0.248.0",
+            integrity: "sha512-eKv+gmgQJXKln3AJo9A8BSW2FA1ddhdYnFS0Q9z9Eju1vk5JZkMrIA20//hpvGYLdzAgH7vAeWl+xMu+SOAsrQ==",
+        },
+        binary: "droid",
+        args: &[],
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        refused_modes: &[],
+    },
+    Entry {
+        id: "aider",
+        install: Install::Pip {
+            package: "aider-chat",
+            version: "0.86.2",
+            file: "aider_chat-0.86.2-py3-none-any.whl",
+            sha256: "64f6a0c66c9f4633ad9f479bca3e64ebcba02b9da03c6b604b74a44736b2416e",
+        },
+        binary: "aider",
+        args: &[],
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        refused_modes: &[],
+    },
+    Entry {
+        id: "openhands",
+        install: Install::Pip {
+            package: "openhands-ai",
+            version: "1.11.0",
+            file: "openhands_ai-1.11.0-py3-none-any.whl",
+            sha256: "833de097150d498ffc7e175869df4723aec4a6b3c0be27545ca37089e6452c8f",
+        },
+        binary: "openhands",
+        args: &[],
+        model: ModelVia::ConfigOption,
+        refused_exact_modes: &[],
+        refused_modes: &[],
+    },
 ];
 
 /// Words every engine refuses in a mode or profile id, on top of its own lists. A bypass, yolo or
