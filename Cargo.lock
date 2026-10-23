@@ -350,6 +350,7 @@ dependencies = [
  "apz-store",
  "apz-theme",
  "apz-trust",
+ "apz-uds",
  "apz-view",
  "argon2",
  "base64 0.22.1",

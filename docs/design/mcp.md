@@ -90,6 +90,29 @@ Package = {kind: "npm",    name: "@scope/pkg", version: "1.2.3"}          // an 
   Stopping kills the server's process (the sandbox's child; a child process it started with `uv` may outlive it, but
   without network and with its proxy credential gone).
 
+## microVMs
+
+Where the local node can boot a microVM (its `GET /v1/mcp-vm`: a KVM host, a guest kernel, initrd and workspace base),
+a stdio server runs in one instead of under the sandbox. The server's status says which: `launcher` is `vm`, or
+`sandbox: <why>` (no KVM, a node that is not the hub's, no egress proxy). The install of an npm package still runs
+sandboxed on the hub.
+
+- **Volumes.** Each read-only directory the sandbox would have (the runtimes, the package, a binary's directory) is a
+  read-only node volume, mounted at `/data/ro-<hash>`. The volume is copied from the directory once per change of that
+  directory. The server's own directory is the guest's `/workspace`: `storage.volume` keeps its image on the node under
+  `<persist>/mcp/<server>/`, and otherwise each run starts from a fresh copy.
+- **Stdio.** The guest's initrd runs `/mcp-bridge` (the `vsockd` crate's bin) instead of the agent harness when the
+  command line has `plaza.mcp=1`. The node sends the bridge one JSON line on vsock port 5200 (program, args, env with
+  the secrets, cwd), then relays the server's stdin and stdout on that port; stderr goes on 5201. The hub reaches each
+  through a Unix socket the node opens for the run.
+- **Egress.** The guest has no network device. Its proxy variables name the lease's proxy URL on `127.0.0.1:3128`; the
+  bridge tunnels each connection over vsock port 5202, and the node dials the hub's egress proxy port and nothing else.
+  The lease's token is the server's own proxy credential, as in the sandbox.
+- **Routes.** On the node: `GET /v1/mcp-vm`, `POST /v1/mcp-runs`, `GET` and `DELETE /v1/mcp-runs/{id}`,
+  `DELETE /v1/mcp-storage/{server}`. The hub and its node share a machine: the sockets are local paths.
+- **Tests.** The relays, the request and the lifecycle run without KVM. The full boot of a server is a test in the node
+  that is skipped with a printed reason when `/dev/kvm` is missing.
+
 ## The egress proxy
 
 - **Listener.** apid listens on `127.0.0.1:<port>` (default 19128, `--mcp-proxy-port`). It binds when the first stdio

@@ -20,6 +20,7 @@ apz-proto = { workspace = true, features = ["store"] }
 apz-http = { path = "../apz-http" }
 weft = { path = "../weft" }
 apz-metrics.workspace = true
+apz-uds = { path = "../apz-uds" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
 apz-ide = { path = "../apz-ide" }
