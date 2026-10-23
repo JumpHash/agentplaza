@@ -520,6 +520,25 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
             );
         }
         Next::Done => {
+            // The project's land hooks check the change before it joins the landing queue: a finding of a block-mode
+            // hook sends the task back to its builder, with the finding (PLAN 14.3).
+            let refusals = landing_refusals(app, task_id, &project);
+            if !refusals.is_empty() {
+                let said = format!(
+                    "the landing hooks refused the change: {}",
+                    refusals.join("; ")
+                );
+                if let Some(t) = &task {
+                    let _ = t.rework(Some(said.clone()));
+                }
+                notice(
+                    app,
+                    &chat,
+                    &format!("Task {task_id} went back to its builder: {said}."),
+                    now,
+                );
+                return;
+            }
             // A code task lands first: its change joins the project's landing queue, and the landing finishes it.
             if join_landing_queue(app, task_id) {
                 notice(
@@ -567,6 +586,38 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
 
 /// Puts `task`'s Weft lane on its repo's landing queue (as a passed review graph does). False when the task has no
 /// lane, or Weft does not take it: the task is then done on its review.
+/// The findings the project's land hooks refuse the task's change on: the block-mode checks of its `land` hooks over
+/// the lines the change's diff adds. None when the project has no such hook, the task has no change, or Weft does not
+/// answer (the landing then goes on as it did before the hooks).
+fn landing_refusals(app: &App, task: &str, project: &str) -> Vec<String> {
+    if project.is_empty() {
+        return Vec::new();
+    }
+    let hooks = crate::project_settings::effective_hooks(&app.project_settings.get(project));
+    if !hooks
+        .iter()
+        .any(|hook| hook.on == apz_proto::hooks::On::Land)
+    {
+        return Vec::new();
+    }
+    let Some(change) = app.weft.lane_of(task) else {
+        return Vec::new();
+    };
+    let Ok(rev) = crate::project_memory::landed_revision(app, &change) else {
+        return Vec::new();
+    };
+    let Ok(diff) = app.weft.get(&format!("/revisions/{rev}/diff")) else {
+        return Vec::new();
+    };
+    let unified: Vec<&str> = diff["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file["unified"].as_str())
+        .collect();
+    crate::project_settings::land_refusals(&hooks, &unified.join("\n"))
+}
+
 fn join_landing_queue(app: &App, task: &str) -> bool {
     let Some(change) = app.weft.lane_of(task) else {
         return false;

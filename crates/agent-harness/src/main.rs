@@ -66,10 +66,13 @@ mod cmdline;
 mod egress;
 #[cfg(target_os = "linux")]
 mod engines;
+
 #[cfg(target_os = "linux")]
 mod envd;
 #[cfg(target_os = "linux")]
 mod files;
+#[cfg(target_os = "linux")]
+mod hooks;
 #[cfg(target_os = "linux")]
 mod ide;
 #[cfg(target_os = "linux")]
@@ -164,6 +167,12 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    // A Claude Code hook call, from the settings the adapter renders (hooks.rs): not the vsock session.
+    if let [_, command, rest @ ..] = args.as_slice()
+        && command == "apz-hook"
+    {
+        return hooks::hook_main(rest);
     }
     match run() {
         Ok(()) => ExitCode::SUCCESS,

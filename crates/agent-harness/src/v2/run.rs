@@ -286,9 +286,15 @@ pub(crate) fn run(
         Some(_) => return Err(files::invalid("\"background\" must be true or false")),
     };
     let cwd = cwd_of(workspace, input)?;
+    // The project's run hooks see the command before it starts: a block-mode finding refuses it (hooks.rs).
+    let checked = crate::hooks::before_run(lane, &command)?;
     if background {
         let timeout = timeout_of(input, BACKGROUND_TIMEOUT_S, BACKGROUND_TIMEOUT_S)?;
-        return start_job(workspace, lane, &command, cwd.as_deref(), timeout);
+        let mut reply = start_job(workspace, lane, &command, cwd.as_deref(), timeout)?;
+        if !checked.is_empty() {
+            reply["check"] = json!({ "summary": checked.join("; ") });
+        }
+        return Ok(reply);
     }
     let timeout = timeout_of(input, DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S)?;
     let prefix = match &cwd {
@@ -320,6 +326,9 @@ pub(crate) fn run(
             "the middle {} bytes of the output are cut; run the command again with its output in a file (command > out.txt 2>&1) and read that file with read",
             exec.output.len() - RUN_BUDGET
         ));
+    }
+    if !checked.is_empty() {
+        reply["check"] = json!({ "summary": checked.join("; ") });
     }
     reply["output"] = json!(output);
     Ok(reply)

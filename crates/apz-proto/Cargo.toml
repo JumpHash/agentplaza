@@ -9,6 +9,8 @@ publish = false
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# The secret shapes a hook scans for (apz-secrets: no dependencies, so every consumer may link it).
+apz-secrets = { path = "../apz-secrets" }
 # The hub's store derives its tables on the work types. Off by default: the wasm consumers must not link SQLite.
 apz-store = { path = "../apz-store", optional = true }
 

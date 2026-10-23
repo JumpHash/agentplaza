@@ -416,6 +416,10 @@ pub struct AgentProfile {
     /// ends its turn without it (unless its output says the task is done).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub handover: bool,
+    /// The project's hooks that run around the agent's tool calls (`hooks`): the harness runs the ones for edits and
+    /// commands, and the engines that have hooks of their own get them rendered from this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<crate::hooks::Hook>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

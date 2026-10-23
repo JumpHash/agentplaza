@@ -351,6 +351,7 @@ dependencies = [
  "apz-proto",
  "apz-rich",
  "apz-sandbox",
+ "apz-secrets",
  "apz-skill",
  "apz-station",
  "apz-store",
@@ -736,6 +737,7 @@ name = "apz-proto"
 version = "0.1.0"
 dependencies = [
  "apz-os",
+ "apz-secrets",
  "apz-store",
  "apz-uds",
  "serde",
@@ -758,6 +760,10 @@ dependencies = [
  "libc",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "apz-secrets"
+version = "0.1.0"
 
 [[package]]
 name = "apz-setup"

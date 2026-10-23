@@ -55,10 +55,14 @@ pub(crate) struct Lane {
     pub(crate) notes: Mutex<Vec<String>>,
     /// The project memory each work item was shown, by work item (anchors.rs).
     pub(crate) anchored: Mutex<BTreeMap<u64, crate::anchors::Memo>>,
+    /// The project's hooks (hooks.rs), as the agent's profile gave them.
+    pub(crate) hooks: Mutex<Vec<apz_proto::hooks::Hook>>,
+    /// What the hooks reported once already: a missing tool is named once per lane (hooks.rs).
+    pub(crate) reported: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl Lane {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             tracking: Mutex::new(track::Tracking::default()),
             shell: Mutex::new(None),
@@ -66,6 +70,8 @@ impl Lane {
             index: Mutex::new(None),
             notes: Mutex::new(Vec::new()),
             anchored: Mutex::new(BTreeMap::new()),
+            hooks: Mutex::new(Vec::new()),
+            reported: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
