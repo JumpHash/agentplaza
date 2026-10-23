@@ -128,6 +128,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.laws.load(conn),
         },
         Component {
+            name: "standing_rules",
+            def: crate::standing_rules::def,
+            rows: |app| app.standing_rules.rows(),
+            load: |app, conn| app.standing_rules.load(conn),
+        },
+        Component {
             name: "work",
             def: crate::scheduler::def,
             rows: |app| app.work.rows(),

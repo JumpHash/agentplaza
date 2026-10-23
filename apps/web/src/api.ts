@@ -387,6 +387,10 @@ export interface LawRules { rules: LawRule[]; overrides: LawOverride[]; strict_p
 export interface Diagnostic { file: string; line: number; column: number; message: string }
 export interface WouldRefuse { cid: number; role: string; tool: string; at_ms: number; laws: string[] }
 export interface LawCheck { ok: boolean; diagnostics: Diagnostic[]; laws: string[]; would_refuse: WouldRefuse[] }
+/** One saved version of the owner's standing rules (9.8). */
+export interface StandingVersion { version: number; author: string; at_ms: number }
+/** The owner's standing rules: the text in force (the newest version's), its version and its history, oldest first. */
+export interface StandingRules { text: string; version: number | null; author: string | null; updated_ms: number | null; versions: StandingVersion[]; saved?: boolean }
 export interface RoleDef {
   id: string; title: string; purpose: string; responsibilities: string[]; deliverables: string[]; collaboration: string;
   boundaries: string[]; tools: string[]; budget: number; model: string; prompt: string; created_by: string; created_ms: number;
@@ -762,6 +766,9 @@ export const api = {
   setLawRuleEnabled: (id: string, enabled: boolean) => post<LawRule>(`/v1/laws/rules/${id}/${enabled ? 'enable' : 'disable'}`),
   deleteLawRule: (id: string) => del<{ deleted: string }>(`/v1/laws/rules/${id}`),
   checkLaw: (source: string, id?: string) => post<LawCheck>('/v1/laws/check', id ? { source, id } : { source }),
+  /** The standing rules every session's prompt and every engine's instruction file carries (`/v1/rules/standing`). */
+  standingRules: () => get<StandingRules>('/v1/rules/standing'),
+  saveStandingRules: (text: string) => put<StandingRules>('/v1/rules/standing', { text }),
   /** Switching a constitutional law off needs `confirm` set to its exact id (the API answers 409 without it). */
   setLawOverride: (law: string, disabled: boolean, reason: string, confirm?: string) => put<{ law: string; override: LawOverride | null }>(`/v1/laws/overrides/${law}`, { disabled, reason, confirm }),
   plazaState: () => get<PlazaState>('/v1/plaza/state'),

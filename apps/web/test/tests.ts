@@ -12,7 +12,7 @@ import richVectors from '../../../crates/apz-rich/tests/vectors.json';
 import { TOUR_STEPS, WIZARD_STEPS, fill, keysSet, moveStep, readFlag, writeFlag } from '../src/onboarding/flow';
 import { ago, clip, compact, isTextValue } from '../src/ui/components';
 import { agentLabel, agentLabelIn, agentName } from '../src/roles';
-import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
+import { STANDING_MAX, builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isOwnerLaw, lawsOfRule, lineSpan, matchesFilter, standingChanged, standingProblem, tierKey, withStrictPermits, type LawFilter } from '../src/views/rules-model';
 import type { LawInfo, Settings } from '../src/api';
 import { approvalPath } from '../src/api';
 import { easeOut, niceScale, resample, tweenArray } from '../src/ui/chart';
@@ -161,6 +161,8 @@ eq(agentLabelIn([], 7), 'Agent #7', 'a label for an agent the roster does not ho
   eq([isBlank('  '), isBlank(' a ')], [true, false], 'rules: a blank title or reason');
   eq(errorText(new Error('nope')), 'nope', 'rules: an error reads as its message');
   eq(errorText('plain'), 'plain', 'rules: a non-error reads as text');
+  eq([standingProblem('a'.repeat(STANDING_MAX)), standingProblem(` ${'a'.repeat(STANDING_MAX)} `), standingProblem('a'.repeat(STANDING_MAX + 1))], [null, null, `At most ${STANDING_MAX} characters.`], 'standing rules: the limit counts characters after trimming');
+  eq([standingChanged('Ask first.\n', 'Ask first.'), standingChanged('Ask first; never force-push.', 'Ask first.'), standingChanged('', '')], [false, true, false], 'standing rules: surrounding space is not a change');
 }
 
 // Charts: the scale, resampling and tweening that every chart animates through.

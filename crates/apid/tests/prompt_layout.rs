@@ -158,3 +158,50 @@ fn the_sessions_of_one_project_share_parts_one_to_three_and_another_project_diff
         );
     }
 }
+
+#[test]
+fn the_standing_rules_are_in_part_two_of_every_session_and_of_what_an_engine_file_renders() {
+    let (noded, gateway) = daemons(400);
+    let scratch = Scratch::new("prompt-standing");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let (status, body) = hub.call(
+        "PUT",
+        "/v1/rules/standing",
+        Some(json!({ "text": "Never merge PRs; the owner merges." })),
+    );
+    assert_eq!(status, 200, "{body}");
+    let (_, planner_a, seat_a) = project_with_seat(&hub, "Gamma");
+    // A later save is in the prompt of every session started after it, of this project and of another.
+    let rule = "Never merge PRs; the owner merges. Merge main into a branch; never rebase.";
+    let (status, body) = hub.call("PUT", "/v1/rules/standing", Some(json!({ "text": rule })));
+    assert_eq!(status, 200, "{body}");
+    let (_, planner_b, _) = project_with_seat(&hub, "Delta");
+
+    let a_planner = parts_of(&hub, planner_a, "planner");
+    let a_seat = parts_of(&hub, seat_a, "builder");
+    let b_planner = parts_of(&hub, planner_b, "planner");
+    for parts in [&a_planner, &a_seat, &b_planner] {
+        assert_eq!(parts.len(), 4, "{parts:?}");
+        assert!(
+            text(&parts[1]["text"]).starts_with("## Standing rules\n\n"),
+            "{parts:?}"
+        );
+        assert!(text(&parts[1]["text"]).contains(rule), "{parts:?}");
+        assert_eq!(parts[1]["cache"], true, "{parts:?}");
+    }
+    // Part 2 is the same for the sessions of every project and seat (the rules are not rendered per agent).
+    assert_eq!(a_planner[1], a_seat[1]);
+    assert_eq!(a_planner[1], b_planner[1]);
+    // An engine's instruction file is rendered from the parts (1.9's adapters): the rule is in what they render.
+    let rendered: String = b_planner
+        .iter()
+        .map(|part| text(&part["text"]))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert!(rendered.contains(rule), "{rendered}");
+}

@@ -18636,6 +18636,74 @@
         }
       }
     },
+    "/v1/rules/standing": {
+      "get": {
+        "operationId": "get_v1_rules_standing",
+        "tags": [
+          "rules"
+        ],
+        "summary": "The owner's standing rules: the text in force and its versions",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "put_v1_rules_standing",
+        "tags": [
+          "rules"
+        ],
+        "summary": "Save the standing rules as a new version",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/plaza/state": {
       "get": {
         "operationId": "get_v1_plaza_state",
