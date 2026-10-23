@@ -863,6 +863,9 @@ mod tests {
             running_vms: 0,
             warm: false,
             pool: Some(pool.clone()),
+            base: false,
+            disk_free_gib: None,
+            idle_cpus: None,
         };
         let fleet = vec![candidate("n2", 4096, &arm), candidate("n3", 16384, &x86)];
         let movable = placement::in_pool(fleet, "n1", Some(&arm));

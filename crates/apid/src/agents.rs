@@ -1025,10 +1025,16 @@ pub fn spawn_agents(
     node: Option<&str>,
     project: Option<&str>,
 ) -> Result<Value, String> {
+    // A fork for a project over its disk quota waits: the quota's card asks the owner first (10.5).
+    if let Some(project) = project {
+        crate::disk::admit_fork(app, project, apz_plaza::now_ms())?;
+    }
     let chosen = node.is_none();
     let node = match node {
         Some(node) => node.to_string(),
-        None => crate::placement::choose_node(app, role),
+        None => crate::placement::choose_node(app, role, project).ok_or_else(|| {
+            "no machine in the project's pools has room for a new agent".to_string()
+        })?,
     };
     let node = node.as_str();
     if node != crate::fleet::LOCAL {
