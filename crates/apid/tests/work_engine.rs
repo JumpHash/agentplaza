@@ -309,6 +309,37 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         text(&note["output"]).contains("waits for the next session"),
         "{note}"
     );
+    // The builder reads the thread its note opened, by the id the send reported. Nobody else has written in
+    // it, so there is no one for the builder's own answer to go to.
+    let thread_id = text(&note["output"])
+        .split_whitespace()
+        .nth(3)
+        .unwrap_or_default()
+        .trim_end_matches(':')
+        .to_string();
+    let read = tool(
+        &hub,
+        builder_cid,
+        work,
+        "thread_read",
+        json!({ "thread": thread_id }),
+    );
+    assert!(
+        text(&read["output"]).contains("Check the upgrade section first."),
+        "{read}"
+    );
+    let answer = tool(
+        &hub,
+        builder_cid,
+        work,
+        "thread_answer",
+        json!({ "thread": thread_id, "text": "Noted." }),
+    );
+    assert_eq!(answer["is_error"], true, "{answer}");
+    assert!(
+        text(&answer["output"]).contains("waits for an answer from you"),
+        "{answer}"
+    );
 
     // A tool the builder ran reports how long it took: the hub keeps each tool's latency.
     let report = json!({

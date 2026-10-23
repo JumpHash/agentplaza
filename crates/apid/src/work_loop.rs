@@ -1810,6 +1810,60 @@ fn deliveries<R>(f: impl FnOnce(&mut HashMap<u64, Delivery>) -> R) -> R {
 /// work item; with none, it waits on the seat and is the first thing the seat's next session reads. `thread` continues
 /// a thread; a new one gets `subject`. A thread that loops (more than [`crate::threads::LOOP_LIMIT`] messages with
 /// no output) is reported to the planner. Returns what happened, for the tool's answer.
+/// The seat thread `thread`, as the session of `cid` reads it: its messages, for a thread of the session's own
+/// task only. The thread as JSON.
+pub fn thread_read(app: &App, cid: u64, thread: &str) -> Result<String, String> {
+    let session = app.sessions.by_cid(cid).ok_or(
+        "only a session's seat reads seat threads: use plaza_send_message to reach an agent",
+    )?;
+    let found = own_thread(app, session.task.as_deref(), thread)?;
+    serde_json::to_string(&found).map_err(|err| err.to_string())
+}
+
+/// Answers the seat thread `thread` for the session of `cid`: to the seat its last message from another seat
+/// came from, in the same thread (see [`message_seat`]).
+pub fn thread_answer(
+    app: &App,
+    cid: u64,
+    thread: &str,
+    text: &str,
+    close: bool,
+) -> Result<String, String> {
+    let session = app.sessions.by_cid(cid).ok_or(
+        "only a session's seat answers seat threads: use plaza_send_message to reach an agent",
+    )?;
+    let found = own_thread(app, session.task.as_deref(), thread)?;
+    let from_seat = session.seat.clone().unwrap_or_else(|| session.role.clone());
+    let me = match &session.task {
+        Some(task) => format!("{task}/{from_seat}"),
+        None => from_seat,
+    };
+    let to = answer_seat(&found.messages, &me)
+        .ok_or_else(|| format!("nobody in thread {thread} waits for an answer from you"))?;
+    message_seat(app, cid, &to, text, Some(thread), None, close)
+}
+
+/// The seat an answer to a thread goes to: the seat that last wrote in it, other than `me`.
+fn answer_seat(messages: &[crate::threads::Message], me: &str) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.from_seat != me)
+        .map(|message| message.from_seat.clone())
+}
+
+/// The thread `id`, when it belongs to `task` (the session's own task).
+fn own_thread(app: &App, task: Option<&str>, id: &str) -> Result<crate::threads::Thread, String> {
+    let thread = app
+        .threads
+        .get(id)
+        .ok_or_else(|| format!("there is no thread {id}"))?;
+    if task != Some(thread.task.as_str()) {
+        return Err(format!("thread {id} is not of your task"));
+    }
+    Ok(thread)
+}
+
 pub fn message_seat(
     app: &App,
     cid: u64,
@@ -2093,5 +2147,40 @@ mod tests {
         // About three bytes a token, rounded up; a call that names no cap holds the largest default answer.
         assert_eq!(worst_case(301, 0).input, 101);
         assert_eq!(worst_case(0, 0).output, UNCAPPED_ANSWER_TOKENS);
+    }
+}
+
+#[cfg(test)]
+mod thread_answer_tests {
+    use super::answer_seat;
+    use crate::threads::Message;
+
+    fn said(from: &str, seq: u64) -> Message {
+        Message {
+            seq,
+            from_seat: from.to_string(),
+            from_session: None,
+            to_seat: "x".to_string(),
+            text: format!("message {seq}"),
+            at_ms: seq,
+            delivered_session: None,
+            delivered_ms: None,
+        }
+    }
+
+    #[test]
+    fn an_answer_goes_to_the_seat_that_last_wrote_and_not_to_oneself() {
+        let thread = [
+            said("T1/reviewer", 1),
+            said("T1/builder", 2),
+            said("T1/reviewer", 3),
+        ];
+        assert_eq!(
+            answer_seat(&thread, "T1/builder").as_deref(),
+            Some("T1/reviewer")
+        );
+        // The builder's own question, unanswered: nobody but itself has written, so nothing to answer.
+        assert_eq!(answer_seat(&[said("T1/builder", 1)], "T1/builder"), None);
+        assert_eq!(answer_seat(&[], "T1/builder"), None);
     }
 }

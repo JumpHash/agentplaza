@@ -1715,11 +1715,28 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                         .cloned()
                         .collect()
                 });
+                // The prompt parts the engine is told, as its instruction file (see `acp::adapter`).
+                let instructions = self.profile.as_ref().map_or_else(Vec::new, |profile| {
+                    profile
+                        .system_parts
+                        .iter()
+                        .map(|part| part.text.clone())
+                        .collect()
+                });
                 let protocol = self.profile.as_ref().map_or(1, |profile| {
                     crate::acp::run::protocol_offer(&profile.engine_transport)
                 });
                 Box::new(move || {
-                    let link = HubLink::new(shared, work, call, &cancel, tools);
+                    // The plaza's VM tools the hub lets run here (code intelligence, tests, library programs)
+                    // run through the same path as the agent's own calls.
+                    let here =
+                        move |name: &str, input: &Value, program: Option<&Program>| match program {
+                            Some(program) => library::run(workspace, program, input),
+                            None => run_guest_tool(workspace, work, name, input),
+                        };
+                    let link = HubLink::new(shared, work, call, &cancel, tools)
+                        .in_vm(here)
+                        .with_instructions(instructions);
                     crate::acp::run::run(workspace, &input, &link, protocol, engine.as_ref())
                 })
             }

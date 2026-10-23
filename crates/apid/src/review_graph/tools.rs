@@ -23,6 +23,8 @@ pub const TOOLS: &[&str] = &[
     "weft_show",
     "weft_blame",
     "weft_map",
+    "weft_change_tree",
+    "weft_touches",
     "weft_bisect",
     "weft_release_notes",
 ];
@@ -112,6 +114,17 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             obj(
                 json!({"question": {"type": "string"}, "repo": {"type": "string"}}),
                 &[],
+            ),
+        ),
+        "weft_change_tree" => (
+            "The change tree of your lane's latest draft: its files and definitions, who wrote them, what each touches and its intents.",
+            obj(json!({}), &[]),
+        ),
+        "weft_touches" => (
+            "The changes in your project's history that touch a path, or one definition in it (the same query as weft_log's touches(path::fn)).",
+            obj(
+                json!({"path": {"type": "string"}, "symbol": {"type": "string"}, "repo": {"type": "string"}, "limit": {"type": "integer"}}),
+                &["path"],
             ),
         ),
         "weft_bisect" => (
@@ -367,6 +380,30 @@ pub fn run(
                 None => Ok(text(&weft()?.get(&format!("/repos/{repo}/map"))?)),
             }
         }
+        "weft_change_tree" => {
+            let lane = own_lane(app, agent)?;
+            let c = weft()?.get(&format!("/changes/{lane}"))?;
+            let latest = c["drafts"]
+                .as_array()
+                .and_then(|d| d.last())
+                .and_then(|d| d.as_str())
+                .ok_or("your lane has no draft yet")?
+                .to_string();
+            Ok(text(&weft()?.get(&format!("/revisions/{latest}/tree"))?))
+        }
+        "weft_touches" => {
+            let repo = repo_of(app, agent, input)?;
+            let path = input
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or("missing `path`")?;
+            let query = touches_query(path, input.get("symbol").and_then(Value::as_str))?;
+            let limit = input.get("limit").and_then(Value::as_u64).unwrap_or(30);
+            Ok(text(&weft()?.get(&format!(
+                "/repos/{repo}/log?q={}&limit={limit}",
+                enc(&query)
+            ))?))
+        }
         "weft_bisect" => {
             let repo = repo_of(app, agent, input)?;
             let check = input
@@ -393,6 +430,42 @@ pub fn run(
     }
 }
 
+/// The log query of `weft_touches`: `touches(path)`, or `touches(path::symbol)`. A name that carries the
+/// query's own punctuation or a space is refused, so it cannot change the query.
+fn touches_query(path: &str, symbol: Option<&str>) -> Result<String, String> {
+    // Whitespace and the query's operators, and `:` (the path and the symbol are joined by `::`).
+    let plain =
+        |s: &str| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || "()&|~:".contains(c));
+    if !plain(path) {
+        return Err(format!("invalid input: `path` is not a path: {path:?}"));
+    }
+    match symbol {
+        None => Ok(format!("touches({path})")),
+        Some(symbol) if plain(symbol) => Ok(format!("touches({path}::{symbol})")),
+        Some(symbol) => Err(format!("invalid input: `symbol` is not a name: {symbol:?}")),
+    }
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touches_names_a_path_or_a_definition_and_refuses_what_would_change_the_query() {
+        assert_eq!(
+            touches_query("src/a.rs", None),
+            Ok("touches(src/a.rs)".into())
+        );
+        assert_eq!(
+            touches_query("src/a.rs", Some("parse")),
+            Ok("touches(src/a.rs::parse)".into())
+        );
+        assert!(touches_query("src/a.rs) | all()", None).is_err());
+        assert!(touches_query("", None).is_err());
+        assert!(touches_query("src/a.rs", Some("x & y")).is_err());
+    }
 }

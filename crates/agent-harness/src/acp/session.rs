@@ -46,6 +46,7 @@ use apz_acp::rpc::{self, Peer};
 use apz_acp::types::{self as types, AGENT_METHOD_NAMES, CLIENT_METHOD_NAMES};
 use serde_json::{Value, json};
 
+use super::adapter;
 use super::catalog::ModelVia;
 use super::instance::Instance;
 use super::layout;
@@ -129,6 +130,10 @@ pub fn prompt_turn(
         .split_first()
         .ok_or_else(|| format!("the {} engine has no command", entry.id))?;
     let args: Vec<&str> = rest.iter().map(String::as_str).collect();
+    // The prompt parts the engine is told, rendered into its instruction file before it starts; the file
+    // is removed when this turn ends (see `adapter::Instructions`).
+    let _instructions = adapter::Instructions::write(&options.cwd, &entry.id, &link.instructions())
+        .map_err(|err| format!("cannot write the {} engine's instructions: {err}", entry.id))?;
     let home = layout::engine_home(options.workspace, &entry.home);
     let mut command = bash::command(
         program,
