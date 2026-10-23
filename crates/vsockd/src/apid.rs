@@ -495,6 +495,7 @@ pub fn refusal(message: &GuestMessage, reason: &str) -> Option<HostMessage> {
             ok: false,
             response: None,
             error: Some(reason.to_string()),
+            window: None,
         }),
         GuestMessage::ToolRequest { call, .. } => Some(HostMessage::ToolDecision {
             call: call.clone(),

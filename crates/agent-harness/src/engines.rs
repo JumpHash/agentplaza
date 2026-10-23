@@ -149,6 +149,23 @@ fn engine_env(home: &Path, route: &Route) -> Vec<String> {
     pairs
 }
 
+/// When an engine compacts its own conversation: at `pct` per cent of its context window, which the adapter sets where
+/// the engine has a setting for it (see `adapter::Capabilities::compaction_env`). 0 leaves the engine its default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Compaction {
+    pub pct: u32,
+}
+
+impl Compaction {
+    /// The engine's setting as a `KEY=VALUE` pair: none when the adapter declares no setting or no share is set.
+    fn env(self, engine_id: &str) -> Vec<String> {
+        match crate::acp::adapter::capabilities(engine_id).and_then(|caps| caps.compaction_env) {
+            Some(key) if self.pct > 0 => vec![format!("{key}={}", self.pct)],
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// What an ACP engine session starts with, for the catalogue's engine `engine_id`: its `KEY=VALUE`
 /// pairs (see [`engine_env`]) and the model id the engine is given. OpenCode's model id is its provider block's `<id>/<model>`, which its config
 /// names as the default model. `HOME` is the engine's own folder (see `acp::layout::engine_home`), not
@@ -159,12 +176,31 @@ pub(crate) fn acp_launch(
     engine_id: &str,
     model: Option<&str>,
 ) -> Result<(Vec<String>, Option<String>), String> {
-    acp_launch_at(workspace, engine_id, engine_id, model)
+    acp_launch_at(
+        workspace,
+        engine_id,
+        engine_id,
+        model,
+        Compaction::default(),
+    )
 }
 
 /// [`acp_launch`] for an engine whose home folder is `home` (an added instance's own), with the
-/// catalogue's launch for `engine_id`.
+/// catalogue's launch for `engine_id`, and the engine's own compaction setting from `compaction`.
 pub(crate) fn acp_launch_at(
+    workspace: &Workspace,
+    engine_id: &str,
+    home_name: &str,
+    model: Option<&str>,
+    compaction: Compaction,
+) -> Result<(Vec<String>, Option<String>), String> {
+    let (mut env, model_id) = route_launch(workspace, engine_id, home_name, model)?;
+    env.extend(compaction.env(engine_id));
+    Ok((env, model_id))
+}
+
+/// The catalogue's launch of `engine_id` in its home folder `home_name`, without the compaction setting.
+fn route_launch(
     workspace: &Workspace,
     engine_id: &str,
     home_name: &str,
@@ -902,6 +938,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_engine_with_a_compaction_setting_gets_the_agents_share_and_the_others_get_nothing() {
+        let workspace = scratch("compaction-setting");
+        let key = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
+        let share = |engine: &str, pct: u32| {
+            acp_launch_at(&workspace, engine, engine, None, Compaction { pct })
+                .expect("a launch")
+                .0
+        };
+        // Claude Code declares its setting: it compacts at the agent's share.
+        assert!(share("claude", 70).contains(&format!("{key}=70")));
+        // Without a share the engine keeps its own default, and an engine with no setting never gets one.
+        assert!(!share("claude", 0).iter().any(|pair| pair.starts_with(key)));
+        assert_eq!(share("codex", 70), share("codex", 0));
     }
 
     #[test]

@@ -63,6 +63,25 @@ const HANDOVER_ASKS: u32 = 2;
 const TASK_DONE: &str = "TASK DONE";
 /// What the harness asks a step session that ended its turn without a handover (journal.rs, 9.2).
 const HANDOVER_ASK: &str = "Write your handover with handover_write first: what stands, what is done, what is next, what to check first. Then end your turn. If the task is finished and nothing is left for another session, end with the line TASK DONE instead.";
+
+/// The most a kept tail of the conversation may weigh when compressing: half of `compress_at`, or no limit when it is 0.
+fn compress_budget(profile: &AgentProfile) -> usize {
+    if profile.compress_at > 0 {
+        (profile.compress_at / 2) as usize
+    } else {
+        usize::MAX
+    }
+}
+
+/// Asks a step session for its handover: the ask joins the conversation's latest message when that is the user's.
+fn ask_for_handover(messages: &mut Vec<Message>) {
+    match messages.last_mut() {
+        Some(last) if last.role == Role::User => last.content.push(Block::Text {
+            text: HANDOVER_ASK.to_string(),
+        }),
+        _ => messages.push(Message::user_text(HANDOVER_ASK)),
+    }
+}
 /// How often a local tool's thread is checked while the beat runs beside it.
 const LOCAL_POLL: Duration = Duration::from_millis(20);
 /// How long a script's calls that arrive together wait to be decided as one batch.
@@ -280,6 +299,10 @@ struct Agent<'a, 'l, S, W> {
     /// The context the work item's latest model call used, in tokens (its input and cache reads and
     /// writes). After a compression it waits for the next call's count.
     context_used: u64,
+    /// The window the host reported for the latest model call's model, until `drive` takes it.
+    call_window: Option<u64>,
+    /// The window the compression share is counted against: the latest call's model's, else the profile's.
+    context_window: u64,
     /// Model calls the operator allowed beyond the profile's turn budget.
     extra_turns: u32,
     /// Set while a local tool runs, once the work item is cancelled or the agent is stopping: an
@@ -474,6 +497,8 @@ pub(crate) fn serve_capped<S: Duplex, W: Write + Send>(
             lane: None,
             compressed_size: 0,
             context_used: 0,
+            call_window: None,
+            context_window: 0,
             extra_turns: 0,
             tool_cancel: Arc::new(AtomicBool::new(false)),
             stopping: None,
@@ -980,9 +1005,9 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             let size = serialized_len(messages.as_slice()) as u64;
             // With the model's window known, the conversation compresses once its last call used `compact_at_pct` of
             // the window; without it, once it is larger than `compress_at` bytes and has grown by a quarter of that.
-            let auto = if profile.context_window > 0 && profile.compact_at_pct > 0 {
+            let auto = if self.context_window > 0 && profile.compact_at_pct > 0 {
                 self.context_used.saturating_mul(100)
-                    >= profile
+                    >= self
                         .context_window
                         .saturating_mul(u64::from(profile.compact_at_pct))
             } else {
@@ -991,15 +1016,28 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     && size > self.compressed_size.saturating_add(profile.compress_at / 4)
             };
             if self.compress_requested || auto {
-                let reason = if self.compress_requested {
-                    "asked"
+                let foldable = compress_cut(
+                    messages.as_slice(),
+                    profile.keep_recent,
+                    compress_budget(profile),
+                )
+                .is_some_and(|cut| cut > 1);
+                if foldable && profile.handover && !handed_over && handover_asks < HANDOVER_ASKS {
+                    // A step session writes its handover before its conversation is folded, as it does before it ends:
+                    // the compaction waits for the call that answers the ask.
+                    handover_asks += 1;
+                    ask_for_handover(messages);
                 } else {
-                    "auto"
-                };
-                self.compress_requested = false;
-                // The next call's count measures the compressed conversation.
-                self.context_used = 0;
-                self.compress(work, profile, messages, reason)?;
+                    let reason = if self.compress_requested {
+                        "asked"
+                    } else {
+                        "auto"
+                    };
+                    self.compress_requested = false;
+                    // The next call's count measures the compressed conversation.
+                    self.context_used = 0;
+                    self.compress(work, profile, messages, reason)?;
+                }
             }
             if turns >= profile.max_turns.saturating_add(self.extra_turns) {
                 return Ok((WorkStatus::Stopped, "turn budget reached".to_string()));
@@ -1033,6 +1071,9 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             } = response;
             self.context_used =
                 usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+            // The window of the model that answered: the host's, which is the chat's own model's when it overrides the
+            // agent's, else the profile's.
+            self.context_window = self.call_window.take().unwrap_or(profile.context_window);
             messages.push(Message::assistant(content.clone()));
 
             let uses: Vec<(String, String, Value, Option<Value>)> = content
@@ -1111,14 +1152,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     if profile.handover && !handed_over && !said.contains(TASK_DONE) {
                         if handover_asks < HANDOVER_ASKS {
                             handover_asks += 1;
-                            match messages.last_mut() {
-                                Some(last) if last.role == Role::User => {
-                                    last.content.push(Block::Text {
-                                        text: HANDOVER_ASK.to_string(),
-                                    })
-                                }
-                                _ => messages.push(Message::user_text(HANDOVER_ASK)),
-                            }
+                            ask_for_handover(messages);
                             continue;
                         }
                         self.shared.note(&format!(
@@ -1164,12 +1198,11 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         messages: &mut Vec<Message>,
         reason: &str,
     ) -> Result<(), Halt> {
-        let budget = if profile.compress_at > 0 {
-            (profile.compress_at / 2) as usize
-        } else {
-            usize::MAX
-        };
-        let Some(cut) = compress_cut(messages.as_slice(), profile.keep_recent, budget) else {
+        let Some(cut) = compress_cut(
+            messages.as_slice(),
+            profile.keep_recent,
+            compress_budget(profile),
+        ) else {
             return Ok(());
         };
         if cut <= 1 {
@@ -1277,7 +1310,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         // The calls that ran ahead of an earlier answer are not this answer's.
         self.early.clear();
         let workspace = self.workspace;
-        let (ok, response, error) = thread::scope(|scope| -> Result<_, Halt> {
+        let (ok, response, error, window) = thread::scope(|scope| -> Result<_, Halt> {
             let mut streamed = Streamed::default();
             let mut running = Vec::new();
             let answer = loop {
@@ -1321,7 +1354,8 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                         ok,
                         response,
                         error,
-                    }) if got == req => break (ok, response, error),
+                        window,
+                    }) if got == req => break (ok, response, error, window),
                     Incoming::Message(other) => {
                         let kind = kind_of(&other);
                         self.shared.note(&format!(
@@ -1355,6 +1389,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             }
             Ok(answer)
         })?;
+        self.call_window = window;
         Ok(match (ok, response) {
             (true, Some(response)) => Ok(response),
             (true, None) => Err("the host sent no answer".to_string()),
@@ -1761,6 +1796,13 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 let protocol = self.profile.as_ref().map_or(1, |profile| {
                     crate::acp::run::protocol_offer(&profile.engine_transport)
                 });
+                // The engine compacts its own conversation at the agent's share, where its adapter can set one.
+                let compaction = self
+                    .profile
+                    .as_ref()
+                    .map_or_else(Default::default, |profile| crate::engines::Compaction {
+                        pct: profile.compact_at_pct,
+                    });
                 Box::new(move || {
                     // The plaza's VM tools the hub lets run here (code intelligence, tests, library programs)
                     // run through the same path as the agent's own calls.
@@ -1772,7 +1814,14 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     let link = HubLink::new(shared, work, call, &cancel, tools)
                         .in_vm(here)
                         .with_instructions(instructions);
-                    crate::acp::run::run(workspace, &input, &link, protocol, engine.as_ref())
+                    crate::acp::run::run(
+                        workspace,
+                        &input,
+                        &link,
+                        protocol,
+                        engine.as_ref(),
+                        compaction,
+                    )
                 })
             }
             // A helper is started and awaited here: the board runs it on a thread of the agent's scope.
@@ -3068,6 +3117,115 @@ mod tests {
                 1,
             ))
             .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    /// The windowed profile of a step session: it writes its handover (`handover_write`) before its conversation compacts.
+    fn windowed_step_welcome() -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": [
+                    {"name": "search", "description": "find", "input_schema": {"type": "object"}},
+                    {"name": "handover_write", "description": "hand over", "input_schema": {"type": "object"}},
+                ],
+                "max_turns": 20, "compress_at": 0, "keep_recent": 1, "handover": true,
+                "compact_at_pct": 70, "context_window": 1000,
+            },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_step_session_writes_its_handover_before_its_conversation_is_compacted() {
+        let workspace = scratch("handover-compaction");
+        run_hub(&workspace, |host| {
+            host.send(&windowed_step_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "build it")).unwrap();
+            // The first turn has nothing older to fold, so no ask yet.
+            windowed_turn(host, 1, "s1");
+            windowed_turn(host, 2, "s2");
+            // The second turn leaves something to fold: the next call is asked for the handover first.
+            let asking = expect_type(host, "model_call");
+            let messages = &asking["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(5), "{messages}");
+            assert!(
+                messages
+                    .to_string()
+                    .contains("Write your handover with handover_write first"),
+                "{messages}"
+            );
+            host.send(&answer_using(
+                3,
+                json!([tool_use(
+                    "h1",
+                    "handover_write",
+                    json!({"stands": "parser done", "next": "wire it"})
+                )]),
+                "tool_use",
+                800,
+            ))
+            .unwrap();
+            expect_type(host, "tool_batch");
+            host.send(&decision("h1", "done", "handover recorded", false))
+                .unwrap();
+            // With the handover written, the older turns fold into the summary.
+            let (_, compressed) = compaction(
+                host,
+                4,
+                "Decisions: none yet.\nDead ends: none.\nOpen questions: none.\nWhere it stands: parser done.",
+            );
+            assert_eq!(compressed["folded"], json!(4), "{compressed}");
+            expect_type(host, "model_call");
+            host.send(&answer_using(5, json!([text("done")]), "end_turn", 1))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    /// The answer to model call `req`, whose context used `input` tokens and whose model has a `window`-token window.
+    fn answer_in_window(req: u64, content: Value, stop: &str, input: u64, window: u64) -> String {
+        json!({
+            "type": "model_result", "req": req, "ok": true, "window": window,
+            "response": {"model": "anthropic/x", "content": content, "stop": stop,
+                         "usage": {"input_tokens": input, "output_tokens": 1}},
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_window_the_host_reports_for_the_model_is_the_one_the_share_is_counted_against() {
+        let workspace = scratch("reported-window");
+        run_hub(&workspace, |host| {
+            // The profile's window is 1000 tokens, so 800 would be over 70 %; the model that answered has 10000.
+            host.send(&windowed_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            for (req, id) in [(1, "s1"), (2, "s2")] {
+                expect_type(host, "model_call");
+                host.send(&answer_in_window(
+                    req,
+                    json!([tool_use(id, "search", json!({"pattern": id}))]),
+                    "tool_use",
+                    800,
+                    10_000,
+                ))
+                .unwrap();
+                expect_type(host, "tool_batch");
+                host.send(&decision(id, "done", "hits", false)).unwrap();
+            }
+            // 800 of 10000 is under 70 %: nothing is folded, and the next call sees all five messages.
+            let next = expect_type(host, "model_call");
+            assert_eq!(
+                next["request"]["messages"].as_array().map(Vec::len),
+                Some(5),
+                "{next}"
+            );
+            host.send(&answer_using(3, json!([text("done")]), "end_turn", 1))
+                .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });
