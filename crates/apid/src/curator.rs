@@ -205,6 +205,15 @@ fn start(app: &App, project: &str, now: u64) {
         now,
     );
     app.evals.begin(&session.id, "distill", "curate", 1);
+    // The curator's run is a run of the engine's `distill` recipe (recipes/runs.rs); its session ends it.
+    app.recipe_runs.start_engine(
+        "distill",
+        "curator",
+        None,
+        Some(project),
+        Some(project),
+        now,
+    );
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, SEAT, 1, model.as_deref(), None, Some(project)) {
         Ok(started) => match started["cids"].get(0).and_then(Value::as_u64) {

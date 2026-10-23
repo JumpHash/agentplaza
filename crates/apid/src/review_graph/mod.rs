@@ -668,6 +668,16 @@ pub fn start(app: &App, task: &str) -> Option<String> {
         "review_run",
         &json!({ "run": id, "task": task, "state": "running", "round": round }),
     );
+    // The run is also a run of the engine's `review` recipe (recipes/runs.rs), which records its outcome.
+    let project = app.reviews.run(&id).map(|r| r.project).unwrap_or_default();
+    app.recipe_runs.start_engine(
+        "review",
+        "review",
+        Some(task),
+        Some(&project),
+        Some(&id),
+        apz_plaza::now_ms(),
+    );
     Some(id)
 }
 
@@ -1512,6 +1522,14 @@ fn gate(app: &App, run_id: &str) {
         r.outcome = Some(outcome.clone());
     });
     let Some(run) = updated else { return };
+    app.recipe_runs.finish_subject(
+        "review",
+        &run.id,
+        &crate::recipes::Report::verdict(outcome.decision == "pass"),
+        &outcome.decision,
+        outcome.decision == "owner",
+        apz_plaza::now_ms(),
+    );
     if !outcome.replan.is_empty() {
         app.bus.publish("review_replan", &json!({ "run": run.id, "task": run.task, "project": run.project, "reasons": outcome.replan }));
     }
@@ -1674,6 +1692,14 @@ pub fn owner_ruled(
         });
     });
     let run = updated.ok_or("no such review run")?;
+    app.recipe_runs.finish_subject(
+        "review",
+        &run.id,
+        &crate::recipes::Report::verdict(decision == "pass"),
+        decision,
+        false,
+        apz_plaza::now_ms(),
+    );
     match decision {
         "pass" => passed(app, &run, &notes),
         "rework" => send_back(app, &run, std::slice::from_ref(&notes)),

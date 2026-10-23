@@ -149,9 +149,37 @@ pub fn landed(app: &Arc<App>, repo: &str) {
     }
 }
 
-/// One build: the newest main's commit, the declaration on main, and the recipe's steps run in the base's VM. Returns
-/// the commit built.
+/// One build, recorded as a run of the engine's `base` recipe (recipes/runs.rs): its step's outcome is the build's.
 fn build_once(app: &App, key: &Key, repo: &str) -> Result<String, String> {
+    let subject = format!("{}:{}", key.project, key.pool);
+    let now = apz_plaza::now_ms();
+    app.recipe_runs.start_engine(
+        "base",
+        "landing",
+        None,
+        Some(&key.project),
+        Some(&subject),
+        now,
+    );
+    let built = build_steps(app, key, repo);
+    let outcome = match &built {
+        Ok(commit) => format!("built {commit}"),
+        Err(why) => why.clone(),
+    };
+    app.recipe_runs.finish_subject(
+        "landing",
+        &subject,
+        &crate::recipes::Report::verdict(built.is_ok()),
+        &outcome,
+        false,
+        apz_plaza::now_ms(),
+    );
+    built
+}
+
+/// The build's steps: the newest main's commit, the declaration on main, and the recipe's steps run in the base's VM.
+/// Returns the commit built.
+fn build_steps(app: &App, key: &Key, repo: &str) -> Result<String, String> {
     let detail = app.weft.get(&format!("/repos/{repo}"))?;
     let commit = detail["refs"]["main"]
         .as_str()

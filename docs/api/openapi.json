@@ -16548,7 +16548,7 @@
         "tags": [
           "recipes"
         ],
-        "summary": "List the review recipes and the orchestrator's proposals",
+        "summary": "List the review recipes, the recipe engine's recipes and the orchestrator's proposals",
         "security": [
           {
             "owner": []
@@ -16929,6 +16929,226 @@
           },
           "401": {
             "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/recipe-runs": {
+      "get": {
+        "operationId": "get_v1_recipe_runs",
+        "tags": [
+          "recipe-runs"
+        ],
+        "summary": "List recipe runs, newest first, optionally of one task or project",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/recipe-runs/{id}": {
+      "get": {
+        "operationId": "get_v1_recipe_runs_id",
+        "tags": [
+          "recipe-runs"
+        ],
+        "summary": "Show a recipe run: its steps, edges and the recipe it ran",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/recipe-runs/{id}/graph": {
+      "get": {
+        "operationId": "get_v1_recipe_runs_id_graph",
+        "tags": [
+          "recipe-runs"
+        ],
+        "summary": "Show a recipe run's graph with each step's and edge's state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/recipe-runs/{id}/cancel": {
+      "post": {
+        "operationId": "post_v1_recipe_runs_id_cancel",
+        "tags": [
+          "recipe-runs"
+        ],
+        "summary": "Stop a recipe run; a task's run stops its task",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the current state",
             "content": {
               "application/json": {
                 "schema": {

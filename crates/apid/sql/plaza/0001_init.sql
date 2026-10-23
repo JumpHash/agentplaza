@@ -2233,6 +2233,61 @@ CREATE TABLE "seat" (
     PRIMARY KEY ("task", "name")
 ) STRICT;
 
+-- component recipe_runs
+CREATE TABLE "recipe_run" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "recipe" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "source" TEXT NOT NULL,
+    "toml_content" TEXT,
+    "trigger" TEXT NOT NULL,
+    "task" TEXT,
+    "project" TEXT,
+    "subject" TEXT,
+    "state" TEXT NOT NULL CHECK ("state" IN ('running', 'owner', 'passed', 'failed', 'cancelled')),
+    "outcome" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "recipe_run_task" ON "recipe_run" ("task");
+CREATE INDEX "recipe_run_project" ON "recipe_run" ("project");
+CREATE INDEX "recipe_run_subject" ON "recipe_run" ("subject");
+CREATE TABLE "recipe_run_steps" (
+    "recipe_run_id" TEXT NOT NULL,
+    "steps_pos" INTEGER NOT NULL CHECK ("steps_pos" >= 0),
+    "step" TEXT NOT NULL,
+    "state" TEXT NOT NULL CHECK ("state" IN ('waiting', 'ready', 'running', 'passed', 'failed', 'skipped')),
+    "visits" INTEGER NOT NULL CHECK ("visits" >= 0),
+    "items" INTEGER NOT NULL CHECK ("items" >= 0),
+    "reported" INTEGER NOT NULL CHECK ("reported" >= 0),
+    "gate" TEXT NOT NULL,
+    PRIMARY KEY ("recipe_run_id", "steps_pos"),
+    FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "recipe_run_edges" (
+    "recipe_run_id" TEXT NOT NULL,
+    "edges_pos" INTEGER NOT NULL CHECK ("edges_pos" >= 0),
+    "index" INTEGER NOT NULL CHECK ("index" >= 0),
+    "from" TEXT NOT NULL,
+    "to" TEXT NOT NULL,
+    "state" TEXT NOT NULL CHECK ("state" IN ('open', 'taken', 'dead')),
+    "taken" INTEGER NOT NULL CHECK ("taken" >= 0),
+    PRIMARY KEY ("recipe_run_id", "edges_pos"),
+    FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component recipe_versions
+CREATE TABLE "recipe_version" (
+    "recipe" TEXT NOT NULL,
+    "version" INTEGER NOT NULL CHECK ("version" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "toml_content" TEXT,
+    "saved_ms" INTEGER NOT NULL CHECK ("saved_ms" >= 0),
+    PRIMARY KEY ("recipe", "version")
+) STRICT;
+
 -- component budgets
 CREATE TABLE "budget" (
     "owner_kind" TEXT NOT NULL CHECK ("owner_kind" IN ('project', 'task')),

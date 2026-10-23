@@ -90,7 +90,33 @@ export interface RecipeDetail { recipe: RecipeDef; toml: string }
 /** A recipe change waiting for the owner. The hub's proposal record is not fixed yet, so only what the page shows is typed. */
 export interface RecipeProposal { id: string; recipe?: string; version?: number; title?: string; by?: string; reason?: string; created_ms?: number; state?: string }
 
-export interface RecipeList { recipes: RecipeSummary[]; proposals: RecipeProposal[] }
+/** A recipe the engine runs, as `GET /v1/recipes` lists it under `engine` (`steps` is the count of its steps). */
+export interface EngineRecipeSummary { id: string; name: string; version: number; scope: string; steps: number; source: string }
+
+/**
+ * A step of an engine recipe. The fields the graph editor shows are typed; any other field the hub sends rides along
+ * (the editor writes it back as it came).
+ */
+export interface EngineStep {
+  id: string; seat?: string; role?: string; model: string | string[]; engine?: string; tools: string[];
+  fan_out: number | string; gate: string[]; budget_share?: number; output?: string;
+  [key: string]: unknown;
+}
+
+/** An edge between two steps. `when` is a condition (`passed`, `findings>0`, ...); `max` makes it a loop taken at most that often. */
+export interface EngineEdge { from: string; to: string; when: string; max?: number; [key: string]: unknown }
+
+/** An engine recipe in full: the header, its steps and its edges. */
+export interface EngineRecipe {
+  id: string; name: string; version: number; scope: string;
+  inputs: unknown[]; outputs: unknown[]; triggers: unknown[];
+  steps: EngineStep[]; edges: EngineEdge[];
+  [key: string]: unknown;
+}
+
+export interface EngineRecipeDetail { recipe: EngineRecipe; toml: string; engine: true }
+
+export interface RecipeList { recipes: RecipeSummary[]; proposals: RecipeProposal[]; engine?: EngineRecipeSummary[] }
 
 /** The owner's three calls on a review card. */
 export type ReviewChoice = 'pass' | 'rework' | 'fail';
@@ -102,6 +128,9 @@ export const review = {
   recipe: (id: string, version?: number) => call<RecipeDetail>('GET', `/v1/recipes/${seg(id)}${version === undefined ? '' : `?version=${version}`}`),
   /** Saves `toml` as a new version of the recipe (the hub refuses a bad one with its reason in `error`). */
   putRecipe: (id: string, toml: string) => call<RecipeDetail>('PUT', `/v1/recipes/${seg(id)}`, { toml }),
+  /** The recipes the engine can open (the graph editor's list). */
+  engineRecipes: async (): Promise<EngineRecipeSummary[]> => (await call<RecipeList>('GET', '/v1/recipes')).engine ?? [],
+  engineRecipe: (id: string) => call<EngineRecipeDetail>('GET', `/v1/recipes/${seg(id)}`),
   decideProposal: (id: string, approve: boolean) => call<unknown>('POST', `/v1/recipes/proposals/${seg(id)}`, { approve }),
   runs: (taskId: string) => call<TaskReviews>('GET', `/v1/tasks/${seg(taskId)}/reviews`),
   run: (runId: string) => call<ReviewRunDetail>('GET', `/v1/reviews/${seg(runId)}`),

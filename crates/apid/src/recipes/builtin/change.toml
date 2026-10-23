@@ -1,0 +1,33 @@
+# The change recipe (PLAN 21.1): a builder's step, then a review on another model. A failed review sends the change
+# back to the builder with its findings, at most twice more (three reviews in all, as CHANGE_ROUNDS said).
+id = "change"
+name = "Change"
+version = 1
+inputs = ["task"]
+outputs = ["change"]
+triggers = ["task.ready"]
+
+[[steps]]
+id = "build"
+seat = "builder"
+role = "builder"
+model = "any"
+output = "change"
+
+[[steps]]
+id = "review"
+seat = "reviewer"
+role = "reviewer"
+model = "differ"
+gate = ["passed"]
+
+[[edges]]
+from = "build"
+to = "review"
+when = "passed"
+
+[[edges]]
+from = "review"
+to = "build"
+when = "failed"
+max = 2
