@@ -150,8 +150,12 @@ connection to `vsockd` → interrupts back through the I/O APIC.
   shared data volumes are attached, in the KVM x86_64 slots.)
 - **Confinement**: on Linux every VMM thread runs under a seccomp allowlist, and the per-VM process
   mode adds the jailer (namespaces, `pivot_root`, dropped ids). On Windows the VMM runs as threads
-  of `noded` with the user's rights; a Windows equivalent (an AppContainer or a restricted token per
-  VM process) is future work.
+  of `noded` with the user's rights. The spec that would confine a monitor process is built and
+  tested (`vmm::confine::monitor_spec`: the kernel and initrd read-only, the vsock directory the only
+  writable path, no network, one process, a memory cap of the guest RAM plus 256 MiB). It runs
+  through `apz_sandbox::spawn` (an AppContainer and a job object), which compiles for Windows and is
+  tested there only. Nothing spawns a Windows monitor process with it yet: `APZ_VMM_SPAWN=process`
+  still boots in-process, because the monitor child (`apz-vmm`) exists on Linux and macOS only.
 - **Windows arm64**: WHP on arm64 has its own register set and an in-hypervisor GICv3; the guest
   path for it (the HVF backend's device tree and memory map on WHP) is not written. The platform
   layer (`whp::sys`, `whp::vm`) builds there already.
