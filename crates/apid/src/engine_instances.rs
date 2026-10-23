@@ -1293,7 +1293,7 @@ fn entry_args(entry: &Value) -> Vec<String> {
 }
 
 /// Whether version `a` is newer than `b`, comparing dotted numbers (pre-release tags sort lower).
-fn newer(a: &str, b: &str) -> bool {
+pub(crate) fn newer(a: &str, b: &str) -> bool {
     let parts = |v: &str| -> (Vec<u64>, bool) {
         let (core, pre) = v.split_once('-').map_or((v, false), |(c, _)| (c, true));
         (

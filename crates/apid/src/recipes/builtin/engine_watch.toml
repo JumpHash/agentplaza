@@ -1,8 +1,9 @@
-# The engine-watch recipe (PLAN 21.1, 12.6). Stub: it needs the engine-watch phase (12.6); none runs yet. The engines a
-# project uses are watched; a newer version is checked, and a proposal to change the engine is made.
+# The engine-watch recipe (PLAN 21.1, 12.6). Run once a day by `engine_watch.rs`, which settles its steps through
+# the recipe engine: `watch` reads the ACP registry and each pinned engine's newest release; `propose` opens a card
+# with the adapter tests' result for each newer version. The engines a project uses are watched through the hub's list.
 id = "engine-watch"
 name = "Engine watch"
-description = "Stub until the engine-watch phase (12.6): declares its steps, none runs yet."
+description = "Reads the ACP registry and the pinned engines' newest releases once a day; a newer version is proposed as a card with its adapter-test result (PLAN 12.6)."
 version = 1
 inputs = ["engines"]
 outputs = ["proposal"]

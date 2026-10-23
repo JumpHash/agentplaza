@@ -487,6 +487,7 @@ impl App {
             crate::weft_hub::stop(&app);
         });
         crate::provider_health::spawn(Arc::clone(&app));
+        crate::engine_watch::spawn(Arc::clone(&app));
         crate::providers::spawn_refresher(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
