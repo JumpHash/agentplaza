@@ -25,8 +25,8 @@ entity Agent "An agent with a Sigil (AP-035)" {
   store "core.agents"
 }
 
-entity Town "The plaza as a whole: the resource that plaza-wide laws name" {
-  field id: Id<Town>
+entity Plaza "The plaza as a whole: the resource that plaza-wide laws name" {
+  field id: Id<Plaza>
   field name: String
 }
 

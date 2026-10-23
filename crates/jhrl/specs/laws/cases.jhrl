@@ -1,5 +1,5 @@
 fixture "plaza" "One plaza with agents of several roles, tools of each risk class, hosts in each group" {
-  Town("plaza") { name: "plaza" }
+  Plaza("plaza") { name: "plaza" }
   Agent("builder") { kind: "llm", role: "builder" }
   Agent("planner") { kind: "llm", role: "planner" }
   Agent("architect") { kind: "llm", role: "architect" }
@@ -82,10 +82,10 @@ authz "constitution" using "plaza" {
 authz "statutes" using "plaza" {
   deny "builder reaches a blocked host" Agent("builder") egress.connect Host("evil") {flags: {}}
   deny "builder calls a write tool" Agent("builder") tool.call Tool("edit-code") {flags: {}}
-  allow "planner submits a plan" Agent("planner") plan.submit Town("plaza") {}
-  allow "architect submits design notes" Agent("architect") design.submit Town("plaza") {}
-  allow "qa submits a test suite" Agent("qa") testsuite.submit Town("plaza") {}
-  allow "researcher submits a brief" Agent("researcher") research.submit Town("plaza") {}
+  allow "planner submits a plan" Agent("planner") plan.submit Plaza("plaza") {}
+  allow "architect submits design notes" Agent("architect") design.submit Plaza("plaza") {}
+  allow "qa submits a test suite" Agent("qa") testsuite.submit Plaza("plaza") {}
+  allow "researcher submits a brief" Agent("researcher") research.submit Plaza("plaza") {}
   allow "orchestrator approves a merge under threshold" Agent("orchestrator") merge.approve Task("task1") {budget: 5, threshold: 10, ambiguous: false}
   deny "orchestrator approves a merge over threshold" Agent("orchestrator") merge.approve Task("task1") {budget: 50, threshold: 10, ambiguous: false}
   deny "orchestrator approves an ambiguous plan" Agent("orchestrator") plan.approve Task("task1") {budget: 5, threshold: 10, ambiguous: true}
