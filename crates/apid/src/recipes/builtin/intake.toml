@@ -1,11 +1,14 @@
-# The intake recipe (PLAN 21.1, 14.5). Stub: its steps need the intake phase (14.5); none runs yet. The steps are the
-# plan's: classify the item, map it to a project, then start a spec or a task.
+# The intake recipe (PLAN 21.1, 14.5, 21.2). An item's words, title and text together, are classed against its project's
+# spec threshold (`spec_over_words`): `classify` scores 1 above it and 0 below, and its edges start one step. Below the
+# threshold the `task` step makes the item's task on its rule's recipe, as intake always did. Above it the `spec` step
+# starts the item's spec-and-plan task, which runs the `plan` recipe. The steps are engine steps: planning.rs and
+# intake/mod.rs run them, and the run records what classed the item and what it started.
 id = "intake"
 name = "Intake"
-description = "Stub until the intake phase (14.5): declares its steps, none runs yet."
+description = "Classes an intake item against its project's spec threshold: a task below it, a spec and plan above it."
 version = 1
 inputs = ["item"]
-outputs = ["spec", "task"]
+outputs = ["task", "spec"]
 triggers = ["item.received"]
 
 [[steps]]
@@ -14,22 +17,23 @@ engine = "intake"
 gate = ["passed"]
 
 [[steps]]
-id = "map"
-engine = "intake"
-gate = ["passed"]
-
-[[steps]]
-id = "start"
+id = "task"
 engine = "intake"
 gate = ["passed"]
 output = "task"
 
-[[edges]]
-from = "classify"
-to = "map"
-when = "passed"
+[[steps]]
+id = "spec"
+engine = "intake"
+gate = ["passed"]
+output = "spec"
 
 [[edges]]
-from = "map"
-to = "start"
-when = "passed"
+from = "classify"
+to = "task"
+when = "score == 0"
+
+[[edges]]
+from = "classify"
+to = "spec"
+when = "score >= 1"

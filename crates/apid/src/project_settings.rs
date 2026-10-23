@@ -90,6 +90,10 @@ pub struct ProjectSettings {
     /// Whether the project releases continuously: each landing starts the release recipe (22; a stub until then, 4.6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub release_continuous: bool,
+    /// The words an intake item may have, title and text together, before it gets a spec and a plan rather than a task
+    /// (planning.rs); [`crate::planning::DEFAULT_SPEC_OVER_WORDS`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_over_words: Option<u32>,
     /// The project's hooks: checks and formatters that run around its agents' edits and commands (`apz_proto::hooks`).
     /// The JSON names them as a list under `hooks`; `"hooks": "defaults"` sets `hook_defaults` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -198,6 +202,7 @@ struct SettingsRow {
     team_max: Option<u32>,
     team_target: Option<u32>,
     queue_batch: Option<u32>,
+    spec_over_words: Option<u32>,
     land_approval: bool,
     release_continuous: bool,
     hook_defaults: bool,
@@ -270,6 +275,7 @@ impl SettingsRow {
             team_max: settings.team_max,
             team_target: settings.team_target,
             queue_batch: settings.queue_batch,
+            spec_over_words: settings.spec_over_words,
             land_approval: settings.land_approval,
             release_continuous: settings.release_continuous,
             hook_defaults: settings.hook_defaults,
@@ -295,6 +301,7 @@ impl SettingsRow {
             team_max: self.team_max,
             team_target: self.team_target,
             queue_batch: self.queue_batch,
+            spec_over_words: self.spec_over_words,
             land_approval: self.land_approval,
             release_continuous: self.release_continuous,
             hooks: self.hooks,

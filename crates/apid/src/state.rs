@@ -218,6 +218,8 @@ pub struct App {
     pub standing_rules: crate::standing_rules::StandingRules,
     /// The intake records: GitHub, Linear and Notion items, their connections and write-backs (intake/mod.rs).
     pub intake: crate::intake::Store,
+    /// The planning records: specs, and the recipes and areas of planned tasks (planning.rs).
+    pub planning: crate::planning::Store,
     /// Agents' artifacts (artifacts/), their versions and data blobs.
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
@@ -380,6 +382,7 @@ impl App {
             appearance: crate::appearance::Store::new(),
             standing_rules: Default::default(),
             intake: Default::default(),
+            planning: Default::default(),
             artifacts: Arc::new(crate::artifacts::Store::new(
                 Arc::clone(store.db(crate::store::PLAZA)),
                 Arc::clone(&blobs),

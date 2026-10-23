@@ -79,6 +79,7 @@ mod nodes;
 mod openapi;
 mod owner_board;
 mod placement;
+mod planning;
 mod platforms;
 mod plaza;
 mod policy;
