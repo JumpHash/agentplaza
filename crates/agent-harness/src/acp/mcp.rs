@@ -30,7 +30,6 @@ use apz_proto::chat::ToolSpec;
 use serde_json::{Value, json};
 
 use super::link::EngineLink;
-use crate::agent::is_guest_tool;
 
 /// The MCP protocol version the server speaks.
 const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -59,19 +58,73 @@ const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 
-/// The tools an engine may call through the plaza's MCP server: the profile's tools the hub runs
-/// (the board, tasks, messages, library). The harness's own tools are left out, since the
-/// engine has its own through ACP; so are the owner's IDE tools and `code_engine` itself.
+/// The groups of the plaza's MCP server (PLAN 12.3): what an engine is offered of the plaza's tools, by
+/// the tool's name. A tool outside every group is not served; the engine has its own file, shell and
+/// search tools, so `read`, `edit`, `find`, `search` and `run` are not among them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Weft: the project's history and the seat's lane.
+    Weft,
+    /// Review: the review steps a reviewer seat has.
+    Review,
+    /// Code intelligence (PLAN 1.8): symbols, definitions, references, diagnostics and outlines, run in the VM.
+    Code,
+    /// Tests: `run_tests`, run in the VM.
+    Tests,
+    /// The library: the approved `x_` tools, through `tool_search`.
+    Library,
+    /// Skills: the skills the seat may use, listed and read.
+    Skills,
+    /// Helpers (PLAN 1.10): `spawn_helper` and `await_helper`.
+    Helpers,
+    /// Talk: seat messages, and reading and answering a seat's threads.
+    Talk,
+    /// The journal and the handover.
+    Journal,
+    /// The project's memory.
+    Memory,
+    /// The owner's MCP servers the project enables, proxied as `mcp__<server>__<tool>`.
+    Owner,
+}
+
+/// The group a tool belongs to, or `None` when the plaza's MCP server does not serve it.
+pub fn group_of(name: &str) -> Option<Group> {
+    Some(match name {
+        "weft_status" | "weft_diff" | "weft_describe" | "weft_log" | "weft_show" | "weft_blame"
+        | "weft_map" | "weft_change_tree" | "weft_touches" => Group::Weft,
+        "review_tree" | "review_score" | "review_verdict" | "review_spawn" => Group::Review,
+        "symbols" | "definition" | "references" | "diagnostics" | "outline" => Group::Code,
+        "run_tests" => Group::Tests,
+        "plaza_skills" | "plaza_skill_read" => Group::Skills,
+        "spawn_helper" | "await_helper" => Group::Helpers,
+        "plaza_message_seat" | "thread_read" | "thread_answer" => Group::Talk,
+        "journal_note" | "journal_read" | "handover_write" => Group::Journal,
+        name if name.starts_with("memory_") => Group::Memory,
+        // The library's tools carry the library's prefix (`x_`, see the hub's `library::PREFIX`).
+        name if name.starts_with("x_") => Group::Library,
+        name if name.starts_with("mcp__") => Group::Owner,
+        _ => return None,
+    })
+}
+
+/// The plaza's tools an engine may call through its MCP server: those of the profile that belong to a
+/// group (see [`group_of`]). The profile is the hub's answer for the session's seat and project, so
+/// the groups are filtered by it and nothing more is offered.
 pub fn plaza_tools(profile_tools: &[ToolSpec]) -> Vec<ToolSpec> {
     profile_tools
         .iter()
-        .filter(|tool| {
-            tool.name != "code_engine"
-                && !tool.name.starts_with("ide_")
-                && !is_guest_tool(&tool.name)
-        })
+        .filter(|tool| group_of(&tool.name).is_some())
         .cloned()
         .collect()
+}
+
+/// The helpers' tools (PLAN 1.10), which are not built yet. Both the plaza's MCP server and the engine's
+/// call path answer them here, so the answer is the same wherever they are asked for; it says so until
+/// 1.10 lands.
+pub fn helper_call(name: &str, _input: &Value) -> Result<String, String> {
+    Err(format!(
+        "{name} is not built yet: helpers come with PLAN 1.10"
+    ))
 }
 
 /// The stdio side: the reply to one line the engine sent, or None for a notification (a message
@@ -134,10 +187,12 @@ pub fn handle(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let outcome = if arguments.is_object() {
-                link.call(name, &arguments, deadline)
-            } else {
+            let outcome = if !arguments.is_object() {
                 Err("invalid input: the arguments must be a JSON object".to_string())
+            } else if group_of(name) == Some(Group::Helpers) {
+                helper_call(name, &arguments)
+            } else {
+                link.call(name, &arguments, deadline)
             };
             let (text, is_error) = match outcome {
                 Ok(text) => (text, false),
@@ -503,14 +558,23 @@ mod tests {
     }
 
     #[test]
-    fn plaza_tools_are_the_profiles_tools_the_hub_runs() {
+    fn plaza_tools_are_the_profiles_tools_that_belong_to_a_group() {
         let profile = [
+            spec("weft_status"),
+            spec("symbols"),
+            spec("run_tests"),
+            spec("x_fmt"),
+            spec("plaza_skills"),
+            spec("journal_note"),
+            spec("memory_search"),
+            spec("plaza_message_seat"),
+            spec("mcp__docs__search"),
             spec("board_list"),
-            spec("task_list"),
             spec("run"),
+            spec("read"),
+            spec("edit"),
             spec("find"),
             spec("fetch_url"),
-            spec("edit"),
             spec("ide_read"),
             spec("code_engine"),
         ];
@@ -518,7 +582,71 @@ mod tests {
             .into_iter()
             .map(|tool| tool.name)
             .collect();
-        assert_eq!(names, ["board_list", "task_list"]);
+        assert_eq!(
+            names,
+            [
+                "weft_status",
+                "symbols",
+                "run_tests",
+                "x_fmt",
+                "plaza_skills",
+                "journal_note",
+                "memory_search",
+                "plaza_message_seat",
+                "mcp__docs__search",
+            ]
+        );
+    }
+
+    #[test]
+    fn each_group_takes_its_own_tools_and_nothing_the_engine_has_itself() {
+        assert_eq!(group_of("weft_touches"), Some(Group::Weft));
+        assert_eq!(group_of("weft_change_tree"), Some(Group::Weft));
+        assert_eq!(group_of("review_verdict"), Some(Group::Review));
+        assert_eq!(group_of("diagnostics"), Some(Group::Code));
+        assert_eq!(group_of("run_tests"), Some(Group::Tests));
+        assert_eq!(group_of("x_lint"), Some(Group::Library));
+        assert_eq!(group_of("plaza_skill_read"), Some(Group::Skills));
+        assert_eq!(group_of("await_helper"), Some(Group::Helpers));
+        assert_eq!(group_of("thread_answer"), Some(Group::Talk));
+        assert_eq!(group_of("handover_write"), Some(Group::Journal));
+        assert_eq!(group_of("memory_propose"), Some(Group::Memory));
+        assert_eq!(group_of("mcp__docs__search"), Some(Group::Owner));
+        // The engine's own tools, the board and the tasks are not the plaza's to serve here.
+        for name in [
+            "read",
+            "edit",
+            "find",
+            "search",
+            "run",
+            "board_list",
+            "plaza_tasks",
+        ] {
+            assert_eq!(group_of(name), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_helper_is_not_built_yet_and_says_so() {
+        let refused = helper_call("spawn_helper", &json!({})).expect_err("not built");
+        assert!(refused.contains("PLAN 1.10"), "{refused}");
+        // Offered and called through the server, the same answer comes back as an error result, and the
+        // link is never asked: the Fake link has no helper.
+        let tools = [spec("spawn_helper")];
+        let called = handle(
+            &json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                    "params": {"name": "spawn_helper", "arguments": {}}}),
+            &tools,
+            &Fake,
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert_eq!(called["result"]["isError"], true);
+        assert!(
+            called["result"]["content"][0]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("PLAN 1.10")),
+            "{called}"
+        );
     }
 
     #[test]

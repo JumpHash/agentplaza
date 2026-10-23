@@ -1214,6 +1214,30 @@
       "additionalProperties": false
     }
   },
+  "thread_read": {
+    "description": "Read a seat thread of your task: its subject, state and every message, each with the seat it came from and the seat it went to. Read a thread before you answer it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thread": {"type": "string", "description": "the thread's id, `th<n>`"}
+      },
+      "required": ["thread"],
+      "additionalProperties": false
+    }
+  },
+  "thread_answer": {
+    "description": "Answer a seat thread of your task: the message goes to the seat that last wrote to it, in the same thread. Set `close` when the answer settles the question.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thread": {"type": "string", "description": "the thread's id, `th<n>`"},
+        "text": {"type": "string", "minLength": 1},
+        "close": {"type": "boolean", "description": "close the thread with this answer"}
+      },
+      "required": ["thread", "text"],
+      "additionalProperties": false
+    }
+  },
   "plaza_message_seat": {
     "description": "Send a message to a seat, not to an agent: `reviewer` or `builder` (a seat of your own task), `T12/reviewer` (a seat of another task), or `planner` (your project's planner). The session filling the seat now reads it next; with none, it waits and is the first thing the seat's next session reads. To answer a message, send to the seat it came from with its `thread`. Messages that go back and forth without either seat producing an output are reported to the planner.",
     "input_schema": {
