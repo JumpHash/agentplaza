@@ -724,6 +724,13 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             Ok(c) => ok(json!({ "repo": p.get("repo"), "ref": p.get("ref"), "revisions": c })),
             Err(e) => fail(404, e),
         })
+        .get("/v1/repos/{repo}/history", |h: &H, req, p| {
+            let reference = q(req, "ref").unwrap_or_else(|| "main".into());
+            match crate::history::view(&h.store, p.get("repo"), &reference) {
+                Ok(v) => ok(v),
+                Err(e) => fail(404, e),
+            }
+        })
         .post("/v1/repos/{repo}/export", |h: &H, req, p| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;
@@ -731,7 +738,7 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             let v: Value = req.json().unwrap_or(Value::Null);
             let Some(conn) = v["connection"].as_str() else { return fail(400, "export needs a connection") };
             let keys = crate::export::Keys { token: v["token"].as_str().map(str::to_string), signing: h.signing.as_ref() };
-            match h.exporter.export(&h.store, &h.derived, p.get("repo"), conn, keys, v["dry_run"].as_bool().unwrap_or(false)) {
+            match h.exporter.export(&h.store, p.get("repo"), conn, keys, v["dry_run"].as_bool().unwrap_or(false)) {
                 Ok(r) => ok(json!(r)),
                 Err(e) => fail(502, e),
             }
@@ -838,7 +845,7 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             }
             let v: Value = req.json().unwrap_or(Value::Null);
             let Some(conn) = v["connection"].as_str() else { return fail(400, "export needs a connection") };
-            match crate::release::export_release(&h.store, p.get("repo"), p.get("version"), conn, v["token"].as_str().map(str::to_string), h.signing.as_ref(), h.store.hub_key()) {
+            match crate::release::export_release(&h.store, p.get("repo"), p.get("version"), conn, v["token"].as_str().map(str::to_string), h.signing.as_ref()) {
                 Ok(r) => ok(json!(r)),
                 Err(e) => fail(502, e),
             }

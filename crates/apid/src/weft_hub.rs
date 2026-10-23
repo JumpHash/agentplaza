@@ -513,19 +513,106 @@ pub fn export_all(app: &App, repo: &str) {
             &format!("/repos/{repo}/export"),
             &json!({ "connection": id, "token": token }),
         ) {
-            Ok(r) if r["state"] == "moved" => app.bus.publish(
-                "weft_export",
-                &json!({ "repo": repo, "connection": id, "state": "moved", "detail": r["detail"] }),
-            ),
+            Ok(r) if r["state"] == "moved" => {
+                app.bus.publish(
+                    "weft_export",
+                    &json!({ "repo": repo, "connection": id, "state": "moved", "detail": r["detail"] }),
+                );
+                // A mirror's remote that moved on its own: its commits become an adoption lane (21.6).
+                if crate::github_modes::mode_of(app, repo) == "mirror" {
+                    adopt_remote(app, repo, id, token.clone());
+                }
+            }
             Ok(_) => {}
             Err(e) => eprintln!("apid: exporting {repo} to {id}: {e}"),
         }
     }
 }
 
+/// The commits a mirror's remote received on its own become a lane (Weft's adopt, 22.4): the lane is queued, and the
+/// project's chat is told. The owner's landing gate (the queue) decides when it lands.
+fn adopt_remote(app: &App, repo: &str, connection: &str, token: Option<String>) {
+    let report = match app.weft.post(
+        &format!("/repos/{repo}/adopt"),
+        &json!({ "connection": connection, "token": token }),
+    ) {
+        Ok(r) => r,
+        Err(e) => return eprintln!("apid: adopting {repo}'s remote commits: {e}"),
+    };
+    let Some(change) = report["change"].as_str().map(str::to_string) else {
+        return;
+    };
+    if let Err(e) = app.weft.hub(
+        "queue.add",
+        json!({ "repo": repo, "ref": "main", "change": change, "n": 1 }),
+    ) {
+        eprintln!("apid: queueing the adoption {change} of {repo}: {e}");
+    }
+    if let Some(project) = crate::github_modes::project_of(app, repo) {
+        let now = apz_plaza::now_ms();
+        let chat = match app.chats.list(Some(&project.id), false).first() {
+            Some(c) => c.id.clone(),
+            None => app.chats.open_project(&project.id, "Adoption", now).id,
+        };
+        let commits = report["commits"].as_array().map(Vec::len).unwrap_or(0);
+        let text = format!(
+            "The remote received {commits} commit(s) on its own. They are adopted as {change}: queued like any change, and they land when its review and checks pass."
+        );
+        app.chats.post(
+            &chat,
+            crate::chats::Post {
+                author: crate::chats::Author::System,
+                session: None,
+                seat: None,
+                kind: crate::chats::MessageKind::Notice,
+                text,
+                card: None,
+                attachments: vec![],
+            },
+            now,
+        );
+    }
+}
+
+/// How often the history keeps in step with the git platforms (21.6): a missed export is retried in order, and a
+/// `ci` repo's main is imported again (polling; GitHub's webhooks would bring the same commits sooner).
+const CATCH_UP_MS: u64 = 60_000;
+static LAST_CATCH_UP: std::sync::Mutex<u64> = std::sync::Mutex::new(0);
+
+/// The catch-up pass: every repo's connections are exported again (what landed since their last export, in order),
+/// and a `ci` repo's GitHub main is imported. Throttled to one pass a minute.
+pub fn catch_up(app: &App) {
+    if !app.weft.running() || app.control.paused() {
+        return;
+    }
+    let now = apz_plaza::now_ms();
+    {
+        let mut last = LAST_CATCH_UP.lock().unwrap_or_else(|p| p.into_inner());
+        if now.saturating_sub(*last) < CATCH_UP_MS {
+            return;
+        }
+        *last = now;
+    }
+    let Ok(repos) = app.weft.get("/repos") else {
+        return;
+    };
+    for r in repos["repos"].as_array().into_iter().flatten() {
+        let Some(name) = r["name"].as_str() else {
+            continue;
+        };
+        if crate::github_modes::mode_of(app, name) == crate::github_modes::CI {
+            if let Err(e) = crate::github_modes::poll(app, name) {
+                eprintln!("apid: importing {name}'s GitHub main: {e}");
+            }
+        } else {
+            export_all(app, name);
+        }
+    }
+}
+
 /// A connection's credential, by its vault name (the GitHub connector's token when it names none); `platform:<id>`
 /// is an authorization of a git platform (platforms.rs), whose token is minted or renewed here.
-fn credential(app: &App, name: Option<&str>) -> Option<String> {
+pub fn credential(app: &App, name: Option<&str>) -> Option<String> {
     let name = name.unwrap_or("GITHUB_TOKEN");
     if let Some(found) = crate::platforms::credential(app, name) {
         return found

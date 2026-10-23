@@ -2,7 +2,7 @@
 // runs, the file tree and the routes. The DOM is not touched here. Bundled and run with node (see the lead's wiring);
 // it prints "history tests: ok" when every assert holds.
 
-import type { WeftBlameLine, WeftChangeSummary, WeftRecord, WeftRepo } from '../src/api-weft';
+import type { WeftBlameLine, WeftChangeSummary, WeftHistory, WeftRecord, WeftRepo } from '../src/api-weft';
 import {
   QUERY_PRESETS,
   blameRuns,
@@ -21,6 +21,7 @@ import {
   releaseStatus,
   repoLine,
   scopedRepos,
+  layoutHistory,
   signOffChain,
   sizeText,
   splitLanes,
@@ -282,5 +283,26 @@ eq(latestRevision({ rounds: ['w-1.r1', 'w-1.r2'], drafts: ['w-1.d1'], landed: 'w
 eq(latestRevision({ rounds: [], drafts: ['w-1.d1', 'w-1.d2'], landed: null }), 'w-1.d2', 'with no round, the newest draft');
 eq(latestRevision({ rounds: [], drafts: [], landed: null }), null, 'with nothing, no revision');
 eq([diffClass('+'), diffClass('-'), diffClass(' ')], ['add', 'del', 'ctx'], 'diff lines by their operator');
+
+// The history as a graph (21.6): landings on the first column, newest on top; each open lane in a column of its own,
+// half a row above the landing it starts from.
+const landing = (id: string, parent: string | null, title: string) => ({ id, parents: parent ? [parent] : [], title }) as unknown as WeftHistory['landings'][number];
+const lane = (change: string, base: string | null) => ({ change, title: `lane ${change}`, state: 'open', round: 1, base, kind: 'feature' }) as unknown as WeftHistory['lanes'][number];
+const graph = layoutHistory({
+  repo: 'app',
+  ref: 'main',
+  head: 'l-c',
+  landings: [landing('l-a', null, 'first'), landing('l-b', 'l-a', 'second'), landing('l-c', 'l-b', 'third')],
+  lanes: [lane('w-5', 'l-b'), lane('w-6', 'l-c')],
+} as WeftHistory);
+const rowOfLanding = (id: string) => graph.nodes.find((n) => n.kind === 'landing' && n.id === id)?.row;
+eq([rowOfLanding('l-c'), rowOfLanding('l-b'), rowOfLanding('l-a')], [0, 1, 2], 'the newest landing is on top');
+eq(graph.nodes.filter((n) => n.kind === 'landing').map((n) => n.column), [0, 0, 0], 'landings share the first column');
+const w5 = graph.nodes.find((n) => n.id === 'w-5')!;
+const w6 = graph.nodes.find((n) => n.id === 'w-6')!;
+eq([w5.column, w5.row, w5.parent], [1, 0.5, 'l-b'], 'a lane is in its own column, half a row above its base');
+eq([w6.column, w6.row, w6.parent], [2, -0.5, 'l-c'], 'the second lane is beside the head');
+eq(graph.columns, 3, 'the graph is as wide as its lanes');
+eq(layoutHistory({ repo: 'app', ref: 'main', head: null, landings: [], lanes: [lane('w-7', 'l-zz')] } as WeftHistory).nodes[0].parent, null, 'a lane whose base is unknown starts from nothing');
 
 console.log(`history tests: ok (${checks} checks)`);

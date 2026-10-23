@@ -13,6 +13,8 @@
 //! | `POST /v1/releases/{id}/yank` | `{reason}`: withdraws a published release |
 //! | `GET /v1/releases/{id}/report` | the release, its run and its life as Weft holds it |
 //! | `GET /v1/releases/{id}/artifacts/{target}` | one target's artifact, with Weft's record of it |
+//! | `POST /v1/releases/{id}/sync` | syncs the release to its git platforms now (22.4) |
+//! | `POST /v1/releases/{id}/notes` | `{notes}`: edits the notes (the platforms get them on the next sync) |
 //! | `POST /v1/releases/{id}/lane` | cuts the release's line (`release/1.4`) at a published release |
 //! | `POST /v1/projects/{id}/backports` | `{change, line, worker}`: backports a landed fix to a line, with its review |
 //! | `POST /v1/projects/{id}/backports/{change}/land` | lands a backport whose review passed |
@@ -306,6 +308,39 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .doc(
             RouteDoc::new("Withdraw a published release, with the reason").errors(&[400, 404, 409]),
+        )
+        .post("/v1/releases/{id}/sync", |app, _, p: &Params<'_>| {
+            match super::sync::sync_release(app, p.get("id")) {
+                Ok(release) => Response::json(200, &release),
+                Err(e) => refusal(&e),
+            }
+        })
+        .doc(
+            RouteDoc::new(
+                "Sync a release to its git platforms now: its tag, release, assets, checks and yank (22.4)",
+            )
+            .errors(&[404, 409]),
+        )
+        .post("/v1/releases/{id}/notes", |app, req: &Request, p: &Params<'_>| {
+            let v = match body(req) {
+                Ok(v) => v,
+                Err(r) => return r,
+            };
+            let Some(notes) = v["notes"].as_str() else {
+                return Response::error(400, "the notes are a string");
+            };
+            let stamp = apz_plaza::now_ms();
+            match app.releases.update(p.get("id"), |r| {
+                r.notes = notes.to_string();
+                r.updated_ms = stamp;
+            }) {
+                Some(release) => Response::json(200, &release),
+                None => Response::error(404, "no such release"),
+            }
+        })
+        .doc(
+            RouteDoc::new("Edit a release's notes; the platforms get them on the next sync")
+                .errors(&[400, 404]),
         )
         .post("/v1/releases/{id}/lane", |app, _, p: &Params<'_>| {
             answer(lanes::cut_lane(&deps(app), p.get("id")))

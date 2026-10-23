@@ -335,6 +335,17 @@ fn land(
     }
 }
 
+/// Imports what landed on a `ci` repo's GitHub main since the last import (the catch-up pass polls for it).
+pub fn poll(app: &App, repo: &str) -> Result<(), String> {
+    let t = target(app, repo)?;
+    // A lane in the queue has its own step (its gate and its landing) with the import in it: the poll waits for it.
+    let queue = app.weft.get(&format!("/repos/{repo}/queue?ref=main"))?;
+    if queue["queue"].as_array().is_some_and(|q| !q.is_empty()) {
+        return Ok(());
+    }
+    sync_main(app, repo, &t)
+}
+
 /// GitHub's main moved (a merge that was not a lane): Weft imports what landed there and records the head it reached.
 fn sync_main(app: &App, repo: &str, t: &Target) -> Result<(), String> {
     let report = app.weft.post(
