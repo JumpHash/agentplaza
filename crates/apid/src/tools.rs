@@ -82,6 +82,7 @@ const ALWAYS: &[&str] = &[
     "weft_map",
     "weft_change_tree",
     "weft_touches",
+    "tests_select",
     "plaza_maintenance",
     "plaza_maintenance_map",
     "plaza_maintenance_propose",
@@ -231,6 +232,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::verifier::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::test_select::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
@@ -692,6 +694,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::agent_proposals::spec(name))
         .or_else(|| crate::drafts::spec(name))
         .or_else(|| crate::review_graph::tools::spec(name))
+        .or_else(|| crate::test_select::spec(name))
         .or_else(|| crate::skills::agent_tools::spec(name))
         .or_else(|| crate::stations::tools::spec(name))?;
     Some(ToolSpec {
@@ -1075,6 +1078,9 @@ fn host_call(
         "plaza_project_draft" => crate::drafts::run(app, agent, input),
         other if crate::review_graph::tools::TOOLS.contains(&other) => {
             crate::review_graph::tools::run(app, agent, work, other, input)
+        }
+        other if crate::test_select::TOOLS.contains(&other) => {
+            crate::test_select::run(app, agent, input)
         }
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {

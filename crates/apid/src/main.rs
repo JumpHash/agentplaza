@@ -111,6 +111,7 @@ mod storage;
 mod store;
 mod task_graph;
 mod task_plan;
+mod test_select;
 mod threads;
 mod toolbox;
 mod toolbox_survey;

@@ -350,6 +350,18 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.e2b_templates.rows(),
             load: |app, conn| app.e2b_templates.load(conn),
         },
+        Component {
+            name: "test_maps",
+            def: crate::test_select::map_def,
+            rows: |app| app.test_select.map_rows(),
+            load: |app, conn| app.test_select.load_maps(conn),
+        },
+        Component {
+            name: "test_misses",
+            def: crate::test_select::miss_def,
+            rows: |app| app.test_select.miss_rows(),
+            load: |app, conn| app.test_select.load_misses(conn),
+        },
     ]
 }
 

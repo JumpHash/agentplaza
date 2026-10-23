@@ -25,6 +25,8 @@ apz-metrics.workspace = true
 apz-uds = { path = "../apz-uds" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
+# Test selection (PLAN 15.4): the coverage maps, the build graph and the selection (test_select.rs).
+apz-testsel = { path = "../apz-testsel" }
 apz-ide = { path = "../apz-ide" }
 # The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
 apz-station = { path = "../apz-station", features = ["store"] }

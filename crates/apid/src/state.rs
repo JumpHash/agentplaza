@@ -190,6 +190,8 @@ pub struct App {
     pub usage: crate::usage::Ledger,
     /// The eval records of step sessions (`evals.rs`): written as sessions end, read by `/v1/evals`.
     pub evals: crate::evals::Evals,
+    /// Test selection (PLAN 15.4): the coverage maps per project and commit, and the misses (`test_select.rs`).
+    pub test_select: crate::test_select::TestSelect,
     /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
     pub metrics: crate::metrics::Metrics,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
@@ -329,6 +331,7 @@ impl App {
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
             evals: crate::evals::Evals::new(Arc::clone(store.db(crate::store::PLAZA))),
+            test_select: crate::test_select::TestSelect::default(),
             metrics: crate::metrics::Metrics::open(
                 Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
