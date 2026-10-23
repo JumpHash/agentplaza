@@ -48,12 +48,12 @@ fn fixture_map(
 ) -> CoverageMap {
     let runs = [
         (
-            "crates/apz-link/src/identity.rs::save_load_round_trip_with_modes",
-            include_str!("fixtures/identity_save_load.json"),
+            "crates/dispatchd/src/http.rs::a_real_request_and_answer_round_trip",
+            include_str!("fixtures/http_round_trip.json"),
         ),
         (
-            "crates/apz-link/src/identity.rs::internal_token_is_created_once_and_stable",
-            include_str!("fixtures/identity_token.json"),
+            "crates/dispatchd/src/http.rs::a_target_is_the_loopback_and_only_the_loopback",
+            include_str!("fixtures/http_loopback.json"),
         ),
     ]
     .map(|(test, export)| TestRun {
@@ -88,13 +88,13 @@ fn a_one_file_change_in_a_leaf_crate_selects_under_a_fifth_of_the_repository_by_
         "the repository has its tests in its sources (found {total})"
     );
     assert!(
-        tests.iter().any(|t| t.id.starts_with("crates/apz-link/")),
-        "apz-link's tests are in the inventory"
+        tests.iter().any(|t| t.id.starts_with("crates/dispatchd/")),
+        "dispatchd's tests are in the inventory"
     );
 
     let change = Change {
         files: vec![Touch {
-            path: "crates/apz-link/src/identity.rs".into(),
+            path: "crates/dispatchd/src/http.rs".into(),
             lines: Some(vec![(45, 46)]),
         }],
     };
@@ -134,10 +134,10 @@ fn a_one_file_change_in_a_leaf_crate_selects_under_a_fifth_of_the_repository_by_
         selection
             .chosen
             .iter()
-            .any(|c| c.test == "crates/apz-link/src/identity.rs::save_load_round_trip_with_modes")
+            .any(|c| c.test == "crates/dispatchd/src/http.rs::a_real_request_and_answer_round_trip")
     );
-    assert_eq!(selection.packages, vec!["apz-link".to_string()]);
-    assert_eq!(selection.command, "cargo test -p apz-link");
+    assert_eq!(selection.packages, vec!["dispatchd".to_string()]);
+    assert_eq!(selection.command, "cargo test -p dispatchd");
 }
 
 #[test]
