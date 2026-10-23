@@ -28,9 +28,10 @@ use common::{FakeDaemon, Hub, Scratch, text};
 const FIRST_CID: u64 = 500;
 /// How long a step waits for the hub (scaled by the slack of a slow run).
 const WAIT: Duration = Duration::from_secs(40);
-/// The models the seats use: the reviewer's differs from the builder's.
+/// The models the seats use: the reviewers' differs from the builder's, and the verifier's from both.
 const BUILDER_MODEL: &str = "mock/agent";
 const REVIEWER_MODEL: &str = "mock/echo";
+const VERIFIER_MODEL: &str = "mock/third";
 
 const LINEAR_KEY: &str = "lin_api_TESTKEY_7731";
 const LINEAR_SIGNING: &str = "lin_hook_TESTSIGN_7731";
@@ -47,12 +48,13 @@ const NOTION_PAGE: &str = "0f2a1b3c-4d5e-4f70-8192-a3b4c5d6e7f8";
 /// The VMs noded started, as (cid, role).
 type Vms = Arc<Mutex<Vec<(u64, String)>>>;
 
-/// The roles the seats run: a builder and a reviewer.
+/// The roles the seats run: a builder, its reviewers and its verifier (the change recipe's chain).
 fn roles() -> Value {
     let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
     } })
 }
 
@@ -132,16 +134,24 @@ fn first_work(hub: &Hub, gateway: &FakeDaemon, cid: u64) -> Value {
 
 /// The session of `seat` on `task` that runs on a VM `known` does not have.
 fn next_session(hub: &Hub, task: &str, seat: &str, known: &HashSet<u64>) -> Value {
+    // A seat of several items is named `reviewer#1`, `reviewer#2`, …: a session of any of them is `seat`'s.
+    let of_seat = |name: &str| name == seat || name.starts_with(&format!("{seat}#"));
     let fresh = |s: &Value| {
-        s["seat"] == seat
+        s["seat"].as_str().is_some_and(of_seat)
             && s["state"] == "forking"
             && s["cid"].as_u64().is_some_and(|cid| !known.contains(&cid))
     };
     let list = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |list| {
         list.as_array().is_some_and(|l| l.iter().any(&fresh))
     });
+    // The first of the fresh sessions by seat name: `reviewer#1` before `reviewer#2`.
     list.as_array()
-        .and_then(|l| l.iter().find(|s| fresh(s)).cloned())
+        .and_then(|l| {
+            l.iter()
+                .filter(|s| fresh(s))
+                .min_by_key(|s| s["seat"].as_str().unwrap_or("").to_string())
+                .cloned()
+        })
         .unwrap_or_else(|| {
             panic!(
                 "no new {seat} session for task {task}: {list}\n{}",
@@ -245,8 +255,8 @@ fn has_record(change: &Value, kind: &str) -> bool {
         .is_some_and(|records| records.iter().any(|r| r["type"] == kind))
 }
 
-/// The seats' scripted work on task `tid`: the builder writes `note` and finishes, the reviewer passes it, and the
-/// change lands. Returns the change's id once the task is done.
+/// The seats' scripted work on task `tid`: the builder writes `note` and finishes, both reviewers and the verifier
+/// pass it, and the change lands. Returns the change's id once the task is done.
 fn land(
     hub: &Hub,
     gateway: &FakeDaemon,
@@ -289,20 +299,30 @@ fn land(
     );
     assert!(has_record(&sealed, "written"), "{sealed}\n{}", hub.log());
 
-    let r = next_session(hub, tid, "reviewer", known);
-    let r_cid = r["cid"].as_u64().expect("its VM");
-    known.insert(r_cid);
-    assert_eq!(r["model"], REVIEWER_MODEL, "{r}");
-    hello(hub, r_cid, "reviewer");
-    let rw = first_work(hub, gateway, r_cid);
-    let rw_id = rw["work"].as_u64().expect("the work item");
-    let verdict = vm_of(hub, r_cid, home, token).tool(
-        rw_id,
-        "plaza_verdict",
-        json!({ "task": tid, "pass": true, "notes": "the note is there" }),
-    );
-    assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
-    hub.work_done(r_cid, rw_id, "done", "passed");
+    for (seat, model) in [
+        ("reviewer", None),
+        ("reviewer", None),
+        ("verifier", Some(VERIFIER_MODEL)),
+    ] {
+        let r = next_session(hub, tid, seat, known);
+        let r_cid = r["cid"].as_u64().expect("its VM");
+        known.insert(r_cid);
+        // The reviewers run on models other than the builder's (two of them, for diversity); the verifier on its own.
+        match model {
+            Some(model) => assert_eq!(r["model"], model, "{r}"),
+            None => assert_ne!(r["model"], BUILDER_MODEL, "{r}"),
+        }
+        hello(hub, r_cid, seat);
+        let rw = first_work(hub, gateway, r_cid);
+        let rw_id = rw["work"].as_u64().expect("the work item");
+        let verdict = vm_of(hub, r_cid, home, token).tool(
+            rw_id,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "the note is there" }),
+        );
+        assert!(!text(&verdict["output"]).is_empty(), "{verdict}");
+        hub.work_done(r_cid, rw_id, "done", "passed");
+    }
     let landed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(40),
@@ -576,7 +596,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         "PATCH",
         &format!("/v1/projects/{pid}/settings"),
         Some(json!({
-            "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL },
+            "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL, "verifier": VERIFIER_MODEL },
             "intake": [
                 { "source": "linear", "field": "team", "value": "ENG", "recipe": "change" },
                 { "source": "github", "field": "label", "value": "plaza", "recipe": "change", "allow_public": false },
