@@ -629,9 +629,9 @@ mod tests {
         );
         assert_eq!(latest.stands, summary, "{latest:?}");
         assert!(
-            read_text("t1", Some(&journal), None).contains("Latest handover (from session s7):\nWhere things stand: Decisions: sessions, not agents"),
+            read_text("t1", Some(&journal), None, None).contains("Latest handover (from session s7):\nWhere things stand: Decisions: sessions, not agents"),
             "{}",
-            read_text("t1", Some(&journal), None)
+            read_text("t1", Some(&journal), None, None)
         );
     }
 
