@@ -1,0 +1,11 @@
+id = "replicate"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read", "write"]
+egress = ["api.replicate.com"]
+secrets = ["REPLICATE_API_TOKEN"]
+events = []
+actions = ["predict", "prediction"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

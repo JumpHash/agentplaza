@@ -1,0 +1,11 @@
+id = "firecrawl"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["api.firecrawl.dev"]
+secrets = ["FIRECRAWL_API_KEY"]
+events = []
+actions = ["scrape", "search"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

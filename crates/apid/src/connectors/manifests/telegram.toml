@@ -1,0 +1,11 @@
+id = "telegram"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["api.telegram.org"]
+secrets = ["TELEGRAM_BOT_TOKEN"]
+events = []
+actions = ["send"]
+webhook = false
+auth_header = ""
+auth_format = ""

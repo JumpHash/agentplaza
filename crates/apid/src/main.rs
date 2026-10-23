@@ -52,6 +52,9 @@ mod evals;
 mod events;
 mod fleet;
 mod foundry;
+// The glue tier has no caller in production until agent-built connectors run on it (PLAN 14.1 and 5.5).
+#[allow(dead_code)]
+mod glue;
 mod harness_control;
 mod hub_auth;
 mod hub_mcp;
