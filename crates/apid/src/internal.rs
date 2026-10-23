@@ -928,7 +928,9 @@ fn model_call(
     // A session's call is held on its budget first; one that does not fit pauses the session (work_loop.rs).
     // A helper's call is held on the VM's session's budget (its task's), and recorded on the helper's session.
     let helper_session = helper.and_then(|n| crate::work_loop::helper_session(app, cid, n));
-    let budget_hold = match crate::work_loop::before_call(app, cid, &model, &request) {
+    let budget_hold = match crate::allowances::gate(app, cid, &model, apz_plaza::now_ms())
+        .and_then(|()| crate::work_loop::before_call(app, cid, &model, &request))
+    {
         Ok(held) => held,
         Err(paused) => {
             app.transcripts.record(

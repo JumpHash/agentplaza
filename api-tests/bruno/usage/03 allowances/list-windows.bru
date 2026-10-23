@@ -1,0 +1,31 @@
+meta {
+  name: List the subscription allowance windows
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/allowances
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("every window names its vendor, its use and whether it blocks a call now", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    for (const window of body) {
+      expect(window.vendor).to.be.a("string");
+      expect(window.window).to.be.a("string");
+      expect(window.used).to.be.a("number");
+      expect(window.limit).to.be.a("number");
+      expect(window.blocking).to.be.a("boolean");
+      expect(window.models).to.be.an("array");
+    }
+  });
+}
