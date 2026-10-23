@@ -3175,6 +3175,17 @@ impl Registry {
             .register_port(cid, port)
     }
 
+    /// Registers `port` on guest `cid` with the live run that has that guest (the guest's own announcement, 6.4). Idempotent.
+    pub fn register_port_by_cid(&self, cid: u64, port: u16) -> Result<(), String> {
+        let runs = self.list();
+        for run in &runs {
+            if run.register_port(cid, port).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(format!("no live run has guest CID {cid}"))
+    }
+
     /// Whether some live run of this node serves `port` on guest `cid`: the check vsockd makes before it dials a
     /// guest for an inbound stream.
     pub fn port_served(&self, cid: u64, port: u16) -> bool {
@@ -5345,6 +5356,28 @@ mod tests {
         );
         registry.lock().runs.push(Arc::clone(&run));
         (registry, run)
+    }
+
+    #[test]
+    fn a_guests_own_announcement_registers_its_port_by_cid_and_nobody_else_can() {
+        let (registry, run) = registry_with_run(VmState::Running, None);
+        // The VM at RUN_CID_BASE announces 8080 (the guest's own registration, 6.4): the live run with that guest serves it.
+        registry
+            .register_port_by_cid(RUN_CID_BASE, 8080)
+            .expect("the run's guest announces its port");
+        assert!(registry.port_served(RUN_CID_BASE, 8080));
+        // Idempotent: the hub's fallback registration of the same port changes nothing.
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 8080)
+            .expect("registers again");
+        assert!(registry.port_served(RUN_CID_BASE, 8080));
+        // A CID no live run has is refused.
+        assert!(
+            registry
+                .register_port_by_cid(RUN_CID_BASE + 9, 8080)
+                .is_err()
+        );
+        assert!(!registry.port_served(RUN_CID_BASE + 9, 8080));
     }
 
     #[test]

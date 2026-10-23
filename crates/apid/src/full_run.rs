@@ -87,6 +87,7 @@ pub fn record(
             cwd: WORKSPACE,
             timeout_s: base_recipe::STEP_TIMEOUT_S,
             env: Vec::new(),
+            listen: None,
         };
         if let Ok(answer) = exec(&command)
             && answer.ok
@@ -139,6 +140,7 @@ fn must(
         cwd: WORKSPACE,
         timeout_s: base_recipe::STEP_TIMEOUT_S,
         env: Vec::new(),
+        listen: None,
     };
     let answer = exec(&command)?;
     if answer.ok {

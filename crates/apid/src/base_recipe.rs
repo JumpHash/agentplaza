@@ -95,6 +95,8 @@ pub struct Command {
     pub cwd: &'static str,
     pub timeout_s: u64,
     pub env: Vec<(&'static str, &'static str)>,
+    /// The port a background command listens on, announced by the guest once it does (a preview's app).
+    pub listen: Option<u16>,
 }
 
 impl Command {
@@ -105,6 +107,7 @@ impl Command {
             cwd: WORKSPACE,
             timeout_s: STEP_TIMEOUT_S,
             env: Vec::new(),
+            listen: None,
         }
     }
 }
@@ -172,6 +175,7 @@ pub fn preview_steps(stack: &Stack, repo: &str, commit: &str, serve: &str, port:
     let mut app = Command::new("serve", &[]);
     app.argv = vec!["sh".into(), "-c".into(), serve.to_string()];
     app.env = cache_env(stack);
+    app.listen = Some(port);
     steps.push(Step::Background(app));
     let mut wait = Command::new("wait for the app", &[]);
     wait.argv = vec![

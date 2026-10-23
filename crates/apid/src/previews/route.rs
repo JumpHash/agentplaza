@@ -7,15 +7,19 @@
 //! after that carries the cookie. A link grants its preview and nothing else of the hub: the token is checked against
 //! the preview of the path, and the hub's other routes are never reached with it.
 
+use std::borrow::Cow;
+use std::io::Write;
+
 use apz_http::{Body, Params, Request, Response, RouteDoc, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::base_vm::{Host, Live};
 use crate::hub_auth;
-use crate::previews::life::{self, Ctx};
+
+use crate::previews::life::{self, Ctx, Frames, NoFrames, StreamBody};
 use crate::previews::{
-    ASLEEP, CLOSED, COOKIE, Link, Preview, Store, TOKEN_PARAM, USE, VIEW, proxy,
+    ASLEEP, CLOSED, COOKIE, Link, NATIVE, Preview, Store, TOKEN_PARAM, USE, VIEW, proxy,
 };
 use crate::state::App;
 
@@ -92,14 +96,71 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Close a preview now, before its lane ends").errors(&[404, 503]))
 }
 
+/// The preview a Host names under `domain` (the hub's `--preview-domain`): `<lane>--<project>.<domain>`, where the lane
+/// is everything before the first `--`. Returns the project and the lane. A port, a case difference and a trailing dot
+/// are ignored; an empty domain names no preview.
+pub fn subdomain_lane(host: &str, domain: &str) -> Option<(String, String)> {
+    if domain.is_empty() {
+        return None;
+    }
+    let host = host
+        .split(':')
+        .next()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let label = host.strip_suffix(&format!(".{domain}"))?;
+    let (lane, project) = label.split_once("--")?;
+    let plain = |name: &str| !name.is_empty() && !name.contains('.');
+    (plain(lane) && plain(project)).then(|| (project.to_string(), lane.to_string()))
+}
+
+/// The request moved to its preview's path when its Host names a preview under `domain`: `/preview/<project>/<lane>/`
+/// and the request's own path after it, its query kept. None for every other request.
+pub fn subdomain_request(req: &Request, domain: &str) -> Option<Request> {
+    let (project, lane) = subdomain_lane(req.header("host")?, domain)?;
+    let rest = req.path.trim_start_matches('/');
+    let mut moved = req.clone();
+    moved.path = format!("/preview/{project}/{lane}/{rest}");
+    Some(moved)
+}
+
+/// The request as the hub routes it: a request on a preview subdomain moved to its preview's path (so the gate and the
+/// routes see the preview's path, and a link's token is what admits it), any other request as it came. Borrowed when
+/// nothing moves.
+pub fn as_routed<'a>(req: &'a Request, domain: &str) -> Cow<'a, Request> {
+    match subdomain_request(req, domain) {
+        Some(moved) => Cow::Owned(moved),
+        None => Cow::Borrowed(req),
+    }
+}
+
+/// The hub's workstation streams: a native preview's frames are the station's shared screen (`stations::screen`).
+pub struct AppFrames<'a>(pub &'a App);
+
+impl Frames for AppFrames<'_> {
+    fn open(&self, station: &str) -> Result<StreamBody, String> {
+        if self.0.stations.live(station).is_none() {
+            return Err("the workstation is offline".to_string());
+        }
+        let weak = self.0.handle();
+        let station = station.to_string();
+        Ok(Box::new(move |out: &mut dyn Write| match weak.upgrade() {
+            Some(app) => crate::stations::screen::watch_into(&app, &station, out),
+            None => Err(std::io::Error::other("the hub is shutting down")),
+        }))
+    }
+}
+
 /// The public path: the owner, or a link to this preview. Everything else is refused before the app is reached.
 fn serve(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let owner = hub_auth::is_owner(app, req);
     let host = Live(app);
+    let frames = AppFrames(app);
     let ctx = Ctx {
         store: &app.previews,
         nodes: &app.nodes,
         host: &host,
+        frames: &frames,
     };
     answer(
         &ctx,
@@ -149,6 +210,29 @@ pub fn answer<H: Host>(
         if query_token.is_some() {
             return token_redirect(project, lane, rest, &query, &token);
         }
+    }
+    // A native preview is its station's stream: watched with GET, and nothing else of the lane is served.
+    if preview.kind == NATIVE {
+        if !matches!(req.method.as_str(), "GET" | "HEAD") {
+            return Response::error(405, "a native preview is watched, not driven");
+        }
+        if !rest.is_empty() {
+            return Response::error(
+                404,
+                "a native preview is its station's stream: the lane has nothing else",
+            );
+        }
+        return match ctx.frames.open(&preview.station) {
+            Ok(stream) => Response {
+                status: 200,
+                headers: vec![
+                    ("Content-Type".to_string(), "text/event-stream".to_string()),
+                    ("Cache-Control".to_string(), "no-store".to_string()),
+                ],
+                body: Body::Stream(stream),
+            },
+            Err(why) => Response::error(503, &why),
+        };
     }
     if preview.status == ASLEEP
         && let Err(why) = life::wake(ctx, &mut preview)
@@ -369,6 +453,7 @@ fn vm_action(app: &App, id: &str, action: Action) -> Response {
         store: &app.previews,
         nodes: &app.nodes,
         host: &host,
+        frames: &NoFrames,
     };
     let result = match action {
         Action::Sleep => life::sleep(&ctx, &mut preview),
@@ -394,6 +479,8 @@ fn preview_json(preview: &Preview) -> Value {
         "id": preview.id,
         "project": preview.project,
         "lane": preview.lane,
+        "kind": preview.kind,
+        "station": preview.station,
         "node": preview.node,
         "status": preview.status,
         "port": preview.port,

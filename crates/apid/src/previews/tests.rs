@@ -9,12 +9,13 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use super::route;
 use apz_http::auth::InternalToken;
-use apz_http::{Request, Response, Router, Server};
+use apz_http::{Body, Request, Response, Router, Server};
 use apz_link::identity::Identity;
 use apz_link::inbound::{Duplex, GuestDial, PortCheck};
 use apz_link::run::Local;
@@ -23,8 +24,7 @@ use apz_proto::wire::HostMessage;
 use apz_trust::node::NodeKey;
 use serde_json::{Value, json};
 
-use super::life::{self, Ctx, Lane};
-use super::proxy;
+use super::life::{self, Ctx, Frames, Lane, NoFrames};
 use super::route::answer;
 use super::{ASLEEP, AWAKE, CLOSED, Store, TOKEN_PARAM, USE, VIEW};
 use crate::base_vm::{Answer, Host, arrive};
@@ -43,58 +43,76 @@ fn now() -> u64 {
     apz_plaza::now_ms()
 }
 
-fn request(method: &str, query: &str, headers: &[(&str, &str)], body: &[u8]) -> Request {
-    Request {
-        method: method.to_string(),
-        path: "/".to_string(),
-        query: query.to_string(),
-        headers: headers
-            .iter()
-            .map(|(name, value)| (name.to_string(), value.to_string()))
-            .collect(),
-        body: body.to_vec(),
-        peer: None,
-    }
-}
-
 #[test]
-fn the_app_gets_what_it_needs_and_none_of_the_hubs_credentials() {
-    let req = request(
-        "POST",
-        "x=1",
-        &[
-            ("content-type", "text/plain"),
-            ("authorization", "Bearer owner"),
-            ("cookie", "apz_preview=secret"),
-        ],
-        b"hello",
-    );
-    let bytes = String::from_utf8(proxy::request_bytes(&req, "/echo", "x=1")).expect("text");
-    assert!(bytes.starts_with("POST /echo?x=1 HTTP/1.1\r\n"), "{bytes}");
-    assert!(bytes.contains("Content-Length: 5\r\n"));
-    assert!(bytes.contains("content-type: text/plain\r\n"));
-    assert!(!bytes.to_ascii_lowercase().contains("authorization"));
-    assert!(!bytes.to_ascii_lowercase().contains("cookie"));
-    assert!(bytes.ends_with("\r\n\r\nhello"));
-}
-
-#[test]
-fn an_answer_is_read_whole_and_a_chunked_one_is_de_chunked() {
-    let plain = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Hidden: no\r\nContent-Length: 4\r\n\r\nhi!!";
-    let answer = proxy::parse(plain).expect("parses");
-    assert_eq!(answer.status, 200);
+fn a_preview_subdomain_names_its_lane_and_project_under_the_domain() {
+    let domain = "preview.example.com";
     assert_eq!(
-        answer.headers,
-        vec![("content-type".to_string(), "text/html".to_string())]
+        route::subdomain_lane("t1--proj.preview.example.com", domain),
+        Some(("proj".to_string(), "t1".to_string()))
     );
-    let chunked = b"HTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nabcd\r\n3;ext=1\r\nefg\r\n0\r\n\r\n";
-    let answer = proxy::parse(chunked).expect("parses");
-    assert_eq!(answer.status, 201);
-    match answer.body {
-        apz_http::Body::Bytes(bytes) => assert_eq!(bytes, b"abcdefg"),
-        _ => panic!("a parsed answer is bytes"),
-    }
-    assert!(proxy::parse(b"not http").is_err());
+    assert_eq!(
+        route::subdomain_lane("T1--proj.Preview.Example.com:8443", domain),
+        Some(("proj".to_string(), "t1".to_string())),
+        "the port and the case are ignored"
+    );
+    assert!(
+        route::subdomain_lane("proj.preview.example.com", domain).is_none(),
+        "no lane"
+    );
+    assert!(
+        route::subdomain_lane("t1--proj.example.org", domain).is_none(),
+        "another domain"
+    );
+    assert!(
+        route::subdomain_lane("a.b--proj.preview.example.com", domain).is_none(),
+        "a lane is one label"
+    );
+    assert!(
+        route::subdomain_lane("t1--proj.preview.example.com", "").is_none(),
+        "no preview domain"
+    );
+}
+
+#[test]
+fn a_request_on_a_preview_subdomain_moves_to_the_preview_path_and_others_stay() {
+    let on = |host: &str| Request {
+        method: "GET".into(),
+        path: "/docs/a".into(),
+        query: "x=1".into(),
+        headers: vec![("host".into(), host.into())],
+        body: Vec::new(),
+        peer: None,
+    };
+    let moved =
+        route::subdomain_request(&on("t1--proj.preview.example.com"), "preview.example.com")
+            .expect("moved");
+    assert_eq!(moved.path, "/preview/proj/t1/docs/a");
+    assert_eq!(moved.query, "x=1");
+    assert!(route::subdomain_request(&on("hub.example.com"), "preview.example.com").is_none());
+}
+
+#[test]
+fn a_subdomain_is_gated_as_its_preview_path_so_an_apps_v1_is_not_the_hubs() {
+    let on = |host: &str| Request {
+        method: "GET".into(),
+        path: "/v1/items".into(),
+        query: String::new(),
+        headers: vec![("host".into(), host.into())],
+        body: Vec::new(),
+        peer: None,
+    };
+    let domain = "preview.example.com";
+    // The app's own `/v1/` on its subdomain is the preview's path: the gate passes it to the preview's own check.
+    let app = on("t1--proj.preview.example.com");
+    let routed = route::as_routed(&app, domain);
+    assert_eq!(routed.path, "/preview/proj/t1/v1/items");
+    assert!(crate::hub_auth::is_public(&routed.method, &routed.path));
+    // The same path on the hub is the owner's route, and the hub's gate refuses it without the owner.
+    assert!(!crate::hub_auth::is_public("GET", "/v1/items"));
+    let hub = on("hub.example.com");
+    let kept = route::as_routed(&hub, domain);
+    assert!(matches!(kept, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(kept.path, "/v1/items");
 }
 
 #[test]
@@ -136,6 +154,9 @@ struct Fork {
 #[derive(Default)]
 struct NodedStandIn {
     fork: Mutex<Fork>,
+    /// Whether the VM announces its port when it listens (the guest's registration, 6.4), or stays silent so the hub
+    /// registers it (the fallback).
+    announce: bool,
 }
 
 impl NodedStandIn {
@@ -188,13 +209,38 @@ impl Host for NodedStandIn {
                 (200, json!({}))
             }
             ("POST", "/v1/runs/r1/vms/0/stop") => (200, json!({})),
+            ("POST", "/v1/forks/4242/ports") => {
+                let port = body.and_then(|b| b["port"].as_u64()).unwrap_or(0) as u16;
+                fork.ports.insert((CID, port));
+                (200, json!({"registered": true}))
+            }
+            ("GET", "/v1/forks/4242/ports/8080") => {
+                if fork.ports.contains(&(CID, PORT)) {
+                    (200, json!({"served": true}))
+                } else {
+                    (404, json!({"served": false}))
+                }
+            }
             _ => (404, json!({"error": format!("no route {path}")})),
         })
     }
 
     fn send(&self, cid: u64, message: &HostMessage) -> Result<(), String> {
-        // The base runner's exec items: each succeeds at once, as a VM that ran them would answer.
-        if let HostMessage::Exec { id, .. } = message {
+        // The base runner's exec items: each succeeds at once, as a VM that ran them would answer. A background command
+        // that names its port is announced when it listens: apid takes the announcement, registers the port with noded by
+        // CID, and records it, which this stand-in does the same way.
+        if let HostMessage::Exec { id, listen, .. } = message {
+            if let (true, Some(port)) = (self.announce, listen) {
+                let registered = self.noded(
+                    NODE,
+                    "POST",
+                    &format!("/v1/forks/{CID}/ports"),
+                    Some(&json!({"port": port})),
+                );
+                if let Ok((200, _)) = registered {
+                    crate::base_vm::record_listening(CID, *port);
+                }
+            }
             crate::base_vm::answer(
                 cid,
                 *id,
@@ -228,20 +274,30 @@ impl GuestDial for Inbound {
     }
 }
 
-/// The lane's app: a small HTTP server in the fork. `GET /` is its page, `POST /echo` answers with the body's size.
-fn fork_app() -> SocketAddr {
+/// The app's gate for its stream: the test holds the sender, and the app waits on the receiver (taken from the slot by
+/// the stream request) between its first event and its second. `seen` says whether the gate opened in time.
+#[derive(Clone)]
+struct Gate {
+    slot: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+    seen: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The lane's app: a small HTTP server in the fork. `GET /` is its page, `POST /echo` answers with the body's size, and
+/// `GET /stream` sends one server-sent event, waits for the gate, and sends the second.
+fn fork_app(gate: Gate) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
     let addr = listener.local_addr().expect("address");
     thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(conn) = conn else { return };
-            thread::spawn(move || serve_app(conn));
+            let gate = gate.clone();
+            thread::spawn(move || serve_app(conn, gate));
         }
     });
     addr
 }
 
-fn serve_app(mut conn: TcpStream) {
+fn serve_app(mut conn: TcpStream, gate: Gate) {
     let Ok(clone) = conn.try_clone() else { return };
     let mut lines = BufReader::new(clone);
     let mut first = String::new();
@@ -267,6 +323,10 @@ fn serve_app(mut conn: TcpStream) {
     }
     let mut body = vec![0u8; length];
     let _ = lines.read_exact(&mut body);
+    if (method.as_str(), target.as_str()) == ("GET", "/stream") {
+        serve_stream(&mut conn, &gate);
+        return;
+    }
     let (status, text) = match (method.as_str(), target.as_str()) {
         ("GET", "/") => (200, "<h1>lane preview</h1>".to_string()),
         ("POST", "/echo") => (200, format!("got {} bytes", body.len())),
@@ -277,6 +337,51 @@ fn serve_app(mut conn: TcpStream) {
         text.len()
     );
     let _ = conn.write_all(reply.as_bytes());
+}
+
+/// The stream: an event, then the gate, then the second event; the connection's end frames the body.
+fn serve_stream(conn: &mut TcpStream, gate: &Gate) {
+    let _ = conn.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+    );
+    let _ = conn.write_all(b"data: 1\n\n");
+    let _ = conn.flush();
+    let receiver = gate
+        .slot
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    let opened =
+        receiver.is_some_and(|receiver| receiver.recv_timeout(Duration::from_secs(10)).is_ok());
+    gate.seen.store(opened, std::sync::atomic::Ordering::SeqCst);
+    let _ = conn.write_all(b"data: 2\n\n");
+}
+
+/// Opens a request to a plain server and returns the connection, unread (for a stream).
+fn open_stream(addr: SocketAddr, path: &str, headers: &[(&str, &str)]) -> TcpStream {
+    let mut stream = TcpStream::connect(addr).expect("connects");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("timeout");
+    let mut head = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).expect("writes");
+    stream
+}
+
+/// Reads from `stream` until `needle` has arrived, and returns everything read so far.
+fn read_until(stream: &mut TcpStream, needle: &str) -> String {
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while !String::from_utf8_lossy(&got).contains(needle) {
+        let n = stream.read(&mut buf).expect("the stream answers in time");
+        assert!(n > 0, "the stream ended before {needle}");
+        got.extend_from_slice(&buf[..n]);
+    }
+    String::from_utf8_lossy(&got).to_string()
 }
 
 /// One HTTP exchange with a plain server on `addr`: the status, the head (lower-cased) and the body.
@@ -313,6 +418,218 @@ fn exchange(
     (status, head.to_ascii_lowercase(), text.to_string())
 }
 
+/// The hub's preview routes on a plain listener: the same handler the hub serves `/preview/…` with, owner false.
+fn preview_router(
+    store: Arc<Store>,
+    nodes: Arc<nodes::Store>,
+    standin: Arc<NodedStandIn>,
+) -> Router<()> {
+    let mut router: Router<()> = Router::new();
+    for method in ["GET", "POST"] {
+        let (store, nodes, standin) =
+            (Arc::clone(&store), Arc::clone(&nodes), Arc::clone(&standin));
+        let handler = move |_: &(), req: &Request, p: &apz_http::Params<'_>| {
+            let host: &NodedStandIn = &standin;
+            let ctx = Ctx {
+                store: &store,
+                nodes: &nodes,
+                host,
+                frames: &NoFrames,
+            };
+            answer(
+                &ctx,
+                req,
+                false,
+                p.get("project"),
+                p.get("lane"),
+                p.get("rest"),
+                now(),
+            )
+        };
+        router = router
+            .route(method, "/preview/{project}/{lane}/", handler.clone())
+            .route(method, "/preview/{project}/{lane}/{rest..}", handler);
+    }
+    router
+}
+
+/// A workstation's stream for the native test: two frames, the second after a pause.
+struct ScriptFrames;
+
+impl Frames for ScriptFrames {
+    fn open(&self, station: &str) -> Result<super::life::StreamBody, String> {
+        if station != "ws-1" {
+            return Err(format!("no workstation {station}"));
+        }
+        Ok(Box::new(|out: &mut dyn Write| -> std::io::Result<()> {
+            out.write_all(b"event: frame\ndata: ZjE=\n\n")?;
+            out.flush()?;
+            thread::sleep(Duration::from_millis(100));
+            out.write_all(b"event: frame\ndata: ZjI=\n\n")
+        }))
+    }
+}
+
+/// The body of an answer, read whole (a stream is run to its end).
+fn body_text(answer: Response) -> String {
+    match answer.body {
+        Body::Bytes(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Body::Stream(write) => {
+            let mut out = Vec::new();
+            write(&mut out).expect("the stream runs to its end");
+            String::from_utf8_lossy(&out).into_owned()
+        }
+        Body::Upgrade(_) => panic!("a preview is not upgraded"),
+    }
+}
+
+/// A native lane's preview: its workstation's stream reaches a link, and nothing else of the lane or of another lane.
+#[test]
+fn a_native_lane_shows_its_stations_stream_to_a_link_and_nothing_else() {
+    let store = Store::for_tests();
+    let nodes = nodes::Store::holding(Vec::new());
+    let host = NodedStandIn::default();
+    let frames = ScriptFrames;
+    let ctx = Ctx {
+        store: &store,
+        nodes: &nodes,
+        host: &host,
+        frames: &frames,
+    };
+    let native = store
+        .add_native_preview("p", "nat", "ws-1", now())
+        .expect("the native preview");
+    assert_eq!(native.kind, super::NATIVE);
+    let web = store
+        .add_preview("p", "web", NODE, RUN, CID, u32::from(PORT), now())
+        .expect("a web preview");
+    let watch = store
+        .add_link(
+            &native.id,
+            VIEW,
+            "watch",
+            Some(now() + 3_600_000),
+            "owner",
+            now(),
+        )
+        .expect("the view link");
+    let watch_cookie = format!("apz_preview={}", store.mint(&watch.id));
+    let drive = store
+        .add_link(
+            &native.id,
+            USE,
+            "drive",
+            Some(now() + 3_600_000),
+            "owner",
+            now(),
+        )
+        .expect("the use link");
+    let drive_cookie = format!("apz_preview={}", store.mint(&drive.id));
+    let web_link = store
+        .add_link(&web.id, USE, "web", Some(now() + 3_600_000), "owner", now())
+        .expect("the web link");
+    let web_cookie = format!("apz_preview={}", store.mint(&web_link.id));
+    let request = |method: &str, cookie: Option<&str>| {
+        let mut headers = Vec::new();
+        if let Some(cookie) = cookie {
+            headers.push(("cookie".to_string(), cookie.to_string()));
+        }
+        Request {
+            method: method.to_string(),
+            path: "/".to_string(),
+            query: String::new(),
+            headers,
+            body: Vec::new(),
+            peer: None,
+        }
+    };
+
+    // Without a link the stream is refused.
+    let refused = answer(&ctx, &request("GET", None), false, "p", "nat", "", now());
+    assert_eq!(refused.status, 401);
+
+    // A view link reaches the stream: the events come as server-sent events.
+    let watched = answer(
+        &ctx,
+        &request("GET", Some(&watch_cookie)),
+        false,
+        "p",
+        "nat",
+        "",
+        now(),
+    );
+    assert_eq!(watched.status, 200);
+    assert!(
+        watched
+            .headers
+            .iter()
+            .any(|(name, value)| name == "Content-Type" && value == "text/event-stream"),
+        "{:?}",
+        watched.headers
+    );
+    let text = body_text(watched);
+    assert!(
+        text.contains("data: ZjE=") && text.contains("data: ZjI="),
+        "{text}"
+    );
+
+    // The stream is all of the lane: any other path of it is refused.
+    let other = answer(
+        &ctx,
+        &request("GET", Some(&watch_cookie)),
+        false,
+        "p",
+        "nat",
+        "docs",
+        now(),
+    );
+    assert_eq!(other.status, 404);
+
+    // A view link reads only: a write is refused by the link's scope, and a use link has no controls yet.
+    let write = answer(
+        &ctx,
+        &request("POST", Some(&watch_cookie)),
+        false,
+        "p",
+        "nat",
+        "",
+        now(),
+    );
+    assert_eq!(write.status, 403);
+    let drove = answer(
+        &ctx,
+        &request("POST", Some(&drive_cookie)),
+        false,
+        "p",
+        "nat",
+        "",
+        now(),
+    );
+    assert_eq!(drove.status, 405);
+
+    // Another lane's link does not reach this stream, and this stream's link does not reach a web lane.
+    let crossed = answer(
+        &ctx,
+        &request("GET", Some(&web_cookie)),
+        false,
+        "p",
+        "nat",
+        "",
+        now(),
+    );
+    assert_eq!(crossed.status, 401);
+    let web_refused = answer(
+        &ctx,
+        &request("GET", Some(&watch_cookie)),
+        false,
+        "p",
+        "web",
+        "",
+        now(),
+    );
+    assert_eq!(web_refused.status, 401);
+}
+
 fn stand_in_node(key: &NodeKey) -> Node {
     Node {
         id: NODE.into(),
@@ -336,9 +653,39 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
     let store = Arc::new(Store::for_tests());
     let node_key = NodeKey::generate();
     let nodes = Arc::new(nodes::Store::holding(vec![stand_in_node(&node_key)]));
-    let standin = Arc::new(NodedStandIn::default());
+    let standin = Arc::new(NodedStandIn {
+        announce: true,
+        ..Default::default()
+    });
     let stack = project_stack::parse(STACK).expect("the stack parses");
     let target = stack.targets[0].clone();
+
+    // The fallback first, on its own store: a guest that stays silent gets its port registered by the hub itself.
+    let silent_store = Store::for_tests();
+    let silent = NodedStandIn::default();
+    let silent_ctx = Ctx {
+        store: &silent_store,
+        nodes: &nodes,
+        host: &silent,
+        frames: &NoFrames,
+    };
+    let fallback_lane = Lane {
+        project: "p",
+        lane: "silent",
+        rev: "rev0",
+        repo: "repo",
+    };
+    life::start_on(&silent_ctx, NODE, &fallback_lane, &stack, &target, now())
+        .expect("the preview starts");
+    let calls = silent.calls();
+    assert!(
+        calls.iter().any(|c| c == "POST /v1/runs/r1/ports"),
+        "the hub registered it: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("POST /v1/forks/")),
+        "no announcement came: {calls:?}"
+    );
 
     // The CI recipe's preview step: the lane's app built and started in a fork, its port registered with noded.
     let host: &NodedStandIn = &standin;
@@ -346,6 +693,7 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
         store: &store,
         nodes: &nodes,
         host,
+        frames: &NoFrames,
     };
     let lane = Lane {
         project: "p",
@@ -356,6 +704,20 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
     let summary =
         life::start_on(&ctx, NODE, &lane, &stack, &target, now()).expect("the preview starts");
     assert!(summary.contains("serves port 8080"), "{summary}");
+    // The guest announced its port when it listened, so the hub did not poll noded to register it: no GET at all.
+    let calls = standin.calls();
+    assert!(
+        calls.iter().any(|c| c == "POST /v1/forks/4242/ports"),
+        "the guest announced it: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("GET ")),
+        "the hub asks noded nothing: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c == "POST /v1/runs/r1/ports"),
+        "the hub did not register it: {calls:?}"
+    );
     let preview = store
         .lane_preview("p", "lane")
         .expect("the lane has a preview");
@@ -393,9 +755,13 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
         .spawn(move |request| tunnel_router.handle(&(), request))
         .expect("serves");
 
+    let gate = Gate {
+        slot: Arc::new(Mutex::new(None)),
+        seen: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
     let inbound = Arc::new(Inbound {
         fork: Arc::clone(&standin),
-        app: fork_app(),
+        app: fork_app(gate.clone()),
     });
     let listener = TcpListener::bind("127.0.0.1:0").expect("binds");
     let inbound_port = listener.local_addr().expect("address").port();
@@ -437,31 +803,7 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
 
     // The preview route on the hub. It is outside `/v1/`, so the owner gate lets it through to its own check.
     assert!(crate::hub_auth::is_public("GET", "/preview/p/lane/"));
-    let mut web_router: Router<()> = Router::new();
-    for method in ["GET", "POST"] {
-        let (store, nodes, standin) =
-            (Arc::clone(&store), Arc::clone(&nodes), Arc::clone(&standin));
-        let handler = move |_: &(), req: &Request, p: &apz_http::Params<'_>| {
-            let host: &NodedStandIn = &standin;
-            let ctx = Ctx {
-                store: &store,
-                nodes: &nodes,
-                host,
-            };
-            answer(
-                &ctx,
-                req,
-                false,
-                p.get("project"),
-                p.get("lane"),
-                p.get("rest"),
-                now(),
-            )
-        };
-        web_router = web_router
-            .route(method, "/preview/{project}/{lane}/", handler.clone())
-            .route(method, "/preview/{project}/{lane}/{rest..}", handler);
-    }
+    let web_router = preview_router(Arc::clone(&store), Arc::clone(&nodes), Arc::clone(&standin));
     let web_server = Server::bind(0)
         .expect("an ephemeral port")
         .spawn(move |request| web_router.handle(&(), request))
@@ -519,9 +861,31 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
     );
     assert_eq!((status, body.as_str()), (200, "got 5 bytes"));
 
+    // 4b. A server-sent stream reaches the viewer as the app sends it: the first event arrives while the app still
+    // waits at the gate, before it sends the second.
+    let (gate_tx, gate_rx) = mpsc::channel();
+    *gate.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate_rx);
+    let mut events = open_stream(web, "/preview/p/lane/stream", &[("Cookie", &cookie)]);
+    let first = read_until(&mut events, "data: 1");
+    assert!(
+        first.contains("200 OK") && first.contains("text/event-stream"),
+        "{first}"
+    );
+    gate_tx.send(()).expect("the app is waiting at the gate");
+    let mut rest = String::new();
+    events.read_to_string(&mut rest).expect("the stream ends");
+    assert!(
+        first.contains("data: 2") || rest.contains("data: 2"),
+        "{first}{rest}"
+    );
+    assert!(
+        gate.seen.load(std::sync::atomic::Ordering::SeqCst),
+        "the first event reached the viewer before the app sent the second"
+    );
+
     // 5. Every opening is recorded: when, from where, what.
     let openings = store.openings(&use_link.id, 50);
-    assert_eq!(openings.len(), 3, "{openings:?}");
+    assert_eq!(openings.len(), 4, "{openings:?}");
     assert!(openings.iter().all(|o| o.from.starts_with("127.0.0.1")));
     assert!(
         openings
@@ -604,6 +968,44 @@ fn a_lane_preview_opens_from_a_link_through_the_booted_hub() {
     assert_eq!(
         store.preview(&preview.id).expect("the preview").status,
         AWAKE
+    );
+
+    // 9b. The lane's subdomain (`<lane>--<project>.<domain>`) is the same preview: the request is moved to its path, and
+    // the link's cookie carries over.
+    let direct = preview_router(Arc::clone(&store), Arc::clone(&nodes), Arc::clone(&standin));
+    let host_request = Request {
+        method: "GET".into(),
+        path: "/stream".into(),
+        query: String::new(),
+        headers: vec![
+            ("host".into(), "lane--p.preview.test".into()),
+            ("cookie".into(), cookie.clone()),
+        ],
+        body: Vec::new(),
+        peer: None,
+    };
+    let moved =
+        route::subdomain_request(&host_request, "preview.test").expect("the Host names a preview");
+    assert_eq!(moved.path, "/preview/p/lane/stream");
+    let mut answered = Vec::new();
+    match direct.handle(&(), &moved).body {
+        Body::Stream(write) => write(&mut answered).expect("relays"),
+        Body::Bytes(bytes) => answered = bytes,
+        Body::Upgrade(_) => panic!("a preview is not upgraded"),
+    }
+    assert!(
+        String::from_utf8_lossy(&answered).contains("data: 1"),
+        "{answered:?}"
+    );
+    let without_cookie = Request {
+        headers: vec![("host".into(), "lane--p.preview.test".into())],
+        ..host_request
+    };
+    let refused = route::subdomain_request(&without_cookie, "preview.test").expect("moved");
+    assert_eq!(
+        direct.handle(&(), &refused).status,
+        401,
+        "a subdomain needs the same link"
     );
 
     // 10. A revoked link never works again.

@@ -513,6 +513,58 @@ fn serve(app: &App, station: &str, view: View, events: &Receiver<Event>, socket:
         .leave(&screens, station, session, viewer);
 }
 
+/// A native lane's preview (PLAN 18.1): the station's shared screen, written to `out` as server-sent events until the
+/// stream ends or the viewer leaves. Each frame is one `frame` event whose data is the frame's bytes in base64, the same
+/// bytes the live view sends as one binary message. Nothing comes back from the viewer: a native preview is watched.
+pub fn watch_into(app: &App, station: &str, out: &mut dyn io::Write) -> io::Result<()> {
+    let link = app
+        .stations
+        .live(station)
+        .ok_or_else(|| io::Error::other("the workstation is offline"))?;
+    // Subscribed before the stream starts, so no frame of it is missed.
+    let events = link.subscribe();
+    let viewer = app.stations.screen.next_viewer();
+    let screens = Link(app);
+    let want = Want {
+        fps: DEFAULT_FPS,
+        scale: DEFAULT_SCALE,
+    };
+    let session = app
+        .stations
+        .screen
+        .join(&screens, station, Pick::Shared, viewer, want)
+        .map_err(io::Error::other)?;
+    watch(&events, session, want.fps, &mut Sse { out });
+    app.stations
+        .screen
+        .leave(&screens, station, session, viewer);
+    Ok(())
+}
+
+/// The live view's socket as a server-sent events stream: the frames and the session's messages go out as events, and
+/// nothing comes back.
+struct Sse<'a> {
+    out: &'a mut dyn io::Write,
+}
+
+impl Wire for Sse<'_> {
+    fn recv(&mut self, wait: Duration) -> io::Result<Option<Message>> {
+        std::thread::sleep(wait);
+        Ok(None)
+    }
+
+    fn send(&mut self, message: &Message) -> io::Result<()> {
+        let event = match message {
+            Message::Binary(bytes) => format!("event: frame\ndata: {}\n\n", STANDARD.encode(bytes)),
+            Message::Text(text) => format!("event: message\ndata: {text}\n\n"),
+        };
+        self.out.write_all(event.as_bytes())?;
+        self.out.flush()
+    }
+
+    fn close(&mut self, _code: u16, _reason: &str) {}
+}
+
 /// Relays the session's frames to the socket, at its fps, until the session ends, the link ends or the client leaves.
 fn watch(events: &Receiver<Event>, session: SessionId, fps: u8, socket: &mut dyn Wire) {
     let mut last_sent = None;

@@ -35,6 +35,10 @@ pub const AWAKE: &str = "awake";
 pub const ASLEEP: &str = "asleep";
 pub const CLOSED: &str = "closed";
 
+/// A preview's kind: a web app on a fork's port (`web`), or a native app's station stream (`native`).
+pub const WEB: &str = "web";
+pub const NATIVE: &str = "native";
+
 /// A link's scope: `view` reads (GET and HEAD); `use` makes any request the preview allows.
 pub const VIEW: &str = "view";
 pub const USE: &str = "use";
@@ -60,6 +64,9 @@ pub struct Preview {
     pub cid: u64,
     /// The port the app listens on in the fork.
     pub port: u32,
+    /// `web` or `native`. A native preview's `station` is the workstation whose shared screen it shows.
+    pub kind: String,
+    pub station: String,
     /// `awake`, `asleep` or `closed`.
     pub status: String,
     pub created_ms: u64,
@@ -195,6 +202,37 @@ impl Store {
             run: run.to_string(),
             cid,
             port,
+            kind: WEB.to_string(),
+            station: String::new(),
+            status: AWAKE.to_string(),
+            created_ms: now,
+            used_ms: now,
+            ends_ms: None,
+        };
+        let stored = preview.clone();
+        self.db
+            .write(move |conn| write_row(conn, def(), sql::PREVIEW_POS, &stored.id, &stored))?;
+        Ok(preview)
+    }
+
+    /// Writes a native preview of `lane`: the station `station`'s shared screen, awake, with no fork behind it.
+    pub fn add_native_preview(
+        &self,
+        project: &str,
+        lane: &str,
+        station: &str,
+        now: u64,
+    ) -> Result<Preview, StoreError> {
+        let preview = Preview {
+            id: random_id(),
+            project: project.to_string(),
+            lane: lane.to_string(),
+            node: String::new(),
+            run: String::new(),
+            cid: 0,
+            port: 0,
+            kind: NATIVE.to_string(),
+            station: station.to_string(),
             status: AWAKE.to_string(),
             created_ms: now,
             used_ms: now,

@@ -171,6 +171,9 @@ pub struct Target {
     pub port: Option<u16>,
     #[serde(default)]
     pub grace_hours: Option<u64>,
+    /// The workstation a native target's lane runs on: its shared screen is the preview.
+    #[serde(default)]
+    pub station: Option<String>,
 }
 
 /// The grace a preview keeps after its lane lands or closes, when the target says none: 24 hours.
@@ -182,6 +185,8 @@ pub enum TargetKind {
     Preview,
     Gui,
     Device,
+    /// A native app's preview: the lane's station stream, linked (`station`), watched under the preview's link rules.
+    Native,
 }
 
 /// `languages` as names (the W40 names apz-lsp gives), each one a language the server table knows.

@@ -592,6 +592,29 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
         );
         return None;
     }
+    // A guest's port listens (a preview's app, v10): noded lets an inbound stream reach it. A base VM is not an agent,
+    // so this is answered before the agent lookup. The hub's own registration (preview start) is the fallback.
+    if let GuestMessage::Listening { port } = message {
+        let path = format!("/v1/forks/{cid}/ports");
+        match crate::fleet::noded_for(
+            app,
+            cid,
+            "POST",
+            &path,
+            Some(&serde_json::json!({"port": port})),
+        ) {
+            Ok((200, _)) => {
+                // Recorded only once noded has it: a refused registration leaves the hub's fallback to make it.
+                crate::base_vm::record_listening(cid, port);
+                eprintln!("apid: VM {cid} registered port {port} (the guest announced it)")
+            }
+            Ok((status, reply)) => {
+                eprintln!("apid: VM {cid} port {port} not registered: noded {status}: {reply}")
+            }
+            Err(why) => eprintln!("apid: VM {cid} port {port} not registered: {why}"),
+        }
+        return None;
+    }
     let Some(agent) = app.agents.get(cid) else {
         return match message {
             GuestMessage::ModelCall { req, .. } => Some(HostMessage::ModelResult {

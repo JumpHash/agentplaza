@@ -81,6 +81,10 @@ pub struct ProjectSettings {
     /// The team the planner aims for when the graph allows, never above the maximum; [`DEFAULT_TEAM_TARGET`] when unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team_target: Option<u32>,
+    /// How many hours a project's previews outlive their lane's landing or closing (PLAN 18.1). A preview target's own
+    /// `grace_hours` overrides it; 24 when neither is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_grace_hours: Option<u64>,
     /// The project's hooks: checks and formatters that run around its agents' edits and commands (`apz_proto::hooks`).
     /// The JSON names them as a list under `hooks`; `"hooks": "defaults"` sets `hook_defaults` instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -90,6 +94,9 @@ pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hook_defaults: bool,
 }
+
+/// The longest grace a preview may keep after its lane ends: a year.
+pub const MAX_PREVIEW_GRACE_HOURS: u64 = 8760;
 
 /// Every project's overrides, by project id.
 #[derive(Default)]
@@ -158,6 +165,7 @@ struct SettingsRow {
     full_suite_minutes: Option<u32>,
     team_max: Option<u32>,
     team_target: Option<u32>,
+    preview_grace_hours: Option<u64>,
     hook_defaults: bool,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
@@ -225,6 +233,7 @@ impl SettingsRow {
             full_suite_minutes: settings.full_suite_minutes,
             team_max: settings.team_max,
             team_target: settings.team_target,
+            preview_grace_hours: settings.preview_grace_hours,
             hook_defaults: settings.hook_defaults,
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
@@ -246,6 +255,7 @@ impl SettingsRow {
             full_suite_minutes: self.full_suite_minutes,
             team_max: self.team_max,
             team_target: self.team_target,
+            preview_grace_hours: self.preview_grace_hours,
             hooks: self.hooks,
             hook_defaults: self.hook_defaults,
         };
@@ -261,6 +271,14 @@ pub fn def() -> &'static TableDef {
 /// Checks a project's overrides against the plaza: models the roles may run (the plaza's model policy), roles it
 /// has, an effort it knows, and limits within the harness's bounds.
 pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
+    if settings
+        .preview_grace_hours
+        .is_some_and(|hours| hours > MAX_PREVIEW_GRACE_HOURS)
+    {
+        return Err(format!(
+            "preview_grace_hours: a preview outlives its lane by a year at most ({MAX_PREVIEW_GRACE_HOURS} hours)"
+        ));
+    }
     if let Some(model) = &settings.default_model {
         app.settings
             .allowed(Tier::Worker, model)
@@ -631,6 +649,18 @@ pub fn effective(app: &App, id: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_preview_grace_is_a_project_setting_that_a_patch_sets_and_clears() {
+        let set = merged(
+            &ProjectSettings::default(),
+            &json!({"preview_grace_hours": 48}),
+        )
+        .expect("merges");
+        assert_eq!(set.preview_grace_hours, Some(48));
+        let cleared = merged(&set, &json!({"preview_grace_hours": null})).expect("merges");
+        assert_eq!(cleared.preview_grace_hours, None);
+    }
 
     #[test]
     fn a_patch_sets_unsets_and_merges_role_models() {

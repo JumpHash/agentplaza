@@ -153,6 +153,7 @@ fn command(label: &str, argv: &[&str], env: &Env) -> Command {
         cwd: WORKSPACE,
         timeout_s: base_recipe::STEP_TIMEOUT_S,
         env: env.clone(),
+        listen: None,
     }
 }
 
