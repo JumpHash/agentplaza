@@ -359,6 +359,7 @@ dependencies = [
  "apz-testsel",
  "apz-theme",
  "apz-topology",
+ "apz-transfer",
  "apz-trust",
  "apz-uds",
  "apz-view",
@@ -372,6 +373,7 @@ dependencies = [
  "hmac",
  "jhrl",
  "libc",
+ "qrcode",
  "rcgen",
  "ring",
  "schemars 1.2.3",
@@ -644,6 +646,7 @@ version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-os",
+ "apz-transfer",
  "apz-trust",
  "base64 0.22.1",
  "flate2",
@@ -855,6 +858,20 @@ dependencies = [
  "serde",
  "serde_json",
  "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
+name = "apz-transfer"
+version = "1.0.0"
+dependencies = [
+ "apz-blobs",
+ "apz-http",
+ "apz-trust",
+ "ed25519-dalek",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -6032,18 +6049,22 @@ dependencies = [
 name = "noded"
 version = "1.0.0"
 dependencies = [
+ "apz-blobs",
  "apz-egress-rules",
  "apz-http",
  "apz-metrics",
  "apz-os",
  "apz-sandbox",
  "apz-station",
+ "apz-transfer",
  "apz-uds",
  "base64 0.22.1",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "sha2",
  "sysinfo",
+ "tempfile",
  "vmm",
  "vsockd",
 ]
@@ -7789,6 +7810,12 @@ checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "quick-error"

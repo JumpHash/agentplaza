@@ -116,6 +116,7 @@ pub fn router() -> Router<App> {
     let router = crate::content::routes(router);
     let router = crate::artifacts::gateway::routes(router);
     let router = crate::shares::routes::routes(router);
+    let router = crate::previews::route::routes(router);
     let router = crate::shares::public::routes(router);
     let router = crate::shares::request::routes(router);
     let router = crate::weft_hub::routes(router);
@@ -145,6 +146,7 @@ pub fn router() -> Router<App> {
     let router = crate::test_lab::routes(router);
     let router = crate::topology::routes(router);
     let router = crate::mover::routes(router);
+    let router = crate::transfer::routes(router);
     let router = crate::stations::routes(router);
     let router = crate::prices::routes(router);
     let router = crate::usage::routes(router);

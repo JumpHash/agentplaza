@@ -23,6 +23,10 @@ pub struct Identity {
     pub cid_count: u64,
     #[serde(default)]
     pub hub_name: String,
+    /// The node's address on a mesh (`join --mesh`): where its mesh listener binds and the hub dials. None: the
+    /// node has no mesh and reaches the hub by its tunnel only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesh: Option<String>,
 }
 
 impl Identity {
@@ -162,6 +166,7 @@ mod tests {
             cid_base: 3,
             cid_count: 2,
             hub_name: "hub".into(),
+            mesh: None,
         }
     }
 

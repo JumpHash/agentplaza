@@ -1,0 +1,26 @@
+meta {
+  name: Answer 404 for the QR code of a link the hub does not know
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/preview-links/{{link}}/qr
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  link: pl999
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no link pl999"
+}
+
+docs {
+  The QR code is an SVG image of the link's address (token included), so a live link answers image/svg+xml with no
+  store. An unknown link answers the JSON 404 above.
+}

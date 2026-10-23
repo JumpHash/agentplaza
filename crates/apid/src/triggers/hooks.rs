@@ -103,6 +103,28 @@ pub fn parse(
             dedup: None,
         }));
     }
+    // Linear's own issue deliveries: `{"type": "Issue", "action": "create" | "update", "data": {"identifier": ...}}`.
+    if connector == "linear" && json["type"] == "Issue" {
+        let action = json["action"].as_str().unwrap_or("");
+        if !matches!(action, "create" | "update") {
+            return Ok(Parsed::Ignored(format!("issue {action}")));
+        }
+        let item = json["data"]["identifier"]
+            .as_str()
+            .ok_or("an issue delivery names its identifier")?;
+        let event = if action == "create" {
+            "issue.created"
+        } else {
+            "issue.updated"
+        };
+        return Ok(Parsed::Event(Event {
+            source: "connector:linear".into(),
+            event: event.into(),
+            item: item.into(),
+            label: String::new(),
+            dedup: None,
+        }));
+    }
     let event = json["event"].as_str().ok_or("a delivery names its event")?;
     let item = json["item"].as_str().ok_or("a delivery names its item")?;
     Ok(Parsed::Event(Event {
@@ -112,6 +134,28 @@ pub fn parse(
         label: json["label"].as_str().unwrap_or("").into(),
         dedup: None,
     }))
+}
+
+/// Whether a delivery's signature is right for its connector: GitHub's `X-Hub-Signature-256`, and Linear's
+/// `Linear-Signature` (hex), each the HMAC-SHA256 of the body under the connector's signing secret.
+pub fn signed_right(
+    connector: &str,
+    secret: &str,
+    header: &dyn Fn(&str) -> Option<String>,
+    body: &[u8],
+) -> bool {
+    match connector {
+        "github" => same(
+            &github_signature(secret, body),
+            &header("x-hub-signature-256").unwrap_or_default(),
+        ),
+        "linear" => crate::intake::hmac_ok(
+            secret,
+            body,
+            &header("linear-signature").unwrap_or_default(),
+        ),
+        _ => true,
+    }
 }
 
 fn put(app: &App, name: &str, value: &str, label: &str, now: u64) -> Result<(), String> {
@@ -141,15 +185,19 @@ fn hook_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if !stored.is_some_and(|s| same(&s, token)) {
         return Response::error(404, "no such webhook");
     }
-    if connector == "github" {
+    if matches!(connector, "github" | "linear") {
         let Some(secret) = app
             .vault
             .value_for(&secret_name(connector), BINDING, &OnBehalf::Hub)
         else {
             return Response::error(401, "the webhook has no signing secret");
         };
-        let sent = req.header("x-hub-signature-256").unwrap_or("");
-        if !same(&github_signature(&secret, &req.body), sent) {
+        if !signed_right(
+            connector,
+            &secret,
+            &|name| req.header(name).map(str::to_string),
+            &req.body,
+        ) {
             return Response::error(401, "the signature does not match the body");
         }
     }
@@ -161,15 +209,30 @@ fn hook_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(parsed) => parsed,
         Err(why) => return Response::error(400, &why),
     };
+    // An intake source's delivery also keeps its item (intake's own routes went into this one).
+    let now = apz_plaza::now_ms();
+    let intake = match crate::intake::delivery(
+        app,
+        connector,
+        &|name| req.header(name).map(str::to_string),
+        &req.body,
+        now,
+    ) {
+        Ok(intake) => intake,
+        Err(why) => return Response::error(502, &why),
+    };
     match parsed {
         Parsed::Event(event) => {
-            let matched = app.triggers.deliver(&event, apz_plaza::now_ms());
+            let matched = app.triggers.deliver(&event, now);
             Response::json(
                 202,
-                &json!({"event": event.event, "item": event.item, "triggers": matched}),
+                &json!({"event": event.event, "item": event.item, "triggers": matched, "intake": intake}),
             )
         }
-        Parsed::Ignored(why) => Response::json(202, &json!({"ignored": why, "triggers": 0})),
+        Parsed::Ignored(why) => Response::json(
+            202,
+            &json!({"ignored": why, "triggers": 0, "intake": intake}),
+        ),
     }
 }
 
@@ -310,6 +373,29 @@ mod tests {
         assert_eq!(event.source, "connector:linear");
         assert_eq!(event.item, "ENG-12");
         assert!(parse("linear", &|_| None, b"{\"item\":\"x\"}").is_err());
+    }
+
+    #[test]
+    fn each_connector_checks_its_own_signature_and_an_unsigned_delivery_is_refused() {
+        let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
+        mac.update(BODY);
+        let hex: String = mac
+            .finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let linear = |name: &str| (name == "linear-signature").then(|| hex.clone());
+        assert!(signed_right("linear", SECRET, &linear, BODY));
+        assert!(!signed_right("linear", "another", &linear, BODY));
+        let github =
+            |name: &str| (name == "x-hub-signature-256").then(|| github_signature(SECRET, BODY));
+        assert!(signed_right("github", SECRET, &github, BODY));
+        assert!(
+            !signed_right("github", SECRET, &linear, BODY),
+            "the wrong header"
+        );
+        assert!(!signed_right("github", SECRET, &|_| None, BODY));
     }
 
     #[test]

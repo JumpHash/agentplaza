@@ -7,9 +7,11 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Component, Path};
 use std::sync::mpsc::Receiver;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use apz_proto::wire::{GuestMessage, HostMessage, MAX_TOOL_OUTPUT, cap_output};
 
@@ -19,35 +21,78 @@ use crate::lane::Shared;
 
 /// Runs the exec items the reader hands over, in the order they came, and answers each. Returns when the reader has
 /// gone and every queued item is answered.
-pub fn serve<S: Write, W: Write>(
+pub fn serve<S: Write + Send, W: Write + Send>(
     calls: Receiver<HostMessage>,
     shared: &Shared<'_, S, W>,
     workspace: &Workspace,
 ) {
-    for message in calls {
-        let HostMessage::Exec {
-            id,
-            argv,
-            env,
-            cwd,
-            background,
-            timeout_s,
-        } = message
-        else {
-            continue;
-        };
-        let answer = run(workspace, id, &argv, &env, &cwd, background, timeout_s);
-        if let GuestMessage::ExecResult {
-            ok: false, output, ..
-        } = &answer
-        {
-            shared.note(&format!("agent-harness: exec {id} refused: {output}"));
+    // A background command that asked for its port to be announced gets a watcher on a thread of its own, which ends
+    // when the port listens or its wait runs out. The scope keeps the watchers until the calls have ended.
+    thread::scope(|scope| {
+        for message in calls {
+            let HostMessage::Exec {
+                id,
+                argv,
+                env,
+                cwd,
+                background,
+                timeout_s,
+                listen,
+            } = message
+            else {
+                continue;
+            };
+            let answer = run(workspace, id, &argv, &env, &cwd, background, timeout_s);
+            if let GuestMessage::ExecResult {
+                ok: false, output, ..
+            } = &answer
+            {
+                shared.note(&format!("agent-harness: exec {id} refused: {output}"));
+            }
+            let started = matches!(answer, GuestMessage::ExecResult { ok: true, .. });
+            if let Err(err) = shared.say(&answer) {
+                // The connection is broken; the reader sees that too and ends the session.
+                shared.note(&format!("agent-harness: exec {id} answer not sent: {err}"));
+                return;
+            }
+            if let (true, true, Some(port)) = (started, background, listen) {
+                scope.spawn(move || announce(shared, port));
+            }
         }
-        if let Err(err) = shared.say(&answer) {
-            // The connection is broken; the reader sees that too and ends the session.
-            shared.note(&format!("agent-harness: exec {id} answer not sent: {err}"));
-            return;
+    });
+}
+
+/// How long a background command's port may take to listen before nobody is told (two minutes: a preview's build is
+/// waited for by its own step).
+const LISTEN_WAIT: Duration = Duration::from_secs(120);
+
+/// Tells the host that `port` listens, once something accepts connections on it (`listening`, v10). Gives up after
+/// [`LISTEN_WAIT`], naming it on the session's log.
+fn announce<S: Write + Send, W: Write + Send>(shared: &Shared<'_, S, W>, port: u16) {
+    if !wait_until_listening(port, LISTEN_WAIT) {
+        shared.note(&format!(
+            "agent-harness: nothing listened on port {port} within {} s",
+            LISTEN_WAIT.as_secs()
+        ));
+        return;
+    }
+    if let Err(err) = shared.say(&GuestMessage::Listening { port }) {
+        shared.note(&format!("agent-harness: port {port} not announced: {err}"));
+    }
+}
+
+/// Whether something accepts connections on 127.0.0.1:`port` within `wait`, polled every 100 ms.
+pub fn wait_until_listening(port: u16, wait: Duration) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let deadline = Instant::now() + wait;
+    loop {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok() {
+            return true;
         }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -374,5 +419,48 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    #[test]
+    fn a_port_something_listens_on_is_announced_to_the_host_and_a_silent_one_is_not() {
+        use crate::session::testing::{next, pair};
+        use apz_proto::line::Lines;
+        let (guest, mut host) = pair();
+        let mut log = Vec::new();
+        let shared = Shared::new(
+            Lines::new(guest.get_ref().try_clone().expect("a second handle")),
+            &mut log,
+        );
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+            probe.local_addr().expect("address").port()
+        };
+        let listener = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            let bound = std::net::TcpListener::bind(("127.0.0.1", port)).expect("binds again");
+            thread::sleep(Duration::from_secs(3));
+            drop(bound);
+        });
+        announce(&shared, port);
+        listener.join().expect("the listener ran");
+        let line = next(&mut host);
+        assert!(
+            line.contains("\"listening\"") && line.contains(&port.to_string()),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_port_nobody_listens_on_is_not_reported_listening() {
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("binds");
+            probe.local_addr().expect("address").port()
+        };
+        let started = Instant::now();
+        assert!(!wait_until_listening(port, Duration::from_millis(300)));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait is bounded"
+        );
     }
 }

@@ -73,6 +73,63 @@ pub fn link() -> PlanProcess {
     }
 }
 
+/// How the hub reaches a node: over the node's own tunnel (the default), or on a WireGuard mesh (Tailscale, Headscale or
+/// plain WireGuard) at the node's mesh address, which the hub dials. The owner chooses; the mesh is never installed or
+/// configured here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePath {
+    Tunnel,
+    Mesh,
+}
+
+/// The mesh tools on this machine, found on the PATH: `tailscale` and `wg`. Detection only reads: nothing is run,
+/// installed or configured.
+pub fn mesh_tools() -> Vec<&'static str> {
+    ["tailscale", "wg"]
+        .into_iter()
+        .filter(|tool| on_path(tool))
+        .collect()
+}
+
+fn on_path(tool: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(tool).is_file()))
+}
+
+/// apz-link as the node runs it on `path`. On the mesh it also listens at its mesh address (`--mesh`), where the hub dials
+/// it; a mesh node without an address is refused.
+pub fn link_on(path: NodePath, mesh: Option<&str>) -> Result<PlanProcess, String> {
+    Ok(PlanProcess {
+        name: "apz-link",
+        args: argv_for(path, mesh, &LINK_RUN)?,
+        env: None,
+    })
+}
+
+/// The arguments of `apz-link join` on `path`: a mesh node names its mesh address, which the hub then dials.
+pub fn join_args(path: NodePath, mesh: Option<&str>) -> Result<Vec<String>, String> {
+    match path {
+        NodePath::Tunnel => Ok(Vec::new()),
+        NodePath::Mesh => Ok(vec!["--mesh".into(), mesh_address(mesh)?.into()]),
+    }
+}
+
+fn argv_for(path: NodePath, mesh: Option<&str>, base: &[&str]) -> Result<Vec<String>, String> {
+    let mut args = argv(base);
+    if path == NodePath::Mesh {
+        args.push("--mesh".into());
+        args.push(mesh_address(mesh)?.into());
+    }
+    Ok(args)
+}
+
+fn mesh_address(mesh: Option<&str>) -> Result<&str, String> {
+    match mesh {
+        Some(address) if !address.is_empty() => Ok(address),
+        _ => Err("a node on the mesh needs its mesh address (host:port)".into()),
+    }
+}
+
 /// The node's processes for CIDs `base..base+count`, in start order.
 pub fn plan(base: u64, count: u64, layout: &Layout) -> Vec<PlanProcess> {
     let uds = path_arg(&layout.uds_dir);
@@ -701,5 +758,42 @@ mod tests {
             cmdline_argv(b"x\0\0"),
             Some(vec!["x".to_string(), String::new()])
         );
+    }
+
+    #[test]
+    fn a_mesh_node_listens_at_its_mesh_address_and_a_tunnel_node_does_not() {
+        let tunnel = link_on(NodePath::Tunnel, None).expect("a tunnel node needs no address");
+        assert_eq!(tunnel.args, argv(&LINK_RUN));
+        let mesh = link_on(NodePath::Mesh, Some("100.64.0.7:7447")).expect("a mesh address");
+        assert_eq!(
+            mesh.args.last().map(String::as_str),
+            Some("100.64.0.7:7447")
+        );
+        assert_eq!(mesh.args[mesh.args.len() - 2], "--mesh");
+        assert!(
+            link_on(NodePath::Mesh, None).is_err(),
+            "no address, no mesh"
+        );
+        assert!(
+            link_on(NodePath::Mesh, Some("")).is_err(),
+            "an empty address is no address"
+        );
+    }
+
+    #[test]
+    fn the_join_names_the_mesh_address_only_on_the_mesh() {
+        assert_eq!(join_args(NodePath::Tunnel, None), Ok(Vec::<String>::new()));
+        assert_eq!(
+            join_args(NodePath::Mesh, Some("node.tailnet:7447")),
+            Ok(vec!["--mesh".to_string(), "node.tailnet:7447".to_string()])
+        );
+        assert!(join_args(NodePath::Mesh, None).is_err());
+    }
+
+    #[test]
+    fn mesh_tools_are_only_names_found_on_the_path() {
+        for tool in mesh_tools() {
+            assert!(["tailscale", "wg"].contains(&tool), "{tool}");
+        }
     }
 }

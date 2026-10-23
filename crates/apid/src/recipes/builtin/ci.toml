@@ -35,7 +35,19 @@ id = "scan"
 engine = "check"
 gate = ["passed", "no findings"]
 
+# The preview (PLAN 18.1, 4.5): once the checks pass, the lane's app is built and started in its own VM from the project's
+# preview base, its port registered with noded, and the lane's preview is live. A project with no preview target passes.
+[[steps]]
+id = "preview"
+engine = "check"
+gate = ["passed"]
+
 [[edges]]
 from = "build"
 to = "tests"
+when = "passed"
+
+[[edges]]
+from = "tests"
+to = "preview"
 when = "passed"

@@ -529,7 +529,8 @@ impl Session<'_> {
                 | GuestMessage::WorkDone { .. }
                 | GuestMessage::Compressed { .. }
                 | GuestMessage::Stats { .. }
-                | GuestMessage::ExecResult { .. }) => {
+                | GuestMessage::ExecResult { .. }
+                | GuestMessage::Listening { .. }) => {
                     self.forward(lines, &bridge, &line, message)?
                 }
             }
@@ -753,6 +754,7 @@ fn guest_kind(message: &GuestMessage) -> &'static str {
     match message {
         GuestMessage::Hello { .. } => "hello",
         GuestMessage::ExecResult { .. } => "exec_result",
+        GuestMessage::Listening { .. } => "listening",
         GuestMessage::EngineUpdate { .. } => "engine_update",
         GuestMessage::ToolCall { .. } => "tool_call",
         GuestMessage::ToolResult { .. } => "tool_result",

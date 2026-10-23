@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::base_recipe::{self, BaseKind};
-use crate::base_vm::{Live, Runner};
+use crate::base_vm::{self, Live, Runner};
 use crate::placement;
 use crate::project_stack::{self, FILE, Stack};
 use crate::state::App;
@@ -191,8 +191,20 @@ fn build_steps(app: &App, key: &Key, repo: &str) -> Result<String, String> {
     let node = placement::base_node(app, &key.project, &key.pool, &base_recipe::volumes(&stack))
         .ok_or_else(|| format!("no node in the pool {} has room for a base", key.pool))?;
     let host = Live(app);
-    let mut runner = Runner::new(&host, node, key.project.clone());
+    let mut runner = Runner::new(&host, node.clone(), key.project.clone());
     base_recipe::execute(&mut runner, &steps)?;
+    // The base reaches the nodes that hold the project's forks, by the grant path (plan 17.5). A failed transfer is
+    // logged: the base is built, and the next landing tries again.
+    if let Some((run, name)) = base_vm::built_checkpoint(&key.project, BaseKind::Build) {
+        match crate::transfer::distribute_built(app, &key.project, &key.pool, &node, &run, &name) {
+            Ok(answers) => {
+                for answer in answers {
+                    eprintln!("apid: base of {} ({}): {answer}", key.project, key.pool);
+                }
+            }
+            Err(why) => eprintln!("apid: base of {} ({}): {why}", key.project, key.pool),
+        }
+    }
     Ok(commit)
 }
 

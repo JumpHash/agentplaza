@@ -33,6 +33,21 @@ export function nodeState(n: NodeView): { label: string; tone: Tone } {
   return n.online ? { label: 'online', tone: 'ok' } : { label: 'offline', tone: 'muted' };
 }
 
+/** How the hub reaches a node: this hub, its own tunnel (the node dials the hub), or the mesh at its address (the hub dials). */
+export function pathText(n: NodeView): string {
+  if (n.path === 'local') return 'This hub';
+  return n.path === 'mesh' ? `Mesh, ${n.mesh_address || 'no address'}` : 'Tunnel';
+}
+
+/** The link's health in a line: whether it is up and its latency, then its errors (none when it has had none). */
+export function linkText(n: NodeView): string {
+  const link = n.link;
+  if (!link) return '—';
+  const up = link.connected ? `connected, ${link.latency_ms == null ? 'measuring' : `${link.latency_ms} ms`}` : 'not connected';
+  const errors = link.errors ? `${link.errors} ${link.errors === 1 ? 'error' : 'errors'}` : '';
+  return [up, errors].filter(Boolean).join(' · ');
+}
+
 /** Whether the owner took the node out of service (stopping or stopped). */
 export function isStopped(n: NodeView): boolean {
   return n.draining || n.state === 'stopping' || n.state === 'stopped';
@@ -259,6 +274,39 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     void load();
   };
 
+  const setPath = async (n: NodeView, path: 'tunnel' | 'mesh', mesh: string): Promise<void> => {
+    await attempt(
+      () => api.setNodePath(n.id, path, mesh),
+      path === 'mesh' ? `${n.name} is reached on the mesh: its forks keep running` : `${n.name} is reached over its tunnel: its forks keep running`,
+    );
+    void load();
+  };
+
+  // The owner's way to a mesh: the node's address on the mesh (set up on both machines by the owner, or by the setup).
+  const confirmMesh = (n: NodeView): void => {
+    const address = input({ value: n.mesh_address || '', placeholder: '100.64.0.7:7447', maxlength: 200, autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Mesh address' });
+    let close: () => void = () => {};
+    close = open(
+      `Reach ${n.name} on the mesh?`,
+      [
+        h('p', null, 'The hub dials the node at its address on the mesh (Tailscale, Headscale or WireGuard, already set up on both machines). Its forks keep running: only the hub’s way to them changes.'),
+        field('Mesh address', address, 'The node’s address on the mesh, as host:port.'),
+      ],
+      [
+        button('Cancel', () => close()),
+        button(
+          'Move to mesh',
+          () => {
+            const mesh = address.value.trim();
+            close();
+            void setPath(n, 'mesh', mesh);
+          },
+          { kind: 'primary' },
+        ),
+      ],
+    );
+  };
+
   const revokeCode = async (c: JoinCode): Promise<void> => {
     await attempt(() => api.revokeJoinCode(c.id), 'Join code revoked');
     void load();
@@ -315,7 +363,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       main = [button('Stop', () => confirmStop(n))];
     }
     const tail: Node[] = n.id === HUB_NODE ? [h('span.muted', null, 'this hub')] : [button('Revoke', () => confirmRevoke(n))];
-    return [...main, button('Roles', () => openRoles(n), { title: 'Set the share of this machine the test lab takes' }), ...tail];
+    const path: Node[] = n.id === HUB_NODE ? [] : [n.path === 'mesh' ? button('Back to tunnel', () => void setPath(n, 'tunnel', '')) : button('Move to mesh', () => confirmMesh(n))];
+    return [...main, button('Roles', () => openRoles(n), { title: 'Set the share of this machine the test lab takes' }), ...path, ...tail];
   };
 
   // The run kills in a node's detail: then the page reloads.
@@ -422,12 +471,15 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       ...(m ? machineDetail(m) : []),
       kv([
         ['Address', n.address || '—'],
+        ['Path', pathText(n)],
+        ['Link', linkText(n)],
         ['CIDs', cids(n)],
         ['Last seen', agoText(n.last_seen_ms)],
         ['Agents', String(n.agents)],
         ['Host', mc?.host ?? '—'],
         ['Version', mc?.version ?? '—'],
       ]),
+      n.link?.last_error ? h('div.nd-err', null, `Last link error: ${n.link.last_error}`) : null,
       waits.length
         ? h('div.nd-wait', null, h('div.field-l', null, 'Waiting to move'), ...waits.map((line) => h('div', null, line)))
         : null,
@@ -450,6 +502,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
       ['Agents', String(n.agents)],
       ['CIDs', cids(n)],
       ['Machine', machineLine],
+      ['Path', pathText(n)],
+      ['Link', linkText(n)],
       ['Last seen', agoText(n.last_seen_ms)],
     ];
     const isOpen = openNode === n.id;

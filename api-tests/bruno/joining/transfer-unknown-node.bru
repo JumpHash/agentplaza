@@ -1,0 +1,26 @@
+meta {
+  name: Answer 502 when a transfer names an unknown node
+  type: http
+  seq: 15
+}
+
+post {
+  url: {{baseUrl}}/v1/transfers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scope": "base:p:build",
+    "from": "n999",
+    "to": "n998",
+    "files": [{"name": "base.bin", "path": "/tmp/base.bin"}]
+  }
+}
+
+assert {
+  res.status: eq 502
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

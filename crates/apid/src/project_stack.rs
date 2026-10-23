@@ -165,7 +165,9 @@ impl Hypervisor {
 }
 
 /// A target: a place a change is previewed or tried by hand (`kind`, and the kind of base that serves it), or a platform
-/// a release builds it for (`platform`, PLAN 20.5). A target names one or both.
+/// a release builds it for (`platform`, PLAN 20.5). A target names one or both. A preview target names the command that
+/// serves the app (`serve`, run by a shell in the lane's checkout), the `port` it listens on, and how many hours a
+/// preview outlives its lane's landing or closing (`grace_hours`, 24 by default; 18.1).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
@@ -180,7 +182,19 @@ pub struct Target {
     /// The file the command leaves, relative to the workspace: its bytes are the target's artifact.
     #[serde(default)]
     pub output: Option<String>,
+    #[serde(default)]
+    pub serve: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub grace_hours: Option<u64>,
+    /// The workstation a native target's lane runs on: its shared screen is the preview.
+    #[serde(default)]
+    pub station: Option<String>,
 }
+
+/// The grace a preview keeps after its lane lands or closes, when the target says none: 24 hours.
+pub const DEFAULT_GRACE_HOURS: u64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -188,6 +202,8 @@ pub enum TargetKind {
     Preview,
     Gui,
     Device,
+    /// A native app's preview: the lane's station stream, linked (`station`), watched under the preview's link rules.
+    Native,
 }
 
 /// `languages` as names (the W40 names apz-lsp gives), each one a language the server table knows.

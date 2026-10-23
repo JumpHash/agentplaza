@@ -23,6 +23,9 @@ pub struct Config {
     pub bind: std::net::IpAddr,
     /// How nodes reach this hub; join tokens carry it.
     pub public_url: String,
+    /// The domain whose subdomains are previews (`--preview-domain`): `<lane>--<project>.<domain>` reaches the lane's
+    /// preview. Empty when the hub serves no preview subdomains.
+    pub preview_domain: String,
     /// Serve HTTPS with the hub's certificate (implied off loopback).
     pub tls: bool,
     /// The MCP egress proxy's port on 127.0.0.1 (and the bridge gateway where the engine has one).
@@ -47,6 +50,7 @@ impl Config {
             dev_models: false,
             bind: std::net::Ipv4Addr::LOCALHOST.into(),
             public_url: String::new(),
+            preview_domain: String::new(),
             tls: false,
             mcp_proxy_port: crate::mcp::egress::DEFAULT_PORT,
             vault_key: apz_os::dirs::config().join("vault.key"),
@@ -87,6 +91,9 @@ impl Config {
                 "--console" => config.console = PathBuf::from(value()?),
                 "--bind" => config.bind = value()?.parse().map_err(|e| format!("{flag}: {e}"))?,
                 "--public-url" => public_url = Some(value()?),
+                "--preview-domain" => {
+                    config.preview_domain = value()?.trim_matches('.').to_ascii_lowercase()
+                }
                 "--tls" => tls = true,
                 "--env-file" => config.env_file = Some(PathBuf::from(value()?)),
                 "--vault-key" => config.vault_key = PathBuf::from(value()?),
@@ -226,6 +233,8 @@ pub struct App {
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
     pub shares: Arc<crate::shares::Store>,
+    /// Previews of lanes and their share links (previews/).
+    pub previews: Arc<crate::previews::Store>,
     pub providers: providers::Store,
     /// The coding engines as instances (`engine_instances.rs`).
     pub engines: crate::engine_instances::Store,
@@ -394,6 +403,10 @@ impl App {
                 Arc::clone(store.db(crate::store::PLAZA)),
                 &config.state_dir,
             )),
+            previews: Arc::new(crate::previews::Store::open(
+                Arc::clone(store.db(crate::store::PLAZA)),
+                &config.state_dir,
+            )),
             providers: providers::Store::new(Arc::clone(&vault)),
             engines: crate::engine_instances::Store::new(&config.state_dir)
                 .with_generations(Arc::clone(&generations)),
@@ -416,9 +429,12 @@ impl App {
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
+        crate::previews::life::spawn_sweeper(Arc::clone(&app));
         crate::e2b::start(&app);
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));
+        crate::tunnel::spawn_mesh(Arc::clone(&app));
+        crate::transfer::start_broker(Arc::clone(&app));
         crate::steps::spawn(Arc::clone(&app));
         crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
@@ -553,20 +569,24 @@ impl App {
         let _ = app.routes.set(Arc::clone(&router));
         // Who may send a body, and how much, is decided from the request's headers before the body is
         // read: a caller the gate refuses gets its answer without one (`hub_auth::body_allowance`).
+        // A preview's subdomain is its lane's preview path, so the gate and the routes see that path (a link's token
+        // admits it there, and nothing else of the hub is reachable from a subdomain).
         let admitting = Arc::clone(&app);
-        let server =
-            server.admit(
-                move |request| match crate::hub_auth::gate(&admitting, request) {
-                    Some(refused) => Err(refused),
-                    None => Ok(crate::hub_auth::body_allowance(&admitting, request)),
-                },
-            );
+        let server = server.admit(move |request| {
+            let routed =
+                crate::previews::route::as_routed(request, &admitting.config.preview_domain);
+            match crate::hub_auth::gate(&admitting, &routed) {
+                Some(refused) => Err(refused),
+                None => Ok(crate::hub_auth::body_allowance(&admitting, &routed)),
+            }
+        });
         // The hub's front door first (owner token off loopback), then the routes.
         server.spawn(move |request| {
             let started = std::time::Instant::now();
-            let response = match crate::hub_auth::gate(&app, request) {
+            let routed = crate::previews::route::as_routed(request, &app.config.preview_domain);
+            let response = match crate::hub_auth::gate(&app, &routed) {
                 Some(refused) => refused,
-                None => router.handle(&app, request),
+                None => router.handle(&app, &routed),
             };
             crate::metrics::collect::request(
                 &app,

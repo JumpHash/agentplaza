@@ -102,6 +102,7 @@ pub mod snapshots;
 pub mod stats;
 pub mod templates;
 pub mod train;
+pub mod transfer;
 pub mod volumes;
 pub mod workspace_image;
 pub mod workstation;
@@ -236,6 +237,8 @@ pub struct Node {
     workstations: workstation::Store,
     /// The exports and imports of sleeping VMs in flight (migrate.rs).
     migrations: migrate::Migrations,
+    /// The blob store and the server node-to-node transfers use (transfer.rs).
+    transfers: transfer::Transfers,
     /// The MCP servers this node runs in microVMs (mcp_vm.rs).
     mcp: mcp_vm::McpVms,
 }
@@ -243,6 +246,10 @@ pub struct Node {
 /// `GET /v1/machine`.
 #[derive(Debug, Serialize)]
 pub struct MachineView {
+    /// The port this node serves node-to-node transfers on (transfer.rs); null when it does not.
+    pub transfer_port: Option<u16>,
+    /// The SHA-256 pin of this node's transfer certificate (hex); null when it serves none.
+    pub transfer_pin: Option<String>,
     pub name: String,
     pub arch: &'static str,
     pub os: &'static str,
@@ -332,6 +339,7 @@ impl Node {
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
             migrations: migrate::Migrations::new(),
+            transfers: transfer::Transfers::open(&apz_os::dirs::state().join("transfers")),
             mcp: mcp_vm::McpVms::kvm(),
         }
     }
@@ -339,6 +347,8 @@ impl Node {
     pub fn machine(&self) -> MachineView {
         let class = machine_class();
         MachineView {
+            transfer_port: self.transfers.port(),
+            transfer_pin: self.transfers.pin(),
             name: hostname(),
             arch: machine_arch(),
             os: machine_os(),
@@ -1802,6 +1812,10 @@ impl Server {
     /// Binds `config.port` on 127.0.0.1 and starts serving.
     pub fn start(config: Config) -> std::io::Result<Self> {
         let server = apz_http::Server::bind(config.port)?;
+        let transfer_port = std::env::var("APZ_TRANSFER_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(transfer::DEFAULT_PORT);
         let internal_token = config.internal_token.clone();
         if !internal_token.enabled() {
             println!("noded: no --internal-token-file: the HTTP API takes no token");
@@ -1812,6 +1826,12 @@ impl Server {
             .unwrap_or(19080);
         collect::point_at_vsockd(vsockd_port, internal_token.header());
         let node = Arc::new(Node::new(config));
+        if let Err(err) = node
+            .transfers
+            .listen(std::net::SocketAddr::from(([0, 0, 0, 0], transfer_port)))
+        {
+            eprintln!("noded: transfers are off: cannot listen on {transfer_port}: {err}");
+        }
         stats::spawn(Arc::clone(&node.stats))?;
         spawn_metrics(Arc::clone(&node));
         // VM lifecycle events (boot, wake, sleep, snapshot …) go into the node's metrics for the hub.
@@ -1972,6 +1992,10 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/ports", |node, request, params| {
             register_port(node, params.get("id"), &request.body)
         })
+        // The guest side: a VM's port that listens is registered by its CID (the run is the one with that guest).
+        .post("/v1/forks/{cid}/ports", |node, request, params| {
+            register_port_by_cid(node, params.get("cid"), &request.body)
+        })
         .delete("/v1/runs/{id}/ports/{cid}/{port}", |node, _, params| {
             unregister_port(
                 node,
@@ -2051,8 +2075,51 @@ fn router() -> Router<Node> {
         .delete("/v1/exports/{export}", |node, _, params| {
             delete_export(node, params.get("export"))
         })
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest",
+            |node, request, params| {
+                checkpoint_manifest(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                    &request.body,
+                )
+            },
+        )
+        .post("/v1/exports/{export}/manifest", |node, request, params| {
+            migrate_answer(
+                201,
+                transfer::publish_export(
+                    &node.transfers,
+                    &node.migrations,
+                    params.get("export"),
+                    &request.body,
+                ),
+            )
+        })
+        .post("/v1/transfers/manifests", |node, request, _| {
+            migrate_answer(200, transfer::publish_files(&node.transfers, &request.body))
+        })
+        .post("/v1/transfers/fetch", |node, request, _| {
+            migrate_answer(
+                200,
+                transfer::fetch_manifest(&node.transfers, &request.body),
+            )
+        })
         .post("/v1/imports", |node, request, _| {
             create_import(node, &request.body)
+        })
+        .post("/v1/imports/from-transfer", |node, request, _| {
+            migrate_answer(
+                201,
+                transfer::import_from_transfer(
+                    &node.transfers,
+                    &node.migrations,
+                    node.registry(),
+                    &request.body,
+                ),
+            )
         })
         .post("/v1/imports/{import}/finish", |node, _, params| {
             finish_import(node, params.get("import"))
@@ -2311,6 +2378,21 @@ fn checkpoint_list(node: &Node, id: &str, index: &str) -> Response {
     };
     match node.registry().checkpoints(id, vm) {
         Ok(checkpoints) => Response::json(200, &serde_json::json!({"checkpoints": checkpoints})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest`: the checkpoint's files as blobs, offered to the receiver.
+fn checkpoint_manifest(node: &Node, id: &str, index: &str, name: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().checkpoint_dir(id, vm, name) {
+        Ok(dir) => migrate_answer(
+            200,
+            transfer::publish_checkpoint(&node.transfers, &dir, body),
+        ),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
@@ -2660,6 +2742,26 @@ fn register_port(node: &Node, id: &str, body: &[u8]) -> Response {
             &serde_json::json!({"cid": cid, "port": port, "served": true}),
         ),
         Err(err) => Response::error(409, &err),
+    }
+}
+
+/// `POST /v1/forks/{cid}/ports` with `{"port"}`: the VM at `cid` announced that `port` listens. The live run that has
+/// that guest serves it; a CID no live run has is refused.
+fn register_port_by_cid(node: &Node, cid: &str, body: &[u8]) -> Response {
+    let Ok(cid) = cid.parse::<u64>() else {
+        return Response::error(400, "a CID is a number");
+    };
+    let port = match serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value["port"].as_u64())
+        .and_then(|port| u16::try_from(port).ok())
+    {
+        Some(port) => port,
+        None => return Response::error(400, "a port is a number from 1 to 65535"),
+    };
+    match node.registry().register_port_by_cid(cid, port) {
+        Ok(()) => Response::json(200, &serde_json::json!({"registered": true})),
+        Err(why) => Response::error(404, &why),
     }
 }
 

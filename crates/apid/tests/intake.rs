@@ -31,6 +31,7 @@ const WAIT: Duration = Duration::from_secs(40);
 /// The models the seats use: the reviewer's differs from the builder's.
 const BUILDER_MODEL: &str = "mock/agent";
 const REVIEWER_MODEL: &str = "mock/echo";
+const VERIFIER_MODEL: &str = "mock/third";
 
 const LINEAR_KEY: &str = "lin_api_TESTKEY_7731";
 const LINEAR_SIGNING: &str = "lin_hook_TESTSIGN_7731";
@@ -53,6 +54,7 @@ fn roles() -> Value {
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
     } })
 }
 
@@ -132,19 +134,26 @@ fn first_work(hub: &Hub, gateway: &FakeDaemon, cid: u64) -> Value {
 
 /// The session of `seat` on `task` that runs on a VM `known` does not have.
 fn next_session(hub: &Hub, task: &str, seat: &str, known: &HashSet<u64>) -> Value {
+    // A seat of several items is named `reviewer#1`, `reviewer#2`, …: a session of any of them is `seat`'s.
+    let of_seat = |name: &str| name == seat || name.starts_with(&format!("{seat}#"));
     let fresh = |s: &Value| {
-        s["seat"] == seat
-            && s["state"] == "forking"
+        s["seat"].as_str().is_some_and(of_seat)
+            && matches!(s["state"].as_str(), Some("forking" | "running"))
             && s["cid"].as_u64().is_some_and(|cid| !known.contains(&cid))
     };
     let list = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |list| {
         list.as_array().is_some_and(|l| l.iter().any(&fresh))
     });
     list.as_array()
-        .and_then(|l| l.iter().find(|s| fresh(s)).cloned())
+        .and_then(|l| {
+            l.iter()
+                .filter(|s| fresh(s))
+                .min_by_key(|s| s["seat"].as_str().unwrap_or("").to_string())
+                .cloned()
+        })
         .unwrap_or_else(|| {
             panic!(
-                "no new {seat} session for task {task}: {list}\n{}",
+                "no new {seat} session for task {task} (known {known:?}): {list}\n{}",
                 hub.log()
             )
         })
@@ -289,20 +298,31 @@ fn land(
     );
     assert!(has_record(&sealed, "written"), "{sealed}\n{}", hub.log());
 
-    let r = next_session(hub, tid, "reviewer", known);
-    let r_cid = r["cid"].as_u64().expect("its VM");
-    known.insert(r_cid);
-    assert_eq!(r["model"], REVIEWER_MODEL, "{r}");
-    hello(hub, r_cid, "reviewer");
-    let rw = first_work(hub, gateway, r_cid);
-    let rw_id = rw["work"].as_u64().expect("the work item");
-    let verdict = vm_of(hub, r_cid, home, token).tool(
-        rw_id,
-        "plaza_verdict",
-        json!({ "task": tid, "pass": true, "notes": "the note is there" }),
-    );
-    assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
-    hub.work_done(r_cid, rw_id, "done", "passed");
+    // Two reviewers (`reviewer#1` and `reviewer#2`, as the seat is named when it has several), then the verifier.
+    for (seat, model) in [
+        ("reviewer", None),
+        ("reviewer", None),
+        ("verifier", Some(VERIFIER_MODEL)),
+    ] {
+        let r = next_session(hub, tid, seat, known);
+        let r_cid = r["cid"].as_u64().expect("its VM");
+        known.insert(r_cid);
+        // The reviewers run on models other than the builder's (two of them, for diversity); the verifier on its own.
+        match model {
+            Some(model) => assert_eq!(r["model"], model, "{r}"),
+            None => assert_ne!(r["model"], BUILDER_MODEL, "{r}"),
+        }
+        hello(hub, r_cid, seat);
+        let rw = first_work(hub, gateway, r_cid);
+        let rw_id = rw["work"].as_u64().expect("the work item");
+        let verdict = vm_of(hub, r_cid, home, token).tool(
+            rw_id,
+            "plaza_verdict",
+            json!({ "task": tid, "pass": true, "notes": "the note is there" }),
+        );
+        assert!(!text(&verdict["output"]).is_empty(), "{verdict}");
+        hub.work_done(r_cid, rw_id, "done", "passed");
+    }
     let landed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(40),
@@ -349,17 +369,18 @@ fn post_signed(hub: &Hub, path: &str, headers: &[(&str, &str)], body: &[u8]) -> 
     (reply.status, value)
 }
 
-/// The Linear webhook for `issue`: an issue created, signed with the signing secret.
-fn linear_hook(hub: &Hub, issue: &str, signing: &str) -> (u16, Value) {
+/// The Linear delivery for `issue` (an issue created) to the connector's hook at `path`, signed with the signing secret.
+fn linear_hook(hub: &Hub, path: &str, issue: &str, signing: &str) -> (u16, Value) {
     let body = json!({
-        "action": "create", "type": "Issue", "data": { "id": issue },
+        "action": "create", "type": "Issue",
+        "data": { "id": issue, "identifier": linear_issue(issue)["identifier"] },
         "webhookTimestamp": now_ms(), "createdAt": "2026-10-23T09:00:00.000Z"
     })
     .to_string();
     let signature = sign(signing, body.as_bytes());
     post_signed(
         hub,
-        "/v1/intake/linear",
+        path,
         &[("linear-signature", &signature)],
         body.as_bytes(),
     )
@@ -538,18 +559,34 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
     assert_eq!(status, 200, "{auth}\n{}", hub.log());
     let auth_id = text(&auth["id"]);
 
+    // Each connector's hook: its one URL, its token made here, and the signing secret its deliveries are checked by.
+    let (status, hook) = hub.call(
+        "POST",
+        "/v1/connectors/linear/webhook",
+        Some(json!({ "secret": LINEAR_SIGNING })),
+    );
+    assert_eq!(status, 201, "{hook}\n{}", hub.log());
+    let linear_path = text(&hook["path"]);
+    let (status, hook) = hub.call(
+        "POST",
+        "/v1/connectors/github/webhook",
+        Some(json!({ "secret": GITHUB_SECRET })),
+    );
+    assert_eq!(status, 201, "{hook}\n{}", hub.log());
+    let github_path = text(&hook["path"]);
+
     // The connections, with their secrets in the vault. The owner's view never shows a value.
     let (status, view) = hub.call(
         "PUT",
         "/v1/intake/connections/linear",
-        Some(json!({ "enabled": true, "base_url": linear_url, "secrets": { "LINEAR_API_KEY": LINEAR_KEY, "LINEAR_WEBHOOK_SECRET": LINEAR_SIGNING } })),
+        Some(json!({ "enabled": true, "base_url": linear_url, "secrets": { "LINEAR_API_KEY": LINEAR_KEY } })),
     );
     assert_eq!(status, 200, "{view}\n{}", hub.log());
     assert_eq!(view["secrets"]["LINEAR_API_KEY"], "set", "{view}");
     let (status, view) = hub.call(
         "PUT",
         "/v1/intake/connections/github",
-        Some(json!({ "enabled": true, "integration": auth_id, "secrets": { "GITHUB_WEBHOOK_SECRET": GITHUB_SECRET } })),
+        Some(json!({ "enabled": true, "integration": auth_id })),
     );
     assert_eq!(status, 200, "{view}\n{}", hub.log());
     let (status, view) = hub.call(
@@ -576,7 +613,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         "PATCH",
         &format!("/v1/projects/{pid}/settings"),
         Some(json!({
-            "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL },
+            "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL, "verifier": VERIFIER_MODEL },
             "intake": [
                 { "source": "linear", "field": "team", "value": "ENG", "recipe": "change" },
                 { "source": "github", "field": "label", "value": "plaza", "recipe": "change", "allow_public": false },
@@ -588,9 +625,9 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
     let mut known = HashSet::new();
 
     // ── Linear: an ENG ticket becomes a task; the ticket is moved to In Progress with a comment naming the task.
-    let (status, linear_item) = linear_hook(&hub, ENG_ISSUE, LINEAR_SIGNING);
+    let (status, linear_item) = linear_hook(&hub, &linear_path, ENG_ISSUE, LINEAR_SIGNING);
     assert_eq!(status, 202, "{linear_item}\n{}", hub.log());
-    assert_eq!(linear_item["status"], "started", "{linear_item}");
+    assert_eq!(linear_item["intake"]["status"], "started", "{linear_item}");
     let eng = item_of(&hub, "linear", ENG_ISSUE);
     assert_eq!(eng["key"], "ENG-12", "{eng}");
     assert_eq!(eng["project"], pid.as_str(), "{eng}");
@@ -654,9 +691,9 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
     }
 
     // ── A Linear ticket with no rule is unmapped, and nothing runs for it.
-    let (status, ops) = linear_hook(&hub, OPS_ISSUE, LINEAR_SIGNING);
+    let (status, ops) = linear_hook(&hub, &linear_path, OPS_ISSUE, LINEAR_SIGNING);
     assert_eq!(status, 202, "{ops}");
-    assert_eq!(ops["status"], "unmapped", "{ops}");
+    assert_eq!(ops["intake"]["status"], "unmapped", "{ops}");
     assert_eq!(
         item_of(&hub, "linear", OPS_ISSUE)["task"],
         "",
@@ -667,7 +704,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
     let forged = json!({ "action": "create", "type": "Issue", "data": { "id": ENG_ISSUE_2 }, "webhookTimestamp": now_ms() }).to_string();
     let (status, _) = post_signed(
         &hub,
-        "/v1/intake/linear",
+        &linear_path,
         &[(
             "linear-signature",
             &sign("not-the-secret", forged.as_bytes()),
@@ -683,7 +720,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         Some(json!({ "base_url": "https://evil.example.test/graphql" })),
     );
     assert_eq!(status, 200);
-    let (status, refused) = linear_hook(&hub, ENG_ISSUE_2, LINEAR_SIGNING);
+    let (status, refused) = linear_hook(&hub, &linear_path, ENG_ISSUE_2, LINEAR_SIGNING);
     assert_eq!(status, 502, "{refused}");
     assert!(refused.to_string().contains("egress"), "{refused}");
     assert_eq!(item_of_or_none(&hub, "linear", ENG_ISSUE_2), None);
@@ -709,7 +746,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
     let gh_sig = format!("sha256={}", sign(GITHUB_SECRET, gh_body.as_bytes()));
     let (status, held) = post_signed(
         &hub,
-        "/v1/intake/github",
+        &github_path,
         &[
             ("x-hub-signature-256", &gh_sig),
             ("x-github-event", "issues"),
@@ -718,7 +755,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
     );
     assert_eq!(status, 202, "{held}\n{}", hub.log());
     assert_eq!(
-        held["status"], "held",
+        held["intake"]["status"], "held",
         "a public item waits for the owner: {held}"
     );
     assert!(
@@ -730,7 +767,7 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         .is_empty(),
         "a held item makes no call"
     );
-    let gh_id = text(&held["id"]);
+    let gh_id = text(&held["intake"]["id"]);
     let (status, started) = hub.call("POST", &format!("/v1/intake/{gh_id}/start"), None);
     assert_eq!(status, 200, "{started}\n{}", hub.log());
     assert_eq!(started["status"], "started", "{started}");
@@ -837,4 +874,129 @@ fn item_of_or_none(hub: &Hub, source: &str, external: &str) -> Option<Value> {
         .flatten()
         .find(|i| i["source"] == source && i["external_id"] == external)
         .cloned()
+}
+
+/// How many recipe runs of `recipe` for `subject` a recipe-runs listing holds.
+fn runs_for(list: &Value, recipe: &str, subject: &str) -> usize {
+    list["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["recipe"] == recipe && r["subject"] == subject)
+        .count()
+}
+
+/// A rule whose recipe is not `change` starts that recipe as a run on the item, through the triggers, once: a
+/// redelivery of the same item (the same issue, edited since) starts no second run and makes no task.
+#[test]
+fn a_rule_on_another_recipe_starts_one_run_per_item_and_a_redelivery_starts_nothing() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("intake-recipe");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+
+    // GitHub's hook (its token made here, its deliveries signed), the GitHub connection on, and a project whose rule
+    // starts the `intake` recipe for an issue labelled `agent`.
+    let (status, hook) = hub.call(
+        "POST",
+        "/v1/connectors/github/webhook",
+        Some(json!({ "secret": GITHUB_SECRET })),
+    );
+    assert_eq!(status, 201, "{hook}\n{}", hub.log());
+    let path = text(&hook["path"]);
+    let (status, view) = hub.call(
+        "PUT",
+        "/v1/intake/connections/github",
+        Some(json!({ "enabled": true })),
+    );
+    assert_eq!(status, 200, "{view}\n{}", hub.log());
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Agent issues", "goal": "Work that GitHub labels for the agent", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "intake": [
+            { "source": "github", "field": "label", "value": "agent", "recipe": "intake", "allow_public": true }
+        ] })),
+    );
+    assert_eq!(status, 200, "{settings}\n{}", hub.log());
+
+    let deliver = |action: &str, title: &str| {
+        let body = json!({
+            "action": action,
+            "repository": { "full_name": "acme/widgets", "private": false },
+            "issue": {
+                "number": 9, "title": title, "body": "Summarise the week.",
+                "html_url": "https://github.com/acme/widgets/issues/9",
+                "labels": [{ "name": "agent" }], "user": { "login": "reporter" }
+            }
+        })
+        .to_string();
+        let sig = format!("sha256={}", sign(GITHUB_SECRET, body.as_bytes()));
+        post_signed(
+            &hub,
+            &path,
+            &[("x-hub-signature-256", &sig), ("x-github-event", "issues")],
+            body.as_bytes(),
+        )
+    };
+
+    // The first delivery: the item starts the intake recipe, and the scheduler's pass starts its run.
+    let (status, first) = deliver("opened", "Weekly summary");
+    assert_eq!(status, 202, "{first}\n{}", hub.log());
+    assert_eq!(first["intake"]["status"], "started", "{first}");
+    let listed = hub.wait_for("/v1/recipe-runs", WAIT, |list| {
+        runs_for(list, "intake", "acme/widgets#9") == 1
+    });
+    assert_eq!(
+        runs_for(&listed, "intake", "acme/widgets#9"),
+        1,
+        "{listed}\n{}",
+        hub.log()
+    );
+    let run = listed["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|r| r["recipe"] == "intake")
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(run["trigger"], "connector:github", "{run}");
+    assert_eq!(run["project"], pid.as_str(), "{run}");
+
+    // The same delivery again, and then the issue edited: each is a delivery of the same item, so neither takes its
+    // identity a second time. The scheduler passes run in between, and a second run would show.
+    let (status, again) = deliver("opened", "Weekly summary");
+    assert_eq!(status, 202, "{again}\n{}", hub.log());
+    let (status, edited) = deliver("edited", "Weekly summary, revised");
+    assert_eq!(status, 202, "{edited}\n{}", hub.log());
+    assert_eq!(edited["intake"]["status"], "started", "{edited}");
+    std::thread::sleep(Duration::from_secs(6));
+    let (_, listed) = hub.call("GET", "/v1/recipe-runs", None);
+    assert_eq!(
+        runs_for(&listed, "intake", "acme/widgets#9"),
+        1,
+        "a redelivery starts no second run: {listed}\n{}",
+        hub.log()
+    );
+
+    // The item keeps its edited text, and it made no task: the intake recipe is not the change recipe.
+    let item = item_of(&hub, "github", "acme/widgets#9");
+    assert_eq!(item["recipe"], "intake", "{item}");
+    assert_eq!(item["task"], "", "{item}");
+    assert_eq!(item["title"], "Weekly summary, revised", "{item}");
 }

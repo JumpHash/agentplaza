@@ -146,6 +146,7 @@ fn build_in<H: Host>(
         cwd: WORKSPACE,
         timeout_s: STEP_TIMEOUT_S,
         env: base_recipe::cache_env(job.stack),
+        listen: None,
     };
     let answer = fork.exec(&build)?;
     if !answer.ok {
@@ -166,6 +167,7 @@ fn build_in<H: Host>(
         cwd: WORKSPACE,
         timeout_s: STEP_TIMEOUT_S,
         env: Vec::new(),
+        listen: None,
     };
     let answer = fork.exec(&read)?;
     if !answer.ok {

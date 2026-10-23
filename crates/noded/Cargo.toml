@@ -16,6 +16,9 @@ apz-os = { path = "../apz-os" }
 apz-sandbox = { path = "../apz-sandbox" }
 apz-station = { path = "../apz-station" }
 apz-uds = { path = "../apz-uds" }
+# Node-to-node transfers (transfer.rs): the blob store, the grants and the chunks a node lacks.
+apz-blobs = { path = "../apz-blobs" }
+apz-transfer = { path = "../apz-transfer" }
 # Transfers carry their chunks as base64 in JSON (`migrate`).
 base64.workspace = true
 serde.workspace = true
@@ -33,6 +36,8 @@ sysinfo = "0.33"
 [dev-dependencies]
 # The loopback policy for the proxy's tests: their stand-in internet is a local server.
 vsockd = { path = "../vsockd", features = ["test-support"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+tempfile = "3"
 
 [lib]
 name = "noded"

@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Api, Incoming, Item, Phase, comment_of, has, hmac_ok};
+use super::{Api, Incoming, Item, Phase, comment_of, has};
 use crate::state::App;
 
 const ISSUE: &str = "query PlazaIssue($id: String!) { issue(id: $id) { id identifier title description url \
@@ -12,11 +12,6 @@ const SET_STATE: &str = "mutation PlazaState($id: String!, $state: String!) { \
     issueUpdate(id: $id, input: { stateId: $state }) { success } }";
 const COMMENT: &str = "mutation PlazaComment($id: String!, $body: String!) { \
     commentCreate(input: { issueId: $id, body: $body }) { success } }";
-
-/// Whether `signature` (hex) is the HMAC-SHA256 of `body` under the webhook's signing `secret`.
-pub fn signature_ok(secret: &str, body: &[u8], signature: &str) -> bool {
-    hmac_ok(secret, body, signature)
-}
 
 /// One GraphQL call. A Linear error in the answer is an error here, whatever the status.
 fn graphql(api: &Api<'_>, text: &str, variables: Value) -> Result<Value, String> {
@@ -44,6 +39,27 @@ pub fn fetch_issue(api: &Api<'_>, id: &str) -> Result<Value, String> {
         return Err(format!("Linear has no issue {id}"));
     }
     Ok(data["issue"].clone())
+}
+
+/// An issue delivery as an item: a created or updated issue, its text read from Linear's API (the delivery's body is
+/// not trusted as text). A delivery that is not an issue's is `None`. The delivery's timestamp must be fresh.
+pub fn delivery(app: &App, body: &[u8], now: u64) -> Result<Option<Item>, String> {
+    let payload: Value = serde_json::from_slice(body).map_err(|e| format!("bad body: {e}"))?;
+    if payload["type"] != "Issue" {
+        return Ok(None);
+    }
+    if !matches!(payload["action"].as_str(), Some("create" | "update")) {
+        return Ok(None);
+    }
+    if !super::fresh(payload["webhookTimestamp"].as_u64(), now) {
+        return Err("the webhook is stale".into());
+    }
+    let id = payload["data"]["id"]
+        .as_str()
+        .ok_or("the issue has no id")?;
+    let api = super::api(app, super::LINEAR)?;
+    let issue = fetch_issue(&api, id)?;
+    Ok(Some(super::ingest(app, incoming(&issue), now)))
 }
 
 /// A fetched issue as an item: its key is its identifier (`ENG-12`), its scope the team's key.
@@ -153,21 +169,5 @@ mod tests {
         assert_eq!(item.labels, vec!["plaza".to_string()]);
         assert_eq!(item.author, "Ada");
         assert!(!item.public);
-    }
-
-    #[test]
-    fn a_linear_signature_is_the_hex_hmac_of_the_body() {
-        use hmac::{Hmac, Mac};
-        let body = br#"{"type":"Issue"}"#;
-        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(b"sign").unwrap();
-        mac.update(body);
-        let hex: String = mac
-            .finalize()
-            .into_bytes()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert!(signature_ok("sign", body, &hex));
-        assert!(!signature_ok("sign", body, "00"));
     }
 }

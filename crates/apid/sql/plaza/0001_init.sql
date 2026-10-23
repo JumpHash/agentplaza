@@ -127,6 +127,7 @@ CREATE TABLE "project_setting" (
     "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
+    "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("project")
 ) STRICT;
@@ -1465,12 +1466,17 @@ CREATE TABLE "node" (
     "address" TEXT NOT NULL,
     "label" TEXT NOT NULL,
     "test_share" INTEGER NOT NULL CHECK ("test_share" >= 0),
+    "path" TEXT NOT NULL,
+    "mesh_address" TEXT NOT NULL,
+    "mesh_token" TEXT NOT NULL,
     PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
     FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "node_machine" (
     "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
     "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "transfer_port" INTEGER CHECK ("transfer_port" >= 0),
+    "transfer_pin" TEXT,
     "cpus" INTEGER CHECK ("cpus" >= 0),
     "memory_mib" INTEGER CHECK ("memory_mib" >= 0),
     "host" TEXT,
@@ -2546,8 +2552,6 @@ CREATE TABLE "release" (
     "number" INTEGER CHECK ("number" >= 0),
     "notes_content" TEXT,
     "run" TEXT,
-    "sbom" TEXT NOT NULL,
-    "provenance" TEXT NOT NULL,
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
     "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
     PRIMARY KEY ("id")
@@ -2570,10 +2574,20 @@ CREATE TABLE "release_artifact" (
     "digest" TEXT NOT NULL,
     "size" INTEGER NOT NULL CHECK ("size" >= 0),
     "signatures" TEXT NOT NULL,
+    "sbom" TEXT NOT NULL,
+    "provenance" TEXT NOT NULL,
     "pool" TEXT NOT NULL,
     "base" TEXT NOT NULL,
     "run" TEXT NOT NULL,
     PRIMARY KEY ("release_id", "artifacts_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "release_not_run" (
+    "release_id" TEXT NOT NULL,
+    "not_run_pos" INTEGER NOT NULL CHECK ("not_run_pos" >= 0),
+    "target" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    PRIMARY KEY ("release_id", "not_run_pos"),
     FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "release_verdict" (
@@ -2736,6 +2750,7 @@ CREATE TABLE "chat_draft_settings" (
     "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
+    "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
@@ -4463,6 +4478,53 @@ CREATE TABLE "share_event" (
     PRIMARY KEY ("seq")
 ) STRICT;
 CREATE INDEX "share_event_share_at_ms" ON "share_event" ("share", "at_ms");
+
+-- preview (written through)
+CREATE TABLE "preview" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "lane" TEXT NOT NULL,
+    "node" TEXT NOT NULL,
+    "run" TEXT NOT NULL,
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "port" INTEGER NOT NULL CHECK ("port" >= 0),
+    "kind" TEXT NOT NULL,
+    "station" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "used_ms" INTEGER NOT NULL CHECK ("used_ms" >= 0),
+    "ends_ms" INTEGER CHECK ("ends_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- preview link (written through)
+CREATE TABLE "preview_link" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "preview" TEXT NOT NULL,
+    "scope" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "created_by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "expires_ms" INTEGER CHECK ("expires_ms" >= 0),
+    "revoked_ms" INTEGER CHECK ("revoked_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- preview opening (written through)
+CREATE TABLE "preview_opening" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "link" TEXT NOT NULL,
+    "preview" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "from" TEXT NOT NULL,
+    "method" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    PRIMARY KEY ("seq")
+) STRICT;
+CREATE INDEX "preview_opening_link_at_ms" ON "preview_opening" ("link", "at_ms");
 
 -- skill (written through)
 CREATE TABLE "skill" (

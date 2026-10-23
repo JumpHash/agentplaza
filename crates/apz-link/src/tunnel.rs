@@ -7,20 +7,30 @@
 //!   answer is one line of JSON (`status`, `content_type`, `stream`), then the body. A streamed answer (`stream`: true)
 //!   arrives as the hub produces it, and [`request_answer`] hands its body on as it comes.
 //!
+//! The mesh (PLAN 17.4, Engine 6.2): a node whose hub holds it on a WireGuard mesh (Tailscale, Headscale or plain
+//! WireGuard) listens at its mesh address ([`listen`]) and the hub dials it there. The hub's dial presents a bearer
+//! the hub gave the node over its authenticated tunnel ([`fetch_link`]), and the hub then asks the node to sign a
+//! nonce with its key (`hello`): the mesh says who can reach the node, the node's key says who the node is. A mesh
+//! session serves the same streams as a tunnel, so the node's forks and their sessions do not notice the change of
+//! path; a tunnel session ends when a mesh session starts ([`mesh_up`]), and the node then dials nothing.
+//!
 //! A hub that predates the tunnel answers the upgrade with 401 or 404; the node then keeps the long poll and its HTTP
-//! requests ([`LEGACY`]) and tries the tunnel again between polls. A refused upgrade with 403 is a revoked node.
+//! requests ([`LEGACY`]) and tries the tunnel again between polls. A refused upgrade with 403 is a revoked node. A
+//! refused upgrade with 409 means the hub holds the node on the mesh: the node asks for its path ([`fetch_link`]).
 
 use std::io::{self, Read};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use apz_http::client::{self, Reply, Target};
 use apz_http::mux::{Event, MAX_CHUNK, Mux, Side, Stream};
-use apz_http::ws::{self, Limits};
+use apz_http::ws::{self, Limits, Origins};
+use apz_http::{Request, Response, Router, Server};
 use apz_trust::node::NodeKey;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::identity::Identity;
 use crate::inbound;
@@ -37,6 +47,10 @@ const ACCEPT_POLL: Duration = Duration::from_millis(500);
 static LEGACY: AtomicBool = AtomicBool::new(false);
 /// The tunnel now up, if any.
 static CURRENT: Mutex<Option<Arc<Mux>>> = Mutex::new(None);
+/// The bearer a hub presents to the mesh listener, as the hub gave it over the tunnel (`fetch_link`).
+static MESH_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+/// Set while a hub's mesh session is up: the node serves that session and holds no tunnel meanwhile.
+static MESH_UP: AtomicBool = AtomicBool::new(false);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -49,8 +63,26 @@ pub enum Connect {
     Revoked,
     /// The hub does not serve the tunnel (401 or 404): it predates it.
     Legacy,
+    /// The hub holds the node on the mesh (409): the node asks for its path (`fetch_link`), and waits to be dialled.
+    Moved,
     /// Anything else: retried.
     Failed(String),
+}
+
+/// Who this node is on a link: its id and key, which answer a hub's `hello` (the node's key on top of the mesh's).
+#[derive(Clone)]
+pub struct Who {
+    pub node_id: String,
+    pub key: Arc<NodeKey>,
+}
+
+impl Who {
+    pub fn new(identity: &Identity, key: &Arc<NodeKey>) -> Who {
+        Who {
+            node_id: identity.node_id.clone(),
+            key: Arc::clone(key),
+        }
+    }
 }
 
 /// Tests of the HTTP path: requests go over HTTP to a fake hub, as they did before the tunnel.
@@ -62,6 +94,61 @@ pub fn use_http() {
 /// The tunnel that is up now, if any.
 pub fn current() -> Option<Arc<Mux>> {
     lock(&CURRENT).clone().filter(|mux| mux.alive())
+}
+
+/// Whether a hub's mesh session is up.
+pub fn mesh_up() -> bool {
+    MESH_UP.load(Ordering::SeqCst)
+}
+
+/// Listens for the hub's mesh dial at `addr` (the node's address on its mesh). The dial must present the bearer the
+/// hub gave the node ([`fetch_link`]); a dial without it, or before the node has one, is refused.
+pub fn listen(addr: SocketAddr, who: Who, local: Local) -> io::Result<apz_http::Handle> {
+    let router: Router<()> =
+        Router::new().get("/v1/mesh", move |_, req, _| admit_mesh(req, &who, &local));
+    Server::bind_addr(addr)?.spawn(move |request| router.handle(&(), request))
+}
+
+/// Upgrades a hub's mesh dial, when it presents the mesh bearer; its session then serves the hub's streams.
+fn admit_mesh(req: &Request, who: &Who, local: &Local) -> Response {
+    let presented = req
+        .header("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default()
+        .to_string();
+    let token = lock(&MESH_TOKEN).clone();
+    let admitted = token.is_some_and(|token| {
+        !token.is_empty() && apz_trust::ct_eq(presented.as_bytes(), token.as_bytes())
+    });
+    if !admitted {
+        return Response::error(401, "the mesh does not admit this caller");
+    }
+    let (who, local) = (who.clone(), local.clone());
+    ws::accept(req, Origins::None, None, Limits::default(), move |socket| {
+        MESH_UP.store(true, Ordering::SeqCst);
+        serve(Mux::new(socket, Side::Acceptor), local, who, true);
+        MESH_UP.store(false, Ordering::SeqCst);
+    })
+}
+
+/// Asks the hub how it holds this node (`GET /v1/nodes/{id}/link`, signed by the node): on the mesh, the hub gives
+/// the bearer its dial presents; on the tunnel, none is kept. Returns the path the hub names.
+pub fn fetch_link(identity: &Identity, key: &NodeKey) -> Result<String, String> {
+    let path = format!("/v1/nodes/{}/link", identity.node_id);
+    let target = identity.signed(key, "GET", &path, &[])?;
+    let reply = client::request(&target, "GET", &path, None, CONNECT_TIMEOUT)
+        .map_err(|err| err.to_string())?;
+    if reply.status != 200 {
+        return Err(format!("the hub answered {}", reply.status));
+    }
+    let link: Value = serde_json::from_slice(&reply.body)
+        .map_err(|err| format!("the hub's link is not JSON: {err}"))?;
+    let path = link["path"].as_str().unwrap_or("tunnel").to_string();
+    *lock(&MESH_TOKEN) = match (path.as_str(), link["mesh_token"].as_str()) {
+        ("mesh", Some(token)) => Some(token.to_string()),
+        _ => None,
+    };
+    Ok(path)
 }
 
 /// The status a refused upgrade carries: the text is `the server answered {status}, not 101 ...`.
@@ -88,6 +175,7 @@ pub fn connect(identity: &Identity, key: &NodeKey) -> Result<Arc<Mux>, Connect> 
             let message = err.to_string();
             match refused_status(&message) {
                 Some(403) => Err(Connect::Revoked),
+                Some(409) => Err(Connect::Moved),
                 Some(401 | 404) => {
                     LEGACY.store(true, Ordering::SeqCst);
                     Err(Connect::Legacy)
@@ -98,14 +186,18 @@ pub fn connect(identity: &Identity, key: &NodeKey) -> Result<Arc<Mux>, Connect> 
     }
 }
 
-/// Serves the hub's streams on `mux` until the tunnel ends: each one on its own thread.
-pub fn serve(mux: Arc<Mux>, local: Local) {
+/// Serves the hub's streams on `mux` until the session ends: each one on its own thread. A tunnel session
+/// (`on_mesh` false) ends when a mesh session starts; a mesh session ends when the hub closes it.
+pub fn serve(mux: Arc<Mux>, local: Local, who: Who, on_mesh: bool) {
     *lock(&CURRENT) = Some(Arc::clone(&mux));
     loop {
+        if !on_mesh && mesh_up() {
+            break;
+        }
         match mux.accept(ACCEPT_POLL) {
             Ok(Some(stream)) => {
-                let local = local.clone();
-                thread::spawn(move || answer(stream, &local));
+                let (local, who) = (local.clone(), who.clone());
+                thread::spawn(move || answer(stream, &local, &who));
             }
             Ok(None) => {}
             Err(_) => break,
@@ -118,9 +210,15 @@ pub fn serve(mux: Arc<Mux>, local: Local) {
 }
 
 /// Answers one stream the hub opened, by its header's kind.
-fn answer(stream: Stream, local: &Local) {
+fn answer(stream: Stream, local: &Local, who: &Who) {
     let header: Value = serde_json::from_slice(stream.header()).unwrap_or(Value::Null);
     match header["kind"].as_str() {
+        Some("hello") => hello(&stream, who, &header),
+        Some("ping") => {
+            if stream.send(b"{}").is_ok() {
+                let _ = stream.finish();
+            }
+        }
         Some("command") => {
             let result = execute(local, &header["command"]);
             let bytes = serde_json::to_vec(&result).unwrap_or_default();
@@ -128,6 +226,7 @@ fn answer(stream: Stream, local: &Local) {
                 let _ = stream.finish();
             }
         }
+        Some("transfer") => carry_transfer(stream, local.transfer),
         Some("port") => {
             let cid = header["cid"].as_u64();
             let port = header["port"].as_u64().and_then(|p| u16::try_from(p).ok());
@@ -137,6 +236,38 @@ fn answer(stream: Stream, local: &Local) {
             }
         }
         _ => stream.reset("unknown stream kind"),
+    }
+}
+
+/// Answers a hub's hello: the node signs the hub's nonce with its key (method `HELLO`), so the hub knows that the
+/// machine on the mesh is this node. The answer is the signature's headers as a JSON object.
+fn hello(stream: &Stream, who: &Who, header: &Value) {
+    let Some(nonce) = header["nonce"].as_str() else {
+        stream.reset("a hello needs a nonce");
+        return;
+    };
+    let path = format!("/v1/nodes/{}/hello", who.node_id);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let signed: Map<String, Value> = who
+        .key
+        .sign(&who.node_id, "HELLO", &path, ts, nonce.as_bytes())
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), Value::String(value)))
+        .collect();
+    let bytes = serde_json::to_vec(&Value::Object(signed)).unwrap_or_default();
+    if stream.send(&bytes).is_ok() {
+        let _ = stream.finish();
+    }
+}
+
+/// Carries a brokered transfer to noded's transfer port, both ways, until either side closes: the bytes are the
+/// receiver's TLS session with the sender, which this node does not read.
+fn carry_transfer(stream: Stream, port: u16) {
+    match std::net::TcpStream::connect(("127.0.0.1", port)) {
+        Ok(conn) => apz_transfer::broker::pipe(stream, conn, std::sync::Arc::new(|_| {})),
+        Err(err) => stream.reset(&format!("the node serves no transfers: {err}")),
     }
 }
 

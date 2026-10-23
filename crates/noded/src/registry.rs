@@ -2448,6 +2448,22 @@ impl Registry {
         Ok(view)
     }
 
+    /// The directory of a checkpoint of a VM (its files), when the checkpoint exists.
+    pub fn checkpoint_dir(
+        &self,
+        run: &str,
+        vm: u32,
+        name: &str,
+    ) -> Result<std::path::PathBuf, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        store
+            .view(cid, name)
+            .ok_or(VmOpError::UnknownRun)
+            .map(|_| store.dir(cid, name))
+    }
+
     /// The checkpoints of VM `vm` of run `run`, newest first.
     pub fn checkpoints(&self, run: &str, vm: u32) -> Result<Vec<SnapshotView>, VmOpError> {
         let store = self.snapshot_store()?;
@@ -3173,6 +3189,17 @@ impl Registry {
         self.find(id)
             .ok_or_else(|| format!("no run with id {id}"))?
             .register_port(cid, port)
+    }
+
+    /// Registers `port` on guest `cid` with the live run that has that guest (the guest's own announcement, 6.4). Idempotent.
+    pub fn register_port_by_cid(&self, cid: u64, port: u16) -> Result<(), String> {
+        let runs = self.list();
+        for run in &runs {
+            if run.register_port(cid, port).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(format!("no live run has guest CID {cid}"))
     }
 
     /// Whether some live run of this node serves `port` on guest `cid`: the check vsockd makes before it dials a
@@ -5345,6 +5372,28 @@ mod tests {
         );
         registry.lock().runs.push(Arc::clone(&run));
         (registry, run)
+    }
+
+    #[test]
+    fn a_guests_own_announcement_registers_its_port_by_cid_and_nobody_else_can() {
+        let (registry, run) = registry_with_run(VmState::Running, None);
+        // The VM at RUN_CID_BASE announces 8080 (the guest's own registration, 6.4): the live run with that guest serves it.
+        registry
+            .register_port_by_cid(RUN_CID_BASE, 8080)
+            .expect("the run's guest announces its port");
+        assert!(registry.port_served(RUN_CID_BASE, 8080));
+        // Idempotent: the hub's fallback registration of the same port changes nothing.
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 8080)
+            .expect("registers again");
+        assert!(registry.port_served(RUN_CID_BASE, 8080));
+        // A CID no live run has is refused.
+        assert!(
+            registry
+                .register_port_by_cid(RUN_CID_BASE + 9, 8080)
+                .is_err()
+        );
+        assert!(!registry.port_served(RUN_CID_BASE + 9, 8080));
     }
 
     #[test]

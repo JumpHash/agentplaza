@@ -51,12 +51,15 @@ struct State {
     waiting: BTreeMap<(u64, u64), Sender<Answer>>,
     /// The base keys each node holds, from the builds that snapshotted there.
     held: BTreeMap<String, BTreeSet<String>>,
+    /// The (VM, port) pairs whose guest announced that the port listens, and noded registered it (6.4).
+    listening: BTreeSet<(u64, u16)>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     up: BTreeSet::new(),
     waiting: BTreeMap::new(),
     held: BTreeMap::new(),
+    listening: BTreeSet::new(),
 });
 
 fn lock() -> MutexGuard<'static, State> {
@@ -65,7 +68,20 @@ fn lock() -> MutexGuard<'static, State> {
 
 /// A base session said hello (apid's hello route, for `kind` base).
 pub fn arrive(cid: u64) {
-    lock().up.insert(cid);
+    let mut state = lock();
+    state.up.insert(cid);
+    // A hello is a new VM: ports an earlier VM with this CID announced are not its.
+    state.listening.retain(|(seen, _)| *seen != cid);
+}
+
+/// The guest at `cid` announced that `port` listens and noded registered it (6.4): the hub need not register it.
+pub fn record_listening(cid: u64, port: u16) {
+    lock().listening.insert((cid, port));
+}
+
+/// Whether the guest at `cid` announced that `port` listens, since its hello.
+pub fn announced(cid: u64, port: u16) -> bool {
+    lock().listening.contains(&(cid, port))
 }
 
 /// The VM at `cid` answered exec item `id`. Nothing waits for an answer nobody asked for, so it is dropped.
@@ -92,6 +108,25 @@ fn hold(node: &str, key: &str) {
         .entry(node.to_string())
         .or_default()
         .insert(key.to_string());
+}
+
+/// The checkpoint each base was last built as: the run and the checkpoint's name, by base key.
+static CHECKPOINTS: Mutex<BTreeMap<String, (String, String)>> = Mutex::new(BTreeMap::new());
+
+fn remember_checkpoint(base: &str, run: &str, name: &str) {
+    CHECKPOINTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(base.to_string(), (run.to_string(), name.to_string()));
+}
+
+/// The run and checkpoint name a project's base of `kind` was last snapshotted as (its files are noded's to offer).
+pub fn built_checkpoint(project: &str, kind: BaseKind) -> Option<(String, String)> {
+    CHECKPOINTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key(project, kind))
+        .cloned()
 }
 
 /// The base a build of `kind` for `project` is recorded under: `<project>/build` or `<project>/test`.
@@ -149,6 +184,8 @@ pub struct Runner<'a, H: Host> {
     cid: Option<u64>,
     /// The next exec item's id.
     next_id: u64,
+    /// The port the background command being started listens on (a preview's app), so its exec item says so.
+    listen: Option<u16>,
 }
 
 impl<'a, H: Host> Runner<'a, H> {
@@ -161,6 +198,7 @@ impl<'a, H: Host> Runner<'a, H> {
             run: None,
             cid: None,
             next_id: 1,
+            listen: None,
         }
     }
 
@@ -219,6 +257,7 @@ impl<'a, H: Host> Runner<'a, H> {
         let id = self.next_id;
         self.next_id += 1;
         let message = HostMessage::Exec {
+            listen: self.listen,
             id,
             argv,
             env,
@@ -326,6 +365,9 @@ impl<'a, H: Host> Runner<'a, H> {
             return Err(format!("noded: status {status} stopping VM {cid}: {reply}"));
         }
         hold(&self.node, &key(&self.project, kind));
+        if let Some(name) = reply["name"].as_str() {
+            remember_checkpoint(&key(&self.project, kind), &run, name);
+        }
         Ok(())
     }
 }
@@ -367,6 +409,11 @@ impl<'a, H: Host> Fork<'a, H> {
         )
     }
 
+    /// Where the fork's VM runs: its noded run and its CID, once the start made the VM (a preview keeps both).
+    pub fn location(&self) -> Option<(String, u64)> {
+        Some((self.runner.run.clone()?, self.runner.cid?))
+    }
+
     /// Stops the fork's VM.
     pub fn retire(self) -> Result<(), String> {
         let Some(run) = self.runner.run.clone() else {
@@ -403,7 +450,11 @@ impl<H: Host> VmRunner for Runner<'_, H> {
                     .map(|(name, value)| (name.to_string(), value.to_string()))
                     .collect();
                 let argv = command.argv.clone();
-                self.must(argv, env, command.cwd, command.timeout_s, background)
+                // A background command with a port says so in its exec item: the guest announces it once it listens.
+                self.listen = command.listen;
+                let outcome = self.must(argv, env, command.cwd, command.timeout_s, background);
+                self.listen = None;
+                outcome
             }
             Step::Checkout {
                 commit, alternates, ..
@@ -576,6 +627,7 @@ mod tests {
             cwd: WORKSPACE,
             timeout_s: 60,
             env: Vec::new(),
+            listen: None,
         };
         let answer = fork.exec(&check).unwrap();
         assert!(answer.ok);
@@ -673,6 +725,7 @@ mod tests {
             cwd: WORKSPACE,
             timeout_s: STEP_TIMEOUT_S,
             env: Vec::new(),
+            listen: None,
         };
         runner.run(&Step::Background(daemon)).unwrap();
         let sent = host.sent();
@@ -712,5 +765,17 @@ mod tests {
         );
         // The waiter map is shared by the tests that run in parallel: only this VM's entry is asserted.
         assert!(!lock().waiting.contains_key(&(777, 1)));
+    }
+
+    #[test]
+    fn a_guests_port_announcement_counts_until_its_vm_says_hello_again() {
+        record_listening(778, 8080);
+        assert!(announced(778, 8080), "the announcement is recorded");
+        assert!(!announced(778, 9999), "only the announced port counts");
+        arrive(778);
+        assert!(
+            !announced(778, 8080),
+            "a new VM with the same CID has announced nothing"
+        );
     }
 }

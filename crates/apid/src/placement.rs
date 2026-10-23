@@ -18,7 +18,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use apz_http::{Body, Params, Request, Response, RouteDoc, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agents::Status;
@@ -45,11 +45,6 @@ pub const CPU_MIB: i64 = 64;
 /// Free space a node needs to take a fork (16.9: a fork owns its own written blocks, typically 1 to 5 GB). A node
 /// that did not say how much it has free is not kept out.
 pub const FORK_DISK_GIB: u64 = 5;
-/// Bytes per export read (noded serves at most 4 MiB at a time).
-pub const CHUNK: u64 = 4 * 1024 * 1024;
-/// Decoded bytes per import write: noded takes at most 512 KiB per call (its body limit is 1 MiB),
-/// so each read of [`CHUNK`] is written in pieces of this size.
-pub const WRITE_CHUNK: usize = 512 * 1024;
 /// How long a move waits for the agent to be back after its wake.
 const WAKE_WAIT: Duration = Duration::from_secs(60);
 /// How long a reservation holds its memory back on a node (see [`reserved_mib`]).
@@ -646,114 +641,6 @@ pub struct Moved {
     pub ms: u64,
 }
 
-/// One file of an export or import, as the node lists it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Part {
-    pub name: String,
-    pub len: u64,
-    #[serde(default)]
-    pub sha256: String,
-}
-
-/// One read from the source node: the chunk's bytes (base64, standard alphabet as noded writes it),
-/// whether it reached the end of the file, and, for a chunk of zeros, how many (with `data` empty).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fetched {
-    pub data: String,
-    pub eof: bool,
-    pub zeros: Option<u64>,
-}
-
-/// Copies every part from the source to the target in pieces of at most `chunk` bytes. `fetch(name,
-/// offset, len)` reads a piece on the source: its base64 data and whether it ends the file. `push(name,
-/// offset, data)` writes a piece on the target. Each piece must decode to exactly the length asked
-/// for, and the source must say eof at the end of a file and nowhere else. A part of length 0 is pushed
-/// once with no data, so the target creates it. Returns the bytes copied.
-pub fn copy_files<F, P>(
-    chunk: u64,
-    parts: &[Part],
-    mut fetch: F,
-    mut push: P,
-) -> Result<u64, String>
-where
-    F: FnMut(&str, u64, u64) -> Result<Fetched, String>,
-    P: FnMut(&str, u64, &str) -> Result<(), String>,
-{
-    if chunk == 0 {
-        return Err("the chunk size must be at least one byte".into());
-    }
-    let mut copied = 0;
-    for part in parts {
-        if part.len == 0 {
-            push(&part.name, 0, "")?;
-            continue;
-        }
-        let mut offset = 0;
-        while offset < part.len {
-            let len = (part.len - offset).min(chunk);
-            let Fetched { data, eof, zeros } = fetch(&part.name, offset, len)?;
-            let decoded = match zeros {
-                // A run of zeros is not sent: the target staged the file as a hole of its length.
-                Some(zeros) if zeros == len && data.is_empty() => {
-                    let last = offset + len == part.len;
-                    if eof != last {
-                        return Err(format!(
-                            "{}: the source says eof {eof} at byte {}, of {}",
-                            part.name,
-                            offset + len,
-                            part.len
-                        ));
-                    }
-                    offset += len;
-                    copied += len;
-                    continue;
-                }
-                Some(zeros) => {
-                    return Err(format!(
-                        "{}: the piece at {offset} claims {zeros} zero bytes, not {len}",
-                        part.name
-                    ));
-                }
-                None => {
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(&data)
-                        .map_err(|e| {
-                            format!("{}: the piece at {offset} is not base64: {e}", part.name)
-                        })?
-                }
-            };
-            if u64::try_from(decoded.len()).unwrap_or(u64::MAX) != len {
-                return Err(format!(
-                    "{}: the piece at {offset} is {} bytes, not {len}",
-                    part.name,
-                    decoded.len()
-                ));
-            }
-            let last = offset + len == part.len;
-            if eof != last {
-                return Err(format!(
-                    "{}: the source says eof {eof} at byte {}, of {}",
-                    part.name,
-                    offset + len,
-                    part.len
-                ));
-            }
-            // The read is written in pieces of at most WRITE_CHUNK decoded bytes.
-            for (index, piece) in decoded.chunks(WRITE_CHUNK).enumerate() {
-                let at = offset + (index * WRITE_CHUNK) as u64;
-                push(&part.name, at, &{
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD.encode(piece)
-                })?;
-            }
-            offset += len;
-            copied += len;
-        }
-    }
-    Ok(copied)
-}
-
 /// The record of what a move has taken so far, so an abort can undo exactly that.
 #[derive(Default)]
 struct Staged {
@@ -938,9 +825,10 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
     })
 }
 
-/// The copy: export the VM's files on `from`, import them on `target`, copy every file in pieces,
-/// finish the import into a sleeping run, record the placement, and have the target's gateway serve
-/// the CID. Returns the bytes copied and the target's run. What it takes goes into `staged`.
+/// The copy (plan 17.5): export the VM's files on `from`, have `from` offer them as blobs, have `target` fetch the chunks
+/// it lacks straight from `from` under the hub's grant, and finish the import into a sleeping run, record the placement,
+/// and have the target's gateway serve the CID. The hub relays no file bytes. Returns the bytes copied and the target's
+/// run. What it takes goes into `staged`.
 fn carry(
     app: &App,
     cid: u64,
@@ -950,32 +838,63 @@ fn carry(
     vm: u32,
     staged: &mut Staged,
 ) -> Result<(u64, String), String> {
-    let exported = call(
-        app,
+    let key = crate::transfer::key(app)?;
+    let mut send = |node: &str, method: &str, path: &str, body: &Value| {
+        answered(
+            &format!("{node} {method} {path}"),
+            fleet::noded(app, node, method, path, Some(body)),
+        )
+    };
+    let exported = crate::transfer::exchange(
+        &mut send,
         from,
         "POST",
         &format!("/v1/runs/{run}/vms/{vm}/export"),
-        Some(&json!({})),
+        &json!({}),
     )?;
     let export = text(&exported, "export")?;
     staged.export = Some(export.clone());
-    let parts: Vec<Part> = serde_json::from_value(exported["files"].clone())
-        .map_err(|e| format!("the export's files: {e}"))?;
-    let imported = call(
-        app,
+    let sender = crate::transfer::sender_of(app, from)?;
+    let broker = crate::transfer::broker_addr();
+    let offered = crate::transfer::exchange(
+        &mut send,
+        from,
+        "POST",
+        &format!("/v1/exports/{export}/manifest"),
+        &crate::transfer::hub_body(&key, from, json!({"files": exported["files"]})),
+    )?;
+    let id = text(&offered, "id")?;
+    let expires = apz_transfer::now_ms() + apz_transfer::grant::TTL_MS;
+    let grant = apz_transfer::Grant::issue(
+        &key,
+        &format!("move:{cid}:{export}"),
+        &id,
+        from,
+        target,
+        &sender.pin,
+        expires,
+    );
+    let (routes, _) = crate::transfer::routes_for(&sender, broker.as_deref(), expires);
+    let imported = crate::transfer::exchange(
+        &mut send,
         target,
         "POST",
-        "/v1/imports",
-        Some(&json!({"meta": exported["meta"], "files": parts})),
+        "/v1/imports/from-transfer",
+        &crate::transfer::hub_body(
+            &key,
+            target,
+            json!({
+                "routes": routes,
+                "grant": grant.encode(),
+                "manifest": offered["manifest"],
+                "meta": exported["meta"],
+                "files": exported["files"],
+            }),
+        ),
     )?;
+    let bytes = imported["bytes"].as_u64().unwrap_or(0);
     let import = text(&imported, "import")?;
     staged.import = Some(import.clone());
-    let bytes = copy_files(
-        CHUNK,
-        &parts,
-        |name, offset, len| fetch_piece(app, from, &export, name, offset, len),
-        |name, offset, data| push_piece(app, target, &import, name, offset, data),
-    )?;
     let finished = call(
         app,
         target,
@@ -1037,52 +956,6 @@ fn abort(app: &App, cid: u64, target: &str, staged: &Staged) {
             call(app, target, "DELETE", &format!("/v1/runs/{run}"), None),
         );
     }
-}
-
-/// Reads one piece of an export on `node`: its base64 data and whether it ends the file.
-fn fetch_piece(
-    app: &App,
-    node: &str,
-    export: &str,
-    name: &str,
-    offset: u64,
-    len: u64,
-) -> Result<Fetched, String> {
-    let body = call(
-        app,
-        node,
-        "GET",
-        &format!("/v1/exports/{export}/{name}?offset={offset}&len={len}"),
-        None,
-    )?;
-    let data = body["data"]
-        .as_str()
-        .ok_or("the export's piece has no data")?
-        .to_string();
-    Ok(Fetched {
-        data,
-        eof: body["eof"].as_bool().unwrap_or(false),
-        zeros: body["zeros"].as_u64(),
-    })
-}
-
-/// Writes one piece of an import on `node`.
-fn push_piece(
-    app: &App,
-    node: &str,
-    import: &str,
-    name: &str,
-    offset: u64,
-    data: &str,
-) -> Result<(), String> {
-    call(
-        app,
-        node,
-        "POST",
-        &format!("/v1/imports/{import}/{name}"),
-        Some(&json!({"offset": offset, "data": data})),
-    )
-    .map(|_| ())
 }
 
 /// Saves the node store, placements included, now (the saver's write, not its next pass). A failed write is logged
@@ -1244,16 +1117,6 @@ pub fn choose_mac(app: &App, want: MacWork) -> Option<String> {
 mod tests {
     use crate::fleet::node_for;
 
-    fn b64(bytes: &[u8]) -> String {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    }
-
-    fn unb64(text: &str) -> Result<Vec<u8>, base64::DecodeError> {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.decode(text)
-    }
-
     use super::*;
 
     fn candidate(node: &str, free_mib: u64, running_vms: u64, warm: bool) -> Candidate {
@@ -1296,6 +1159,9 @@ mod tests {
             address: String::new(),
             label: String::new(),
             test_share: 0,
+            path: crate::nodes::TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }
     }
 
@@ -1522,6 +1388,9 @@ mod tests {
                 address: String::new(),
                 label: String::new(),
                 test_share: 0,
+                path: crate::nodes::TUNNEL.to_string(),
+                mesh_address: String::new(),
+                mesh_token: String::new(),
             }]);
             let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
             assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");
@@ -1567,168 +1436,6 @@ mod tests {
         drop(first);
         assert!(!is_moving(4242));
         assert!(Claim::take(4242).is_some());
-    }
-
-    /// A source of `files` that answers `copy_files` pieces, and a target that collects them.
-    fn copy_with(
-        files: &std::collections::BTreeMap<String, Vec<u8>>,
-        parts: &[Part],
-        chunk: u64,
-        eof_early: bool,
-    ) -> (
-        Result<u64, String>,
-        std::collections::BTreeMap<String, Vec<u8>>,
-    ) {
-        let mut target: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
-        let result = copy_files(
-            chunk,
-            parts,
-            |name, offset, len| {
-                let bytes = &files[name];
-                let end = usize::try_from(offset + len).unwrap();
-                let piece = &bytes[usize::try_from(offset).unwrap()..end];
-                let eof = end == bytes.len() || eof_early;
-                Ok(Fetched {
-                    data: b64(piece),
-                    eof,
-                    zeros: None,
-                })
-            },
-            |name, offset, data| {
-                let bytes = unb64(data).unwrap();
-                let file = target.entry(name.to_string()).or_default();
-                assert_eq!(file.len() as u64, offset, "pieces arrive in order");
-                file.extend(bytes);
-                Ok(())
-            },
-        );
-        (result, target)
-    }
-
-    fn part(name: &str, len: usize) -> Part {
-        Part {
-            name: name.to_string(),
-            len: len as u64,
-            sha256: String::new(),
-        }
-    }
-
-    #[test]
-    fn every_write_is_at_most_512_kib_and_the_file_arrives_whole() {
-        let len = 2 * WRITE_CHUNK + 5;
-        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
-        let files = std::collections::BTreeMap::from([("memory".to_string(), data.clone())]);
-        let mut target: Vec<u8> = Vec::new();
-        let mut largest = 0;
-        let result = copy_files(
-            CHUNK,
-            &[part("memory", len)],
-            |_, offset, piece_len| {
-                let piece = &files["memory"][usize::try_from(offset).unwrap()..]
-                    [..usize::try_from(piece_len).unwrap()];
-                Ok(Fetched {
-                    data: b64(piece),
-                    eof: offset + piece_len == len as u64,
-                    zeros: None,
-                })
-            },
-            |_, offset, encoded| {
-                let bytes = unb64(encoded).unwrap();
-                largest = largest.max(bytes.len());
-                assert_eq!(target.len() as u64, offset, "writes arrive in order");
-                target.extend(bytes);
-                Ok(())
-            },
-        );
-        assert_eq!(result, Ok(len as u64));
-        assert!(
-            largest <= WRITE_CHUNK,
-            "the largest write was {largest} bytes"
-        );
-        assert_eq!(target, data);
-    }
-
-    #[test]
-    fn a_copy_ends_cleanly_or_fails_at_the_edges() {
-        // An empty file is created and copies nothing.
-        {
-            let files = std::collections::BTreeMap::from([("vmstate".to_string(), Vec::new())]);
-            let (result, target) = copy_with(&files, &[part("vmstate", 0)], CHUNK, false);
-            assert_eq!(result, Ok(0));
-            assert_eq!(target["vmstate"], Vec::<u8>::new());
-        }
-        // A source that ends early, or a short piece, fails the copy.
-        {
-            let files = std::collections::BTreeMap::from([("memory".to_string(), vec![1_u8; 10])]);
-            let (result, _) = copy_with(&files, &[part("memory", 10)], 4, true);
-            assert!(result.unwrap_err().contains("eof"), "eof before the end");
-            let mut short = |_: &str, _: u64, len: u64| {
-                Ok(Fetched {
-                    data: b64(&vec![1_u8; usize::try_from(len).unwrap() - 1]),
-                    eof: false,
-                    zeros: None,
-                })
-            };
-            let parts = [part("memory", 10)];
-            let result = copy_files(4, &parts, &mut short, |_, _, _| Ok(()));
-            assert!(result.unwrap_err().contains("bytes"), "a short piece");
-        }
-        // A failed push stops the copy.
-        {
-            let parts = [part("memory", 8)];
-            let result = copy_files(
-                4,
-                &parts,
-                |_, offset, len| {
-                    let piece = vec![0_u8; usize::try_from(len).unwrap()];
-                    Ok(Fetched {
-                        data: b64(&piece),
-                        eof: offset + len == 8,
-                        zeros: None,
-                    })
-                },
-                |_, offset, _| {
-                    if offset == 4 {
-                        Err("the import refused the piece".to_string())
-                    } else {
-                        Ok(())
-                    }
-                },
-            );
-            assert_eq!(result, Err("the import refused the piece".to_string()));
-        }
-    }
-
-    #[test]
-    fn a_run_of_zeros_is_counted_and_never_pushed() {
-        let parts = [part("memory", 8)];
-        let mut pushed = Vec::new();
-        let copied = copy_files(
-            4,
-            &parts,
-            |_, offset, len| {
-                Ok(if offset == 0 {
-                    Fetched {
-                        data: String::new(),
-                        eof: false,
-                        zeros: Some(len),
-                    }
-                } else {
-                    Fetched {
-                        data: b64(&[7, 7, 7, 7]),
-                        eof: true,
-                        zeros: None,
-                    }
-                })
-            },
-            |_, at, data| {
-                pushed.push((at, data.to_string()));
-                Ok(())
-            },
-        )
-        .expect("copies");
-        assert_eq!(copied, 8);
-        assert_eq!(pushed, vec![(4, b64(&[7, 7, 7, 7]))]);
     }
 
     fn mac(
