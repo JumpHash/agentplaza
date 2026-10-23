@@ -1,6 +1,7 @@
-# Tool catalog (0113). Every tool any role can use. Each call is authorised by Cedar via `cedar_action`
-# before it runs (0084); `submits` names the output contract in ../schemas/ for tools that hand in work.
-# Risk classes: read | write | irreversible (C-004: irreversible needs owner approval).
+# Tool catalog. Every tool any role can use. Each call is checked against the JHRL laws
+# (crates/jhrl/specs) before it runs, under the `cedar_action` name; `submits` names the output
+# contract in ../schemas/ for tools that hand in work.
+# Risk classes: read | write | irreversible (irreversible steps need owner approval).
 
 bash:
   description: Run a shell command in /workspace as the unprivileged tool user, with timeout and output caps.
@@ -42,7 +43,7 @@ fetch_url:
   cedar_action: egress.connect
   input: {type: object, required: [url], additionalProperties: false, properties: {url: {type: string, format: uri}}}
 transcript_search:
-  description: Search this agent's own earlier transcript at the orchestrator (after compaction, 0096).
+  description: Search this agent's own earlier transcript at the orchestrator (after compaction).
   risk_class: read
   cedar_action: tool.exec
   input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, max_results: {type: integer, minimum: 1, maximum: 50}}}
@@ -62,43 +63,43 @@ submit_plan:
   cedar_action: plan.submit
   submits: plan
 assign_task:
-  description: Assign a town task to a town agent.
+  description: Assign a project task to a project agent.
   risk_class: write
   cedar_action: task.assign
   input: {type: object, required: [task_id, agent_id], additionalProperties: false, properties: {task_id: {type: string}, agent_id: {type: string}, note: {type: string}}}
 spawn_agent:
-  description: Spawn an agent of a role in the town, within quota.
+  description: Spawn an agent of a role in the project, within its quota.
   risk_class: write
   cedar_action: agent.spawn
   input: {type: object, required: [role], additionalProperties: false, properties: {role: {type: string}, reason: {type: string}}}
 hibernate_agent:
-  description: Hibernate an agent of the town (snapshot and free its memory).
+  description: Hibernate an agent of the project (snapshot and free its memory).
   risk_class: write
   cedar_action: agent.hibernate
   input: {type: object, required: [agent_id], additionalProperties: false, properties: {agent_id: {type: string}, reason: {type: string}}}
 approve_plan:
-  description: Approve or reject a plan below the town threshold.
+  description: Approve or reject a plan within the project threshold. Above it, the owner decides.
   risk_class: write
   cedar_action: plan.approve
   input: {type: object, required: [task_id, approve, reason], additionalProperties: false, properties: {task_id: {type: string}, approve: {type: boolean}, reason: {type: string}}}
 approve_merge:
-  description: Approve or reject a merge below the town threshold.
+  description: Approve or reject a merge within the project threshold. Above it, the owner decides.
   risk_class: write
   cedar_action: merge.approve
   input: {type: object, required: [task_id, approve, reason], additionalProperties: false, properties: {task_id: {type: string}, approve: {type: boolean}, reason: {type: string}}}
 escalate:
-  description: Send a request up the approval chain (council, then owner).
+  description: Send a request to the owner for an approval decision.
   risk_class: write
   cedar_action: approval.request
   input: {type: object, required: [summary, kind], additionalProperties: false, properties: {summary: {type: string}, kind: {type: string}, refs: {type: array, items: {type: string}}}}
 send_message:
-  description: Send a typed message to an agent, group or topic (M3, bus.proto).
+  description: Send a typed message to an agent, group or topic.
   risk_class: write
   cedar_action: message.send
   input: {type: object, required: [to, kind, body], additionalProperties: false,
           properties: {to: {type: string}, kind: {enum: [request, inform, propose, result, question]}, body: {type: string, maxLength: 16384}, thread_id: {type: string}}}
 read_audit:
-  description: Query the audit log (tool calls, egress, messages, sanctions).
+  description: Query the audit log (tool calls, egress, messages, approvals).
   risk_class: read
   cedar_action: audit.read
   input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, since: {type: string, format: date-time}}}
@@ -107,100 +108,34 @@ read_usage:
   risk_class: read
   cedar_action: usage.read
   input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}, period: {type: string}}}
-submit_finance_report:
-  description: Submit a Finance report.
-  risk_class: write
-  cedar_action: report.submit
-  submits: finance-report
 submit_incident_report:
   description: Submit an incident report.
   risk_class: write
   cedar_action: report.submit
   submits: incident-report
-submit_systemic_report:
-  description: Submit an ombudsman systemic report.
-  risk_class: write
-  cedar_action: report.submit
-  submits: systemic-report
-submit_town_report:
-  description: Submit a Mayor Office report on town issues.
-  risk_class: write
-  cedar_action: report.submit
-  input: {type: object, required: [title, issues], additionalProperties: false, properties: {title: {type: string}, issues: {type: array, items: {type: string}}, proposed_fix: {type: string}}}
 request_grant:
-  description: Ask the council or owner for a time-limited, scoped grant (0079).
+  description: Ask the owner for a time-limited, scoped grant.
   risk_class: write
   cedar_action: grant.request
   input: {type: object, required: [capability, scope, duration_h, reason], additionalProperties: false,
           properties: {capability: {type: string}, scope: {type: string}, duration_h: {type: integer, minimum: 1, maximum: 72}, reason: {type: string}}}
 quarantine_agent:
-  description: Pause and isolate an agent (only with a per-case grant).
+  description: Pause and isolate an agent (only with an owner grant for this case).
   risk_class: write
   cedar_action: agent.quarantine
-  grant_only: true      # never a standing right: only contract-tier per-case grants permit it (0079)
+  grant_only: true      # never a standing right: only a per-case owner grant permits it
   input: {type: object, required: [agent_id, reason], additionalProperties: false, properties: {agent_id: {type: string}, reason: {type: string}}}
 file_detection:
-  description: Hand a possible violation to Legal (Governance) for review.
+  description: Hand a possible violation to the owner for review.
   risk_class: write
   cedar_action: report.submit
   input: {type: object, required: [agent_id, law_id, evidence], additionalProperties: false,
           properties: {agent_id: {type: string}, law_id: {type: string}, evidence: {type: array, items: {type: string}, minItems: 1}}}
-read_case_record:
-  description: Read a case's filed record (charge, evidence, briefs).
-  risk_class: read
-  cedar_action: case.read
-  input: {type: object, required: [case_id], additionalProperties: false, properties: {case_id: {type: string}}}
-search_precedent:
-  description: Search earlier rulings.
-  risk_class: read
-  cedar_action: precedent.search
-  input: {type: object, required: [query], additionalProperties: false, properties: {query: {type: string}}}
-file_charge:
-  description: File a charge (prosecutors only).
-  risk_class: write
-  cedar_action: charge.file
-  submits: charge
-close_detection:
-  description: Close a detection without charging, with a written reason (prosecutors only).
-  risk_class: write
-  cedar_action: detection.close
-  input: {type: object, required: [detection_id, reason], additionalProperties: false, properties: {detection_id: {type: string}, reason: {type: string, minLength: 20}}}
-issue_ruling:
-  description: Issue a ruling (judges only, never in their own case).
-  risk_class: write
-  cedar_action: ruling.issue
-  submits: ruling
-file_brief:
-  description: File a defence brief.
-  risk_class: write
-  cedar_action: brief.file
-  submits: defence-brief
-decline_case:
-  description: Decline to defend a case with no merit, with a reason.
-  risk_class: write
-  cedar_action: case.decline
-  input: {type: object, required: [case_id, reason], additionalProperties: false, properties: {case_id: {type: string}, reason: {type: string}}}
 read_codex:
-  description: Read laws, their history and violation statistics.
+  description: Read the JHRL laws, their history and violation statistics.
   risk_class: read
   cedar_action: codex.read
   input: {type: object, required: [law_id], additionalProperties: false, properties: {law_id: {type: string}}}
-file_petition:
-  description: File a law petition (the diff goes on a Codex branch).
-  risk_class: write
-  cedar_action: petition.file
-  submits: law-petition
-propose_motion:
-  description: Propose a council motion.
-  risk_class: write
-  cedar_action: motion.propose
-  submits: council-motion
-cast_vote:
-  description: Vote on a council motion, with a reason.
-  risk_class: write
-  cedar_action: vote.cast
-  input: {type: object, required: [motion_id, vote, reason], additionalProperties: false,
-          properties: {motion_id: {type: string}, vote: {enum: ["yes", "no", "abstain"]}, reason: {type: string}}}
 read_cascade_data:
   description: Export cascade outcome records (training labels) as an artifact.
   risk_class: read
@@ -217,7 +152,7 @@ submit_training_job:
   cedar_action: training.submit
   submits: training-job
 
-# ---- roles v1.1 (0117) ----
+# ---- design, testing, security, release and research seats ----
 submit_design:
   description: Submit a design note for the planner and builders to follow.
   risk_class: write
@@ -229,7 +164,7 @@ submit_test_suite:
   cedar_action: testsuite.submit
   submits: test-suite
 read_artifact:
-  description: Read a town artifact (hidden ones are refused for roles they're hidden from).
+  description: Read a project artifact (hidden ones are refused for roles they're hidden from).
   risk_class: read
   cedar_action: artifact.read
   input: {type: object, required: [artifact], additionalProperties: false, properties: {artifact: {type: string}, path: {type: string}}}
@@ -244,7 +179,7 @@ submit_release_plan:
   cedar_action: release.submit
   submits: release-plan
 deploy:
-  description: Run a deploy step through a deploy-group connector (staging = write; production = irreversible, C-004).
+  description: Run a deploy step through a deploy-group connector (staging = write; production = irreversible, owner approval).
   risk_class: irreversible
   cedar_action: tool.call
   input: {type: object, required: [tool, action, environment], additionalProperties: false,

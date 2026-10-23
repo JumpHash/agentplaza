@@ -354,7 +354,7 @@ pub struct Law {
     pub resource: Option<Scope>,
     pub when: Vec<Expr>,
     pub unless: Vec<Expr>,
-    pub town: Option<String>,
+    pub project: Option<String>,
     pub expires: Option<Expr>,
     pub implements: Vec<String>,
     pub span: Span,

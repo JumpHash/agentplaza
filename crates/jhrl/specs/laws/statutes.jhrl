@@ -157,7 +157,7 @@ law "S-003c" "Planners may create tasks" {
   statement "A planner or the orchestrator may create tasks. Tasks still need plan approval before work starts."
   permit task.create
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "planner" or principal.role == "orchestrator"
 }
 
@@ -168,7 +168,7 @@ law "S-003d" "Planners may submit plans" {
   statement "A planner may submit a plan; it runs only after the plan gate (the orchestrator or the owner)."
   permit plan.submit
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "planner"
 }
 
@@ -192,39 +192,6 @@ law "S-004c" "The orchestrator approves plans and merges below threshold" {
   principal is Agent
   resource is Task
   when principal.role == "orchestrator" and context.budget <= context.threshold and not context.ambiguous
-}
-
-law "S-005a" "Departments may read audit logs" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Finance and Incident response may read audit logs."
-  permit audit.read
-  principal is Agent
-  resource is AuditLog
-  when principal.role == "finance" or principal.role == "incident"
-}
-
-law "S-005b" "Finance and Incident response may read usage" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Finance and Incident response may read the usage ledger (tokens, tool calls, VM time, spend)."
-  permit usage.read
-  principal is Agent
-  resource is UsageLedger
-  when principal.role == "finance" or principal.role == "incident"
-}
-
-law "S-005c" "Departments submit their own kind of report" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Finance submits finance reports and detections of economic gaming, Incident response incident reports and detections."
-  permit report.submit
-  principal is Agent
-  resource is Report
-  when (principal.role == "finance" and (context.kind == "finance" or context.kind == "detection")) or (principal.role == "incident" and (context.kind == "incident" or context.kind == "detection")) 
 }
 
 law "S-005d" "Incident response may request per-case grants" {
@@ -256,7 +223,7 @@ law "S-009b" "Architects submit designs" {
   statement "An architect may submit design notes."
   permit design.submit
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "architect"
 }
 
@@ -278,7 +245,7 @@ law "S-010b" "QA submits test suites" {
   statement "A QA agent may submit test suites, hidden or not."
   permit testsuite.submit
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "qa"
 }
 
@@ -366,7 +333,7 @@ law "S-013c" "Researchers submit research briefs" {
   statement "A researcher may submit research briefs."
   permit research.submit
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "researcher"
 }
 
@@ -457,7 +424,7 @@ law "S-016d" "Edge operators submit device reports" {
   when principal.role == "edge-operator" and context.kind == "device"
 }
 
-// S-006: the breeder bundle, moved here from docs/codex-draft/statutes/S-006-breeder-bundle.cedar.
+// S-006: the breeder bundle.
 // Breeders may submit jobs up to 8 GPU-hours (S-006c) and are forbidden above that (S-006d).
 // Model agents take no tasks and no messages (S-006f, S-006g). invoke_model runs a model only where
 // its card allows the role (S-006e).
@@ -492,7 +459,7 @@ law "S-006c" "Breeders may submit training jobs up to 8 GPU-hours" {
   statement "A breeder may submit a training job that runs a vetted recipe for at most 8 GPU-hours."
   permit training.submit
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "breeder" and context.gpu_hours <= 8
 }
 
@@ -503,7 +470,7 @@ law "S-006d" "Breeders may not submit jobs over 8 GPU-hours" {
   statement "A breeder's training job above 8 GPU-hours is refused; a larger job needs a per-case grant."
   forbid training.submit
   principal is Agent
-  resource is Town
+  resource is Plaza
   when principal.role == "breeder" and context.gpu_hours > 8
 }
 

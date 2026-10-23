@@ -659,8 +659,8 @@ mod tests {
         ("architect", &["run", "run_tests", "read", "find", "search"]),
         ("auditor", &["read_audit", "read_usage", "search"]),
         (
-            "legal-gov-judge",
-            &["read_case_record", "search_precedent", "issue_ruling"],
+            "incident",
+            &["request_grant", "quarantine_agent", "file_detection"],
         ),
     ];
 
@@ -745,11 +745,11 @@ mod tests {
     fn a_role_the_dispatcher_may_not_drive_is_left_open() {
         let ledger = FakeLedger::with_tasks(vec![
             task("t1", "open", Some("builder")),
-            task("t2", "open", Some("legal-gov-judge")),
+            task("t2", "open", Some("incident")),
             task("t3", "open", Some("intruder")),
         ])
         .with_agent(300, "builder")
-        .with_agent(310, "legal-gov-judge")
+        .with_agent(310, "incident")
         .with_agent(320, "intruder");
         let operator = FakeOperator::default().with_agent(300, FakeAgent::default());
         let (mut dispatcher, log) = dispatcher_with_roles(ledger, operator, GRANTS);
@@ -781,7 +781,7 @@ mod tests {
         let text = log.text();
         assert!(
             text.contains(
-                "dispatchd: task t2 (role legal-gov-judge): the role grants no tool this dispatcher may drive; skipped"
+                "dispatchd: task t2 (role incident): the role grants no tool this dispatcher may drive; skipped"
             ),
             "{text}"
         );

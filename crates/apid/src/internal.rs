@@ -537,7 +537,7 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
         ty: "Host".into(),
         id: host.into(),
     };
-    // The host's group is not known here (the towns' host-groups document is not code), so a law
+    // The host's group is not known here (the projects' host-groups document is not code), so a law
     // that names a group sees an empty one.
     let attrs =
         std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);

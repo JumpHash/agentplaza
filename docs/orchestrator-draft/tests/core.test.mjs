@@ -17,12 +17,10 @@ async function fresh() {
     INSERT INTO core.machines (id, name, arch, backend, class, page_size, cpus, memory_mib, disk_gib, cert_fingerprint)
       VALUES ('m1', 'hw-box-1', 'x86_64', 'kvm', 'server', 4096, 8, 32768, 500, '\\x01'),
              ('m2', 'pi-5', 'aarch64', 'kvm', 'pi5', 4096, 4, 8192, 120, '\\x02');
-    INSERT INTO core.towns (id, name) VALUES ('shop', 'Shop');
-    UPDATE core.towns SET state = 'active' WHERE id = 'shop';
-    INSERT INTO core.agents (id, name, role, town_id, config_hash, codex_hash, public_key) VALUES
-      ('${A1}', 'Vesna', 'builder', 'shop', '\\x01', '\\x01', '\\x01'),
-      ('${A2}', 'Oskar', 'reviewer', 'shop', '\\x01', '\\x01', '\\x02'),
-      ('${A3}', 'Mila', 'mayor', 'shop', '\\x01', '\\x01', '\\x03');
+    INSERT INTO core.agents (id, role, config_hash, codex_hash, public_key) VALUES
+      ('${A1}', 'builder', '\\x01', '\\x01', '\\x01'),
+      ('${A2}', 'reviewer', '\\x01', '\\x01', '\\x02'),
+      ('${A3}', 'verifier', '\\x01', '\\x01', '\\x03');
     INSERT INTO core.runs (id, agent_id, model_rung) VALUES ('r1', '${A1}', 'mid');
     INSERT INTO core.vms (id, run_id, machine_id, trust_class) VALUES ('vm1', 'r1', 'm1', 'standard'), ('vm2', 'r1', 'm2', 'standard');
     INSERT INTO core.sessions (id, run_id, vm_id, epoch, token_hash) VALUES ('s1', 'r1', 'vm1', 1, '\\x0a');
@@ -180,21 +178,21 @@ const approval = (db, id, chain, c004 = false) => db.query(
 
 await test('C-004 approvals have the owner-only chain', async () => {
   const db = await fresh();
-  await rejects(approval(db, 'p1', ['mayor:shop', 'owner'], true), /c004_owner_only/);
+  await rejects(approval(db, 'p1', ['reviewer', 'owner'], true), /c004_owner_only/);
   await approval(db, 'p2', ['owner'], true);
 });
 
 await test('only the authority at the current step decides (DecidedByChain)', async () => {
   const db = await fresh();
-  await approval(db, 'p1', ['mayor:shop', 'council', 'owner']);
+  await approval(db, 'p1', ['reviewer', 'lead', 'owner']);
   await rejects(db.query(`UPDATE core.approvals SET status = 'approved', decided_as = 'owner', decided_by = 'dev1' WHERE id = 'p1'`), /decided_by_chain/);
   await db.query(`UPDATE core.approvals SET position = 2, nonce = '\\x02' WHERE id = 'p1'`);
-  await db.query(`UPDATE core.approvals SET status = 'approved', decided_as = 'council', decided_by = '${A3}' WHERE id = 'p1'`);
+  await db.query(`UPDATE core.approvals SET status = 'approved', decided_as = 'lead', decided_by = '${A3}' WHERE id = 'p1'`);
 });
 
 await test('escalation needs a fresh nonce; decisions are final; silence is not yes', async () => {
   const db = await fresh();
-  await approval(db, 'p1', ['mayor:shop', 'owner']);
+  await approval(db, 'p1', ['reviewer', 'owner']);
   await rejects(db.query(`UPDATE core.approvals SET position = 2 WHERE id = 'p1'`), /fresh nonce/);
   await rejects(db.query(`UPDATE core.approvals SET status = 'expired' WHERE id = 'p1'`), /only after its last step/);
   await db.query(`UPDATE core.approvals SET position = 2, nonce = '\\x0f' WHERE id = 'p1'`);
@@ -214,7 +212,7 @@ await test('a nonce is used once', async () => {
 // ---------------------------------------------------------------- tasks (0123)
 async function tasks(db) {
   await db.exec(`
-    INSERT INTO core.tasks (id, root_id, title, town_id, budget_credits) VALUES ('T', 'T', 'Build the shop site', 'shop', 1000);
+    INSERT INTO core.tasks (id, root_id, title) VALUES ('T', 'T', 'Build the shop site');
     INSERT INTO core.tasks (id, root_id, parent_id, title) VALUES ('T1', 'T', 'T', 'Design'), ('T2', 'T', 'T', 'Implement'), ('T3', 'T', 'T', 'Test');
     INSERT INTO core.task_deps VALUES ('T2', 'T1'), ('T3', 'T2');`);
 }
@@ -283,13 +281,9 @@ await test('superseding needs a change set, and verifying work is not superseded
 });
 
 // ---------------------------------------------------------------- agents, machines
-await test('agent names unique among live agents; retired names come free', async () => {
+await test('agent ids are ULIDs', async () => {
   const db = await fresh();
-  const add = (id, name) => db.query(`INSERT INTO core.agents (id, name, role, config_hash, codex_hash, public_key) VALUES ($1, $2, 'builder', '\\x01', '\\x01', '\\x09')`, [id, name]);
-  await rejects(add('01JAAAAAAAAAAAAAAAAAAAAAA9', 'vesna'), /agents_live_name/);
-  await db.query(`UPDATE core.agents SET status = 'retired', retired_at = now() WHERE id = '${A1}'`);
-  await add('01JAAAAAAAAAAAAAAAAAAAAAA9', 'Vesna');
-  await rejects(add('not-a-ulid', 'X'), /check constraint/);
+  await rejects(db.query(`INSERT INTO core.agents (id, role, config_hash, codex_hash, public_key) VALUES ('not-a-ulid', 'builder', '\\x01', '\\x01', '\\x09')`), /check constraint/);
 });
 
 await test('HVF only on aarch64', async () => {
@@ -306,21 +300,6 @@ await test('overcommit starts per machine class and stays under the owner cap (0
                   VALUES ('m4', 'pi-4', 'aarch64', 'kvm', 'pi4', 4096, 4, 4096, 60, '\\x04', 1.2)`);
   eq(Number((await one(db, `SELECT overcommit FROM core.machines WHERE id = 'm4'`)).overcommit), 1.2, 'capped');
   await rejects(db.query(`UPDATE core.machines SET overcommit = 3 WHERE id = 'm4'`), /overcommit_within_cap/);
-});
-
-await test('town lifecycle: proposed first, archived is final and retires its agents', async () => {
-  const db = await fresh();
-  await rejects(db.query(`INSERT INTO core.towns (id, name, state) VALUES ('lab', 'Lab', 'active')`), /must start as proposed/);
-  await db.query(`INSERT INTO core.towns (id, name) VALUES ('lab', 'Lab')`);
-  const add = (id) => db.query(`INSERT INTO core.agents (id, role, town_id, config_hash, codex_hash, public_key) VALUES ($1, 'researcher', 'lab', '\\x01', '\\x01', '\\x01')`, [id]);
-  await rejects(add('01JAAAAAAAAAAAAAAAAAAAAAB1'), /not active/);
-  await db.query(`UPDATE core.towns SET state = 'active' WHERE id = 'lab'`);
-  await add('01JAAAAAAAAAAAAAAAAAAAAAB1');
-  await db.query(`UPDATE core.towns SET state = 'paused' WHERE id = 'lab'`);
-  await rejects(add('01JAAAAAAAAAAAAAAAAAAAAAB2'), /not active/);
-  await db.query(`UPDATE core.towns SET state = 'archived' WHERE id = 'lab'`);
-  eq((await one(db, `SELECT status FROM core.agents WHERE id = '01JAAAAAAAAAAAAAAAAAAAAAB1'`)).status, 'retired', 'agent retired with its town');
-  await rejects(db.query(`UPDATE core.towns SET state = 'active' WHERE id = 'lab'`), /may not go from archived to active/);
 });
 
 // ---------------------------------------------------------------- audit hash chain (C-001)

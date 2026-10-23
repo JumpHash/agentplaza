@@ -1,0 +1,25 @@
+meta {
+  name: Read a page of the main chat's transcript before a seq
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{baseUrl}}/v1/chats/main/transcript?before=1000000&limit=500
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.entries: isArray
+  res.body.more: isBoolean
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a page is at most five hundred entries, with whether more come before it", function () {
+    expect(res.getBody().entries.length).to.be.at.most(500);
+    expect(res.getBody().more).to.be.a("boolean");
+  });
+}

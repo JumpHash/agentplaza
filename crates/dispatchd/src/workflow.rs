@@ -646,8 +646,8 @@ mod tests {
             ("architect", &["run", "run_tests", "read", "find", "search"]),
             ("auditor", &["read_audit", "read_usage", "search"]),
             (
-                "legal-gov-judge",
-                &["read_case_record", "search_precedent", "issue_ruling"],
+                "incident",
+                &["request_grant", "quarantine_agent", "file_detection"],
             ),
         ]);
         let roles = Some(&roles);
@@ -681,7 +681,7 @@ mod tests {
         );
         // A role the harness implements nothing for cannot be driven at all.
         assert_eq!(
-            plan_for("legal-gov-judge", roles),
+            plan_for("incident", roles),
             Plan::Skipped("the role grants no tool this dispatcher may drive")
         );
         // A role the manifest does not carry at all: the hub would refuse every

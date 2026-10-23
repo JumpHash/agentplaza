@@ -2,7 +2,7 @@
 //!
 //! One binary: `weft serve` (the history server on the hub), `weft serve --cache` (a stateless object cache on
 //! every node), and the `weft` CLI (agent VMs, check VMs, the owner's machine). The design is
-//! `docs/design/weft.md`; its architecture page is `docs/design/assets/weft/architecture.html`.
+//! `docs/design/weft.md`.
 //!
 //! - [`log`]: the append-only, hash-chained log of signed statements: the truth.
 //! - [`blobs`]: file contents and artifacts by BLAKE3 hash.

@@ -339,7 +339,7 @@ pub fn card_answered(app: &App, card: &Card) -> String {
         apz_plaza::now_ms(),
     ) {
         Ok(_) => format!("the disk quota is now {}", bytes(to)),
-        Err(e) => e,
+        Err(e) => e.to_string(),
     }
 }
 

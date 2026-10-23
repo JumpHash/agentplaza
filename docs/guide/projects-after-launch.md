@@ -67,7 +67,7 @@ Its kind is one of fix, improve, feature, security, performance, chore or instru
 
 Each waiting proposal has three buttons.
 
-- **Do it** makes the proposal a task of the project, for the role it names. You can give it a budget in credits and a
+- **Do it** makes the proposal a task of the project, for the role it names. You can give it a budget in dollars or tokens and a
   note.
 - **Later** puts it off. It stays in the list, marked for later, and you can answer it again.
 - **No** declines it, with an optional reason. The watchers read the reason, and the declines, on their next sweep.

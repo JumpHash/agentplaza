@@ -1,9 +1,0 @@
-{
-  "name": "agentplaza-treasury-draft-tests",
-  "private": true,
-  "type": "module",
-  "description": "Behaviour tests for the Treasury and Agora schema on PostgreSQL 16 (PGlite)",
-  "dependencies": {
-    "@electric-sql/pglite": "0.2.17"
-  }
-}

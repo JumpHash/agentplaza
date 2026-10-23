@@ -493,7 +493,7 @@ impl Onboarding {
                     palette.accent,
                 )));
                 lines.push(line(
-                    "AgentPlaza is a town for your AI agents, from the terminal.",
+                    "AgentPlaza is a plaza for your AI agents, from the terminal.",
                     palette.ink2(),
                     false,
                 ));

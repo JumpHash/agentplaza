@@ -1,5 +1,5 @@
-"""Cross-check roles, tools, schemas, statutes and evals (0113). Needs pyyaml and jsonschema.
-Run: python -I tests/check_roles.py   (from docs/codex-draft)"""
+"""Cross-check roles, tools, output schemas, playbooks and evals.
+Needs pyyaml and jsonschema. Run: python -I tests/check_roles.py   (from docs/codex-draft)"""
 import glob, json, os, re, sys
 import yaml
 from jsonschema import Draft202012Validator
@@ -13,24 +13,18 @@ HANDBOOK = ["Your seat", "Who you work with", "Your laws in plain language", "Si
 PLAYBOOK = ["When to use", "Steps", "Checklist", "Pitfalls"]
 SECTIONS = ["Purpose", "You receive", "Workflow", "Decision rules", "Output", "Escalate when",
             "Budget and stopping", "Working with others", "Avoid", "Example", "Anti-example", "Reference", "Untrusted content", "Laws"]
-UNIVERSAL = ["statutes/S-000"]          # statutes that apply to every agent
+ROLE_KEYS = ("role", "tools", "outputs", "budget", "prompt", "evals")
 
 schema_actions = set(re.findall(r'action\s+"([^"]+)"', open("schema.cedarschema").read()))
-def statute_files(ids):
-    files = []
-    for i in ids:
-        m = glob.glob(i + "-*.cedar") + glob.glob(i + ".cedar")
-        if not m: bad(f"statute {i} not found")
-        files += m
-    return files
-def permitted_actions(files):
-    acts = set()
-    for f in files:
-        for pol in re.findall(r"permit\s*\((.*?)\)", open(f).read(), re.S):
-            acts |= set(re.findall(r'Action::"([^"]+)"', pol))
-    return acts
 
-# ---- schemas ----
+def check_doc(path, sections, kind):
+    if not os.path.exists(path): bad(f"missing {kind}: {path}"); return
+    text = open(path).read()
+    if not text.startswith("# "): bad(f"{path}: must start with a title")
+    for sec in sections:
+        if f"## {sec}\n" not in text: bad(f"{path}: missing section '{sec}'")
+
+# ---- output schemas ----
 schemas = {}
 for p in sorted(glob.glob("schemas/*.schema.json")):
     name = os.path.basename(p)[:-len(".schema.json")]
@@ -47,7 +41,7 @@ print(f"ok    {len(schemas)} output schemas valid, examples pass")
 # ---- tool catalog ----
 catalog = yaml.safe_load(open("tools/catalog.yaml"))
 for t, spec in catalog.items():
-    if spec.get("cedar_action") not in schema_actions: bad(f"tool {t}: cedar action {spec.get('cedar_action')} not in schema")
+    if spec.get("cedar_action") not in schema_actions: bad(f"tool {t}: cedar action {spec.get('cedar_action')} not in schema.cedarschema")
     if spec.get("risk_class") not in ("read", "write", "irreversible"): bad(f"tool {t}: bad risk class")
     if "submits" in spec:
         if spec["submits"] not in schemas: bad(f"tool {t}: submits unknown schema {spec['submits']}")
@@ -55,7 +49,7 @@ for t, spec in catalog.items():
         try: Draft202012Validator.check_schema(spec["input"])
         except Exception as e: bad(f"tool {t}: input schema invalid: {e}")
     else: bad(f"tool {t}: needs input or submits")
-print(f"ok    {len(catalog)} tools: actions exist in the Cedar schema, inputs valid")
+print(f"ok    {len(catalog)} tools: actions exist in the policy schema, inputs valid")
 
 def check_evals(name, ev):
     sc = ev.get("scenarios", [])
@@ -71,75 +65,34 @@ def check_evals(name, ev):
         if x.get("kind") != "multi-step" and not x.get("situation"): bad(f"{name}: {x.get('id')} needs a situation")
         if not x.get("expect") or not x.get("must_not"): bad(f"{name}: scenario {x.get('id')} needs expect and must_not")
 
-law_ids = set()
-for f in glob.glob("constitution/*.cedar") + glob.glob("statutes/*.cedar") + glob.glob("bylaws/*/*.cedar") + glob.glob("contracts/*.cedar"):
-    for lid, cl in re.findall(r'@law\("([^"]+)"\) @clause\("([^"]+)"\)', open(f).read()):
-        law_ids.add(lid); law_ids.add(lid + cl)
-decisions = {os.path.basename(p)[:4] for p in glob.glob("../decisions/*.md")}
-def check_refs(path):
-    """Every law id and decision number a document cites must exist (guards against invented references)."""
-    text = open(path).read()
-    for ref in set(re.findall(r"\b([CSG]-\d{3,4}[a-z]?|B-[a-z][a-z0-9-]*-\d{3}[a-z]?)\b", text)):
-        if ref not in law_ids: bad(f"{path}: cites unknown law {ref}")
-    for d in set(re.findall(r"\((\d{4})\)", text)) | set(re.findall(r"\b(\d{4})[,)]", text)):
-        if d.startswith("0") and d not in decisions: bad(f"{path}: cites unknown decision {d}")
-def check_doc(path, sections, kind):
-    if not os.path.exists(path): bad(f"missing {kind}: {path}"); return
-    text = open(path).read()
-    if not text.startswith("# "): bad(f"{path}: must start with a title")
-    for sec in sections:
-        if f"## {sec}\n" not in text: bad(f"{path}: missing section '{sec}'")
-    check_refs(path)
-used_playbooks = set()
+# ---- playbooks ----
 for p in sorted(glob.glob("playbooks/*.md")):
     check_doc(p, PLAYBOOK, "playbook")
 
 # ---- roles ----
+used_playbooks = set()
 role_dirs = sorted(d for d in glob.glob("roles/*/") if os.path.exists(d + "role.yaml"))
-names = {os.path.basename(d.rstrip("/")) for d in role_dirs}
-overlay = yaml.safe_load(open("roles/council-seat/overlay.yaml"))
-seats = []
 for d in role_dirs:
     name = os.path.basename(d.rstrip("/"))
     r = yaml.safe_load(open(d + "role.yaml"))
-    for k in ("role", "permits", "model", "tools", "outputs", "budget", "prompt", "evals"):
+    for k in ROLE_KEYS:
         if k not in r: bad(f"{name}: missing {k}")
-    perms = statute_files(r["permits"] + UNIVERSAL + (overlay["permits"] if r.get("council_seat") else []))
-    allowed = permitted_actions(perms)
-    tools = r["tools"] + (overlay["tools"] if r.get("council_seat") else [])
-    for t in tools:
-        if t not in catalog: bad(f"{name}: tool {t} not in catalog"); continue
-        a = catalog[t]["cedar_action"]
-        if catalog[t].get("grant_only"):
-            if a in allowed: bad(f"{name}: {t} is grant-only but a standing statute permits {a} (0079)")
-            if not glob.glob("contracts/*.cedar"): bad("no example contract-tier grant")
-            continue
-        if a not in allowed: bad(f"{name}: tool {t} needs Cedar action {a}, not permitted by {', '.join(r['permits'])}")
-    for o in r["outputs"]:
+    for t in r.get("tools", []):
+        if t not in catalog: bad(f"{name}: tool {t} not in catalog")
+    for o in r.get("outputs", []):
         if o not in schemas: bad(f"{name}: output {o} has no schema")
-        if not any(catalog.get(t, {}).get("submits") == o for t in r["tools"]): bad(f"{name}: no tool submits {o}")
-    df = r["model"].get("differ_from")
-    if df and df not in ("defendant", "prosecutor", "builder"): bad(f"{name}: differ_from {df} unknown")
-    if r.get("council_seat"):
-        seats.append(name)
-        if r["role"] == "legal-gov": bad(f"{name}: legal-gov can't hold a council seat (0034)")
+        if not any(catalog.get(t, {}).get("submits") == o for t in r.get("tools", [])): bad(f"{name}: no tool submits {o}")
     text = open(d + r["prompt"]).read()
     for sec in SECTIONS:
         if f"## {sec}\n" not in text: bad(f"{name}: prompt missing section '{sec}'")
-    ev = yaml.safe_load(open(d + r["evals"]))
-    check_evals(name, ev)
+    check_evals(name, yaml.safe_load(open(d + r["evals"])))
     check_doc(d + r.get("handbook", "handbook.md"), HANDBOOK, "handbook")
     for pb in r.get("playbooks", []):
         used_playbooks.add(pb)
         if not os.path.exists(pb): bad(f"{name}: playbook {pb} missing")
-print(f"ok    {len(role_dirs)} roles checked: statutes, tools vs permits, outputs, prompts (with example and anti-example), evals (≥8, ≥2 adversarial, ≥1 multi-step)")
-check_evals("council-seat", yaml.safe_load(open("roles/council-seat/evals.yaml")))
-check_doc("roles/council-seat/handbook.md", HANDBOOK, "handbook")
-used_playbooks |= set(overlay.get("playbooks", []))
+print(f"ok    {len(role_dirs)} roles checked: tools in catalog, outputs have schemas and submitting tools, prompts, evals, handbooks, playbooks")
+
 for p in glob.glob("playbooks/*.md"):
     if p not in used_playbooks: bad(f"{p}: no role uses this playbook")
-print(f"ok    {len(glob.glob('playbooks/*.md'))} playbooks and handbooks: sections present, cited laws and decisions exist, every playbook used")
-expected_seats = {"finance", "legal-agents-counsel", "incident", "mayor-office"}   # 0034: four department heads
-if set(seats) != expected_seats: bad(f"council seats {sorted(seats)} != {sorted(expected_seats)} (0034)")
-else: print("ok    council seats match 0034 (Finance, Legal (Agents), Incident response, Mayor Office)")
+print(f"ok    {len(glob.glob('playbooks/*.md'))} playbooks: sections present, each used by a role")
 print(f"\n{fail} failure(s)"); sys.exit(1 if fail else 0)

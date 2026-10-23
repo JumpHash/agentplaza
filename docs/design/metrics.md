@@ -15,8 +15,8 @@ The code is in four places:
   carries them to the hub.
 
 The consoles are `apps/web/src/metrics/` with the page in `apps/web/src/views/metrics.ts`, and
-`apps/desktop/src/console/screens/metrics/`. The architecture page has a short [Metrics](../architecture.md#metrics)
-section that points here.
+`apps/desktop/src/console/screens/metrics/`. The architecture page lists the three SQLite files in its [storage](../architecture.md#5-storage)
+section; the samples are in `metrics.db`.
 
 ## What is measured
 
@@ -69,7 +69,7 @@ The families cover:
    hard cap per entity kind folds any overflow into an `other` series, so a runaway label cannot grow memory.
 2. **Scrape.** A registry is scraped every 10 s, or every 2 s while a console is watching a scope live. The hub's own
    collectors (`crates/apid/src/metrics/collect.rs`) run on its tick: the API route timer, the database timer, bus lag,
-   the queue and approval gauges, agent states, the treasury and store sizes, and the metrics system's own cost.
+   the queue and approval gauges, agent states, the store sizes, and the metrics system's own cost.
 3. **Node batch.** noded keeps what it collected in a buffer. The buffer holds up to 15 minutes when nothing collects
    it, and older samples are dropped first. The node link (`apz-link`) takes the buffer with each heartbeat
    (`GET /v1/metrics/batch` on noded). While the hub has asked for live data, noded answers every 2 s with

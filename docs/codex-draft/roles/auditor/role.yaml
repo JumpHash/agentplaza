@@ -1,7 +1,6 @@
 # Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
 role: auditor
 variant: ''
-council_seat: false
 permits:
 - statutes/S-015
 model:
@@ -22,7 +21,7 @@ tools:
 outputs:
 - audit-report
 budget:
-  default_credits: 1000
+  default_budget: 1000
   period: weekly
 compaction:
   trigger_fraction: 0.75

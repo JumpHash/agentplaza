@@ -394,7 +394,7 @@ fn a_draft_in_the_main_chat_becomes_a_project_the_owner_starts() {
     assert_eq!(status, 404);
     let (status, turns) = hub.call("GET", "/v1/chats/main/transcript", None);
     assert_eq!(status, 200, "{turns}");
-    assert!(turns.is_array(), "{turns}");
+    assert!(turns["entries"].is_array(), "{turns}");
     let (status, context) = hub.call("GET", "/v1/chats/main/context", None);
     assert_eq!(status, 200, "{context}");
     // The main chat's model goes back to the orchestrator's own (null).

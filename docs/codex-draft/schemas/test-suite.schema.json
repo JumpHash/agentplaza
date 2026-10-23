@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/test-suite.schema.json",
   "title": "Test suite",
-  "description": "Tests written by QA from a spec, before or alongside building (0040, 0052, 0113).",
+  "description": "Tests written by QA from a spec, before or alongside building.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -27,7 +27,7 @@
     },
     "hidden": {
       "type": "boolean",
-      "description": "Hidden acceptance suites are never readable by builders (S-010)"
+      "description": "Hidden acceptance suites are never readable by builders"
     },
     "run": {
       "type": "string",

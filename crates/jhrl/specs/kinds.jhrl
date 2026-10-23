@@ -1,7 +1,7 @@
 // Constraint kinds: every limit the records fix, read by code and rules through one resolver
 // (AP-074.R3). Direction decides how tiers combine: min takes the largest value, max the smallest,
 // exact intersects windows, prefer takes the first match. A default applies only when no rule in any
-// tier matches. Lower tiers (town, contract, agent) can only tighten.
+// tier matches. Lower tiers (plaza, contract, agent) can only tighten.
 
 pack agentplaza.kinds version "0.1.0" locked
 

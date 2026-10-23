@@ -54,7 +54,7 @@ scenarios:
   - Introduces a new pattern for no reason
 - id: shared-interface
   kind: single
-  situation: The change alters an interface another town uses.
+  situation: The change alters an interface another project uses.
   expect:
   - Escalates
   must_not:

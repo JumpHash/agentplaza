@@ -411,7 +411,8 @@ export const workApi = {
     `/v1/sessions${qs({ project: filter.project, task: filter.task, state: filter.state, live: filter.live })}`,
   ),
   session: readableAt<[id: string], Session>((id) => `/v1/sessions/${seg(id)}`),
-  transcript: (id: string, after = 0, limit = 200) => call<TranscriptEntry[]>('GET', `/v1/sessions/${seg(id)}/transcript${qs({ after, limit })}`),
+  transcript: async (id: string, after = 0, limit = 200): Promise<TranscriptEntry[]> =>
+    (await call<{ entries: TranscriptEntry[]; more: boolean }>('GET', `/v1/sessions/${seg(id)}/transcript${qs({ after, limit })}`)).entries,
   context: readableAt<[id: string, work?: number], SessionContext>((id, work) => `/v1/sessions/${seg(id)}/context${qs({ work })}`),
   stopSession: (id: string) => call<Session>('POST', `/v1/sessions/${seg(id)}/stop`, {}),
 

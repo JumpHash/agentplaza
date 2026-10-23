@@ -1,10 +1,11 @@
-// AgentPlaza policy schema, draft v0 (decision 0038).
-// Principals, resources and actions the hub evaluates. Grows with each milestone.
+// AgentPlaza policy schema, draft v0. The live laws are JHRL specs (crates/jhrl/specs); this Cedar
+// draft lists the principals, resources and actions the work engine checks on each tool call.
+// Action names match tools/catalog.yaml (`cedar_action`).
 
 entity Owner;
-entity Town;
+entity Project;
 entity Group;
-entity Agent in [Town] { role: String, variant: String, town: Town, council_seat: Bool };  // variant: e.g. "judge"; "" if none
+entity Agent in [Project] { role: String, project: Project };
 
 entity AuditLog;
 entity Gateway;
@@ -14,12 +15,12 @@ entity Sandbox { agent: Agent };            // an agent's own microVM
 entity Registry;
 entity HostGroup;                           // allowlists, e.g. package-registries
 entity Host in [HostGroup];
-entity Artifact { town: Town, hidden_from: Set<String> };   // hidden_from: roles that may never read it (S-010)
+entity Artifact { project: Project, hidden_from: Set<String> };   // hidden_from: roles that may never read it
 entity Approval;
 entity ToolGroup;                                            // e.g. "deploy", "web-search"
 entity Tool in [ToolGroup] { risk_class: String };   // "read" | "write" | "irreversible" (tool catalog)
 
-// Context carrying classifier flags (Jev / screens) for judgment laws.
+// Context carrying classifier flags for judgment laws.
 type Flagged = { flags: Set<String> };
 
 action "audit.modify"      appliesTo { principal: [Agent, Owner], resource: [AuditLog],  context: {} };
@@ -28,7 +29,7 @@ action "policy.modify"     appliesTo { principal: [Agent, Owner], resource: [Pol
 action "vault.read"        appliesTo { principal: [Agent, Owner], resource: [Vault],     context: {} };
 action "vault.list"        appliesTo { principal: [Agent, Owner], resource: [Vault],     context: {} };
 
-// Reported by node tripwires (0033); evaluated detectively.
+// Reported by node tripwires; evaluated detectively.
 action "sandbox.event"     appliesTo { principal: [Agent], resource: [Sandbox], context: { kind: String } };
 
 action "tool.exec"         appliesTo { principal: [Agent], resource: [Sandbox],        context: Flagged };
@@ -41,62 +42,49 @@ action "registry.set_name" appliesTo { principal: [Agent], resource: [Registry],
 action "tool.call"         appliesTo { principal: [Agent], resource: [Tool],
                                        context: { flags: Set<String>, owner_approval?: Approval } };
 
-// --- Added for role bundles S-002..S-005 (0071, 0079) ---
-entity Task { town: Town };
+// Work engine: tasks, plans, merges, seats and usage.
+entity Task { project: Project };
 entity UsageLedger;
 
-action "task.create"   appliesTo { principal: [Agent], resource: [Town], context: {} };
+action "task.create"   appliesTo { principal: [Agent], resource: [Project], context: {} };
 action "task.assign"   appliesTo { principal: [Agent], resource: [Task], context: { assignee: Agent } };
 action "plan.approve"  appliesTo { principal: [Agent, Owner], resource: [Task],
                                    context: { budget: Long, threshold: Long, ambiguous: Bool } };
 action "merge.approve" appliesTo { principal: [Agent, Owner], resource: [Task],
                                    context: { budget: Long, threshold: Long, ambiguous: Bool } };
 action "review.submit" appliesTo { principal: [Agent], resource: [Task], context: Flagged };
-action "agent.spawn"     appliesTo { principal: [Agent, Owner], resource: [Town], context: {} };
-action "agent.hibernate" appliesTo { principal: [Agent, Owner], resource: [Town], context: {} };
+action "agent.spawn"     appliesTo { principal: [Agent, Owner], resource: [Project], context: {} };
+action "agent.hibernate" appliesTo { principal: [Agent, Owner], resource: [Project], context: {} };
 action "audit.read"    appliesTo { principal: [Agent, Owner], resource: [AuditLog],    context: {} };
 action "usage.read"    appliesTo { principal: [Agent, Owner], resource: [UsageLedger], context: {} };
 
-// --- Added for role tools (0113): legal, council, reports, breeders, grants ---
-entity Case { defendant: Agent };
-entity Codex;
-entity Precedents;
+// Reports, grants, laws, training and Foundry.
 entity Report;
-entity Motion;
+entity Codex;
 entity Grant;
 entity CascadeData;
 entity Foundry;
 
 action "claim.submit"     appliesTo { principal: [Agent], resource: [Task], context: Flagged };
-action "plan.submit"      appliesTo { principal: [Agent], resource: [Town], context: {} };
-action "case.read"        appliesTo { principal: [Agent, Owner], resource: [Case], context: {} };
-action "charge.file"      appliesTo { principal: [Agent], resource: [Agent], context: { law_id: String } };
-action "detection.close"  appliesTo { principal: [Agent], resource: [Report], context: {} };
-action "brief.file"       appliesTo { principal: [Agent], resource: [Case], context: Flagged };
-action "case.decline"     appliesTo { principal: [Agent], resource: [Case], context: {} };
-action "ruling.issue"     appliesTo { principal: [Agent, Owner], resource: [Case], context: {} };
-action "precedent.search" appliesTo { principal: [Agent], resource: [Precedents], context: {} };
+action "plan.submit"      appliesTo { principal: [Agent], resource: [Project], context: {} };
 action "codex.read"       appliesTo { principal: [Agent, Owner], resource: [Codex], context: {} };
-action "petition.file"    appliesTo { principal: [Agent], resource: [Codex], context: {} };
 action "report.submit"    appliesTo { principal: [Agent], resource: [Report], context: { kind: String, flags: Set<String> } };
-action "motion.propose"   appliesTo { principal: [Agent], resource: [Motion], context: {} };
-action "vote.cast"        appliesTo { principal: [Agent], resource: [Motion], context: {} };
 action "grant.request"    appliesTo { principal: [Agent], resource: [Grant], context: {} };
 action "agent.quarantine" appliesTo { principal: [Agent, Owner], resource: [Agent], context: { now_unix: Long } };
 action "cascade.read"     appliesTo { principal: [Agent], resource: [CascadeData], context: {} };
 action "foundry.read"     appliesTo { principal: [Agent], resource: [Foundry], context: {} };
 action "training.submit"  appliesTo { principal: [Agent], resource: [Foundry], context: { gpu_hours: Long, recipe: String, flags: Set<String> } };
 
-// --- Added for roles v1.1 (0117): architect, QA, security, release, researcher, librarian, auditor, edge ---
+// Seats: architect, QA, security, release, researcher, librarian, auditor, edge operator.
 entity MemoryStore;
 entity AuditSample;
 entity Device { node: String, kind: String };
 
-action "design.submit"          appliesTo { principal: [Agent], resource: [Town], context: {} };
-action "testsuite.submit"       appliesTo { principal: [Agent], resource: [Town], context: { hidden: Bool } };
+action "design.submit"          appliesTo { principal: [Agent], resource: [Project], context: {} };
+action "testsuite.submit"       appliesTo { principal: [Agent], resource: [Project], context: { hidden: Bool } };
 action "security_review.submit" appliesTo { principal: [Agent], resource: [Task], context: Flagged };
 action "release.submit"         appliesTo { principal: [Agent], resource: [Task], context: {} };
-action "research.submit"        appliesTo { principal: [Agent], resource: [Town], context: {} };
+action "research.submit"        appliesTo { principal: [Agent], resource: [Project], context: {} };
 action "artifact.read"          appliesTo { principal: [Agent], resource: [Artifact], context: {} };
 action "memory.read"            appliesTo { principal: [Agent], resource: [MemoryStore], context: { scope: String } };
 action "memory.change"          appliesTo { principal: [Agent], resource: [MemoryStore],

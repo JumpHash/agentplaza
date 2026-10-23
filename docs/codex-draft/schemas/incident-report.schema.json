@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/incident-report.schema.json",
   "title": "Incident report",
-  "description": "Incident response report (0033, 0072).",
+  "description": "Incident response report.",
   "type": "object",
   "additionalProperties": false,
   "required": [
