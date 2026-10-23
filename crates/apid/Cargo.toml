@@ -41,6 +41,9 @@ serde_json.workspace = true
 # The API's OpenAPI spec (openapi.rs): the routes' request and response schemas.
 schemars = "1"
 toml = "1"
+# The glue tier (PLAN 14.4; glue.rs): connector components run under wasmtime's component model, compiled by
+# cranelift. Already in the lock (48.0.7, through tree-sitter). No WASI and no HTTP: the hub mediates both.
+wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 ureq.workspace = true
 sha2.workspace = true
 blake2.workspace = true
@@ -90,3 +93,5 @@ workspace = true
 tempfile = "3"
 # The node end of the tunnel, for the end-to-end test in src/tunnel.rs.
 apz-link = { path = "../apz-link" }
+# The glue tests build their components from WAT text (glue.rs).
+wat = "1"

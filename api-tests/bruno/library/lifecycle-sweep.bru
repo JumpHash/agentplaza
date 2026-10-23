@@ -1,0 +1,17 @@
+meta {
+  name: Propose removal of harmful and unused tools
+  type: http
+  seq: 63
+}
+
+post {
+  url: {{baseUrl}}/v1/library/sweep
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.asked: isNumber
+}

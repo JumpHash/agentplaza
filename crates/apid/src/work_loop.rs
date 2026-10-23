@@ -1677,6 +1677,11 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         cards::Kind::ToolCall | cards::Kind::Review => crate::approvals::card_answered(app, card),
         cards::Kind::Proposal => crate::agent_proposals::card_answered(app, card),
         cards::Kind::Engine => crate::engine_watch::card_answered(app, card),
+        cards::Kind::Connector if card.subject.starts_with("tool:") => {
+            crate::tool_life::card_answered(app, card)
+        }
+        cards::Kind::Connector => crate::connectors::card_answered(app, card),
+        cards::Kind::Promote | cards::Kind::Tool => crate::tool_life::card_answered(app, card),
         cards::Kind::Disk => crate::disk::card_answered(app, card),
         cards::Kind::Start => crate::drafts::answered(app, card),
         cards::Kind::Memory => crate::curator::card_answered(app, card),

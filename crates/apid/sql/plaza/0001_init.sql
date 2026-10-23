@@ -499,6 +499,16 @@ CREATE TABLE "library_entry" (
     "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
     "calls" INTEGER NOT NULL CHECK ("calls" >= 0),
     "review_note" TEXT NOT NULL,
+    "project" TEXT NOT NULL,
+    "connector" TEXT NOT NULL,
+    "replaces" TEXT NOT NULL,
+    "stage" TEXT NOT NULL,
+    "trial_project" TEXT NOT NULL,
+    "promoted" INTEGER NOT NULL CHECK ("promoted" IN (0, 1)),
+    "tests" TEXT NOT NULL,
+    "failures" INTEGER NOT NULL CHECK ("failures" >= 0),
+    "latency_ms" INTEGER NOT NULL CHECK ("latency_ms" >= 0),
+    "stage_from" INTEGER NOT NULL CHECK ("stage_from" >= 0),
     PRIMARY KEY ("name", "version")
 ) STRICT;
 CREATE TABLE "library_entry_command" (
@@ -525,6 +535,20 @@ CREATE TABLE "library_entry_files" (
     "size" INTEGER NOT NULL CHECK ("size" >= 0),
     "executable" INTEGER NOT NULL CHECK ("executable" IN (0, 1)),
     PRIMARY KEY ("library_entry_name", "library_entry_version", "files_pos"),
+    FOREIGN KEY ("library_entry_name", "library_entry_version") REFERENCES "library_entry" ("name", "version") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "library_entry_comparisons" (
+    "library_entry_name" TEXT NOT NULL,
+    "library_entry_version" INTEGER NOT NULL CHECK ("library_entry_version" >= 0),
+    "comparisons_pos" INTEGER NOT NULL CHECK ("comparisons_pos" >= 0),
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "builtin_ran" INTEGER NOT NULL CHECK ("builtin_ran" IN (0, 1)),
+    "builtin_ok" INTEGER NOT NULL CHECK ("builtin_ok" IN (0, 1)),
+    "builtin_ms" INTEGER NOT NULL CHECK ("builtin_ms" >= 0),
+    "candidate_ok" INTEGER NOT NULL CHECK ("candidate_ok" IN (0, 1)),
+    "candidate_ms" INTEGER NOT NULL CHECK ("candidate_ms" >= 0),
+    "same" INTEGER NOT NULL CHECK ("same" IN (0, 1)),
+    PRIMARY KEY ("library_entry_name", "library_entry_version", "comparisons_pos"),
     FOREIGN KEY ("library_entry_name", "library_entry_version") REFERENCES "library_entry" ("name", "version") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
@@ -641,6 +665,84 @@ CREATE TABLE "connector_proposal_spec_actions" (
     "input_schema_content" TEXT,
     PRIMARY KEY ("connectors_pos", "proposals_pos", "actions_pos"),
     FOREIGN KEY ("connectors_pos", "proposals_pos") REFERENCES "connector_proposal_spec" ("connectors_pos", "proposals_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "version" TEXT NOT NULL,
+    "webhook" INTEGER NOT NULL CHECK ("webhook" IN (0, 1)),
+    "auth_header" TEXT NOT NULL,
+    "auth_format" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("connectors_pos", "manifests_pos"),
+    FOREIGN KEY ("connectors_pos") REFERENCES "connectors" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_kind" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "kind_pos" INTEGER NOT NULL CHECK ("kind_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "kind_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_scopes" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "scopes_pos" INTEGER NOT NULL CHECK ("scopes_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "scopes_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_egress" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "egress_pos" INTEGER NOT NULL CHECK ("egress_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "egress_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_secrets" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "secrets_pos" INTEGER NOT NULL CHECK ("secrets_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "secrets_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_events" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "events_pos" INTEGER NOT NULL CHECK ("events_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "events_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_actions" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "actions_pos" INTEGER NOT NULL CHECK ("actions_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "actions_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_manifest_checks" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "manifests_pos" INTEGER NOT NULL CHECK ("manifests_pos" >= 0),
+    "checks_pos" INTEGER NOT NULL CHECK ("checks_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "manifests_pos", "checks_pos"),
+    FOREIGN KEY ("connectors_pos", "manifests_pos") REFERENCES "connector_manifest" ("connectors_pos", "manifests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "connector_kv" (
+    "connectors_pos" INTEGER NOT NULL CHECK ("connectors_pos" >= 0),
+    "kv_pos" INTEGER NOT NULL CHECK ("kv_pos" >= 0),
+    "connector" TEXT NOT NULL,
+    "key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("connectors_pos", "kv_pos"),
+    FOREIGN KEY ("connectors_pos") REFERENCES "connectors" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component settings
