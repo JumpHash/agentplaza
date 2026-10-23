@@ -387,9 +387,9 @@ fn relay_events(app: &Arc<App>) {
                     | "abandon" | "lane.rebase" | "conflict" => "weft_change",
                     "queue.add" | "queue.remove" => "weft_queue",
                     "land" | "import" => "weft_land",
-                    "release.propose" | "release.sign" | "release.export" | "artifact.put" => {
-                        "weft_release"
-                    }
+                    "release.propose" | "release.sign" | "release.export" | "artifact.put"
+                    | "release.candidate" | "release.qualify" | "release.verdict"
+                    | "release.publish" | "release.promote" | "release.yank" => "weft_release",
                     "export" | "connection.add" | "connection.state" | "connection.remove" => {
                         "weft_export"
                     }

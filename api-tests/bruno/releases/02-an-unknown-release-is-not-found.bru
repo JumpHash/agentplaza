@@ -1,0 +1,15 @@
+meta {
+  name: An unknown release is not found
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/releases/rel-0
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

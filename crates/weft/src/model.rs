@@ -423,6 +423,43 @@ pub struct ReleaseExport {
     pub url: Option<String>,
 }
 
+/// `release.candidate` (hub-signed): the hub cuts a candidate of a proposed release from its artifacts, one per
+/// declared target, with their digest (the digest `release.sign` covers). `number` is the candidate's `rc.N` when the
+/// project numbers its candidates.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseCandidate {
+    pub repo: String,
+    pub version: String,
+    pub artifacts: Vec<String>,
+    pub digest: Hash,
+    #[serde(default)]
+    pub number: Option<u32>,
+}
+
+/// `release.qualify`, `release.publish`, `release.promote` and `release.yank` (hub-signed): one move of a release's
+/// life. `environment` names the deploy environment or store track a promotion is for; `reason` says why a yank.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseMove {
+    pub repo: String,
+    pub version: String,
+    #[serde(default)]
+    pub environment: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `release.verdict` (hub-signed): a verdict on a release from its source, `ci` (the checks of its commit) or
+/// `qualification`. `verdict` is `passed`, `failed` or `abandoned`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseVerdict {
+    pub repo: String,
+    pub version: String,
+    pub source: String,
+    pub verdict: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// `pack.add`: a language or format pack (its files are blobs).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackAdd {

@@ -256,6 +256,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.recipe_runs.load_versions(conn),
         },
         Component {
+            name: "releases",
+            def: crate::releases::entity::def,
+            rows: |app| app.releases.rows(),
+            load: |app, conn| app.releases.load(conn),
+        },
+        Component {
             name: "budgets",
             def: crate::budgets::def,
             rows: |app| app.budgets.rows(),

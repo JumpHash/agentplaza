@@ -1,0 +1,14 @@
+/* The Releases screen: the back link, the header, the action row and the notes. The lists and tables use the console's
+   own .kv, .tbl and .card. */
+.rel { display: flex; flex-direction: column; gap: 16px; padding: 16px; }
+.rel-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
+.rel-h h1 { margin: 0; font-size: 22px; }
+.rel-h p { margin: 0; flex-basis: 100%; }
+.rel-back { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-3); text-decoration: none; font-size: 13px; }
+.rel-back:hover { color: var(--ink); }
+.rel-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.rel-notes { white-space: pre-wrap; }
+.rel-list { margin: 0 0 8px; padding-left: 18px; }
+.rel-groups { display: flex; flex-direction: column; gap: 16px; }
+.rel-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.rel-error p { margin: 0; }

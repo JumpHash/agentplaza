@@ -1,0 +1,15 @@
+meta {
+  name: A yank without a reason is refused
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/yank
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+}

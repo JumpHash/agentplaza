@@ -322,6 +322,8 @@ mod tests {
             draining: false,
             revoked: false,
             address: String::new(),
+            label: String::new(),
+            test_share: 0,
         }]));
 
         // The hub's requests from the node are answered only when the node's signature checks out.

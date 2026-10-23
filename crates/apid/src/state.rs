@@ -158,6 +158,8 @@ pub struct App {
     pub seats: crate::seats::Seats,
     /// The recipe engine's runs and the owner's recipe versions (recipes/runs.rs).
     pub recipe_runs: crate::recipes::runs::Runs,
+    /// The releases of every project, each with its life as Weft's statements made it (releases/).
+    pub releases: crate::releases::entity::Store,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
     /// The VMs' workspace reports and the disk quotas' check (disk.rs).
@@ -314,6 +316,7 @@ impl App {
             sessions: Default::default(),
             seats: Default::default(),
             recipe_runs: Default::default(),
+            releases: Default::default(),
             budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
             disk: Default::default(),

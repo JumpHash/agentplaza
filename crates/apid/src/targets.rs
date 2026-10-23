@@ -375,12 +375,17 @@ mod tests {
         let run = runs
             .start_engine_items("release", &items, "release", None, Some("p1"), None, 1)
             .expect("the release recipe is a built-in");
+        runs.settle(&run, "draft", &Report::verdict(true), 1);
+        runs.started(&run, "build", 1);
         for item in 0..built {
             let moves = runs.settle(&run, "build", &Report::verdict(true), 2 + item as u64);
             if item + 1 < built {
                 assert!(moves.is_empty(), "item {} is not the last", item + 1);
             }
         }
+        // The hub cuts the candidate once every built target passed.
+        runs.started(&run, "candidate", 9);
+        runs.settle(&run, "candidate", &Report::verdict(true), 9);
         assert_eq!(
             runs.view(&run).unwrap().run.state,
             crate::recipes::runs::RunState::Passed

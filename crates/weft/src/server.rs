@@ -1604,7 +1604,7 @@ pub fn release_view(st: &State, r: &crate::state::Release) -> Value {
     json!({
         "version": r.propose.version, "repo": r.propose.repo, "from": r.propose.from, "line": r.propose.line, "notes": r.propose.notes, "targets": r.propose.targets,
         "imported": r.propose.imported, "proposed_seq": r.proposed_seq, "signed": r.signed.as_ref().map(|s| json!({ "seq": s.1, "key": s.2, "digest": s.0.digest })),
-        "artifacts": artifacts, "exports": r.exports,
+        "artifacts": artifacts, "exports": r.exports, "life": r.life,
     })
 }
 
