@@ -1462,6 +1462,9 @@ CREATE TABLE "node" (
     "draining" INTEGER NOT NULL CHECK ("draining" IN (0, 1)),
     "revoked" INTEGER NOT NULL CHECK ("revoked" IN (0, 1)),
     "address" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "mesh_address" TEXT NOT NULL,
+    "mesh_token" TEXT NOT NULL,
     PRIMARY KEY ("nodes_pos", "nodes_pos_2"),
     FOREIGN KEY ("nodes_pos") REFERENCES "nodes" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
