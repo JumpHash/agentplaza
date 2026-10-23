@@ -20,6 +20,7 @@ pub const RULES_VERSION: u32 = 1;
 /// What a prompt is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum Kind {
     /// A role's system prompt.
     System,
@@ -47,6 +48,7 @@ impl Kind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum Severity {
     Error,
     Warning,
@@ -69,8 +71,9 @@ impl Severity {
     }
 }
 
-/// One thing a check found.
+/// One thing a check found (a row of a version's findings in the store).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct Finding {
     /// The rule's id, one of `rules()`.
     pub rule: String,

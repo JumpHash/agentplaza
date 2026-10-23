@@ -16,8 +16,8 @@ assert {
 }
 
 tests {
-  test("no own budget and no balance yet", function () {
-    expect(res.getBody().own).to.equal(false);
-    expect(res.getBody().balance).to.equal(0);
+  test("no budget of its own yet: no cap, nothing spent", function () {
+    expect(res.getBody().cap).to.equal(null);
+    expect(res.getBody().spent).to.equal(0);
   });
 }

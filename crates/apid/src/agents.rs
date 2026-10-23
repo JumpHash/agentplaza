@@ -14,7 +14,6 @@ use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
-use crate::db::Db;
 use crate::role::Role;
 use crate::scheduler::Origin;
 use crate::settings::{Tier, tier_of};
@@ -62,14 +61,11 @@ impl Agent {
 }
 
 /// The roster: the agents by CID, in memory, with an index of the CIDs by status, so a timer can ask for
-/// the idle ones without cloning the whole roster. With a database, every change to a durable field (role,
-/// model) is written through to the `agents` row, and a remove is a soft delete there
-/// (db/roster.rs). Writes happen after the roster lock is released.
+/// the idle ones without cloning the whole roster. Nothing is stored: the agents come back as their guests
+/// connect and say hello.
 #[derive(Default)]
 pub struct Roster {
     agents: Mutex<Ledger>,
-    /// Postgres, when this run has it; None keeps the roster in memory only.
-    store: Option<Arc<Db>>,
     /// Signalled after every change to the roster.
     changed: Condvar,
 }
@@ -123,15 +119,6 @@ impl Ledger {
 }
 
 impl Roster {
-    /// A roster that writes through to `store`; None when this run has no database.
-    pub fn with_db(store: Option<Arc<Db>>) -> Self {
-        Self {
-            agents: Mutex::default(),
-            store,
-            changed: Condvar::new(),
-        }
-    }
-
     pub fn get(&self, cid: u64) -> Option<Agent> {
         // contract
         self.lock().agents.get(&cid).cloned()
@@ -166,8 +153,8 @@ impl Roster {
         self.lock().agents.values().filter_map(&mut f).collect()
     }
 
-    /// Applies `f` to the agent, if it exists; returns whether it did. A change to a durable field is
-    /// written through. A change to Idle kicks the scheduler (see `scheduler::kick`).
+    /// Applies `f` to the agent, if it exists; returns whether it did. A change to Idle kicks the scheduler (see
+    /// `scheduler::kick`).
     pub fn update(&self, cid: u64, f: impl FnOnce(&mut Agent)) -> bool {
         // contract
         self.change(cid, f, true)
@@ -180,34 +167,29 @@ impl Roster {
     }
 
     fn change(&self, cid: u64, f: impl FnOnce(&mut Agent), kick: bool) -> bool {
-        let (written, became_idle) = {
+        let became_idle = {
             let mut ledger = self.lock();
             let Some(agent) = ledger.agents.get_mut(&cid) else {
                 return false;
             };
-            let before = durable(agent);
             let from = agent.status;
             f(agent);
             let to = agent.status;
-            let written = (durable(agent) != before).then(|| agent.clone());
             if from != to {
                 ledger.reindex(cid, from, to);
             }
-            (written, kick && to == Status::Idle && from != Status::Idle)
+            kick && to == Status::Idle && from != Status::Idle
         };
         self.changed.notify_all();
-        self.persist(written.as_ref());
         if became_idle {
             crate::scheduler::kick();
         }
         true
     }
 
-    /// Inserts or replaces an agent, and writes it through. An agent that arrives Idle, or turns Idle, kicks
-    /// the scheduler.
+    /// Inserts or replaces an agent. An agent that arrives Idle, or turns Idle, kicks the scheduler.
     pub fn upsert(&self, agent: Agent) {
         // contract
-        self.persist(Some(&agent));
         let became_idle = {
             let mut ledger = self.lock();
             let idle = agent.status == Status::Idle;
@@ -220,27 +202,13 @@ impl Roster {
         }
     }
 
-    /// Takes the agent off the roster (a soft delete in the database); returns whether it was there.
+    /// Takes the agent off the roster; returns whether it was there.
     pub fn remove(&self, cid: u64) -> bool {
         let removed = self.lock().take(cid);
         if removed {
             self.changed.notify_all();
         }
-        if let (true, Some(store)) = (removed, &self.store) {
-            store.retire_agent(cid);
-        }
         removed
-    }
-
-    /// Puts agents loaded from the database on the roster; nothing is written back.
-    pub fn restore(&self, agents: Vec<Agent>) {
-        {
-            let mut ledger = self.lock();
-            for agent in agents {
-                ledger.put(agent);
-            }
-        }
-        self.changed.notify_all();
     }
 
     /// Waits, at most `timeout`, until `done` holds for agent `cid` (`None` when it is not on the roster);
@@ -260,32 +228,9 @@ impl Roster {
         !result.timed_out()
     }
 
-    fn persist(&self, agent: Option<&Agent>) {
-        if let (Some(agent), Some(store)) = (agent, &self.store) {
-            store.write_agent(agent);
-        }
-    }
-
     fn lock(&self) -> std::sync::MutexGuard<'_, Ledger> {
         self.agents.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
-
-/// The fields the `agents` row holds; a change to one of them is written through.
-fn durable(agent: &Agent) -> (String, Option<String>) {
-    (agent.role.clone(), agent.model_override.clone())
-}
-
-/// Loads the active rows of the `agents` table onto the roster before reconcile runs; without a
-/// database nothing loads.
-pub fn load_roster(app: &App) {
-    let agents = app
-        .db
-        .active_agents()
-        .into_iter()
-        .map(|row| row.into_agent())
-        .collect();
-    app.agents.restore(agents);
 }
 
 /// Pushes every connected agent its current profile (tools, model), e.g. after the
@@ -479,7 +424,8 @@ fn system_parts(app: &App, agent: &Agent, role_prompt: &str) -> Vec<SystemPart> 
                 .bound_body("plaza")
                 .map(|rules| render_vars(&rules, agent)),
         ),
-        crate::skills::agent_tools::prompt_section(app, &agent.role, project.as_deref()),
+        // The skills index comes from the session's cached tools section (tools.rs).
+        crate::tools::section(app, agent).skills.clone(),
     ]);
     // The project's rules, the index of its memory (PLAN 9.5), and the paragraph about its project.
     let project_part = join_sections([
@@ -561,14 +507,10 @@ fn harness_prompt() -> String {
          nothing. Keep board posts and messages short; put long material in a shared file and link it.",
     );
     text.push_str(
-        "\n\nHow money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-         it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
-         worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
-         work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
-         at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-         nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
-         is only debited by what you send yourself (plaza_pay), up to 1000 credits a day. plaza_money shows your wallet \
-         and any task's escrow, spend and payouts.",
+        "\n\nHow money works: a task's budget is a cap in dollars or tokens, reserved from its project when the task \
+         starts. Each model call is held against the task's budget before it is sent, and settled with its real cost \
+         when it ends. A call that does not fit pauses the work until the owner raises the budget. You have no tools \
+         for money.",
     );
     text
 }
@@ -1414,7 +1356,7 @@ mod route_tests {
         assert!(ends_offline(Status::Offline));
 
         // The roster applies the same rule `gone` applies: the asleep agent stays asleep.
-        let roster = Roster::with_db(None);
+        let roster = Roster::default();
         let mut asleep = agent("builder");
         asleep.status = Status::Asleep;
         roster.upsert(asleep);
@@ -1444,7 +1386,7 @@ mod route_tests {
 
     #[test]
     fn wait_until_returns_as_soon_as_a_change_makes_the_agent_idle() {
-        let roster = Arc::new(Roster::with_db(None));
+        let roster = Arc::new(Roster::default());
         let mut asleep = agent("builder");
         asleep.status = Status::Asleep;
         roster.upsert(asleep);
@@ -1465,7 +1407,7 @@ mod route_tests {
 
     #[test]
     fn wait_until_gives_up_at_the_timeout_when_the_condition_never_holds() {
-        let roster = Roster::with_db(None);
+        let roster = Roster::default();
         roster.upsert(agent("builder"));
         let held = roster.wait_until(42, Duration::from_millis(50), |a| {
             a.is_some_and(|a| a.status == Status::Offline)
@@ -1569,7 +1511,7 @@ mod roster_index_tests {
 
     #[test]
     fn index_follows_every_mutation() {
-        let roster = Roster::with_db(None);
+        let roster = Roster::default();
         let statuses = [
             Status::Offline,
             Status::Idle,
@@ -1595,7 +1537,7 @@ mod roster_index_tests {
                 2 => {
                     roster.update(cid, |a| a.status = status);
                 }
-                3 => roster.restore(vec![agent(cid, status)]),
+                3 => roster.upsert(agent(cid, status)),
                 4 => {
                     roster.update(cid, |a| a.model_override = Some(format!("m{step}")));
                 }
@@ -1609,12 +1551,14 @@ mod roster_index_tests {
 
     #[test]
     fn counts_and_select_read_the_index() {
-        let roster = Roster::with_db(None);
-        roster.restore(vec![
+        let roster = Roster::default();
+        for a in [
             agent(1, Status::Idle),
             agent(2, Status::Working),
             agent(3, Status::Idle),
-        ]);
+        ] {
+            roster.upsert(a);
+        }
         assert_eq!(
             roster.count_by_status(),
             BTreeMap::from([(Status::Idle, 2), (Status::Working, 1)])

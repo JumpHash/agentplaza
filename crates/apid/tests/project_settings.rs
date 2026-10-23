@@ -1,7 +1,8 @@
 //! A project's settings, end to end on a scratch hub: the project's overrides reach the agents on its sessions (the model
 //! a session starts on for its role, the limits in the profile it starts with, the permission mode), the effective view
-//! says where each value comes from, a task's default budget is the project's, and the project's budget funds its tasks
-//! and goes back to the plaza when the project is archived. An agent is on a project through its session: the builder
+//! says where each value comes from, a task's default budget is the project's, and the project's budget (the work
+//! engine's, in its unit) funds its tasks' reservations, which come back when the project is archived. An agent is on a
+//! project through its session: the builder
 //! seat of the project's task starts one on a VM of its own. noded and the agent gateway are stood in for, as in the
 //! other scratch-hub tests.
 
@@ -164,16 +165,50 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
         "openai/gpt-6-luna"
     );
 
-    // The project's first task: a task that names no budget gets the project's, and its builder seat starts a session
-    // on a VM of its own, on the project's model for the builder.
+    // The project's budget, in tokens, is what its tasks reserve from it when they start. It is set before any task, so
+    // the first one's reservation lands in it. The old credits route is gone.
+    let (status, budget) = hub.call(
+        "PUT",
+        &format!("/v1/projects/{pid}/budget"),
+        Some(json!({ "unit": "tokens", "cap": 10_000 })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    assert_eq!(
+        (budget["unit"].clone(), budget["cap"].clone()),
+        (json!("tokens"), json!(10_000)),
+        "{budget}"
+    );
+    let (status, _) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/budget"),
+        Some(json!({ "credits": 5000 })),
+    );
+    assert!(
+        matches!(status, 404 | 405),
+        "the credits route is gone: {status}"
+    );
+
+    // The project's first task: a plain task (no budget of its own) whose builder seat starts a session on a VM of its
+    // own, on the project's model for the builder.
     let (status, first) = hub.call(
         "POST",
         "/v1/tasks",
         Some(json!({ "goal": "First", "project": pid })),
     );
     assert_eq!(status, 201, "{first}");
-    assert_eq!(first["budget"], 3000, "{first}");
+    assert!(
+        first.get("budget").is_none(),
+        "a task carries no credit budget: {first}"
+    );
     let session = builder_session(&hub, &text(&first["id"]));
+    // The seat's start reserved the project's task budget (3000 tokens) from the project, with no budget of its own.
+    let reserved = hub.wait_for(&format!("/v1/projects/{pid}/budget"), WAIT, |b| {
+        b["reserved"] == 3000
+    });
+    assert_eq!(
+        reserved["reserved"], 3000,
+        "a plain task reserves its project's task budget: {reserved}"
+    );
     assert_eq!(session["model"], "openai/gpt-6-luna", "{session}");
     let cid = session["cid"].as_u64().expect("its VM");
     assert_eq!(cid, SEAT_VM, "{session}");
@@ -221,19 +256,6 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
         "{fleet}"
     );
 
-    // The budget: its tasks are funded from the project's.
-    let (_, before) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
-    let plaza_at_start = before["plaza"].as_i64().unwrap_or(0);
-    assert_eq!(before["own"], false, "{before}");
-    let (status, budget) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/budget"),
-        Some(json!({ "credits": 5000 })),
-    );
-    assert_eq!(status, 200, "{budget}");
-    assert_eq!(budget["balance"], 5000);
-    let plaza_before = budget["plaza"].as_i64().unwrap_or(0);
-
     // The owner clears the builder's model for the project: the session the project starts next takes the default.
     let (_, _) = hub.call(
         "PATCH",
@@ -245,40 +267,45 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
         "/v1/tasks",
         Some(json!({ "goal": "Second", "project": pid })),
     );
-    assert_eq!(second["budget"], 3000);
     let next = builder_session(&hub, &text(&second["id"]));
     assert_eq!(next["model"], "anthropic/claude-sonnet-5-5", "{next}");
     assert_ne!(next["cid"], cid, "{next}");
-    let (_, budget) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
+    let reserved = hub.wait_for(&format!("/v1/projects/{pid}/budget"), WAIT, |b| {
+        b["reserved"] == 6000
+    });
     assert_eq!(
-        budget["balance"], 2000,
-        "the second task drew on the project: {budget}"
+        reserved["reserved"], 6000,
+        "the second plain task reserves its project's task budget too: {reserved}"
     );
-    assert_eq!(
-        budget["plaza"].as_i64(),
-        Some(plaza_before),
-        "not on the plaza"
-    );
-    let (status, refused) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/budget"),
-        Some(json!({ "credits": 0 })),
-    );
-    assert_eq!(status, 400, "{refused}");
 
-    // A task nobody has taken: paused, no seat starts on it, so it stays open until the archive.
+    // A task nobody has taken: paused, so no seat starts on it. Its own budget is 1000 tokens, which the project
+    // reserves when the project resumes and the task starts.
     let (status, _) = hub.call("POST", &format!("/v1/projects/{pid}/pause"), None);
     assert_eq!(status, 200);
-    // (Its budget fits in what the project has left: 2000.)
     let (status, open) = hub.call(
         "POST",
         "/v1/tasks",
-        Some(json!({ "goal": "Third", "project": pid, "budget": 1000 })),
+        Some(json!({ "goal": "Third", "project": pid })),
     );
     assert_eq!(status, 201, "{open}");
+    let (status, own) = hub.call(
+        "PUT",
+        &format!("/v1/tasks/{}/budget", text(&open["id"])),
+        Some(json!({ "unit": "tokens", "cap": 1000 })),
+    );
+    assert_eq!(status, 200, "{own}");
+    let (status, _) = hub.call("POST", &format!("/v1/projects/{pid}/resume"), None);
+    assert_eq!(status, 200);
+    let reserved = hub.wait_for(&format!("/v1/projects/{pid}/budget"), WAIT, |b| {
+        b["reserved"] == 7000
+    });
+    assert_eq!(
+        reserved["reserved"], 7000,
+        "the third task reserves its own budget: {reserved}"
+    );
 
-    // Archived: its sessions end and their agents are off it, its open task is withdrawn and the task its seat had is
-    // closed (each escrow back where it came from), and what the project has left goes back to the plaza.
+    // Archived: its sessions end and their agents are off it, its tasks are closed (never left claimed), and what the
+    // project reserved for them comes back.
     let (status, _) = hub.call("POST", &format!("/v1/projects/{pid}/archive"), None);
     assert_eq!(status, 200);
     let (_, on) = hub.call("GET", &format!("/v1/agents?project={pid}"), None);
@@ -292,13 +319,18 @@ fn a_projects_settings_reach_its_agents_and_its_budget_funds_its_tasks() {
         assert_eq!(ended["state"], "ended", "{ended}");
     }
     let (_, third) = hub.call("GET", &format!("/v1/tasks/{}", text(&open["id"])), None);
-    assert_eq!(third["state"], "withdrawn", "{third}");
+    assert!(
+        matches!(third["state"].as_str(), Some("withdrawn" | "failed")),
+        "the third task is closed, never left claimed: {third}"
+    );
     let (_, second) = hub.call("GET", &format!("/v1/tasks/{}", text(&second["id"])), None);
     assert!(
         matches!(second["state"].as_str(), Some("withdrawn" | "failed")),
         "the task its seat had is closed, never left claimed: {second}"
     );
     let (_, budget) = hub.call("GET", &format!("/v1/projects/{pid}/budget"), None);
-    assert_eq!(budget["balance"], 0, "{budget}");
-    assert_eq!(budget["plaza"].as_i64(), Some(plaza_at_start), "{budget}");
+    assert_eq!(
+        budget["reserved"], 0,
+        "the reservations came back: {budget}"
+    );
 }

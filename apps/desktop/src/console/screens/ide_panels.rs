@@ -239,8 +239,8 @@ pub fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     out
 }
 
-/// The held calls of agent `cid` that still wait, from `GET /v1/approvals`. Tool calls only: payments and the
-/// other kinds are decided on the Approvals screen.
+/// The held calls of agent `cid` that still wait, from `GET /v1/approvals`. Tool calls only: the other kinds (reviews,
+/// shares) are decided on the Approvals screen.
 fn pending_for(list: &Value, cid: u64) -> Vec<Held> {
     list.as_array()
         .map(|items| {
@@ -1493,7 +1493,7 @@ mod tests {
             {"id": "a1", "cid": 7, "state": "pending", "tool": "edit", "input": {"create": [{"path": "x"}]}},
             {"id": "a2", "cid": 8, "state": "pending", "tool": "run", "input": {}},
             {"id": "a3", "cid": 7, "state": "approved", "tool": "run", "input": {}},
-            {"id": "a4", "cid": 7, "state": "pending", "kind": "payment", "tool": "", "input": {}},
+            {"id": "a4", "cid": 7, "state": "pending", "kind": "artifact.share", "tool": "", "input": {}},
         ]);
         let held = pending_for(&list, 7);
         assert_eq!(held.len(), 1);

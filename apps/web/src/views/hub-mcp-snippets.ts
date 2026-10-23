@@ -31,7 +31,6 @@ export const HUB_TOOLS: Record<HubScope, string[]> = {
     'get_project',
     'list_approvals',
     'list_machines',
-    'treasury_summary',
     'usage_summary',
     'list_laws',
     'search_library',

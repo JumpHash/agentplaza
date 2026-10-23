@@ -4,7 +4,7 @@
 //! (or the jobs agent's `register_from_job`) reads them, checks the inference contract and the
 //! bytes with tract (`inference::LoadedModel::load`), and records the model as `trained`. States
 //! go `trained -> shadow -> promoted -> retired`: only the owner promotes or retires. A promoted
-//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, no VM, wallet,
+//! model gets a model agent on the roster: `kind: "model"`, a CID in the reserved range, no VM,
 //! tools or chat. Retiring it removes the entry again.
 //!
 //! The job's model card has no inference contract yet, so the registry reads an object `serving`
@@ -700,7 +700,7 @@ fn free_cid(roster: &Roster, records: &BTreeMap<String, ModelRecord>) -> Result<
         })
 }
 
-/// The roster entry of a promoted model: no VM, no wallet, no tools, no chat.
+/// The roster entry of a promoted model: no VM, no tools, no chat.
 pub fn model_agent(cid: u64, now_ms: u64) -> Agent {
     Agent {
         cid,

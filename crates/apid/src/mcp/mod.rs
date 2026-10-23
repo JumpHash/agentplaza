@@ -21,6 +21,7 @@ pub mod runtimes;
 pub mod stdio;
 #[cfg(test)]
 mod tests;
+pub mod vm;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -37,6 +38,7 @@ use sha2::{Digest, Sha256};
 use crate::agents::Agent;
 use crate::deliverables::Upload;
 use crate::state::App;
+use crate::upstream::Upstream;
 use client::ToolInfo;
 use config::{McpServer, Risk};
 use runtime::{Ctx, Runtime};
@@ -124,10 +126,19 @@ pub struct Mcp {
 }
 
 impl Mcp {
+    /// Counts the server store's changes in `gens` (the hub's generations).
+    pub fn with_generations(
+        mut self,
+        gens: std::sync::Arc<apz_cache::Generations<String>>,
+    ) -> Self {
+        self.store = self.store.with_generations(gens);
+        self
+    }
+
     /// An empty MCP state: the store fills from the database at start. Stdio servers run under the OS sandbox, with
     /// their directories and the runtimes under `state_dir`, and reach the network through the egress proxy on
     /// loopback `port`.
-    pub fn load(state_dir: &Path, port: u16) -> Mcp {
+    pub fn load(state_dir: &Path, port: u16, noded: Upstream) -> Mcp {
         Mcp {
             store: config::Store::default(),
             runtime: Runtime::new(
@@ -135,7 +146,8 @@ impl Mcp {
                 Arc::new(runtimes::HttpFetch),
                 Arc::new(stdio::SandboxLauncher),
                 Some(egress::Egress::new(port)),
-            ),
+            )
+            .with_vm(Arc::new(vm::VmLauncher::new(noded))),
         }
     }
 }
@@ -269,20 +281,23 @@ pub fn allowed(server: &McpServer, role: &str, node: Option<&str>, project: Opti
         }
 }
 
-/// The tool specs an agent is offered: each allowed tool of each server the agent may use, that the laws
-/// permit. Irreversible tools are withheld by C-004a until an owner approval is threaded through calls.
-pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
-    let node = app.nodes.owner_of_cid(agent.cid).map(|n| n.id);
+/// The tool specs a session of `role` on `node`, working on `project`, is offered: each allowed tool of each server it may
+/// use, that the laws permit. Irreversible tools are withheld by C-004a until an owner approval is threaded through calls.
+pub fn specs_for(
+    app: &App,
+    role: &str,
+    node: Option<&str>,
+    project: Option<&str>,
+) -> Vec<ToolSpec> {
     let laws = crate::laws::global();
     let mut specs = Vec::new();
     for server in app.mcp.store.list() {
-        let project = crate::projects::project_of(app, agent.cid);
-        if !allowed(&server, &agent.role, node.as_deref(), project.as_deref()) {
+        if !allowed(&server, role, node, project) {
             continue;
         }
         let tools = app.mcp.store.tools_of(&server.id);
         for (tool, name) in tools.iter().zip(wire_names(&server.id, &tools)) {
-            if !server.tools.allow.admits(&tool.name) || !laws.permits(&agent.role, &name) {
+            if !server.tools.allow.admits(&tool.name) || !laws.permits(role, &name) {
                 continue;
             }
             let note = match risk_for(&server, tool) {

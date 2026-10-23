@@ -143,7 +143,7 @@ fn reserve_budget(
             left: left.saturating_sub(unreserved),
         });
     }
-    app.budgets.start_task(task, reserve, now)
+    app.budgets.start_task(task, project, reserve, now)
 }
 
 /// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats) up to its project's team (PLAN 7.1): a
@@ -1595,24 +1595,25 @@ pub fn before_call(
     model: &str,
     request: &apz_proto::chat::ChatRequest,
 ) -> Result<Option<CallHold>, String> {
-    let session = app.sessions.by_cid(cid);
-    let now = now();
     let size = serde_json::to_string(&request.messages).map_or(0, |t| t.len())
         + serde_json::to_string(&request.tools).map_or(0, |t| t.len());
-    // About three bytes a token, rounded up: the hold is a ceiling, and the settle charges what the call really cost.
-    let worst = call_cost(
-        app,
-        model,
-        crate::prices::Tokens {
-            input: (size as u64).div_ceil(3),
-            output: match request.max_tokens {
-                0 => UNCAPPED_ANSWER_TOKENS,
-                cap => u64::from(cap),
-            },
-            cache_read: 0,
-            cache_write: 0,
-        },
-    );
+    hold_call(app, cid, model, size as u64, request.max_tokens)
+}
+
+/// [`before_call`] for a call whose request the caller sized itself: `size` is the request's size in bytes and
+/// `max_tokens` the answer cap it names (0 when it names none). The LLM proxy holds its calls this way, and a VM that
+/// runs no session holds on the plaza's budget the same way.
+pub fn hold_call(
+    app: &App,
+    cid: u64,
+    model: &str,
+    size: u64,
+    max_tokens: u32,
+) -> Result<Option<CallHold>, String> {
+    let session = app.sessions.by_cid(cid);
+    let now = now();
+    // The hold is a ceiling: the settle charges what the call really cost.
+    let worst = call_cost(app, model, worst_case(size, max_tokens));
     let (task, project) = match &session {
         Some(session) => (session.task.as_deref(), session.project.as_str()),
         None => (None, PLAZA),
@@ -1656,27 +1657,67 @@ pub fn before_call(
     }
 }
 
+/// A call's worst case in tokens, from its request's size in bytes and the answer cap it names (0 when it names none):
+/// about three bytes a token, rounded up, and the answer its cap, or [`UNCAPPED_ANSWER_TOKENS`] when it has none.
+pub fn worst_case(size: u64, max_tokens: u32) -> crate::prices::Tokens {
+    crate::prices::Tokens {
+        input: size.div_ceil(3),
+        output: match max_tokens {
+            0 => UNCAPPED_ANSWER_TOKENS,
+            cap => u64::from(cap),
+        },
+        cache_read: 0,
+        cache_write: 0,
+    }
+}
+
+/// Releases a call's hold without charging it: the call failed, or returned no usage.
+pub fn release_call(app: &App, held: CallHold) {
+    app.budgets.release(&held.hold, now());
+}
+
 /// After the call: what it really cost is charged (and the hold released), its usage is added to the session, and a
 /// budget it took past its warning share says so in the task's chat. A failed call (`usage` none) charges nothing.
 pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto::chat::Usage>) {
-    let now = now();
     let Some(usage) = usage else {
-        app.budgets.release(&held.hold, now);
+        release_call(app, held);
         return;
     };
-    let tokens = crate::prices::Tokens {
-        input: usage.input_tokens,
-        output: usage.output_tokens,
-        cache_read: usage.cache_read_tokens,
-        cache_write: usage.cache_write_tokens,
+    settle_call(
+        app,
+        cid,
+        held,
+        crate::prices::Tokens {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+            cache_read: usage.cache_read_tokens,
+            cache_write: usage.cache_write_tokens,
+        },
+        None,
+    );
+}
+
+/// [`after_call`] for a call whose usage the caller parsed itself (the LLM proxy's, streams included): `reported_usd` is
+/// the cost the provider reported for the call when it did, and the model's price settles it when it did not.
+pub fn settle_call(
+    app: &App,
+    cid: u64,
+    held: CallHold,
+    tokens: crate::prices::Tokens,
+    reported_usd: Option<f64>,
+) {
+    let now = now();
+    let all_tokens = tokens.input + tokens.output + tokens.cache_read + tokens.cache_write;
+    let actual = match reported_usd {
+        Some(usd) => Amount::of((usd * 1_000_000.0).ceil() as u64, all_tokens),
+        None => call_cost(app, &held.model, tokens),
     };
-    let actual = call_cost(app, &held.model, tokens);
     let _ = app.sessions.add_usage(
         cid,
         &crate::sessions::Usage {
-            tokens_in: usage.input_tokens,
-            tokens_out: usage.output_tokens,
-            tokens_cached: usage.cache_read_tokens,
+            tokens_in: tokens.input,
+            tokens_out: tokens.output,
+            tokens_cached: tokens.cache_read,
             cost_micros: actual.micros,
             model_calls: 1,
             tool_calls: 0,
@@ -2043,5 +2084,14 @@ mod tests {
                 "{state:?} is not left to hand over"
             );
         }
+    }
+
+    #[test]
+    fn a_call_is_held_at_its_request_size_in_tokens_and_the_answer_cap_it_names() {
+        let worst = worst_case(300, 500);
+        assert_eq!((worst.input, worst.output), (100, 500));
+        // About three bytes a token, rounded up; a call that names no cap holds the largest default answer.
+        assert_eq!(worst_case(301, 0).input, 101);
+        assert_eq!(worst_case(0, 0).output, UNCAPPED_ANSWER_TOKENS);
     }
 }

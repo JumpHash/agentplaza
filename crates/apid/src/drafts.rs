@@ -681,7 +681,6 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<Value, (u16, String)>
 
     // 2. Its settings, and its budget: its tasks are funded from it.
     let settings = settings_of(&draft);
-    let task_budget = settings.task_budget;
     if let Err(e) = app.project_settings.set(&pid, settings) {
         undo(app, &pid);
         return Err((500, format!("the project's settings were not saved: {e}")));
@@ -700,13 +699,7 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<Value, (u16, String)>
     }
 
     // 3. Its tasks: the ledger creates them all or none.
-    let posted = match task_plan::post(
-        &app.projects,
-        &app.plaza.tasks,
-        &pid,
-        &draft.tasks,
-        task_budget,
-    ) {
+    let posted = match task_plan::post(&app.projects, &app.plaza.tasks, &pid, &draft.tasks) {
         Ok(posted) => posted,
         Err(e) => {
             undo(app, &pid);
@@ -858,7 +851,6 @@ mod tests {
             goal: format!("goal {key}"),
             acceptance: None,
             role: Some(role.into()),
-            budget: None,
             after: after.iter().map(|k| k.to_string()).collect(),
         }
     }

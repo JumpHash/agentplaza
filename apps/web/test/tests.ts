@@ -1,8 +1,8 @@
 // Pure-logic tests: run with `npm test`.
 import { parse, href, hrefIn, movedTo, setLinkScope } from '../src/router';
 import { inScope, isLive, liveProjects } from '../src/scope';
-import { afterText, budgetText, isConversationId, settingsLine, startBlock, streamed } from '../src/ide/conversation-model';
-import type { ProjectDraft } from '../src/api';
+import { afterText, budgetText, chatOfWorkspace, draftBudgetOf, isTalkWorkspace, settingsLine, startBlock, streamed, talkWorkspace } from '../src/ide/talk-model';
+import type { ProjectDraft } from '../src/api-work';
 import { machinesRoute, viewHash } from '../src/views/machines';
 import { parseStyle, STYLES } from '../src/views/machine-style';
 import { finiteValues, gpuCardLine, latestValue, metricValues, parseGpuCards, vmRows } from '../src/views/machine-view-model';
@@ -16,7 +16,6 @@ import { builtinLaws, diagnosticText, diagnosticsByLine, errorText, isBlank, isO
 import type { LawInfo, Settings } from '../src/api';
 import { approvalPath } from '../src/api';
 import { easeOut, niceScale, resample, tweenArray } from '../src/ui/chart';
-import { balanceData, barData, creditsOf, creditsUsd, flowsOf, mergeJournal, movesOf, partyOf, sortRows, windowOf as treasuryWindow } from '../src/views/treasury';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent, FleetApple, FleetKind, FleetMachine, FleetResponse, FleetStatus, IdeWorkspaceInfo } from '../src/api';
@@ -36,7 +35,7 @@ import { applyBuffer, badgeOf, diffMark, dirsOf, fuzzyScore, isViewed, languageF
 import type { FileChange } from '../src/ide/types';
 import { CENTRE_MIN, clampSize, closeSheets, defaultLayout, fitSize, isNarrow, LEFT_SIZE, leftShows, leftViewFor, openRight, originFallback, parseLayout, RIGHT_SIZE, rightShows, rightTabFor, SHUT, serializeLayout, toggleLeft, toggleRight, hasDiff, hasTerminal, centreViewsFor, rightViewsFor, runsFor } from '../src/ide/layout';
 import { MAX_TERMINALS, attachFrame, base64ToBytes, bytesToBase64, clearSession, inputFrame, killFrame, nextOffset, openFrame, parseServerFrame, plainText, readSession, reconnectDelay, resizeFrame, sessionKey, splitInput, storedTerminalCount, terminalSocketUrl, writeSession, type KeyValueStore } from '../src/views/ide-terminal-model';
-import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, dollarsPerHour, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, rateText, readDefaults, readRate, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
+import { auditLabel, codeChip, countdown, displaysText, formLabel, gpuLine, gpuSummary, joinCommand, leaseCount, leaseStateChip, nameProblem, osText, pictureNote, ramText, readSettings, accountBadge, accountText, settingsForm, sortStations, stationSummary, statusChip, takeoverText, type SettingsForm, actionFrame, activeAction, backoffMs, bytesText, buttonAction, clockText, controlSocketUrl, crumbsOf, defaultsForm, frameAt, frameTime, frameTimes, framePoint, inputButton, joinPath, keyAction, moveAction, parentDir, parseControlText, parseFrame, parseScreenText, pendingPaths, readDefaults, recordingSpan, scrollNotches, screenSocketUrl, sessionChoices, takeoverBanner, treeOf, uploadProblem, wheelAction, actionText, type KeyEventLike } from '../src/views/workstations-model';
 import { isStationNode, leaseCounts, stationBadge, stationLine, stationLook, stationMachine, stationThumbnailPath } from '../src/views/station-machine';
 import { lookOfSpec, sizeLine, specKey, VIEWS, type PictureSpec } from '../src/views/machine-picture';
 import { VM_FORM_DEFAULTS, backendFor, backendHint, imageProblem, macosOn, nodeChoices, nodeFactsLine, nodeOptionLabel, nodeVmFacts, pciProblem, readVmForm, sortVms, vmBody, vmGpuText, vmNameProblem, vmOsText, vmProblem, vmStateChip, wholeIn, type NodeVmFacts, type VmForm } from '../src/views/workstations-vm-model';
@@ -177,20 +176,31 @@ eq([easeOut(0), easeOut(1)], [0, 1], 'ease out: the ends are fixed');
 eq(parse('#/hardware-lab?model=hub&lod=1'), { screen: 'hardware-lab', params: [], project: null }, 'a query is not part of the route');
 eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its project before a query');
 
-// ---- The IDE's conversation view (ide/conversation-model.ts) ----
+// ---- The IDE's talk view (ide/talk-model.ts): a chat's workspace, its draft, its budget field ----
 {
-  eq(isConversationId('conv-12'), true, 'a conversation workspace id');
-  eq(isConversationId('agent:7'), false, 'an agent workspace is not one');
-  eq(isConversationId(null), false, 'nothing open is not one');
+  eq(talkWorkspace('main'), 'chat:main', 'a chat workspace id');
+  eq(chatOfWorkspace('chat:ch12'), 'ch12', 'a chat workspace opens its chat');
+  eq(isTalkWorkspace('chat:main'), true, 'the orchestrator chat is a workspace');
+  eq(isTalkWorkspace('chat:'), false, 'a chat workspace with no chat is not one');
+  eq(isTalkWorkspace('agent:7'), false, 'an agent workspace is not one');
+  eq(isTalkWorkspace(null), false, 'nothing open is not one');
   eq(afterText({ after: ['1', '2'] }), 'after 1, 2', 'a task that runs after others');
   eq(afterText({}), '', 'one that runs at once');
-  const draft = { problems: [] as string[], budget: 15000 } as unknown as ProjectDraft;
-  eq(startBlock({ draft, project: undefined, archived: false }), null, 'a draft with no problems starts');
-  eq(startBlock({ draft: { ...draft, problems: ['the draft has no tasks yet'] }, project: undefined, archived: false }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
-  eq(startBlock({ draft, project: 'pr2', archived: false }), 'The project is started.', 'a started one does not start again');
-  eq(startBlock({ draft: undefined, project: undefined, archived: false })?.startsWith('There is no draft yet'), true, 'no draft yet');
-  eq(budgetText({ budget: 15000 }), '15,000 credits', 'a budget');
-  eq(budgetText({}), 'From the plaza’s budget', 'no budget of its own');
+  const draft = { problems: [] as string[], revision: 1, budget: { unit: 'usd', cap: 15_000_000 } } as unknown as ProjectDraft;
+  eq(startBlock({ archived: false }, draft), null, 'a draft with no problems starts');
+  eq(startBlock({ archived: false }, { ...draft, problems: ['the draft has no tasks yet'] }), 'Before it can start: the draft has no tasks yet.', 'its problems stop it');
+  eq(startBlock({ archived: false }, { ...draft, started_ms: 9 }), 'The project is started.', 'a started draft does not start again');
+  eq(startBlock({ archived: true }, draft), 'The chat is archived.', 'an archived chat does not start');
+  eq(startBlock({ archived: false }, null)?.startsWith('There is no draft yet'), true, 'no draft yet');
+  eq(budgetText({ unit: 'usd', cap: 15_000_000 }), '$15.00', 'a dollar budget');
+  eq(budgetText({ unit: 'tokens', cap: 500_000, monthly_cap: 100_000 }), '500,000 tokens · 100,000 tokens a month', 'a token budget with a monthly cap');
+  eq(budgetText(undefined), 'From the plaza’s budget', 'no budget of its own');
+  // The budget field is sent whole (the edit replaces it): dollars become micro-dollars, the monthly cap is kept.
+  eq(draftBudgetOf('usd', '2.5', 3_000_000), { ok: true, value: { unit: 'usd', cap: 2_500_000, monthly_cap: 3_000_000 } }, 'dollars typed, the monthly cap kept');
+  eq(draftBudgetOf('tokens', '500,000'), { ok: true, value: { unit: 'tokens', cap: 500_000 } }, 'tokens typed, grouped');
+  eq(draftBudgetOf('usd', '  '), { ok: true, value: undefined }, 'a blank field sends no budget');
+  eq(draftBudgetOf('usd', '0').ok, false, 'a budget of zero is refused');
+  eq(draftBudgetOf('tokens', 'lots').ok, false, 'a budget that is no number is refused');
   eq(
     settingsLine({ role_models: { builder: 'anthropic/claude-sonnet-5-5' }, effort: 'high', permission_mode: 'ask' }),
     'Builder model: anthropic/claude-sonnet-5-5 · effort high · permission: ask',
@@ -224,48 +234,6 @@ eq(parse('#/p/pr2/work?task=t3').project, 'pr2', 'a scoped route keeps its proje
   eq(inScope(agent('pr2'), null), true, 'All projects shows everyone');
   eq(inScope(agent(null), null), true, 'All projects shows an agent on no project');
 }
-
-// Treasury: the range window, flow totals, chart data, journal paging merge and the party labels.
-const TDAY = 86_400_000;
-const NOW = 100 * TDAY;
-eq(treasuryWindow('7d', NOW, 0), { from: NOW - 7 * TDAY, to: NOW, bucket: 'hour' }, 'treasury 7 d is hourly');
-eq(treasuryWindow('30d', NOW, 0), { from: NOW - 30 * TDAY, to: NOW, bucket: 'day' }, 'treasury 30 d is daily');
-eq(treasuryWindow('all', NOW, NOW - 10 * TDAY), { from: NOW - 10 * TDAY, to: NOW, bucket: 'day' }, 'treasury all starts at the first account');
-eq(treasuryWindow('all', NOW, NOW + 5), { from: NOW - TDAY, to: NOW, bucket: 'day' }, 'treasury all with a future start spans a day');
-
-const tp = (at: number, over: Record<string, number> = {}) => ({
-  at_ms: at, end_ms: at + TDAY, entries: 2, minted: 0, escrowed: 0, paid: 0, refunded: 0, fined: 0, spent: 0,
-  by_kind: {}, plaza_budget_end: 100, circulating_end: 20, treasury_end: 3, ...over,
-});
-const pts = [tp(0, { minted: 50, paid: 5, spent: 2 }), tp(TDAY, { minted: 10, escrowed: 7, fined: 1, refunded: 4, spent: 3, entries: 3 })];
-eq(flowsOf(pts), { entries: 5, minted: 60, escrowed: 7, paid: 5, refunded: 4, fined: 1, spent: 5 }, 'flow totals sum over buckets');
-eq(flowsOf([]), { entries: 0, minted: 0, escrowed: 0, paid: 0, refunded: 0, fined: 0, spent: 0 }, 'flow totals of no buckets are zero');
-const bd = barData(pts, (at) => `t${at / TDAY}`);
-eq(bd.labels, ['t0', 't1'], 'bars are labelled per bucket');
-eq(bd.layers.map((l) => l.key), ['minted', 'escrowed', 'paid', 'refunded', 'fined', 'spent'], 'bars: one layer per kind, in order');
-eq(bd.layers[0]?.values, [50, 10], 'bars: minted values per bucket');
-const ad = balanceData(pts, (at) => `t${at / TDAY}`);
-eq(ad.layers.map((l) => [l.key, l.values]), [['plaza', [100, 100]], ['circulating', [20, 20]], ['treasury', [3, 3]]], 'balances: plaza, circulating, treasury');
-
-const je = (id: number, over: Record<string, unknown> = {}) => ({ id, kind: 'spend', amount: 1, created_at: id, memo: '', posted_by: 'x', postings: [], task_id: null, root_task: null, ...over });
-const j1 = [je(5), je(4)];
-eq(mergeJournal(j1, [je(4), je(3)]).map((e) => e.id), [5, 4, 3], 'journal: an older page extends the list without repeats');
-eq(mergeJournal([je(4), je(3)], [je(6), je(5)]).map((e) => e.id), [6, 5, 4, 3], 'journal: a newer head page goes first');
-eq(mergeJournal([], [je(2), je(1)]).map((e) => e.id), [2, 1], 'journal: the first page is newest first');
-eq(mergeJournal([je(4, { memo: 'old' })], [je(4, { memo: 'new' })])[0]?.memo, 'new', 'journal: the fresher copy of an id wins');
-
-eq(sortRows(['b', 'a', 'c'], (s) => s, 1), ['a', 'b', 'c'], 'sort strings ascending');
-eq(sortRows([3, 10, 2], (n) => n, -1), [10, 3, 2], 'sort numbers descending');
-
-const names = new Map([[7, 'Della']]);
-eq(partyOf({ account: 1, amount: -5, kind: 'wallet', owner_ref: '7' }, names), 'Della', 'a wallet is its agent');
-eq(partyOf({ account: 2, amount: 5, kind: 'town_budget', owner_ref: 'plaza' }, names), 'Plaza budget', 'the plaza budget account');
-eq(partyOf({ account: 3, amount: -5, kind: 'task_escrow', owner_ref: 't9' }, names), 'Escrow t9', 'an escrow names its task');
-eq(movesOf({ id: 1, kind: 'refund', amount: 500, created_at: 0, memo: '', posted_by: '', task_id: 't9', root_task: null, postings: [
-  { account: 12, amount: -500, kind: 'task_escrow', owner_ref: 't9' }, { account: 2, amount: 500, kind: 'town_budget', owner_ref: 'plaza' }] }, names),
-  { from: 'Escrow t9', to: 'Plaza budget' }, 'a refund moves from escrow to the plaza budget');
-eq(Math.abs(creditsUsd(1000) - 1) < 1e-9, true, 'a thousand credits are a dollar');
-eq(creditsOf(0.5), 500, 'half a dollar of model spend is five hundred credits');
 
 // The Machines view's pure parts (floor-popup.ts): the popup's text.
 eq(gibText(16384), '16 GiB', 'machines text: whole GiB');
@@ -498,7 +466,7 @@ sectionEnd('onboarding tests: ok');
 }
 sectionEnd('ide wrapper tests: ok');
 
-// innerHTML: the console sets text with textContent. Six sites set markup, each a fixed template or values passed through
+// innerHTML: the console sets text with textContent. Four sites set markup, each a fixed template or values passed through
 // esc(). A site is named by its file and a snippet of its line (not its line number), so edits nearby do not break this.
 // A new assignment fails it, and so does a listed site that no longer exists.
 {
@@ -509,7 +477,6 @@ sectionEnd('ide wrapper tests: ok');
   const allowed: [string, string][] = [
     ['views/engine-mount.ts', "root.innerHTML = '';"],
     ['views/nodes.ts', 't.innerHTML = markup;'],
-    ['views/treasury.ts', 't.innerHTML = markup;'],
     ['ui/shell.ts', 'svg.innerHTML ='],
     ['ui/shell.ts', 'amb!.innerHTML ='],
   ];
@@ -524,7 +491,7 @@ sectionEnd('ide wrapper tests: ok');
       else used[hit] = true;
     });
   }
-  eq(unlisted, [], 'innerHTML: every assignment is one of the six fixed sites');
+  eq(unlisted, [], 'innerHTML: every assignment is one of the four fixed sites');
   eq(allowed.filter((_, i) => !used[i]).map(([f, s]) => `${f}: ${s}`), [], 'innerHTML: every listed site still exists');
 }
 sectionEnd('innerHTML tests: ok');
@@ -877,13 +844,13 @@ const named = (name: string) => ({ name }) as StationView;
 const input = [named('studio'), named('Alpha'), named('beta')];
 eq([sortStations(input).map((s) => s.name), input.map((s) => s.name)], [['Alpha', 'beta', 'studio'], ['studio', 'Alpha', 'beta']], 'workstation list: name order, input untouched');
 
-const defaults: StationSettings = { takeover: 'agent_waits', record: true, retention_days: 30, record_fps: 2, record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false, rate_per_hour: 0 };
+const defaults: StationSettings = { takeover: 'agent_waits', record: true, retention_days: 30, record_fps: 2, record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false };
 const form = settingsForm(defaults);
-eq(form, { takeover: 'agent_waits', record: true, retention_days: '30', record_fps: '2', record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false, rate_per_hour: '0' }, 'workstation settings form: the numbers as text');
+eq(form, { takeover: 'agent_waits', record: true, retention_days: '30', record_fps: '2', record_takeovers: true, work_folder: '~/AgentPlaza', snapshot_reset: false }, 'workstation settings form: the numbers as text');
 eq(readSettings(form), { ok: true, settings: defaults }, 'workstation settings form: the defaults round-trip');
 eq(readSettings({ ...form, work_folder: '  /srv/work  ', retention_days: ' 7 ', record_fps: '1' }), { ok: true, settings: { ...defaults, work_folder: '/srv/work', retention_days: 7, record_fps: 1 } }, 'workstation settings form: trimmed and parsed');
-const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '5', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: '1000000' };
-eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 5, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true, rate_per_hour: 1000000 } }, 'workstation settings form: every field, at the bounds');
+const edited: SettingsForm = { takeover: 'keep_working_pointer_paused', record: false, retention_days: '365', record_fps: '5', record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true };
+eq(readSettings(edited), { ok: true, settings: { takeover: 'keep_working_pointer_paused', record: false, retention_days: 365, record_fps: 5, record_takeovers: false, work_folder: 'D:\\work', snapshot_reset: true } }, 'workstation settings form: every field, at the bounds');
 const refused = (patch: Partial<SettingsForm>): boolean => readSettings({ ...form, ...patch }).ok;
 eq(
   [
@@ -898,15 +865,10 @@ eq(
     refused({ work_folder: 'a'.repeat(513) }),
     refused({ work_folder: 'a\tb' }),
     refused({ takeover: 'nope' as SettingsForm['takeover'] }),
-    refused({ rate_per_hour: '' }),
-    refused({ rate_per_hour: '1.5' }),
-    refused({ rate_per_hour: '-1' }),
-    refused({ rate_per_hour: '1000001' }),
   ],
-  [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false],
+  [false, false, false, false, false, false, false, false, false, false, false],
   'workstation settings form: every out-of-bounds value is refused',
 );
-eq(readSettings({ ...form, rate_per_hour: ' 2500 ' }), { ok: true, settings: { ...defaults, rate_per_hour: 2500 } }, 'workstation rate: whole credits, trimmed');
 eq(readSettings({ ...form, retention_days: '0' }), { ok: false, error: 'Keep recordings for whole days, from 1 to 3650.' }, 'workstation settings form: the retention message');
 sectionEnd('workstation tests: ok');
 
@@ -1106,8 +1068,6 @@ eq([pendingPaths(['a', 'b']), pendingPaths([{ path: 'c' }, 5, { x: 1 }]), pendin
 eq([uploadProblem('a.txt', 10), uploadProblem('../x', 1), uploadProblem('a/b', 1), uploadProblem('', 1), uploadProblem('big', 512 * 1024 * 1024 + 1)].map((p) => p !== null), [false, true, true, true, true], 'work folder: upload names and sizes that cannot be kept');
 eq([bytesText(0), bytesText(1536), bytesText(10 * 1024 * 1024), bytesText(512 * 1024 * 1024)], ['0 B', '1.5 KB', '10 MB', '512 MB'], 'work folder: sizes in words');
 
-eq([readRate(' 120 '), readRate('1.5'), readRate('1000001'), readRate(''), readRate('0')], [120, null, null, null, 0], 'rate: whole credits from 0 to the bound');
-eq([rateText(0), rateText(1500), dollarsPerHour(12)], ['Free', '$1.500 an hour', '0.012'], 'rate: free, or its dollars an hour');
 const recDefaults: RecordingDefaults = { record: true, retention_days: 30, record_fps: 1, record_takeovers: false };
 eq(readDefaults(defaultsForm(recDefaults)), { ok: true, defaults: recDefaults }, 'recording defaults: the form round-trips');
 eq([readDefaults({ ...defaultsForm(recDefaults), record_fps: '6' }).ok, readDefaults({ ...defaultsForm(recDefaults), record_fps: '0' }).ok, readDefaults({ ...defaultsForm(recDefaults), retention_days: '0' }).ok], [false, false, false], 'recording defaults: out-of-bounds values are refused, frames a second from 1 to 5');
@@ -1843,14 +1803,14 @@ sectionEnd('graph wrapper tests: ok');
   eq(workState({ state: 'open', ready: false, blocked_by: [] }), 'waiting', 'work: an open task waiting on links');
   eq(workState({ state: 'open', ready: false, blocked_by: ['t1'] }), 'blocked', 'work: a failed link blocks');
   eq(workState({ state: 'claimed', ready: false, blocked_by: [] }, { stage: 'tool', tool: 'bash', since_ms: 0 }), 'working', 'work: a claim at work');
-  eq(workState({ state: 'claimed', ready: false, blocked_by: [] }, { stage: 'approval', tool: 'plaza_pay', since_ms: 0 }), 'needs-you', 'work: a claim waiting on the owner needs you');
+  eq(workState({ state: 'claimed', ready: false, blocked_by: [] }, { stage: 'approval', tool: 'plaza_hire', since_ms: 0 }), 'needs-you', 'work: a claim waiting on the owner needs you');
   eq(workState({ state: 'awaiting_review', ready: false, blocked_by: [] }), 'review', 'work: awaiting review');
   eq(['done', 'failed', 'withdrawn'].map((state) => workState({ state, ready: false, blocked_by: [] })), ['done', 'failed', 'withdrawn'], 'work: ended states');
   eq(listed(['a']), 'a', 'listed: one');
   eq(listed(['a', 'b', 'c']), 'a, b and c', 'listed: three');
   eq([shortSpan(40_000), shortSpan(12 * 60_000), shortSpan(3 * 3_600_000), shortSpan(2 * 86_400_000)], ['40s', '12m', '3h', '2d'], 'short spans');
   eq(stepText({ stage: 'tool', tool: 'bash', since_ms: now - 120_000 }, now), 'Running bash · 2m', 'a step names its tool and its time');
-  eq(stepText({ stage: 'approval', tool: 'plaza_pay', since_ms: now }, now), 'Waits for you to approve plaza_pay · 0s', 'an approval step names the tool');
+  eq(stepText({ stage: 'approval', tool: 'plaza_hire', since_ms: now }, now), 'Waits for you to approve plaza_hire · 0s', 'an approval step names the tool');
   eq(stepText(null, now), '', 'no step, no text');
 
   const edges: [string, string][] = [['t1', 't3'], ['t2', 't3'], ['t3', 't4']];
@@ -1866,8 +1826,8 @@ sectionEnd('graph wrapper tests: ok');
   eq(cardLine(node('t3'), 'waiting', ctx), 'After T2', 'work: a waiting card names the links not done yet');
   eq(cardLine(node('t5', { blocked_by: ['t1', 't2'] }), 'blocked', ctx), 'Blocked: T1 and T2 did not finish', 'work: a blocked card names the links that ended');
   eq(cardLine(node('t2', { state: 'claimed', agent_cid: 7 }), 'working', ctx), 'Ada · Thinking · 5s', 'work: a working card names its agent and step');
-  const asks = { ...ctx, stepOf: () => ({ stage: 'approval' as const, tool: 'plaza_pay', since_ms: now - 120_000 }) };
-  eq(cardLine(node('t2', { state: 'claimed', agent_cid: 7 }), 'needs-you', asks), 'Approve plaza_pay · Ada · 2m', 'work: a card that needs you leads with the decision');
+  const asks = { ...ctx, stepOf: () => ({ stage: 'approval' as const, tool: 'plaza_hire', since_ms: now - 120_000 }) };
+  eq(cardLine(node('t2', { state: 'claimed', agent_cid: 7 }), 'needs-you', asks), 'Approve plaza_hire · Ada · 2m', 'work: a card that needs you leads with the decision');
   eq(cardLine(node('t6', { role: 'qa' }), 'ready', ctx), 'Any QA agent can claim it', 'work: a ready card names the role that can claim it');
   eq(cardLine(node('t6', { role: 'orchestrator' }), 'ready', ctx), 'Any Orchestrator agent can claim it', 'work: a role is a name, with no article to get wrong');
   eq(cardLine(node('t6'), 'ready', ctx), 'Any agent can claim it', 'work: a ready card with no role');
@@ -1885,7 +1845,7 @@ sectionEnd('graph wrapper tests: ok');
     tasks: ['t1', 't2'], history: [], created_ms: 0, updated_ms: 0,
   } as Project;
   const taskRow = (id: string, over: Partial<Task> = {}): Task => ({
-    id, state: 'open', goal: id, acceptance: null, role: null, budget: 2000, assignee_id: null, agent_cid: null, note: null, outcome: null,
+    id, state: 'open', goal: id, acceptance: null, role: null, assignee_id: null, agent_cid: null, note: null, outcome: null,
     created_at: 0, updated_at: 0, project: 'pr1', after: [], ready: true, waiting_on: [], blocked_by: [], ...over,
   });
   const segs = flowSegments(project, [taskRow('t1', { state: 'done' }), taskRow('t2', { ready: false, waiting_on: ['t1'] })]);
@@ -1899,7 +1859,7 @@ sectionEnd('graph wrapper tests: ok');
   eq(flowSegments(asking, []).map((x) => x.state), ['done', 'done', 'done', 'current', 'you', 'later', 'later'], 'work: the flow line shows the approval waiting on the owner');
   eq(flowSegments({ ...asking, owner_approval: false }, [])[4]?.state, 'later', 'work: the orchestrator’s approval is not the owner’s');
   const claimed = [taskRow('t1', { state: 'claimed', ready: false, agent_cid: 7 }), taskRow('t2', { state: 'claimed', ready: false, agent_cid: 8 })];
-  const deciding = (cid: number) => (cid === 7 ? { stage: 'approval' as const, tool: 'plaza_pay', since_ms: 0 } : { stage: 'tool' as const, tool: 'bash', since_ms: 0 });
+  const deciding = (cid: number) => (cid === 7 ? { stage: 'approval' as const, tool: 'plaza_hire', since_ms: 0 } : { stage: 'tool' as const, tool: 'bash', since_ms: 0 });
   eq(flowSegments(project, claimed, deciding).filter((x) => x.kind === 'task').map((x) => x.state), ['needs-you', 'working'], 'work: with the steps, a task waiting on the owner is the owner’s square');
   eq(flowSegments(project, claimed).filter((x) => x.kind === 'task').map((x) => x.state), ['working', 'working'], 'work: without the steps, a claim is at work');
   eq([waitsForOwner(asking, []), waitsForOwner(project, claimed, deciding), waitsForOwner(project, claimed), waitsForOwner(null, claimed, deciding)], [true, true, false, true], 'work: a plan or a task can wait on the owner, in a project or outside');

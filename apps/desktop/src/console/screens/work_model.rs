@@ -877,7 +877,7 @@ mod tests {
         );
         assert_eq!(WorkState::of("open", false, &t1, None), WorkState::Blocked);
         let tool = step("tool", Some("bash"), 0);
-        let asks = step("approval", Some("plaza_pay"), 0);
+        let asks = step("approval", Some("plaza_hire"), 0);
         assert_eq!(
             WorkState::of("claimed", false, &none, Some(&tool)),
             WorkState::Working
@@ -915,8 +915,8 @@ mod tests {
             "Running bash · 2m"
         );
         assert_eq!(
-            step_text(Some(&step("approval", Some("plaza_pay"), NOW)), NOW),
-            "Waits for you to approve plaza_pay · 0s"
+            step_text(Some(&step("approval", Some("plaza_hire"), NOW)), NOW),
+            "Waits for you to approve plaza_hire · 0s"
         );
         assert_eq!(step_text(None, NOW), "");
         assert_eq!(title_of("\n  First line \nsecond"), "First line");
@@ -964,14 +964,14 @@ mod tests {
             card_line(&claimed, WorkState::Working, &ctx),
             "QA #7 · Thinking · 5s"
         );
-        let asks = |_: u64| Some(step("approval", Some("plaza_pay"), NOW - 120_000));
+        let asks = |_: u64| Some(step("approval", Some("plaza_hire"), NOW - 120_000));
         let deciding = LineContext {
             step_of: &asks,
             ..ctx
         };
         assert_eq!(
             card_line(&claimed, WorkState::NeedsYou, &deciding),
-            "Approve plaza_pay · QA #7 · 2m"
+            "Approve plaza_hire · QA #7 · 2m"
         );
         let qa = GraphTask {
             role: Some("qa".into()),
@@ -1105,7 +1105,7 @@ mod tests {
         };
         let deciding = |cid: u64| {
             Some(if cid == 7 {
-                step("approval", Some("plaza_pay"), 0)
+                step("approval", Some("plaza_hire"), 0)
             } else {
                 step("tool", Some("bash"), 0)
             })

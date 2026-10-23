@@ -190,16 +190,17 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::skills::store_mem::MemorySkills;
+    use crate::skills::store_db::DbSkills;
     use crate::skills::tests::MemBlobs;
     use crate::skills::{FileBody, FileIn, NewSkill, Source};
 
     const T0: u64 = 1_800_000_000_000;
 
     fn library() -> Skills {
-        Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+        Skills::with_generations(
+            Arc::new(DbSkills::for_tests()),
             Arc::new(MemBlobs::default()),
+            Arc::default(),
         )
     }
 

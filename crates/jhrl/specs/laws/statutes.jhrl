@@ -551,17 +551,3 @@ law "S-006h" "A model is never run for a role its card does not list" {
   resource is Model
   when not context.role_allowed
 }
-
-// S-007a: a payment is a permit, not a forbid. A payment over the owner's approve_over threshold is
-// held for the owner by plaza_pay (not refused, and not a violation), so no law forbids it. The
-// threshold is not in the laws' context, so the statute cannot read it; the permit covers any amount.
-law "S-007a" "Agents may send payments; the owner decides the large ones" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "An agent may pay another agent from its earnings. A payment over the owner's threshold is held until the owner decides, and a held payment is not a violation."
-  permit payment.send
-  principal is Agent
-  resource is Town
-  when context.amount >= 0
-}

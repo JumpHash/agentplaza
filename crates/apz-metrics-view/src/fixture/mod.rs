@@ -10,7 +10,7 @@
 //!
 //! * [`data`] — the plaza's shape, the generators, `series`, `scalar`, `hist`, `hist_steps`, `scopes`,
 //!   `entities`, `agent`.
-//! * [`extra`] — events, calls, traces, alerts, self cost, budgets, treasury, node reports, rate limits,
+//! * [`extra`] — events, calls, traces, alerts, self cost, budgets, node reports, rate limits,
 //!   outside services, node links, saved pins.
 
 use apz_metrics::query::AggFn;
@@ -110,9 +110,6 @@ impl Source for Fixture {
     }
     fn monthly_budget(&self) -> Option<f64> {
         Some(1200.0)
-    }
-    fn treasury(&self) -> Option<(f64, f64)> {
-        Some((61_500.0, 0.001))
     }
     fn report(&self, node: &str) -> serde_json::Value {
         extra::report(node)

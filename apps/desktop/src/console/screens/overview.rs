@@ -1,7 +1,7 @@
 //! The Overview screen (parity with the web console's `overview` view, in the prototype's bare page): the
 //! orchestrator's composer under the plaza's question, the three ways in, the figures, what waits on the owner
 //! beside the live activity, the projects in progress and the fleet. Under a project it is that project's: its
-//! agents, its tasks, its stage and budget, its activity.
+//! agents, its tasks, its stage, its activity.
 //!
 //! The web view is pushed the transcript bus. A screen has no event stream here, so the feed is
 //! polled: every load reads each agent's transcript after the last entry seen.
@@ -50,8 +50,6 @@ pub struct State {
     /// A load is in flight; hub events that arrive meanwhile only mark `again`.
     loading: bool,
     again: bool,
-    /// Under a project, the credits left in its own budget (None: it is funded from the plaza's).
-    budget: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +80,6 @@ pub struct Snapshot {
     projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
     approvals: Vec<Approval>,
     proposals: Vec<Proposal>,
-    budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -198,13 +195,6 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 .get::<Value>("/v1/agent-proposals")
                 .map(|v| approvals::list(&v, Proposal::from_value))
                 .unwrap_or_default();
-            let budget = scope.as_deref().and_then(|p| {
-                let b: Value = client.get(&format!("/v1/projects/{p}/budget")).ok()?;
-                b["own"]
-                    .as_bool()
-                    .unwrap_or(false)
-                    .then(|| b["balance"].as_i64().unwrap_or(0))
-            });
             Ok(Snapshot {
                 overview,
                 agents,
@@ -212,7 +202,6 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 projects: read_projects(&client, scope.as_deref()),
                 approvals,
                 proposals,
-                budget,
             })
         },
         Msg::Loaded,
@@ -243,7 +232,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.projects = snap.projects;
             state.approvals = snap.approvals;
             state.proposals = snap.proposals;
-            state.budget = snap.budget;
             // The roster was read after the steps the events brought, so its own are as new.
             state.steps.clear();
             state.error = None;
@@ -458,7 +446,7 @@ fn read_projects(
     Some((projects, tasks))
 }
 
-/// Under a project, its figures: its agents, its open tasks, its stage, its budget.
+/// Under a project, its figures: its agents, its open tasks, its stage.
 fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
     let agents: Vec<&Agent> = state
         .agents
@@ -488,10 +476,6 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
         ),
         None => ("—".to_string(), ""),
     };
-    let (budget, budget_sub) = match state.budget {
-        Some(b) => (ui::thousands(b), "credits left"),
-        None => ("—".to_string(), "from the plaza"),
-    };
     row![
         stat(
             "Agents",
@@ -504,7 +488,6 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
             format!("{done} done")
         ),
         stat("Stage", figure(stage), life.to_string()),
-        stat("Budget", figure(budget), budget_sub.to_string()),
     ]
     .spacing(16)
     .into()
@@ -912,7 +895,7 @@ fn wait_row<'a>(icon: &str, title: String, sub: String) -> Element<'a, Msg> {
         .into()
 }
 
-/// The line of a waiting approval: its goal, its payment, or the tool call.
+/// The line of a waiting approval: its goal, or the tool call.
 fn wait_title(a: &Approval) -> String {
     let goal = a.detail.get("goal").and_then(Value::as_str);
     let task = a.detail.get("task").and_then(Value::as_str);
@@ -920,7 +903,6 @@ fn wait_title(a: &Approval) -> String {
         "review" => goal
             .map(str::to_string)
             .unwrap_or_else(|| format!("Review of {}", task.unwrap_or(""))),
-        "payment" => format!("Payment awaiting approval: {}", a.subject),
         "deploy" => a.subject.clone(),
         "artifact.share" => format!("Share {}", a.subject),
         _ => {
@@ -941,7 +923,6 @@ fn kind_icon(kind: &str) -> &'static str {
         "review" => "git-pull-request",
         "tool" => "terminal",
         "deploy" => "rocket",
-        "payment" => "credit-card",
         _ => "shield-check",
     }
 }

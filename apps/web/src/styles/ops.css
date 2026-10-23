@@ -1,4 +1,4 @@
-/* Ops views: council, treasury and machine. Tokens and existing classes only. */
+/* Ops views: council and machine. Tokens and existing classes only. */
 
 .motion-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
 .motion-head .faint { margin-left: auto; font-size: var(--fs-sm); }

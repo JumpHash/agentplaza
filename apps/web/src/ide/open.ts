@@ -3,6 +3,7 @@
 
 import { href } from '../router';
 import { isIdeHash, originFallback } from './layout';
+import { talkWorkspace } from './talk-model';
 
 export interface OpenOpts {
   /** A file to open in a tab, a path in the workspace. */
@@ -26,9 +27,9 @@ export function consoleOrigin(): string {
   return originFallback(consoleHash);
 }
 
-/** Opens the owner's conversation `id` (`conv-<n>`) in the IDE: the chat with the orchestrator and its project draft. */
-export function openConversation(id: string): void {
-  location.hash = href('ide', id);
+/** Opens chat `id` in the IDE: the owner's line to the orchestrator (`main`) or a project's, with its draft. */
+export function openTalk(chatId: string): void {
+  location.hash = href('ide', talkWorkspace(chatId));
 }
 
 /**

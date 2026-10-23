@@ -822,7 +822,6 @@ fn manages_scroll(id: &super::screens::Id) -> bool {
             | Id::Library
             | Id::Ide(_)
             | Id::Board
-            | Id::Treasury
             | Id::Rules
             | Id::Tools
             | Id::Mcp
@@ -980,7 +979,6 @@ const MORE: &[(Id, &str, &str)] = &[
     (Id::Metrics, "Metrics", "chart-column"),
     (Id::Library, "Library", "library"),
     (Id::Board, "Board", "pin"),
-    (Id::Treasury, "Treasury", "coins"),
     (Id::Rules, "Rules", "scale"),
     (Id::Lab, "Lab", "flask-conical"),
 ];

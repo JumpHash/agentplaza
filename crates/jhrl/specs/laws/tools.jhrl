@@ -23,12 +23,12 @@ law "T-002" "Every agent may use the plaza's shared tools" {
   tier statute
   enforcement preventive
   severity info
-  statement "Any agent may use the plaza's shared tools: its toolbox, projects it can see, the board, messages, tasks it can read, and its wallet."
+  statement "Any agent may use the plaza's shared tools: its toolbox, projects it can see, the board, messages and tasks it can read."
   rationale "These are the plaza's common surface; the tiers below narrow the tools that act for the plaza as a whole."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_message_seat", "plaza_get_file", "plaza_pay", "plaza_money", "plaza_connector_propose"]
+  when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_message_seat", "plaza_get_file", "plaza_connector_propose"]
 }
 
 law "T-003" "Only the orchestrator plans and delegates" {
@@ -48,7 +48,7 @@ law "T-006" "The reviewer rules on work" {
   enforcement preventive
   severity info
   statement "Only the reviewer may give a verdict on a piece of work."
-  rationale "A verdict releases or refuses payment, so one role holds it, and no builder judges its own work."
+  rationale "A verdict decides whether the work is accepted, so one role holds it, and no builder judges its own work."
   permit tool.call
   principal is Agent
   resource is Tool

@@ -7,15 +7,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
+use apz_cache::Generations;
 use apz_plaza::ConnectedAgent;
 use apz_plaza::social::PostRequest;
-use apz_plaza::tasks::{CreateTask, Task, resolve_budget};
+use apz_plaza::tasks::{CreateTask, Task};
 use apz_proto::chat::ToolSpec;
 use apz_proto::wire::WorkKind;
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::agents::{self, Agent};
+use crate::laws::Laws;
 use crate::scheduler::Origin;
 use crate::settings::tier_of;
 use crate::state::App;
@@ -62,7 +64,6 @@ const ALWAYS: &[&str] = &[
     "checkpoint_diff",
     "checkpoint_restore",
     "checkpoint_list",
-    "plaza_pay",
     "plaza_connector_propose",
     "plaza_skills",
     "plaza_skill_read",
@@ -143,7 +144,6 @@ const GATED: &[&str] = &[
     "plaza_agent_control",
     "plaza_loop",
     "plaza_agents",
-    "plaza_money",
     "plaza_post_task",
     "plaza_tasks_post",
     "plaza_task_link",
@@ -201,7 +201,6 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_message_seat"
         | "team_set"
         | "plaza_agents"
-        | "plaza_money"
         | "plaza_post_task"
         | "plaza_tasks_post"
         | "plaza_task_link"
@@ -209,7 +208,6 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_cancel_task"
         | "plaza_task_result"
         | "plaza_get_file"
-        | "plaza_pay"
         | "plaza_verdict" => Some(Runs::Host),
         name if crate::skills::agent_tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::toolbox::TOOLS.contains(&name) => Some(Runs::Host),
@@ -251,32 +249,141 @@ pub fn specs_for(app: &App, role: &str, project: Option<&str>) -> Vec<ToolSpec> 
     specs
 }
 
-/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
-pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
-    let mut specs = specs_for(
-        app,
-        &agent.role,
-        crate::projects::project_of(app, agent.cid).as_deref(),
-    );
-    specs.extend(crate::library::specs_for(app, agent.cid));
-    specs.extend(crate::mcp::specs_for_agent(app, agent));
+/// A session's tools section is kept this long at most, whatever its sources say.
+const SECTION_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// What a session's tools section is built from besides its sources: the role it runs as, the project it works on and
+/// the node it runs on (the MCP servers offered depend on the node).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SectionKey {
+    pub role: String,
+    pub project: Option<String>,
+    pub node: Option<String>,
+}
+
+/// A session's tools section, built from its sources: the tools it is offered except the library's (those are per agent)
+/// and its `## Skills` prompt section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    /// The role's tools: grants, plaza tools, connectors, with the maintenance and environment tools where they apply.
+    pub tools: Vec<ToolSpec>,
+    /// The MCP servers' tools the session may use on its node.
+    pub mcp: Vec<ToolSpec>,
+    /// The `## Skills` section of its system prompt, when it has skills.
+    pub skills: Option<String>,
+}
+
+/// The sections of the sessions, each built once per key and rebuilt when a source it was built from moves.
+pub struct Sections {
+    cache: apz_cache::Cache<SectionKey, Section>,
+}
+
+impl Default for Sections {
+    fn default() -> Self {
+        Sections::new()
+    }
+}
+
+impl Sections {
+    pub fn new() -> Sections {
+        Sections {
+            cache: apz_cache::Cache::new(SECTION_AGE),
+        }
+    }
+
+    /// The section for `key`: answered from the cache while `current` (the generation of its sources now) is the one it was
+    /// built at, else built by `build` (once for every caller that misses, see `apz_cache::Cache`).
+    pub fn get(
+        &self,
+        key: &SectionKey,
+        current: impl Fn() -> u64,
+        build: impl Fn() -> Section,
+    ) -> Arc<Section> {
+        self.cache
+            .get(key, current, || Ok::<_, String>(build()))
+            .expect("a section is built from its sources, which cannot fail")
+    }
+
+    /// How many sections were built (a test counts them).
+    #[cfg(test)]
+    pub fn builds(&self) -> u64 {
+        self.cache.stats().1
+    }
+}
+
+/// The generation of the sources `key`'s section is built from: the generations of the connectors, the vault, the MCP
+/// servers, the settings, the engines, the skills, the role and the project, and the laws. Each only moves up, so their sum
+/// moves with any of them.
+pub fn section_generation(gens: &Generations<String>, laws: &Laws, key: &SectionKey) -> u64 {
+    let mut keys = vec![
+        crate::sources::CONNECTORS.to_string(),
+        crate::sources::VAULT.to_string(),
+        crate::sources::MCP.to_string(),
+        crate::sources::SETTINGS.to_string(),
+        crate::sources::ENGINES.to_string(),
+        crate::skills::LIBRARY.to_string(),
+        crate::sources::role(&key.role),
+    ];
+    if let Some(project) = &key.project {
+        keys.push(crate::sources::project(project));
+    }
+    keys.iter().fold(laws.generation(), |sum, key| {
+        sum.wrapping_add(gens.get(key))
+    })
+}
+
+/// The section of the tools `agent` is offered (its role's, on its project and node), from the cache while its sources
+/// have not moved.
+pub fn section(app: &App, agent: &Agent) -> Arc<Section> {
+    let key = SectionKey {
+        role: agent.role.clone(),
+        project: crate::projects::project_of(app, agent.cid),
+        node: app.nodes.owner_of_cid(agent.cid).map(|n| n.id),
+    };
+    app.tool_sections.get(
+        &key,
+        || section_generation(&app.generations, app.laws, &key),
+        || build_section(app, &key),
+    )
+}
+
+/// Builds the section of `key` from the stores: the same specs `specs_for_agent` offered before the cache.
+fn build_section(app: &App, key: &SectionKey) -> Section {
+    let project = key.project.as_deref();
+    let mut tools = specs_for(app, &key.role, project);
     // A project's maintenance and environment tools are offered only where they apply: the maintenance tools on a
     // project in maintenance, the environment tools on one that has environments.
-    let project = crate::projects::project_of(app, agent.cid).and_then(|id| app.projects.get(&id));
-    let maintained = project.as_ref().is_some_and(|p| p.in_maintenance());
-    let has_envs = project
-        .as_ref()
-        .is_some_and(|p| !crate::environments::list(app, &p.id).is_empty());
-    specs.retain(|spec| {
+    let found = project.and_then(|id| app.projects.get(id));
+    let maintained = found.as_ref().is_some_and(|p| p.in_maintenance());
+    let has_envs = project.is_some_and(|id| !crate::environments::list(app, id).is_empty());
+    tools.retain(|spec| {
         (maintained || !crate::maintenance::TOOLS.contains(&spec.name.as_str()))
             && (has_envs || !crate::environments::TOOLS.contains(&spec.name.as_str()))
     });
     // The engines offered are the owner's enabled ones: the built-in ones in `engines_enabled`, then the
     // instances the owner added (`engine_instances.rs`).
     let enabled = enabled_engines(app);
-    for spec in specs.iter_mut().filter(|spec| spec.name == "code_engine") {
+    for spec in tools.iter_mut().filter(|spec| spec.name == "code_engine") {
         restrict_engines(&mut spec.input_schema, &enabled);
     }
+    Section {
+        tools,
+        mcp: crate::mcp::specs_for(app, &key.role, key.node.as_deref(), project),
+        skills: crate::skills::agent_tools::prompt_section(app, &key.role, project),
+    }
+}
+
+/// The tool specs agent `agent` is offered: its role's, plus the library tools it may use.
+pub fn specs_for_agent(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    with_library(app, agent, &section(app, agent))
+}
+
+/// The tools of `agent` from its `section`: the section's role tools, then the library tools it may use (per agent, so
+/// not cached), then the MCP tools.
+pub fn with_library(app: &App, agent: &Agent, section: &Section) -> Vec<ToolSpec> {
+    let mut specs = section.tools.clone();
+    specs.extend(crate::library::specs_for(app, agent.cid));
+    specs.extend(section.mcp.iter().cloned());
     specs
 }
 
@@ -585,52 +692,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
     })
 }
 
-/// The rules a `plaza_money` report ends with (the system prompt's "How money works", minus its last sentence).
-const HOW_MONEY_WORKS: &str = "How money works: a task's budget is minted from the plaza's budget into the task's own escrow when \
-     it is posted (plaza_post_task) — no wallet is debited and no transfer cap applies. The \
-     worker's real model and tool costs are charged to that escrow as it works; when the escrow runs out the \
-     work stops. When a reviewer passes the work, the worker is paid from the escrow (a margin on the real cost, \
-     at most 20%); whatever is left goes back to the plaza's budget. A failed or unreviewed task pays the worker \
-     nothing: its remaining escrow is refunded to the plaza, and the cost already spent stays spent. Your wallet \
-     is only debited by what you send yourself (plaza_pay), up to 1000 credits a day.";
-
-/// The plain-text `plaza_money` report: the caller's wallet, an optional task's
-/// money (`(id, state, money)`), then the rules.
-fn money_report(
-    cid: u64,
-    wallet: &apz_plaza::treasury::WalletMoney,
-    task: Option<(&str, &str, &apz_plaza::treasury::TaskMoney)>,
-) -> String {
-    let mut lines = vec![format!(
-        "your wallet (cid:{cid}): balance {} credits; sent today {} of the {} daily cap; earned {} from task payments",
-        wallet.balance,
-        wallet.sent_today,
-        apz_plaza::treasury::TRANSFER_DAILY_CAP,
-        wallet.earned
-    )];
-    if let Some((id, state, money)) = task {
-        lines.push(format!("task {id}: state {state}"));
-        lines.push(format!("budget (minted into escrow): {}", money.minted));
-        lines.push(format!("escrow balance now: {}", money.escrow));
-        lines.push(format!("real spend charged so far: {}", money.spent));
-        if money.paid.is_empty() {
-            lines.push("paid to agents: none yet".to_string());
-        } else {
-            let paid: Vec<String> = money
-                .paid
-                .iter()
-                .map(|(cid, amount)| format!("cid:{cid} {amount}"))
-                .collect();
-            lines.push(format!("paid to agents: {}", paid.join(", ")));
-        }
-        lines.push(format!("refunded to the plaza: {}", money.refunded));
-    }
-    lines.push(String::new());
-    lines.push(HOW_MONEY_WORKS.to_string());
-    lines.join("\n")
-}
-
-/// Plaza task tools (posting, assignment, results, money); `None` when `name` is not one of them.
+/// Plaza task tools (posting, assignment, results); `None` when `name` is not one of them.
 fn host_tasks(
     app: &App,
     agent: &Agent,
@@ -650,27 +712,6 @@ fn host_tasks(
         "plaza_task_result" => Some((|| -> Result<String, String> {
             let task = task_arg(app, input)?;
             Ok(task_json(&task).to_string())
-        })()),
-        "plaza_money" => Some((|| -> Result<String, String> {
-            let wallet = app.plaza.treasury.wallet_money(agent.cid);
-            let Some(task) = input.get("task").and_then(Value::as_str) else {
-                return Ok(money_report(agent.cid, &wallet, None));
-            };
-            let record = app
-                .plaza
-                .tasks
-                .find(task)
-                .ok_or_else(|| format!("no task {task}"))?;
-            let json = task_json(&record);
-            let state = json["state"]
-                .as_str()
-                .map_or_else(|| json["state"].to_string(), str::to_string);
-            let money = app.plaza.treasury.task_money(task);
-            Ok(money_report(
-                agent.cid,
-                &wallet,
-                Some((task, &state, &money)),
-            ))
         })()),
         "plaza_post_task" => Some((|| -> Result<String, String> {
             let title = str_arg(input, "title")?;
@@ -712,10 +753,6 @@ fn host_tasks(
                     p.stage
                 ));
             }
-            // An unfunded task would stop at its first model call: give it a working default, the project's when it
-            // sets one.
-            let budget =
-                budget_arg_or(input, crate::project_settings::task_budget(app, Some(pid)))?;
             // The assignee works on the project: checked before the task exists, so a refusal posts nothing.
             if let Some(cid) = input.get("assignee").and_then(Value::as_u64) {
                 let target = app
@@ -735,7 +772,6 @@ fn host_tasks(
                         .map(str::trim)
                         .filter(|a| !a.is_empty())
                         .map(str::to_string),
-                    budget: Some(budget),
                     role,
                     after,
                     project: Some(project.clone()),
@@ -752,18 +788,13 @@ fn host_tasks(
             let project = str_arg(input, "project")?;
             own_project(app, agent, Some(project.to_string()))?;
             takes_tasks(app, project)?;
-            let tasks: Vec<crate::task_plan::Planned> =
-                serde_json::from_value(input.get("tasks").cloned().unwrap_or(Value::Null))
-                    .map_err(|e| {
-                        format!("`tasks` must be a list of {{key, goal, acceptance?, role?, budget?, after?}}: {e}")
-                    })?;
-            let posted = crate::task_plan::post(
-                &app.projects,
-                &app.plaza.tasks,
-                project,
-                &tasks,
-                crate::project_settings::task_budget(app, Some(project)),
-            )?;
+            let tasks: Vec<crate::task_plan::Planned> = serde_json::from_value(
+                input.get("tasks").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|e| {
+                format!("`tasks` must be a list of {{key, goal, acceptance?, role?, after?}}: {e}")
+            })?;
+            let posted = crate::task_plan::post(&app.projects, &app.plaza.tasks, project, &tasks)?;
             for task in &posted {
                 app.work.note_poster(&task.id, agent.cid);
             }
@@ -799,31 +830,6 @@ fn host_tasks(
                 .withdraw()
                 .map_err(|e| format!("{e:?}"))?;
             Ok("cancelled".into())
-        })()),
-        "plaza_pay" => Some((|| -> Result<String, String> {
-            let to = u64_arg(input, "to")?;
-            let amount = input
-                .get("amount")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| "missing integer `amount`".to_string())?;
-            let memo = str_arg(input, "memo")?;
-            // A payment over the owner's threshold is held: the treasury has no holds, so nothing moves
-            // until the owner approves it (approvals::decide -> payments::decided runs the transfer).
-            if crate::payments::held(amount, app.settings.get().payments.approve_over) {
-                let subject = format!("pay {amount} to {to}");
-                let detail = json!({"cid": agent.cid, "to": to, "amount": amount, "memo": memo});
-                let item = crate::approvals::submit(app, "payment", &subject, detail);
-                return Ok(format!(
-                    "awaiting owner approval ({}): paying {amount} to {to} is held until the owner decides",
-                    item.id
-                ));
-            }
-            let entry = app
-                .plaza
-                .treasury
-                .transfer(agent.cid, to, amount, memo)
-                .map_err(|e| format!("{e:?}"))?;
-            Ok(format!("paid {amount} to {to} (entry {entry})"))
         })()),
         _ => None,
     }
@@ -1170,7 +1176,6 @@ fn task_json(task: &Task) -> Value {
         "id": view.id,
         "goal": view.goal,
         "state": view.state,
-        "budget": view.budget,
         "role": view.role,
         "acceptance": view.acceptance,
         "project": view.project,
@@ -1221,23 +1226,6 @@ fn u64_arg(input: &Value, key: &str) -> Result<u64, String> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| format!("missing integer `{key}`"))
-}
-
-/// A task's `budget` argument, through the one default and minimum in
-/// [`resolve_budget`]: absent (or null) → `default` (a project's `task_budget`), else the plaza's default; a number
-/// under the minimum, 0 included, or a value that is not a whole number → refused.
-pub fn budget_arg_or(input: &Value, default: Option<u64>) -> Result<u64, String> {
-    let requested = match input.get("budget") {
-        None | Some(Value::Null) => default,
-        Some(value) => Some(
-            value
-                .as_u64()
-                .ok_or("budget must be a whole number of credits")?,
-        ),
-    };
-    resolve_budget(requested).map_err(|refusal| {
-        format!("{refusal}. It is minted from the plaza's budget; your wallet is not debited.")
-    })
 }
 
 /// The optional `attachments` argument: at most 8 shared files the caller may read.
@@ -1326,17 +1314,6 @@ mod tests {
                 "{name} schema is not an object"
             );
         }
-        // The JSON spells the plaza's task budget floor out; it must be the floor the plaza enforces.
-        let floor = apz_plaza::tasks::MIN_TASK_BUDGET;
-        assert_eq!(
-            BUILTIN["plaza_post_task"].input_schema["properties"]["budget"]["minimum"],
-            floor
-        );
-        assert_eq!(
-            BUILTIN["plaza_tasks_post"].input_schema["properties"]["tasks"]["items"]["properties"]
-                ["budget"]["minimum"],
-            floor
-        );
         let run = build_spec("run").expect("the run spec");
         assert_eq!(run.name, "run");
         assert_eq!(run.description, BUILTIN["run"].description);
@@ -1720,33 +1697,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tool_task_takes_the_default_budget_and_refuses_below_the_minimum() {
-        use apz_plaza::tasks::DEFAULT_TASK_BUDGET;
-        let default = DEFAULT_TASK_BUDGET as u64;
-        assert_eq!(budget_arg_or(&json!({}), None), Ok(default));
-        assert_eq!(
-            budget_arg_or(&json!({}), Some(3000)),
-            Ok(3000),
-            "a project's default"
-        );
-        assert_eq!(budget_arg_or(&json!({"budget": 500}), Some(3000)), Ok(500));
-        assert_eq!(budget_arg_or(&json!({"budget": null}), None), Ok(default));
-        assert_eq!(budget_arg_or(&json!({"budget": 200}), None), Ok(200));
-        assert_eq!(budget_arg_or(&json!({"budget": 5000}), None), Ok(5000));
-        for low in [100, 0] {
-            let refusal =
-                budget_arg_or(&json!({"budget": low}), None).expect_err("below the minimum");
-            assert!(
-                refusal.contains("minimum of 200"),
-                "names the minimum: {refusal}"
-            );
-            assert!(refusal.contains("wallet is not debited"), "{refusal}");
-        }
-        assert!(budget_arg_or(&json!({"budget": -5}), None).is_err());
-        assert!(budget_arg_or(&json!({"budget": "lots"}), None).is_err());
-    }
-
     /// Agents never run anything on the host: the host-side tools are the
     /// plaza's data operations only (no processes, files or network).
     #[test]
@@ -1765,16 +1715,180 @@ mod tests {
             "plaza_cancel_task",
             "plaza_task_result",
             "plaza_get_file",
-            "plaza_pay",
             "plaza_verdict",
         ]
         .into_iter()
         .filter(|name| runs(name) == Some(Runs::Host))
         .collect();
-        assert_eq!(host.len(), 15);
+        assert_eq!(host.len(), 14);
         assert_eq!(runs("fetch_url"), Some(Runs::Guest));
         for name in ["exec", "shell", "http_get", "read_host_file"] {
             assert_eq!(runs(name), None, "{name} must not exist");
         }
+    }
+
+    /// The sources a section is built from, as the tests move them.
+    struct Sources {
+        gens: Generations<String>,
+        laws: Laws,
+    }
+
+    impl Sources {
+        fn new() -> Sources {
+            Sources {
+                gens: Generations::new(),
+                laws: Laws::builtin(),
+            }
+        }
+    }
+
+    /// The section every test reads: builder on project `p1`, running on node `n1`.
+    fn section_key() -> SectionKey {
+        SectionKey {
+            role: "builder".into(),
+            project: Some("p1".into()),
+            node: Some("n1".into()),
+        }
+    }
+
+    fn empty_section() -> Section {
+        Section {
+            tools: Vec::new(),
+            mcp: Vec::new(),
+            skills: None,
+        }
+    }
+
+    /// Reads the section of `key` through `sections` now; true when it was built rather than answered from the cache.
+    fn builds_on_read(sections: &Sections, src: &Sources, key: &SectionKey) -> bool {
+        let before = sections.builds();
+        sections.get(
+            key,
+            || section_generation(&src.gens, &src.laws, key),
+            empty_section,
+        );
+        sections.builds() > before
+    }
+
+    /// A section read once is answered from the cache until a change to one of its sources; that change rebuilds it
+    /// once, and the read after it is answered from the new build.
+    fn a_change_rebuilds_the_section(change: impl FnOnce(&Sources)) {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        assert!(
+            builds_on_read(&sections, &src, &key),
+            "the first read builds"
+        );
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "nothing changed: no build"
+        );
+        change(&src);
+        assert!(
+            builds_on_read(&sections, &src, &key),
+            "the change rebuilds it"
+        );
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "the next read is cached"
+        );
+    }
+
+    #[test]
+    fn a_section_is_built_once_while_its_sources_do_not_move() {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        for _ in 0..3 {
+            sections.get(
+                &key,
+                || section_generation(&src.gens, &src.laws, &key),
+                empty_section,
+            );
+        }
+        assert_eq!(sections.builds(), 1);
+        // Another session's section is built apart.
+        let other = SectionKey {
+            role: "reviewer".into(),
+            ..section_key()
+        };
+        assert!(builds_on_read(&sections, &src, &other));
+    }
+
+    #[test]
+    fn a_change_to_the_role_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::role("builder"));
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_project_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::project("p1"));
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_connectors_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::CONNECTORS.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_vault_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::VAULT.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_mcp_servers_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::MCP.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_settings_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::SETTINGS.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_engines_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::sources::ENGINES.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_a_skill_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| {
+            src.gens.bump(&crate::skills::LIBRARY.to_string());
+        });
+    }
+
+    #[test]
+    fn a_change_to_the_laws_rebuilds_its_section() {
+        a_change_rebuilds_the_section(|src| src.laws.set_strict(true));
+    }
+
+    #[test]
+    fn a_change_to_what_a_section_is_not_built_from_leaves_it_cached() {
+        let src = Sources::new();
+        let sections = Sections::new();
+        let key = section_key();
+        assert!(builds_on_read(&sections, &src, &key));
+        src.gens.bump(&crate::sources::role("reviewer"));
+        src.gens.bump(&crate::sources::project("p2"));
+        src.gens.bump(&crate::skills::skill_key("pdf-forms"));
+        assert!(
+            !builds_on_read(&sections, &src, &key),
+            "another role, project or skill leaves the section cached"
+        );
     }
 }

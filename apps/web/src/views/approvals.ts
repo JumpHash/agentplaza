@@ -82,7 +82,7 @@ const PROPOSAL_TONE: Record<AgentProposal['state'], 'ok' | 'danger' | 'warn'> = 
   approved: 'ok',
   rejected: 'danger',
 };
-const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket', payment: 'credit-card' };
+const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket' };
 
 type Item = Approval | AgentProposal;
 const isProposal = (x: Item): x is AgentProposal => 'role' in x;
@@ -244,7 +244,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   };
 
-  // A tool call, a payment or a share: Deny and Approve, with what the agent asked for above them.
+  // A tool call or a share: Deny and Approve, with what the agent asked for above them.
   const plainCard = (a: Approval, chips: Node[], body: Node): HTMLElement => {
     const group: HTMLButtonElement[] = [];
     const reason = reasonBox(a);
@@ -260,10 +260,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   };
 
   const waitingCard = (a: Approval): HTMLElement => {
-    const d = a.detail;
     const rv = reviewOf(a);
     if (rv) return reviewCard(a, rv);
-    if (a.kind === 'payment') return plainCard(a, [agentLink(a.cid)], h('pre.ap-pre', null, JSON.stringify(d, null, 2) ?? 'null'));
     if (a.kind === 'artifact.share') {
       const ask = shareOptions(a);
       return plainCard(

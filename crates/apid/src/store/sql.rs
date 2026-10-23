@@ -124,6 +124,90 @@ pub const TRANSCRIPT_PAGE: &str = include_str!("../../sql/queries/transcript_pag
 pub const TRANSCRIPT_CIDS: &str = include_str!("../../sql/queries/transcript_cids.sql");
 pub const TRANSCRIPT_DELETE: &str = include_str!("../../sql/queries/transcript_delete.sql");
 
+// The unfurl cache (`unfurl_cache`: unfurl/mod.rs).
+pub const UNFURL_GET: &str = include_str!("../../sql/queries/unfurl_get.sql");
+
+// The hub MCP server (`hub_mcp_token`, `hub_mcp_token_digest` and `hub_mcp_call`: hub_mcp/store_db.rs).
+pub const HUB_MCP_CALL_LAST_SEQ: &str = include_str!("../../sql/queries/hub_mcp_call_last_seq.sql");
+pub const HUB_MCP_CALL_PAGE: &str = include_str!("../../sql/queries/hub_mcp_call_page.sql");
+pub const HUB_MCP_TOKEN_BY_DIGEST: &str =
+    include_str!("../../sql/queries/hub_mcp_token_by_digest.sql");
+pub const HUB_MCP_TOKEN_NEXT_POS: &str =
+    include_str!("../../sql/queries/hub_mcp_token_next_pos.sql");
+pub const HUB_MCP_TOKEN_REVOKE: &str = include_str!("../../sql/queries/hub_mcp_token_revoke.sql");
+pub const HUB_MCP_TOKEN_USE: &str = include_str!("../../sql/queries/hub_mcp_token_use.sql");
+
+// The prompt library (`prompt`, `prompt_version` and `prompt_event`: prompts/store.rs).
+pub const PROMPT_LIST: &str = include_str!("../../sql/queries/prompt_list.sql");
+pub const PROMPT_GET: &str = include_str!("../../sql/queries/prompt_get.sql");
+pub const PROMPT_TAGS: &str = include_str!("../../sql/queries/prompt_tags.sql");
+pub const PROMPT_TAGS_CLEAR: &str = include_str!("../../sql/queries/prompt_tags_clear.sql");
+pub const PROMPT_POS: &str = include_str!("../../sql/queries/prompt_pos.sql");
+pub const PROMPT_BINDING_HOLDER: &str = include_str!("../../sql/queries/prompt_binding_holder.sql");
+pub const PROMPT_BOUND: &str = include_str!("../../sql/queries/prompt_bound.sql");
+pub const PROMPT_VERSIONS: &str = include_str!("../../sql/queries/prompt_versions.sql");
+pub const PROMPT_VERSION_GET: &str = include_str!("../../sql/queries/prompt_version_get.sql");
+pub const PROMPT_FINDINGS: &str = include_str!("../../sql/queries/prompt_findings.sql");
+pub const PROMPT_BODY: &str = include_str!("../../sql/queries/prompt_body.sql");
+pub const PROMPT_EVENTS: &str = include_str!("../../sql/queries/prompt_events.sql");
+pub const PROMPT_EVENT_LAST_SEQ: &str = include_str!("../../sql/queries/prompt_event_last_seq.sql");
+
+// The skill library (`skill`, `skill_version`, `skill_file`, `skill_finding` and `skill_event`: skills/store_db.rs).
+pub const SKILL_LIST: &str = include_str!("../../sql/queries/skill_list.sql");
+pub const SKILL_GET: &str = include_str!("../../sql/queries/skill_get.sql");
+pub const SKILL_POS: &str = include_str!("../../sql/queries/skill_pos.sql");
+pub const SKILL_TAGS: &str = include_str!("../../sql/queries/skill_tags.sql");
+pub const SKILL_TAGS_CLEAR: &str = include_str!("../../sql/queries/skill_tags_clear.sql");
+pub const SKILL_BINDINGS: &str = include_str!("../../sql/queries/skill_bindings.sql");
+pub const SKILL_BINDINGS_CLEAR: &str = include_str!("../../sql/queries/skill_bindings_clear.sql");
+pub const SKILL_NAME_HOLDER: &str = include_str!("../../sql/queries/skill_name_holder.sql");
+pub const SKILL_VERSIONS: &str = include_str!("../../sql/queries/skill_versions.sql");
+pub const SKILL_VERSION_META: &str = include_str!("../../sql/queries/skill_version_meta.sql");
+pub const SKILL_VERSION_GET: &str = include_str!("../../sql/queries/skill_version_get.sql");
+pub const SKILL_FILES: &str = include_str!("../../sql/queries/skill_files.sql");
+pub const SKILL_FINDINGS: &str = include_str!("../../sql/queries/skill_findings.sql");
+pub const SKILL_EVENTS: &str = include_str!("../../sql/queries/skill_events.sql");
+pub const SKILL_EVENT_LAST_SEQ: &str = include_str!("../../sql/queries/skill_event_last_seq.sql");
+pub const SKILL_BOUND: &str = include_str!("../../sql/queries/skill_bound.sql");
+
+// The share links (`share` and `share_event`: shares/mod.rs).
+pub const SHARE_GET: &str = include_str!("../../sql/queries/share_get.sql");
+pub const SHARE_LIST: &str = include_str!("../../sql/queries/share_list.sql");
+pub const SHARE_LIST_TARGET: &str = include_str!("../../sql/queries/share_list_target.sql");
+pub const SHARE_LIVE: &str = include_str!("../../sql/queries/share_live.sql");
+pub const SHARE_POS: &str = include_str!("../../sql/queries/share_pos.sql");
+pub const SHARE_EVENT_COUNTS: &str = include_str!("../../sql/queries/share_event_counts.sql");
+pub const SHARE_EVENT_FAILURES: &str = include_str!("../../sql/queries/share_event_failures.sql");
+pub const SHARE_EVENT_LAST_SEQ: &str = include_str!("../../sql/queries/share_event_last_seq.sql");
+pub const SHARE_EVENT_PAGE: &str = include_str!("../../sql/queries/share_event_page.sql");
+
+// The artifact index (`artifact`, `artifact_version` and `artifact_blob`: artifacts/mod.rs).
+pub const ARTIFACT_GET: &str = include_str!("../../sql/queries/artifact_get.sql");
+pub const ARTIFACT_POS: &str = include_str!("../../sql/queries/artifact_pos.sql");
+pub const ARTIFACT_LIST: &str = include_str!("../../sql/queries/artifact_list.sql");
+pub const ARTIFACT_LATEST: &str = include_str!("../../sql/queries/artifact_latest.sql");
+pub const ARTIFACT_SET_SHARED: &str = include_str!("../../sql/queries/artifact_set_shared.sql");
+pub const ARTIFACT_DELETE: &str = include_str!("../../sql/queries/artifact_delete.sql");
+pub const ARTIFACT_HASHES: &str = include_str!("../../sql/queries/artifact_hashes.sql");
+pub const ARTIFACT_STATS_VERSIONS: &str =
+    include_str!("../../sql/queries/artifact_stats_versions.sql");
+pub const ARTIFACT_VERSION_GET: &str = include_str!("../../sql/queries/artifact_version_get.sql");
+pub const ARTIFACT_VERSION_LIST: &str = include_str!("../../sql/queries/artifact_version_list.sql");
+pub const ARTIFACT_VERSION_BLOBS: &str =
+    include_str!("../../sql/queries/artifact_version_blobs.sql");
+pub const ARTIFACT_VERSION_SCRIPTS: &str =
+    include_str!("../../sql/queries/artifact_version_scripts.sql");
+pub const ARTIFACT_SCRIPT_HASH: &str = include_str!("../../sql/queries/artifact_script_hash.sql");
+pub const ARTIFACT_VERSION_DELETE: &str =
+    include_str!("../../sql/queries/artifact_version_delete.sql");
+pub const ARTIFACT_BLOB_GET: &str = include_str!("../../sql/queries/artifact_blob_get.sql");
+pub const ARTIFACT_BLOB_POS: &str = include_str!("../../sql/queries/artifact_blob_pos.sql");
+pub const ARTIFACT_STATS_BLOBS: &str = include_str!("../../sql/queries/artifact_stats_blobs.sql");
+pub const ARTIFACT_BLOB_IDS: &str = include_str!("../../sql/queries/artifact_blob_ids.sql");
+pub const ARTIFACT_BLOB_USERS: &str = include_str!("../../sql/queries/artifact_blob_users.sql");
+pub const ARTIFACT_REFERS: &str = include_str!("../../sql/queries/artifact_refers.sql");
+pub const ARTIFACT_BLOB_DELETE: &str = include_str!("../../sql/queries/artifact_blob_delete.sql");
+
 /// Every query: (file, name, text), for the test that prepares each against its file.
 #[cfg(test)]
 pub const QUERIES: &[(&str, &str, &str)] = &[
@@ -145,6 +229,13 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "eval_scores", EVAL_SCORES),
     ("plaza", "eval_runs_landed", EVAL_RUNS_LANDED),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
+    ("plaza", "hub_mcp_call_last_seq", HUB_MCP_CALL_LAST_SEQ),
+    ("plaza", "hub_mcp_call_page", HUB_MCP_CALL_PAGE),
+    ("plaza", "hub_mcp_token_by_digest", HUB_MCP_TOKEN_BY_DIGEST),
+    ("plaza", "hub_mcp_token_next_pos", HUB_MCP_TOKEN_NEXT_POS),
+    ("plaza", "hub_mcp_token_revoke", HUB_MCP_TOKEN_REVOKE),
+    ("plaza", "hub_mcp_token_use", HUB_MCP_TOKEN_USE),
+    ("plaza", "unfurl_get", UNFURL_GET),
     ("plaza", "ide_audit_last_seq", IDE_AUDIT_LAST_SEQ),
     ("plaza", "ide_audit_page", IDE_AUDIT_PAGE),
     (
@@ -280,4 +371,67 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("transcripts", "transcript_page", TRANSCRIPT_PAGE),
     ("transcripts", "transcript_cids", TRANSCRIPT_CIDS),
     ("transcripts", "transcript_delete", TRANSCRIPT_DELETE),
+    ("plaza", "prompt_list", PROMPT_LIST),
+    ("plaza", "prompt_get", PROMPT_GET),
+    ("plaza", "prompt_tags", PROMPT_TAGS),
+    ("plaza", "prompt_tags_clear", PROMPT_TAGS_CLEAR),
+    ("plaza", "prompt_pos", PROMPT_POS),
+    ("plaza", "prompt_binding_holder", PROMPT_BINDING_HOLDER),
+    ("plaza", "prompt_bound", PROMPT_BOUND),
+    ("plaza", "prompt_versions", PROMPT_VERSIONS),
+    ("plaza", "prompt_version_get", PROMPT_VERSION_GET),
+    ("plaza", "prompt_findings", PROMPT_FINDINGS),
+    ("plaza", "prompt_body", PROMPT_BODY),
+    ("plaza", "prompt_events", PROMPT_EVENTS),
+    ("plaza", "prompt_event_last_seq", PROMPT_EVENT_LAST_SEQ),
+    ("plaza", "skill_list", SKILL_LIST),
+    ("plaza", "skill_get", SKILL_GET),
+    ("plaza", "skill_pos", SKILL_POS),
+    ("plaza", "skill_tags", SKILL_TAGS),
+    ("plaza", "skill_tags_clear", SKILL_TAGS_CLEAR),
+    ("plaza", "skill_bindings", SKILL_BINDINGS),
+    ("plaza", "skill_bindings_clear", SKILL_BINDINGS_CLEAR),
+    ("plaza", "skill_name_holder", SKILL_NAME_HOLDER),
+    ("plaza", "skill_versions", SKILL_VERSIONS),
+    ("plaza", "skill_version_meta", SKILL_VERSION_META),
+    ("plaza", "skill_version_get", SKILL_VERSION_GET),
+    ("plaza", "skill_files", SKILL_FILES),
+    ("plaza", "skill_findings", SKILL_FINDINGS),
+    ("plaza", "skill_events", SKILL_EVENTS),
+    ("plaza", "skill_event_last_seq", SKILL_EVENT_LAST_SEQ),
+    ("plaza", "skill_bound", SKILL_BOUND),
+    ("plaza", "share_get", SHARE_GET),
+    ("plaza", "share_list", SHARE_LIST),
+    ("plaza", "share_list_target", SHARE_LIST_TARGET),
+    ("plaza", "share_live", SHARE_LIVE),
+    ("plaza", "share_pos", SHARE_POS),
+    ("plaza", "share_event_counts", SHARE_EVENT_COUNTS),
+    ("plaza", "share_event_failures", SHARE_EVENT_FAILURES),
+    ("plaza", "share_event_last_seq", SHARE_EVENT_LAST_SEQ),
+    ("plaza", "share_event_page", SHARE_EVENT_PAGE),
+    ("plaza", "artifact_get", ARTIFACT_GET),
+    ("plaza", "artifact_pos", ARTIFACT_POS),
+    ("plaza", "artifact_list", ARTIFACT_LIST),
+    ("plaza", "artifact_latest", ARTIFACT_LATEST),
+    ("plaza", "artifact_set_shared", ARTIFACT_SET_SHARED),
+    ("plaza", "artifact_delete", ARTIFACT_DELETE),
+    ("plaza", "artifact_hashes", ARTIFACT_HASHES),
+    ("plaza", "artifact_stats_versions", ARTIFACT_STATS_VERSIONS),
+    ("plaza", "artifact_version_get", ARTIFACT_VERSION_GET),
+    ("plaza", "artifact_version_list", ARTIFACT_VERSION_LIST),
+    ("plaza", "artifact_version_blobs", ARTIFACT_VERSION_BLOBS),
+    (
+        "plaza",
+        "artifact_version_scripts",
+        ARTIFACT_VERSION_SCRIPTS,
+    ),
+    ("plaza", "artifact_script_hash", ARTIFACT_SCRIPT_HASH),
+    ("plaza", "artifact_version_delete", ARTIFACT_VERSION_DELETE),
+    ("plaza", "artifact_blob_get", ARTIFACT_BLOB_GET),
+    ("plaza", "artifact_blob_pos", ARTIFACT_BLOB_POS),
+    ("plaza", "artifact_stats_blobs", ARTIFACT_STATS_BLOBS),
+    ("plaza", "artifact_blob_ids", ARTIFACT_BLOB_IDS),
+    ("plaza", "artifact_blob_users", ARTIFACT_BLOB_USERS),
+    ("plaza", "artifact_refers", ARTIFACT_REFERS),
+    ("plaza", "artifact_blob_delete", ARTIFACT_BLOB_DELETE),
 ];

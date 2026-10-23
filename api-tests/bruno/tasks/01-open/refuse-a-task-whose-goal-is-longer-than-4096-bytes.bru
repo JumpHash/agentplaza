@@ -15,11 +15,11 @@ headers {
 }
 
 body:json {
-  {"goal": "x", "budget": 200, "project": "{{tsk_pid}}"}
+  {"goal": "x", "project": "{{tsk_pid}}"}
 }
 
 script:pre-request {
-  req.setBody({ goal: "a".repeat(4097), budget: 200, project: bru.getVar("tsk_pid") });
+  req.setBody({ goal: "a".repeat(4097), project: bru.getVar("tsk_pid") });
 }
 
 assert {

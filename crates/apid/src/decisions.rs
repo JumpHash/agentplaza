@@ -158,7 +158,7 @@ fn default_json(pick: Option<&Pick>) -> Value {
 }
 
 /// `POST /internal/v1/agents/{cid}/gateway/decisions` for agent `cid`: always the saved default. The hold applies, and
-/// the call is metered as a model call is: tokens are unpriced, so it costs one credit.
+/// the call is not held on a budget: a decision has no session to hold it on.
 pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
     if app.agents.get(cid).is_none() {
         return Response::error(404, "unknown agent");
@@ -184,13 +184,6 @@ pub(crate) fn agent_decision(app: &App, cid: u64, req: &Request) -> Response {
         Err(f) => return failure(f),
     };
     let work = app.work.current(cid).map_or(0, |item| item.id);
-    // pricing: no decision model has a price in the plaza's settings yet, so its tokens cost
-    // nothing here and the call costs the one credit a model call costs at least.
-    if let Err(message) =
-        crate::internal::meter(app, cid, work, 1, &format!("decision {}", pick.model))
-    {
-        return Response::json(402, &json!({ "error": message }));
-    }
     app.transcripts.record(
         &app.bus,
         cid,

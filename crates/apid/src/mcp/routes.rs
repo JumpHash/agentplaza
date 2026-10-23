@@ -64,6 +64,9 @@ pub struct ServerView {
     pub status: Status,
     pub tools_count: usize,
     pub last_error: Option<String>,
+    /// How the server runs: "vm", or "sandbox: <why>". Empty before its first start.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub launcher: String,
     pub last_used_ms: u64,
     pub server_info: Option<ServerInfo>,
 }
@@ -74,6 +77,7 @@ pub fn view(app: &App, server: McpServer) -> ServerView {
         tools_count: app.mcp.store.tools_of(&server.id).len(),
         status: summary.status,
         last_error: summary.last_error,
+        launcher: summary.launcher,
         last_used_ms: summary.last_used_ms,
         server_info: summary.server_info,
         server,

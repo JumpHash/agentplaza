@@ -7,29 +7,23 @@
 //!   choices are held to the plaza's model policy, so a project narrows it and never widens it.
 //! - **Effort and `max_tokens`:** the project's fill in before the plaza's (`internal::model_call`).
 //! - **Limits:** field by field, the agent's, then the project's, then the plaza's (`agents::profile`).
-//! - **A task's budget** when it names none (`task_budget`), and the **review timeout** of its tasks.
+//! - **A task's budget** when it names none (`task_budget`, in the project budget's unit), and the **review timeout** of
+//!   its tasks.
 //! - **The permission mode** of its agents that have none of their own (`approvals::gate`).
 //!
 //! The project's instructions and skills are the prompt and skills bound to `project:<id>`, beside `plaza` and
 //! `role:<role>`. Connectors and MCP servers take a `projects` list beside their roles.
-//!
-//! **The budget** is a `town_budget` account of the project's own (`apz_plaza::treasury`). Setting credits aside moves
-//! them from the plaza's budget as the owner's operation, the project's tasks are funded from it (and refunded to it),
-//! and when the project is over the rest goes back to the plaza.
 //!
 //! Kept in plaza.db (table `project_setting`: a row per project that has overrides, its role models a child table).
 //!
 //! GET   /v1/projects/{id}/settings            → the project's overrides
 //! PATCH /v1/projects/{id}/settings {…}        → the overrides (a field set to null goes back to the plaza's)
 //! GET   /v1/projects/{id}/settings/effective  → every setting the project's agents get, and where it comes from
-//! GET   /v1/projects/{id}/budget              → its budget: balance, and the plaza's
-//! POST  /v1/projects/{id}/budget {credits}    → sets more aside (or, negative, gives some back)
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_plaza::treasury::PLAZA_OWNER;
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
@@ -64,7 +58,7 @@ pub struct ProjectSettings {
     pub compress_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_recent: Option<u32>,
-    /// A task's budget when it names none, in credits.
+    /// The amount a task reserves when it names none, in the project budget's unit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_budget: Option<u64>,
     /// The permission mode of the project's agents that have none of their own.
@@ -242,8 +236,8 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
     {
         return Err("keep_recent must be 1 to 50".into());
     }
-    if let Some(budget) = settings.task_budget {
-        apz_plaza::tasks::resolve_budget(Some(budget)).map_err(|e| format!("task_budget: {e}"))?;
+    if settings.task_budget == Some(0) {
+        return Err("task_budget is at least 1 (unset it for the plaza's)".into());
     }
     if let Some(minutes) = settings.review_timeout_minutes
         && !(1..=10_080).contains(&minutes)
@@ -320,7 +314,7 @@ pub fn model_for(app: &App, agent: &Agent) -> Option<String> {
         .or(settings.default_model)
 }
 
-/// The budget a task of project `pid` gets when it names none.
+/// The amount (in the project budget's unit) a task of project `pid` reserves when it names none.
 pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
     pid.and_then(|pid| app.project_settings.get(pid).task_budget)
 }
@@ -365,26 +359,6 @@ pub fn permission_mode(app: &App, cid: u64) -> Mode {
         .unwrap_or_default()
 }
 
-// ---- The budget ---------------------------------------------------------------------------------------------------
-
-/// Gives the rest of project `pid`'s budget back to the plaza (it is over); nothing when it has none.
-pub fn return_rest(app: &App, pid: &str) {
-    if let Err(e) = app.plaza.treasury.return_town_budget(pid) {
-        eprintln!("apid: project {pid}'s budget not returned to the plaza: {e}");
-    }
-}
-
-/// Project `pid`'s budget as the API shows it.
-fn budget_view(app: &App, pid: &str) -> Value {
-    let treasury = &app.plaza.treasury;
-    json!({
-        "project": pid,
-        "own": treasury.has_town_budget(pid),
-        "balance": i64::try_from(treasury.town_budget_balance(pid)).unwrap_or(i64::MAX),
-        "plaza": i64::try_from(treasury.plaza_budget_balance()).unwrap_or(i64::MAX),
-    })
-}
-
 /// After a change to project `pid`'s overrides, its agents get their new profiles at once.
 fn push_agents(app: &App, pid: &str) {
     for cid in crate::projects::agents_of(app, pid) {
@@ -408,13 +382,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(
             RouteDoc::new("Show the settings a project's agents get, and where each comes from")
                 .errors(&[404]),
-        )
-        // GET /v1/projects/{id}/budget is the work engine's budget (work_routes.rs); this POST moves credits until
-        // the treasury goes (Engine 0.5).
-        .post("/v1/projects/{id}/budget", budget_route)
-        .doc(
-            RouteDoc::new("Set credits aside for a project, or give some back")
-                .errors(&[400, 404, 409]),
         )
 }
 
@@ -486,60 +453,17 @@ pub fn effective(app: &App, id: &str) -> Value {
             "max_turns": pick(own.max_turns.map(Value::from), json!(plaza.max_turns)),
             "compress_at": pick(own.compress_at.map(Value::from), json!(crate::harness_control::DEFAULT_COMPRESS_AT)),
             "keep_recent": pick(own.keep_recent.map(Value::from), json!(crate::harness_control::DEFAULT_KEEP_RECENT)),
-            "task_budget": pick(own.task_budget.map(Value::from), json!(apz_plaza::tasks::DEFAULT_TASK_BUDGET)),
+            "task_budget": match own.task_budget {
+                Some(budget) => json!({"value": budget, "source": "project"}),
+                None => json!({"value": null, "source": "default"}),
+            },
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
             "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
             "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },
         "role_models": role_models,
-        "budget": budget_view(app, id),
     })
-}
-
-#[derive(Deserialize)]
-struct BudgetBody {
-    credits: i64,
-}
-
-/// Body: `{credits}`: positive sets that much more aside from the plaza's budget, negative gives that much back.
-fn budget_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let Some(project) = app.projects.get(p.get("id")) else {
-        return Response::error(404, "no such project");
-    };
-    let body: BudgetBody = match req.json() {
-        Ok(body) => body,
-        Err(e) => return Response::error(400, &format!("bad body: {e}")),
-    };
-    // A delivered project in maintenance still funds the work the owner picks.
-    if project.archived || (project.stage == "delivered" && !project.in_maintenance()) {
-        return Response::error(
-            409,
-            &format!(
-                "project {} is over: its budget went back to the plaza",
-                project.id
-            ),
-        );
-    }
-    let moved = match body.credits {
-        0 => return Response::error(400, "credits is not 0"),
-        credits if credits > 0 => app
-            .plaza
-            .treasury
-            .move_budget(PLAZA_OWNER, &project.id, credits),
-        credits => {
-            app.plaza
-                .treasury
-                .move_budget(&project.id, PLAZA_OWNER, credits.saturating_neg())
-        }
-    };
-    match moved {
-        Ok(_) => {
-            app.bus.publish("project", &project);
-            Response::json(200, &budget_view(app, &project.id))
-        }
-        Err(e) => Response::error(409, &format!("the budget did not move: {e}")),
-    }
 }
 
 #[cfg(test)]

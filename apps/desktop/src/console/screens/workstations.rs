@@ -3,8 +3,8 @@
 //! command to run on the machine), shows each one's state and a thumbnail of its screen, and holds the hub's
 //! recording defaults. A workstation's page shows its live view and the owner's takeover of it
 //! (`workstations_live.rs`), its facts, leases, work folder (`workstations_files.rs`), recordings with
-//! playback (`workstations_rec.rs`), its settings (the takeover policy, recording, the work folder, the hourly
-//! rate), its rename, drain, revoke and audit. Reloads on the screen's poll and on the `station`, `lease_*`,
+//! playback (`workstations_rec.rs`), its settings (the takeover policy, recording and the work folder), its rename,
+//! drain, revoke and audit. Reloads on the screen's poll and on the `station`, `lease_*`,
 //! `station_takeover`, `station_give_back`, `station_sync_conflict` and `station_sync_paused` bus frames.
 
 use std::collections::HashMap;
@@ -36,8 +36,6 @@ const TTL_CHOICES: [u64; 3] = [15, 30, 60];
 const RETENTION_DAYS: (u64, u64) = (1, 3650);
 /// Frames a recording keeps a second: from one to five (the sampler keeps at most five).
 const RECORD_FPS: (u64, u64) = (1, 5);
-/// The hourly rate's bound, in plaza credits (1 credit is $0.001): $1000 an hour.
-const RATE_MAX: u64 = 1_000_000;
 /// How often the list's thumbnails are taken again, while the list is shown.
 const THUMB_EVERY: Duration = Duration::from_secs(10);
 const WORK_FOLDER_MAX: usize = 512;
@@ -104,8 +102,6 @@ pub struct Settings {
     pub record_takeovers: bool,
     pub work_folder: String,
     pub snapshot_reset: bool,
-    /// Plaza credits an hour of a lease here costs its task; 0 is free (1 credit is $0.001).
-    pub rate_per_hour: u64,
 }
 
 /// What the daemon reports about its machine.
@@ -258,7 +254,6 @@ pub struct SettingsForm {
     record_takeovers: bool,
     work_folder: String,
     snapshot_reset: bool,
-    rate_per_hour: String,
 }
 
 impl From<&Settings> for SettingsForm {
@@ -271,7 +266,6 @@ impl From<&Settings> for SettingsForm {
             record_takeovers: s.record_takeovers,
             work_folder: s.work_folder.clone(),
             snapshot_reset: s.snapshot_reset,
-            rate_per_hour: s.rate_per_hour.to_string(),
         }
     }
 }
@@ -286,7 +280,6 @@ pub enum FormEdit {
     RecordTakeovers(bool),
     WorkFolder(String),
     SnapshotReset(bool),
-    Rate(String),
 }
 
 /// The dialog that is open, drawn as a card above the lists.
@@ -564,7 +557,6 @@ fn apply_edit(form: &mut SettingsForm, edit: FormEdit) {
         FormEdit::RecordTakeovers(on) => form.record_takeovers = on,
         FormEdit::WorkFolder(text) => form.work_folder = text,
         FormEdit::SnapshotReset(on) => form.snapshot_reset = on,
-        FormEdit::Rate(text) => form.rate_per_hour = text,
     }
 }
 
@@ -1657,19 +1649,6 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
         folder = folder.on_input(|t| Msg::Form(FormEdit::WorkFolder(t)));
     }
 
-    let mut rate = text_input("0", &f.rate_per_hour)
-        .font(theme::MONO)
-        .style(theme::input)
-        .padding(8.0)
-        .width(Length::Fixed(120.0));
-    if live {
-        rate = rate.on_input(|t| Msg::Form(FormEdit::Rate(t)));
-    }
-    let rate_hint = match whole_in(&f.rate_per_hour, (0, RATE_MAX)) {
-        Some(credits) => rate_text(credits),
-        None => format!("Credits an hour, from 0 to {RATE_MAX}. 1 credit is $0.001."),
-    };
-
     let save = ui::btn(
         if state.saving {
             "Saving…"
@@ -1708,7 +1687,6 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
             folder.into(),
             "Under the agent's OS account. It syncs with the hub both ways.",
         ),
-        field("Rate, credits an hour", rate.into(), &rate_hint),
         snapshot.into(),
         row![save].into(),
     ];
@@ -2240,8 +2218,6 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
             "The work folder is a path of up to {WORK_FOLDER_MAX} characters."
         ));
     }
-    let rate = whole_in(&f.rate_per_hour, (0, RATE_MAX))
-        .ok_or_else(|| format!("Charge whole credits an hour, from 0 to {RATE_MAX}."))?;
     Ok(Settings {
         takeover: f.takeover,
         record: f.record,
@@ -2250,20 +2226,7 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
         record_takeovers: f.record_takeovers,
         work_folder: folder.to_string(),
         snapshot_reset: f.snapshot_reset,
-        rate_per_hour: rate,
     })
-}
-
-/// An hourly rate in words: free at 0, else its credits and its dollars (1 credit is $0.001).
-pub fn rate_text(credits: u64) -> String {
-    if credits == 0 {
-        "Free: a lease here costs its task nothing.".to_string()
-    } else {
-        format!(
-            "{credits} credits an hour: ${:.3} an hour, charged to the task while it holds the machine.",
-            credits as f64 * 0.001
-        )
-    }
 }
 
 /// A whole number from `text` within `(lo, hi)`, or None.

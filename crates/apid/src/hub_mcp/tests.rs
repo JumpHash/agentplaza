@@ -9,11 +9,11 @@ use apz_plaza::events::EventBus;
 use apz_plaza::tasks::{CreateTask, TaskLedger};
 use serde_json::{Value, json};
 
-use super::audit::MemoryAudit;
-use super::auth::{MemoryTokens, NewToken, Scope, TokenRecord, sha256_hex};
+use super::auth::{NewToken, Scope, TokenRecord, sha256_hex};
+use super::store_db::{DbAudit, DbTokens, test_store};
 use super::tools::{Ctx, Plaza, REGISTRY, Tool, observe, visible};
 use super::{Host, HubMcp, routes};
-use crate::prompts::store_mem::MemoryPrompts;
+use crate::prompts::store::SqlitePrompts;
 use crate::prompts::{NewPrompt, Prompts};
 use crate::skills::Skills;
 use apz_prompt::Kind;
@@ -30,7 +30,7 @@ struct FakePlaza {
 
 fn fake_plaza() -> FakePlaza {
     FakePlaza {
-        prompts: Prompts::new(Arc::new(MemoryPrompts::in_memory())),
+        prompts: Prompts::new(Arc::new(SqlitePrompts::for_tests())),
         skills: None,
     }
 }
@@ -151,7 +151,6 @@ impl Plaza for FakePlaza {
                     .create(&CreateTask {
                         goal: "Ship".into(),
                         acceptance: None,
-                        budget: None,
                         role: None,
                         after: Vec::new(),
                         project: project.map(String::from),
@@ -206,7 +205,6 @@ impl Plaza for FakePlaza {
                 .create(&CreateTask {
                     goal: "Ship".into(),
                     acceptance: None,
-                    budget: None,
                     role: Some("coder".into()),
                     after,
                     project: Some("pr1".into()),
@@ -225,10 +223,6 @@ impl Plaza for FakePlaza {
 
     fn machines(&self) -> Vec<Value> {
         vec![json!({ "name": "n0", "kind": "linux", "status": "up" })]
-    }
-
-    fn treasury(&self, _journal_limit: usize) -> Value {
-        json!({ "view": {}, "journal": {}, "plaza_budget": 0 })
     }
 
     fn usage(&self, _from_ms: u64, _to_ms: u64) -> Value {
@@ -304,16 +298,20 @@ impl Host for TestHost {
 struct Harness {
     host: TestHost,
     router: Router<TestHost>,
+    /// The plaza database's folder and store: they live as long as the harness (dropping the store stops its writer).
+    _store: (tempfile::TempDir, apz_store::Store),
 }
 
 fn harness(enabled: bool) -> Harness {
     let clock = Arc::new(AtomicU64::new(T0));
     let reading = Arc::clone(&clock);
+    let (dir, store) = test_store("hub-mcp-harness");
+    let db = Arc::clone(store.db(crate::store::PLAZA));
     let hub = HubMcp::new(
         enabled,
         vec![ORIGIN.to_string()],
-        Box::new(MemoryTokens::default()),
-        Box::new(MemoryAudit::default()),
+        Box::new(DbTokens::new(Arc::clone(&db))),
+        Box::new(DbAudit::new(db)),
         Box::new(move || reading.load(Ordering::SeqCst)),
     );
     Harness {
@@ -323,6 +321,7 @@ fn harness(enabled: bool) -> Harness {
             clock,
         },
         router: routes(Router::new()),
+        _store: (dir, store),
     }
 }
 
@@ -520,7 +519,6 @@ fn tools_list_shows_what_the_scope_and_the_allowlist_permit() {
         "project_graph",
         "list_approvals",
         "list_machines",
-        "treasury_summary",
         "usage_summary",
         "list_laws",
         "search_library",
@@ -868,18 +866,19 @@ fn every_tool_call_writes_an_audit_row() {
         Some(&session),
         tool_call("get_agent", json!({ "cid": 9 })),
     );
-    let rows = h.host.hub.audit.list();
+    // Newest first: the get_agent call is the first row.
+    let rows = h.host.hub.audit.query(None, None, 10);
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].token_id.as_deref(), Some(record.id.as_str()));
-    assert_eq!((rows[0].tool.as_str(), rows[0].ok), ("plaza_status", true));
-    assert_eq!(rows[0].args_sha256, sha256_hex(b"{}"));
-    assert_eq!(rows[1].tool, "get_agent");
+    assert_eq!(rows[1].token_id.as_deref(), Some(record.id.as_str()));
+    assert_eq!((rows[1].tool.as_str(), rows[1].ok), ("plaza_status", true));
+    assert_eq!(rows[1].args_sha256, sha256_hex(b"{}"));
+    assert_eq!(rows[0].tool, "get_agent");
     assert_eq!(
-        (rows[1].ok, rows[1].error.as_deref()),
+        (rows[0].ok, rows[0].error.as_deref()),
         (false, Some("tool_error"))
     );
     assert_eq!(
-        rows[1].args_sha256,
+        rows[0].args_sha256,
         sha256_hex(json!({ "cid": 9 }).to_string().as_bytes())
     );
 }
@@ -1259,11 +1258,13 @@ mod open_modes {
         let clock = Arc::new(AtomicU64::new(T0));
         let reading = Arc::clone(&clock);
         let defaults = crate::hub_mcp::default_origins(19080, "https://hub.test", tls);
+        let (dir, store) = test_store("hub-mcp-open");
+        let db = Arc::clone(store.db(crate::store::PLAZA));
         let hub = HubMcp::new(
             false,
             vec![],
-            Box::new(MemoryTokens::default()),
-            Box::new(MemoryAudit::default()),
+            Box::new(DbTokens::new(Arc::clone(&db))),
+            Box::new(DbAudit::new(db)),
             Box::new(move || reading.load(Ordering::SeqCst)),
         )
         .listening(tls, defaults);
@@ -1275,6 +1276,7 @@ mod open_modes {
                 clock,
             },
             router: routes(Router::new()),
+            _store: (dir, store),
         }
     }
 
@@ -1355,7 +1357,7 @@ mod open_modes {
                 tool_call("create_task", json!({ "title": "x" })),
             );
             assert_eq!(body_of(&resp)["error"]["code"], json!(-32602));
-            let rows = h.host.hub.audit.list();
+            let rows = h.host.hub.audit.query(None, None, 10);
             assert_eq!(rows[0].error.as_deref(), Some("unknown_tool"));
             assert_eq!(rows[0].token_id, None);
         }
@@ -1381,7 +1383,8 @@ mod open_modes {
 
     #[test]
     fn open_over_remote_needs_the_confirmation_and_remote_needs_tls() {
-        let db = crate::db::Db::connect(&std::collections::BTreeMap::new());
+        let (_dir, store) = test_store("hub-mcp-remote");
+        let db = store.db(crate::store::PLAZA);
         let body = |bind: &str, mode: &str, confirm: bool| crate::hub_mcp::owner::SettingsBody {
             enabled: true,
             bind: bind.into(),
@@ -1396,7 +1399,7 @@ mod open_modes {
         );
         let ctx = crate::hub_mcp::owner::Ctx {
             hub: &tls.host.hub,
-            db: &db,
+            db,
             public_url: "https://hub.test",
         };
         assert_eq!(
@@ -1420,7 +1423,7 @@ mod open_modes {
         );
         let ctx = crate::hub_mcp::owner::Ctx {
             hub: &plain.host.hub,
-            db: &db,
+            db,
             public_url: "https://hub.test",
         };
         let refused = crate::hub_mcp::owner::apply_settings(&ctx, body("remote", "secure", false));
@@ -1549,8 +1552,8 @@ mod open_modes {
             tool_call("plaza_status", json!({})),
         );
         assert_eq!(body_of(&resp)["result"]["isError"], json!(false));
-        let rows = h.host.hub.audit.list();
-        let last = rows.last().expect("a row");
+        let rows = h.host.hub.audit.query(None, None, 10);
+        let last = rows.first().expect("a row");
         assert_eq!(last.token_id, None);
         assert_eq!(last.client_ip.as_deref(), Some("203.0.113.7"));
         assert_eq!(last.tool, "plaza_status");

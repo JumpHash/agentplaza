@@ -13,7 +13,9 @@
 //!
 //! Documents are files in the plaza's file store (by id) or paths in the project's repo.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use apz_cache::Generations;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_store::rusqlite::Connection;
@@ -226,6 +228,8 @@ impl Actor {
 #[derive(Default)]
 pub struct Store {
     items: Mutex<Vec<Project>>,
+    /// The hub's generations: each project whose record changes bumps its `project:<id>`.
+    gens: Arc<Generations<String>>,
 }
 
 fn now_ms() -> u64 {
@@ -294,8 +298,14 @@ fn plan_author(project: &Project) -> Option<u64> {
 }
 
 impl Store {
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
     /// Runs `change` on a copy of the projects and keeps the copy once it succeeds; a refusal leaves the store as it
-    /// was. The saver writes the change to plaza.db.
+    /// was. The saver writes the change to plaza.db. Each project whose record changed bumps its generation.
     fn mutate<T>(
         &self,
         change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>,
@@ -306,6 +316,12 @@ impl Store {
             .map_err(|_| "projects are unavailable".to_string())?;
         let mut next: Vec<Project> = items.clone();
         let out = change(&mut next)?;
+        for changed in next.iter().filter(|p| !items.contains(p)) {
+            crate::sources::bump(&self.gens, &crate::sources::project(&changed.id));
+        }
+        for gone in items.iter().filter(|p| !next.contains(p)) {
+            crate::sources::bump(&self.gens, &crate::sources::project(&gone.id));
+        }
         *items = next;
         Ok(out)
     }
@@ -1024,11 +1040,9 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
-            // Delivered: the project's agents' work ends, and the rest of its budget goes to the plaza (in maintenance
-            // they stay: the project is still looked after).
+            // Delivered: the project's agents' work ends (in maintenance they stay: the project is still looked after).
             if project.stage == "delivered" && !project.in_maintenance() {
                 crate::work_loop::end_project(app, &project.id, "the project was delivered");
-                crate::project_settings::return_rest(app, &project.id);
             }
             answer(app, &project, stage_hint(&project.stage))
         }
@@ -1275,9 +1289,8 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
     crate::policy::push_all(app);
     if project.archived {
         // Nothing more is done for it: its agents' work ends (their sessions end and their VMs stop), then its open
-        // tasks are withdrawn (their escrow back in its budget), and the rest of its budget goes to the plaza. A task
-        // an agent was working on is still claimed here, its work only cancelled (it ends when the agent answers): it
-        // is withdrawn too, or its escrow would stay out of both budgets.
+        // tasks are withdrawn. A task an agent was working on is still claimed here, its work only cancelled (it ends
+        // when the agent answers): it is withdrawn too.
         crate::work_loop::end_project(app, id, "the project was archived");
         for task in &project.tasks {
             if let Some(task) = app.plaza.tasks.find(task)
@@ -1286,7 +1299,6 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
                 let _ = task.withdraw();
             }
         }
-        crate::project_settings::return_rest(app, id);
     } else if !project.paused {
         // Resumed: its agents' waiting work goes out.
         app.work.dispatch_idle(app);
@@ -1797,6 +1809,29 @@ mod tests {
                 .unwrap()
                 .id,
             "pr2"
+        );
+    }
+
+    #[test]
+    fn a_change_moves_only_the_changed_projects_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let first = store.open_for_owner("First", "goal", "code").expect("open");
+        let second = store
+            .open_for_owner("Second", "goal", "code")
+            .expect("open");
+        let before = gens.get(&crate::sources::project(&first.id));
+        store.set_paused(&first.id, true).expect("pause");
+        assert!(
+            gens.get(&crate::sources::project(&first.id)) > before,
+            "a pause moves the project"
+        );
+        let untouched = gens.get(&crate::sources::project(&second.id));
+        store.set_paused(&first.id, false).expect("resume");
+        assert_eq!(
+            gens.get(&crate::sources::project(&second.id)),
+            untouched,
+            "another project stays"
         );
     }
 }

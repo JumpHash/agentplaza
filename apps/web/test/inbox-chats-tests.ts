@@ -1,24 +1,28 @@
 // The inbox's and the chats' logic: the card kind labels, the amount an answer takes (in the unit of its owner's budget),
 // the drafts kept across redraws, the text of a settled card, the author and chat kind labels, the message order and
-// limit, and the expert lines. The views draw them. Bundled with the other suites by test/tests.ts; it prints
+// limit, a chat's answer still to come, its draft not started, its open start card, and the expert lines. The views draw
+// them. Bundled with the other suites by test/tests.ts; it prints
 // "inbox chats tests: ok".
 
-import type { Card, ChatMessage } from '../src/api-work';
+import type { Card, ChatDraft, ChatMessage } from '../src/api-work';
 import {
   amountUnitName,
   amountWire,
   authorLabel,
+  awaitingReply,
   cardExpertLine,
   cardKindLabel,
   chatKindLabel,
   clockText,
   Drafts,
   doneText,
+  draftPending,
   frameChat,
   isDangerChoice,
   isStaleAnswer,
   messageExpertLine,
   nonBlank,
+  openStartCard,
   preselectProject,
   recentMessages,
   settledText,
@@ -204,5 +208,16 @@ dropped.run();
 dropped.stop();
 await wait(350);
 eq(halted, 0, 'stop drops a call still waiting');
+
+// A chat's answer still to come (the owner spoke last, by seq), its draft not yet started, and its open start card.
+eq(awaitingReply([message(2, 'owner'), message(1, 'session')]), true, 'the owner spoke last: an answer is to come');
+eq(awaitingReply([message(1, 'owner'), message(2, 'session')]), false, 'a session answered last');
+eq(awaitingReply([]), false, 'a chat with no messages has nothing to come');
+eq(draftPending({ draft: undefined }), false, 'a chat with no draft has none pending');
+eq(draftPending({ draft: { revision: 2, started_ms: 5 } as ChatDraft }), false, 'a started draft is not pending');
+eq(draftPending({ draft: { revision: 2 } as ChatDraft }), true, 'a draft the owner has not started is pending');
+const cardOf = (id: string, kind: string, state: string): Card => ({ id, kind, state }) as unknown as Card;
+eq(openStartCard([cardOf('c1', 'budget', 'open'), cardOf('c2', 'start', 'answered'), cardOf('c3', 'start', 'open')])?.id, 'c3', 'the open start card');
+eq(openStartCard([cardOf('c2', 'start', 'answered')]), null, 'no open start card when the start was answered');
 
 console.log(`inbox chats tests: ok (${checks} checks)`);

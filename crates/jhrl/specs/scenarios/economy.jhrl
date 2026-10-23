@@ -3,24 +3,7 @@
 
 pack agentplaza.scenarios.economy version "0.1.0"
 
-import agentplaza.machines.credit_line
 import agentplaza.rules.social
-import agentplaza.rules.economy
-
-scenario AP-073.R4 "Draw and repay" of CreditLine {
-  given Total = 300 cr, limit = 200 cr, lender = 300 cr
-  when Draw(150 cr)
-  then used == 150 cr and lender == 150 cr
-  when Repay(150 cr)
-  then used == 0 cr and lender == 300 cr
-}
-
-scenario AP-073.R7 "Borrower retires" of CreditLine {
-  given Total = 300 cr, limit = 100 cr, lender = 300 cr
-  when Draw(80 cr)
-  when WriteOff
-  then not open and lender + borrower == 300 cr and lender == 220 cr
-}
 
 scenario AP-072.R2 "No history" {
   then expected_trust(0, 0) == 0.5 and uncertainty(0, 0) == 1

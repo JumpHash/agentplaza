@@ -1,9 +1,9 @@
 // The inbox's and the chats' logic as plain functions and one small class: the labels of cards, chats and authors, the
 // amount an answer takes, the amounts kept across redraws, the text a settled card shows, the order and the tail of a
-// chat's messages, and the lines of the expert view. No DOM, no timers and no runtime import of the API (type-only
-// imports are fine), so node can test it (test/inbox-chats-tests.ts).
+// chat's messages, a chat's draft and its start card, and the lines of the expert view. No DOM, no timers and no runtime
+// import of the API (type-only imports are fine), so node can test it (test/inbox-chats-tests.ts).
 
-import type { BudgetUnit, Card, ChatKind, ChatMessage } from '../api-work';
+import type { BudgetUnit, Card, Chat, ChatKind, ChatMessage } from '../api-work';
 import { parseDollars, parseTokens, type Parsed } from './budget-model';
 
 /** Sentence case: the words of `text` with underscores as spaces, the first letter capital. */
@@ -85,6 +85,22 @@ export function chatKindLabel(kind: ChatKind): string {
 export function recentMessages(messages: readonly ChatMessage[], limit: number): ChatMessage[] {
   const ordered = [...messages].sort((a, b) => a.seq - b.seq);
   return ordered.slice(Math.max(0, ordered.length - limit));
+}
+
+/** Whether a chat's answer is still to come: its newest message is the owner's (no session has answered it yet). */
+export function awaitingReply(messages: readonly ChatMessage[]): boolean {
+  const newest = messages.reduce<ChatMessage | null>((last, m) => (last === null || m.seq > last.seq ? m : last), null);
+  return newest?.author === 'owner';
+}
+
+/** Whether a chat holds a project's draft the owner has not started: the chat's draft, and no `started_ms` on it. */
+export function draftPending(chat: Pick<Chat, 'draft'>): boolean {
+  return !!chat.draft && chat.draft.started_ms === undefined;
+}
+
+/** The open start card among a chat's cards: the question that starts its draft, or null when none is open. */
+export function openStartCard(cards: readonly Card[]): Card | null {
+  return cards.find((c) => c.kind === 'start' && c.state === 'open') ?? null;
 }
 
 /** A message's time by the reader's clock, `HH:MM`. */

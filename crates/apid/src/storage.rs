@@ -122,7 +122,7 @@ fn requested_range(req: &Request, size: u64) -> Result<Option<(u64, u64)>, ()> {
 pub fn roots(app: &App) -> Result<HashSet<Hash>, String> {
     let mut roots: HashSet<Hash> = HashSet::new();
     roots.extend(app.deliverables.hashes());
-    roots.extend(app.artifacts.hashes());
+    roots.extend(app.artifacts.hashes()?);
     roots.extend(app.skills.hashes()?);
     roots.extend(crate::stations::blob_hashes(app)?);
     Ok(roots)

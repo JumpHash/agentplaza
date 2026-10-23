@@ -1,5 +1,5 @@
 //! Operator-spawned agents and every agent's model override, kept in plaza.db (the `spawned` tables, saved by the
-//! store's saver). A restart respawns each spawned agent under its old CID, so its wallet and workspace line up.
+//! store's saver). A restart respawns each spawned agent under its old CID, so its workspace lines up.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

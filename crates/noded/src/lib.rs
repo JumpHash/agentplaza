@@ -25,6 +25,7 @@ pub mod cpu_baseline;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
+mod mcp_vm;
 pub mod metrics;
 pub mod migrate;
 pub mod registry;
@@ -166,6 +167,8 @@ pub struct Node {
     workstations: workstation::Store,
     /// The exports and imports of sleeping VMs in flight (migrate.rs).
     migrations: migrate::Migrations,
+    /// The MCP servers this node runs in microVMs (mcp_vm.rs).
+    mcp: mcp_vm::McpVms,
 }
 
 /// `GET /v1/machine`.
@@ -252,6 +255,7 @@ impl Node {
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
             migrations: migrate::Migrations::new(),
+            mcp: mcp_vm::McpVms::kvm(),
         }
     }
 
@@ -2000,6 +2004,23 @@ fn router() -> Router<Node> {
         )
         .post("/v1/runs/{id}/vms/{index}/fork", |node, request, params| {
             fork_vm(node, params.get("id"), params.get("index"), &request.body)
+        })
+        // MCP servers in microVMs (mcp_vm.rs): whether this node can run one, a run per server, and a
+        // server's kept workspace.
+        .get("/v1/mcp-vm", |node, _, _| {
+            mcp_vm::availability_answer(node.registry(), &node.mcp)
+        })
+        .post("/v1/mcp-runs", |node, request, _| {
+            mcp_vm::create_run(node.registry(), &node.mcp, &request.body)
+        })
+        .get("/v1/mcp-runs/{id}", |node, _, params| {
+            mcp_vm::get_run(&node.mcp, params.get("id"))
+        })
+        .delete("/v1/mcp-runs/{id}", |node, _, params| {
+            mcp_vm::delete_run(&node.mcp, params.get("id"))
+        })
+        .delete("/v1/mcp-storage/{server}", |node, _, params| {
+            mcp_vm::delete_storage(node.registry(), &node.mcp, params.get("server"))
         })
         // Trainer jobs: a native run per job, under the OS sandbox; see `train`.
         .get("/v1/train", |_, _, _| train::list())

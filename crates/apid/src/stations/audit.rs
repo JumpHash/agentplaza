@@ -121,16 +121,6 @@ pub enum StationAudit {
         reason: String,
         session: u64,
     },
-    /// What a lease cost its task for the time it held the station.
-    LeaseCharge {
-        lease: String,
-        task: String,
-        rate_per_hour: u64,
-        active_ms: u64,
-        wanted: i64,
-        charged: i64,
-        error: Option<String>,
-    },
     RecordingDelete {
         recording: String,
         lease: String,
@@ -473,15 +463,6 @@ mod tests {
                 reason: "quiet".into(),
                 session: 7,
             },
-            StationAudit::LeaseCharge {
-                lease: "l4".into(),
-                task: "t1".into(),
-                rate_per_hour: 60,
-                active_ms: 120_000,
-                wanted: 2,
-                charged: 2,
-                error: None,
-            },
             StationAudit::RecordingDelete {
                 recording: "r1".into(),
                 lease: "l4".into(),
@@ -614,7 +595,7 @@ mod tests {
             kinds.insert(want["kind"].as_str().unwrap().to_string());
             assert_eq!(got, want, "the JSON of {}", want["kind"]);
         }
-        assert_eq!(kinds.len(), 38, "every kind is covered: {kinds:?}");
+        assert_eq!(kinds.len(), 37, "every kind is covered: {kinds:?}");
     }
 
     #[test]

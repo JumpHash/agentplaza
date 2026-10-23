@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::json;
@@ -18,7 +19,8 @@ use super::egress::Egress;
 use super::http::check_endpoint;
 use super::runtime::{Ctx, Runtime, Status};
 use super::runtimes::{Fetch, sha256_hex};
-use super::stdio::SandboxLauncher;
+use super::stdio::{Child as ServerChild, SandboxLauncher};
+use super::vm::{VmHost, VmRequest};
 use super::{
     McpSecrets, OnBehalf, Secret, allowed, auto_risk, forget_risks, lookup, publish_risks,
     risk_for, wire_names,
@@ -73,6 +75,52 @@ fn runtime() -> Runtime {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     Runtime::new(dir, Arc::new(FixtureFetch), Arc::new(SandboxLauncher), None)
+}
+
+/// A microVM host for tests: available or not as given, and every launch is recorded and refused with `refusal`.
+struct FakeVm {
+    available: Result<(), String>,
+    launched: Mutex<Vec<VmRequest>>,
+    refusal: String,
+}
+
+impl VmHost for FakeVm {
+    fn available(&self) -> Result<(), String> {
+        self.available.clone()
+    }
+
+    fn launch(&self, request: &VmRequest) -> Result<Box<dyn ServerChild>, String> {
+        self.launched.lock().unwrap().push(request.clone());
+        Err(self.refusal.clone())
+    }
+
+    fn purge(&self, _server: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// A runtime for one test with `vm` as its microVM host, and the proxy on a free loopback port when `proxied`.
+fn runtime_with_vm(vm: Arc<FakeVm>, proxied: bool) -> Runtime {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "apz-mcp-vm-tests-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let egress = proxied.then(|| Egress::new(port));
+    Runtime::new(
+        dir,
+        Arc::new(FixtureFetch),
+        Arc::new(SandboxLauncher),
+        egress,
+    )
+    .with_vm(vm)
 }
 
 /// A vault for tests: entries by name, each bound to one server, optionally scoped to one node. Agents
@@ -872,4 +920,94 @@ fn the_sandboxed_fixture_reaches_the_proxy_port_and_nothing_else() {
     assert!(local.starts_with("refused"), "{local}");
     let beyond = reach("192.0.2.1:443".into());
     assert!(beyond.starts_with("refused"), "{beyond}");
+}
+
+#[test]
+fn a_server_runs_in_a_microvm_with_its_directories_as_volumes_and_the_proxy_on_the_guest_port() {
+    let vm = Arc::new(FakeVm {
+        available: Ok(()),
+        launched: Mutex::new(Vec::new()),
+        refusal: "the fake node refused the boot".into(),
+    });
+    let runtime = runtime_with_vm(Arc::clone(&vm), true);
+    let vault = Vault::default();
+    let server = stdio_server("fixture", &[]);
+    let refused = runtime
+        .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
+        .unwrap_err();
+    assert!(
+        refused.contains("the fake node refused the boot"),
+        "{refused}"
+    );
+    assert_eq!(runtime.summary("fixture").launcher, "vm");
+    let launched = vm.launched.lock().unwrap();
+    assert_eq!(launched.len(), 1);
+    let request = &launched[0];
+    assert!(
+        request.program.starts_with("/data/ro-"),
+        "{}",
+        request.program
+    );
+    assert!(
+        request.program.ends_with("/mcp_fixture"),
+        "{}",
+        request.program
+    );
+    assert_eq!(request.args, ["stdio"]);
+    assert_eq!(request.cwd, "/workspace");
+    assert_ne!(request.egress_port, 0);
+    assert!(request.env["HTTPS_PROXY"].ends_with("@127.0.0.1:3128"));
+    assert!(request.mounts.iter().all(|m| m.name.starts_with("ro-")));
+}
+
+#[test]
+fn a_node_that_cannot_boot_a_microvm_runs_the_server_in_the_sandbox_and_says_why() {
+    let vm = Arc::new(FakeVm {
+        available: Err("no /dev/kvm on this host".into()),
+        launched: Mutex::new(Vec::new()),
+        refusal: String::new(),
+    });
+    let runtime = runtime_with_vm(Arc::clone(&vm), true);
+    let vault = Vault::default();
+    let server = stdio_server("fixture", &[]);
+    let probe = runtime
+        .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
+        .unwrap();
+    assert_eq!(probe.server_info.name, "fixture");
+    assert_eq!(
+        runtime.summary("fixture").launcher,
+        "sandbox: no /dev/kvm on this host"
+    );
+    assert!(vm.launched.lock().unwrap().is_empty());
+    runtime.stop("fixture");
+}
+
+#[test]
+fn a_server_on_another_node_or_without_a_proxy_is_not_sent_to_a_microvm() {
+    let vm = Arc::new(FakeVm {
+        available: Ok(()),
+        launched: Mutex::new(Vec::new()),
+        refusal: "never".into(),
+    });
+    let vault = Vault::default();
+    let server = stdio_server("fixture", &[]);
+    let other_node = runtime_with_vm(Arc::clone(&vm), true);
+    other_node
+        .probe(&server, &ctx(&vault, owner("n7"), "n7", T0))
+        .unwrap();
+    assert_eq!(
+        other_node.summary("fixture").launcher,
+        "sandbox: node n7 is not this hub's node"
+    );
+    other_node.stop("fixture");
+    let unproxied = runtime_with_vm(Arc::clone(&vm), false);
+    unproxied
+        .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
+        .unwrap();
+    assert_eq!(
+        unproxied.summary("fixture").launcher,
+        "sandbox: the server has no egress proxy"
+    );
+    unproxied.stop("fixture");
+    assert!(vm.launched.lock().unwrap().is_empty());
 }

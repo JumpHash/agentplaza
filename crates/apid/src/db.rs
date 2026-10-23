@@ -20,36 +20,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
 use crate::state::App;
 
 /// Every component still snapshotted into Postgres, by name, in restore order. The task ledger and the components of
 /// `plaza.db` are not here: `store` keeps them.
-pub const COMPONENTS: &[&str] = &["treasury"];
+pub const COMPONENTS: &[&str] = &[];
 
-pub mod data_migrate;
-pub mod hub_mcp;
 pub mod migrate;
-pub mod roster;
 pub mod sql;
 
 const MINUTE: Duration = Duration::from_secs(60);
 
-/// The component's snapshot ("" when it has nothing to save yet).
-pub fn snapshot_of(app: &App, component: &str) -> String {
-    match component {
-        "treasury" => app.plaza.treasury.snapshot(),
-        _ => String::new(),
-    }
+/// The component's snapshot ("" when it has nothing to save yet). No component is left in Postgres.
+pub fn snapshot_of(_app: &App, _component: &str) -> String {
+    String::new()
 }
 
-/// Restores one component from its stored snapshot.
-pub fn restore_into(app: &App, component: &str, json: &str) -> Result<(), String> {
-    match component {
-        "treasury" => app.plaza.treasury.restore(json),
-        other => Err(format!("unknown component {other}")),
-    }
+/// Restores one component from its stored snapshot: there are none to restore.
+pub fn restore_into(_app: &App, component: &str, _json: &str) -> Result<(), String> {
+    Err(format!("unknown component {component}"))
 }
 
 /// FNV-1a, 64-bit, as i64: stable across runs (the std hasher is not).
@@ -188,10 +177,6 @@ impl Db {
             eprintln!("db: refusing to start: {e}");
             std::process::exit(1);
         }
-        if let Err(e) = data_migrate::run(&mut client) {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
         Db::with(url, Some(client))
     }
 
@@ -315,38 +300,6 @@ impl Db {
     }
 }
 
-/// The unfurl cache (`unfurl_cache`, migration 0009): one answer per reference, upserted. Without Postgres the
-/// unfurl keeps its own memory copy (unfurl/mod.rs), so these answer nothing when the database is not enabled.
-impl Db {
-    /// The cached answer for `key`: its data, whether it is ok, and when it was fetched (ms). None when none is stored.
-    pub fn unfurl_get(&self, key: &str) -> Result<Option<(Value, bool, u64)>, String> {
-        if !self.enabled() {
-            return Ok(None);
-        }
-        let row = self.run(|c| c.query_opt(sql::UNFURL_GET, &[&key]))?;
-        Ok(row.map(|row| {
-            (
-                row.get::<_, Value>(0),
-                row.get::<_, bool>(1),
-                row.get::<_, i64>(2) as u64,
-            )
-        }))
-    }
-
-    /// Stores `data` as the answer for `key`, replacing the one stored.
-    pub fn unfurl_put(
-        &self,
-        key: &str,
-        data: &Value,
-        ok: bool,
-        fetched_ms: u64,
-    ) -> Result<(), String> {
-        let fetched = fetched_ms as i64;
-        self.run(|c| c.execute(sql::UNFURL_PUT, &[&key, data, &ok, &fetched]))
-            .map(|_| ())
-    }
-}
-
 /// At start: restore every component that Postgres holds; a component Postgres does not
 /// hold yet keeps what its own files loaded (the first run imports them). Logs each outcome.
 pub fn restore_all(app: &App) {
@@ -381,49 +334,6 @@ fn restore_components(app: &App) {
             }
         }
     }
-    reconcile_escrows(app);
-}
-
-/// The finished tasks (done, failed, withdrawn) whose escrow still holds money, from `(id, state, escrow)` triples.
-fn stranded_escrows(tasks: &[(String, String, i128)]) -> Vec<&(String, String, i128)> {
-    tasks
-        .iter()
-        .filter(|(_, state, escrow)| {
-            matches!(state.as_str(), "done" | "failed" | "withdrawn") && *escrow > 0
-        })
-        .collect()
-}
-
-/// After a restore, refunds each finished task whose escrow still holds money: a stop between the treasury's store
-/// and the task ledger's can leave one (the task finished, its escrow not yet paid back). Returns how many it found.
-fn reconcile_escrows(app: &App) -> usize {
-    let tasks: Vec<(String, String, i128)> = app
-        .plaza
-        .tasks
-        .list()
-        .iter()
-        .map(|task| {
-            let view = task.view();
-            let escrow = app.plaza.treasury.escrow_balance(view.id);
-            (view.id.to_string(), view.state.to_string(), escrow)
-        })
-        .collect();
-    let stranded = stranded_escrows(&tasks);
-    for (id, state, escrow) in &stranded {
-        eprintln!(
-            "db: restore: task {id} is {state} but its escrow holds {escrow}; refunding it to the plaza's budget"
-        );
-        if let Err(e) = app.plaza.treasury.refund_task_to_budget(id) {
-            eprintln!("db: restore: refund of task {id} failed: {e}");
-        }
-    }
-    if !stranded.is_empty() {
-        eprintln!(
-            "db: restore: {} finished tasks had escrow to refund",
-            stranded.len()
-        );
-    }
-    stranded.len()
 }
 
 /// Loads the stored transcripts into the transcript store from the store's database, which then
@@ -441,9 +351,8 @@ fn restore_transcripts(app: &App) {
 fn write_pass_with(app: &App, mut on_error: impl FnMut(&str, &str)) {
     // A run without Postgres has no component stores to write.
     let components: &[&str] = if app.db.enabled() { COMPONENTS } else { &[] };
-    // The treasury is snapshotted before the other stores and stored alone in its transaction: the escrows of the
-    // tasks live in it, and the task ledger is in `plaza.db` now.
-    const LEDGERS: &[&str] = &["treasury"];
+    // Components stored together in one transaction: none now.
+    const LEDGERS: &[&str] = &[];
     let ledgers: Vec<(&str, String)> = components
         .iter()
         .copied()
@@ -544,9 +453,8 @@ pub fn test_database(label: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// A finished task whose escrow still holds money is stranded; open or claimed tasks, and empty escrows, are not.
     #[test]
-    fn the_ledger_components_are_stored_together_and_read_back() {
+    fn components_stored_together_are_read_back() {
         let Some(url) = test_database("store_many") else {
             return;
         };
@@ -554,8 +462,8 @@ mod tests {
         let db = Db::connect(&env);
         assert!(db.enabled());
         let items = [
-            ("treasury", r#"{"entries":[1]}"#.to_string()),
-            ("tasks", r#"{"tasks":[]}"#.to_string()),
+            ("first", r#"{"items":[]}"#.to_string()),
+            ("second", r#"{"items":[1]}"#.to_string()),
         ];
         db.store_many(&items).expect("one transaction");
         for (name, json) in &items {
@@ -565,27 +473,13 @@ mod tests {
             assert_eq!(stored, wanted, "{name}");
         }
         // An unchanged item is skipped; a changed one is written again.
-        db.store_many(&[("tasks", r#"{"tasks":[1]}"#.to_string())])
+        db.store_many(&[("second", r#"{"items":[2]}"#.to_string())])
             .expect("a second pass");
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&db.load("tasks").expect("stored"))
+            serde_json::from_str::<serde_json::Value>(&db.load("second").expect("stored"))
                 .expect("json"),
-            serde_json::json!({"tasks": [1]})
+            serde_json::json!({"items": [2]})
         );
-    }
-
-    #[test]
-    fn stranded_escrows_are_finished_tasks_with_money_in_escrow() {
-        let tasks = [
-            ("t1".to_string(), "done".to_string(), 5),
-            ("t2".to_string(), "withdrawn".to_string(), 0),
-            ("t3".to_string(), "open".to_string(), 9),
-            ("t4".to_string(), "failed".to_string(), 3),
-            ("t5".to_string(), "claimed".to_string(), 0),
-        ];
-        let stranded = stranded_escrows(&tasks);
-        let ids: Vec<&str> = stranded.iter().map(|(id, _, _)| id.as_str()).collect();
-        assert_eq!(ids, ["t1", "t4"]);
     }
 
     #[test]
@@ -632,55 +526,6 @@ mod tests {
         assert!(started.elapsed() < limit, "{:?}", started.elapsed());
     }
 
-    /// The unfurl cache on Postgres: a miss, a store, a read back, and an upsert that replaces the row. A database
-    /// that is not enabled answers a miss and stores nothing (the unfurl's memory copy covers that case).
-    #[test]
-    fn unfurl_cache_round_trips_and_an_upsert_replaces() {
-        use serde_json::json;
-        let disabled = Db::with(String::new(), None);
-        assert_eq!(disabled.unfurl_get("k"), Ok(None));
-        assert!(disabled.unfurl_put("k", &json!({}), true, 1).is_err());
-
-        let Some(url) = test_database("unfurl_cache") else {
-            return;
-        };
-        let env = BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
-        let db = Db::connect(&env);
-        assert!(db.enabled());
-        let key = format!("test-key-{}", std::process::id());
-        assert_eq!(db.unfurl_get(&key), Ok(None));
-        db.unfurl_put(
-            &key,
-            &json!({"ok": true, "card": {"title": "a"}}),
-            true,
-            1_000,
-        )
-        .expect("stored");
-        assert_eq!(
-            db.unfurl_get(&key),
-            Ok(Some((
-                json!({"ok": true, "card": {"title": "a"}}),
-                true,
-                1_000
-            )))
-        );
-        db.unfurl_put(
-            &key,
-            &json!({"ok": false, "error": "rate_limited"}),
-            false,
-            2_000,
-        )
-        .expect("replaced");
-        assert_eq!(
-            db.unfurl_get(&key),
-            Ok(Some((
-                json!({"ok": false, "error": "rate_limited"}),
-                false,
-                2_000
-            )))
-        );
-    }
-
     /// Runs on a fresh database of the test server (skipped without APZ_TEST_DATABASE_URL); uses a
     /// test-only component and a unique value. Exercises the component's queries.
     #[test]
@@ -699,8 +544,8 @@ mod tests {
         assert_eq!(db.store(component, &json), Ok(false));
         let loaded = db.load(component).expect("stored row");
         assert_eq!(
-            serde_json::from_str::<Value>(&loaded).unwrap(),
-            serde_json::from_str::<Value>(&json).unwrap()
+            serde_json::from_str::<serde_json::Value>(&loaded).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()
         );
 
         db.run(|c| c.execute(sql::STATE_DELETE, &[&component]))

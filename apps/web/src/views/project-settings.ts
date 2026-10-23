@@ -1,5 +1,5 @@
 // A project's Settings tab: every setting its agents get, inherited from the plaza or overridden here, with Reset to
-// plaza; and the project's budget. The instructions and skills are the prompt and skills bound to `project:<id>`. The
+// plaza. The instructions and skills are the prompt and skills bound to `project:<id>`. The
 // markup is the prototype's Settings tab (styles/proto/projects.css).
 
 import { api, type EffectiveSettings, type EffectiveValue, type Project } from '../api';

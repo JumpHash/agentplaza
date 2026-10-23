@@ -384,7 +384,7 @@ function openSendBack(p: Project, done: () => void): void {
 function openArchive(p: Project, done: () => void): void {
   dialog(
     'Archive project?',
-    [h('p.muted', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn, its agents stop working on it, and the rest of its budget goes back to the plaza. Its history stays.`)],
+    [h('p.muted', null, `Nothing more is done for ${p.title}: its open tasks are withdrawn and its agents stop working on it. Its history stays.`)],
     (close) => [
       lbtn('Cancel', () => close(), { kind: 'ghost' }),
       lbtn(
@@ -517,7 +517,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       h('p.pj-intro', null, 'Agents work on one project at a time. Talk a new one through with the orchestrator, or open one yourself.'),
       ordered.length
         ? h('div.pj-list', null, ordered.map(projectRow))
-        : emptyState(icon('commit', '', 22), 'No projects yet.', 'Start one in a conversation with the orchestrator: it drafts the tasks and the budget, and you start it.', newBtn),
+        : emptyState(icon('commit', '', 22), 'No projects yet.', 'Start one in a chat with the orchestrator: it drafts the tasks and the budget, and you start it.', newBtn),
     ];
   };
 

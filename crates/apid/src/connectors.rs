@@ -758,6 +758,8 @@ fn admits_project(setting: &Setting, project: Option<&str>) -> bool {
 }
 
 pub struct Store {
+    /// The hub's generations: a change to the settings, the proposals or the catalog bumps `connectors`.
+    gens: Arc<apz_cache::Generations<String>>,
     settings: Mutex<BTreeMap<String, Setting>>,
     /// The vault. A connector field's credential is the entry named `Field.env`, bound to `connector:<id>`.
     vault: Arc<crate::vault::Store>,
@@ -786,6 +788,7 @@ impl Store {
     /// An empty store over `vault`, with the built-in connectors' fields registered; [`Store::load`] fills it at start.
     pub fn new(vault: Arc<crate::vault::Store>) -> Self {
         let store = Self {
+            gens: Arc::default(),
             settings: Mutex::new(BTreeMap::new()),
             vault,
             write: Mutex::new(()),
@@ -793,6 +796,12 @@ impl Store {
         };
         store.register();
         store
+    }
+
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<apz_cache::Generations<String>>) -> Self {
+        self.gens = gens;
+        self
     }
 
     /// Replaces the settings and proposals with what the store holds (at start). Approved proposals join the catalog
@@ -953,6 +962,7 @@ impl Store {
                 .collect();
         }
         *lock(&self.settings) = next;
+        crate::sources::bump(&self.gens, crate::sources::CONNECTORS);
         Ok(self.view(c))
     }
 
@@ -2290,6 +2300,7 @@ impl Store {
         *lock(&self.proposals) = next;
         if approve {
             adopt(&reviewed.spec);
+            crate::sources::bump(&self.gens, crate::sources::CONNECTORS);
             self.register();
         }
         Ok(reviewed)
@@ -2465,5 +2476,25 @@ mod proposal_tests {
         assert_eq!(reloaded.setting("acme-good"), store.setting("acme-good"));
         assert!(reloaded.setting("acme-good").enabled);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_to_a_connectors_setting_moves_the_connectors_source() {
+        let dir = scratch("connector-gens");
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::new(vault_for(&dir)).with_generations(std::sync::Arc::clone(&gens));
+        let id = catalog()[0].id;
+        store
+            .update(
+                id,
+                Patch {
+                    enabled: Some(true),
+                    roles: None,
+                    projects: None,
+                },
+            )
+            .expect("update");
+        assert!(gens.get(&crate::sources::CONNECTORS.to_string()) > 0);
+        assert_eq!(gens.get(&crate::sources::VAULT.to_string()), 0);
     }
 }

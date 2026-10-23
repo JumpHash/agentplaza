@@ -3,13 +3,15 @@
 // the scope, the crumbs and the live line, then the screen), Settings with its own index, and the ambient layer behind
 // the work. The screens mount into `.page` exactly as before; the shell only frames them.
 
-import { api, type Approval, type OwnerConversationSummary, type Project, type Task } from '../api';
-import { workApi, type Card } from '../api-work';
+import { api, type Approval, type Project, type Task } from '../api';
+import { workApi, type Card, type Chat } from '../api-work';
 import { hrefIn, type Route } from '../router';
 import { isLive, projects, scope, switchTo } from '../scope';
 import { agents, on, overview } from '../store';
 import { agentName } from '../roles';
 import { openIde } from '../ide/open';
+import { talkWorkspace } from '../ide/talk-model';
+import { draftPending } from '../views/chat-model';
 import { openNewProject } from './new-project';
 import { stopAll } from './plaza-control';
 import { pmono } from './components';
@@ -36,7 +38,6 @@ export const MORE: [string, LucideName, string][] = [
   ['metrics', 'chart-column', 'Metrics'],
   ['library', 'library', 'Library'],
   ['board', 'pin', 'Board'],
-  ['treasury', 'coins', 'Treasury'],
   ['rules', 'scale', 'Rules'],
   ['lab', 'flask-conical', 'Lab'],
 ];
@@ -276,18 +277,19 @@ export function openPalette(): void {
 interface SideData {
   approvals: Approval[];
   tasks: Task[];
-  conversations: OwnerConversationSummary[];
+  /** The orchestrator's chat and the projects' chats (not the tasks'), newest first. */
+  chats: Chat[];
   /** The cards waiting for the owner (the inbox's count). */
   cards: Card[];
 }
-const side: SideData = { approvals: [], tasks: [], conversations: [], cards: [] };
+const side: SideData = { approvals: [], tasks: [], chats: [], cards: [] };
 
 async function refreshSide(): Promise<void> {
-  const [approvals, tasks, conversations, cards] = await Promise.allSettled([api.approvals(), api.tasks(), api.ownerConversations(), workApi.cards(true)]);
+  const [approvals, tasks, chats, cards] = await Promise.allSettled([api.approvals(), api.tasks(), workApi.chats(), workApi.cards(true)]);
   if (cards.status === 'fulfilled') side.cards = cards.value;
   if (approvals.status === 'fulfilled') side.approvals = approvals.value.filter((a) => (a as { status?: string }).status === undefined || (a as { status?: string }).status === 'pending');
   if (tasks.status === 'fulfilled') side.tasks = tasks.value;
-  if (conversations.status === 'fulfilled') side.conversations = conversations.value;
+  if (chats.status === 'fulfilled') side.chats = chats.value.filter((c) => c.kind !== 'task');
 }
 
 function navRow([k, ic, l]: [string, LucideName, string], current: string, count?: number): HTMLElement {
@@ -335,7 +337,8 @@ function sidebarBody(route: Route): HTMLElement[] {
   const nav = h('nav.nav', { 'aria-label': 'Plaza' }, NAV.map((n) => navRow(n, cur, n[0] === 'approvals' ? pending : n[0] === 'inbox' ? side.cards.length : undefined)), more, moreOn ? MORE.map((n) => navRow(n, cur)) : null);
 
   const scroll = h('div.scroll');
-  const drafting = side.conversations.filter((c) => !c.project && !c.archived);
+  // The orchestrator's chat, and the project chats whose draft the owner has not started yet.
+  const drafting = side.chats.filter((c) => !c.archived && (c.kind === 'main' || draftPending(c)));
   if (drafting.length) {
     scroll.append(
       h('div.sec', null, h('span', null, 'Talking it through')),
@@ -343,12 +346,12 @@ function sidebarBody(route: Route): HTMLElement[] {
         'div.proj',
         null,
         drafting.map((c) => {
-          const to = `#/ide/talk/${encodeURIComponent(c.id)}`;
+          const to = hrefIn(null, 'ide', talkWorkspace(c.id));
           return h(
             'a.thread',
             { href: to, 'aria-current': hash === to ? 'page' : null },
             h('div.t1', null, lu('file-pen-line', 14), h('span.tt', null, c.title), h('span.ago', null, shortAgo(c.updated_ms))),
-            h('div.t2', null, h('span', null, c.draft ? `Draft · revision ${c.draft.revision}` : 'Talking it through'), h('span.sp'), c.pending ? h('span.chip.t-info', null, 'Answering') : null),
+            h('div.t2', null, h('span', null, draftPending(c) && c.draft ? `Draft · revision ${c.draft.revision}` : 'Talking it through')),
           );
         }),
       ),
@@ -372,8 +375,9 @@ function sidebarBody(route: Route): HTMLElement[] {
     const head = h('a.proj-head', { href: `#/projects/${encodeURIComponent(p.id)}/plan`, 'aria-current': cur === 'projects' && route.params[0] === p.id ? 'page' : null }, pmono(p, 18), h('span.lab', null, p.title), tag);
     const items: HTMLElement[] = [];
     if (!closed) {
-      const conv = side.conversations.find((c) => c.project === p.id && !c.archived);
-      if (conv) items.push(thread(`#/ide/talk/${encodeURIComponent(conv.id)}`, 'messages-square', 'With the orchestrator', h('span.ago', null, shortAgo(conv.updated_ms)), hash));
+      // The project's own chat is its line to the planner (the newest one, when it has several).
+      const planner = side.chats.find((c) => c.kind === 'project' && c.project === p.id && !c.archived);
+      if (planner) items.push(thread(hrefIn(null, 'ide', talkWorkspace(planner.id)), 'messages-square', 'With the planner', h('span.ago', null, shortAgo(planner.updated_ms)), hash));
       const waits = side.approvals.filter((a) => (a as { project?: string | null }).project === p.id);
       for (const a of waits.slice(0, 3)) {
         const title = (a as { title?: string; summary?: string; kind?: string }).title ?? (a as { summary?: string }).summary ?? (a as { kind?: string }).kind ?? 'Waiting on you';

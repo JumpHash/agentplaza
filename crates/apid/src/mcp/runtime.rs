@@ -17,8 +17,10 @@ use super::config::{McpServer, Package, Setting, TransportKind};
 use super::egress::Egress;
 use super::http::{HttpTransport, Policy, check_endpoint};
 use super::runtimes::{Fetch, Runtimes};
-use super::stdio::{self, Launcher, Layout, StdioTransport, push_capped};
+use super::stdio::{self, Child, Launcher, Layout, StdioTransport, push_capped};
+use super::vm::{self, VmHost};
 use super::{McpSecrets, OnBehalf};
+use crate::fleet::LOCAL;
 
 /// Failures in this window count toward giving up.
 pub const FAILURE_WINDOW_MS: u64 = 10 * 60_000;
@@ -59,6 +61,8 @@ pub struct LogLine {
 #[derive(Default)]
 struct State {
     status: Status,
+    /// How the instance runs: in a microVM, or under the sandbox and why not.
+    launcher: String,
     last_used_ms: u64,
     idle_ms: u64,
     last_error: Option<String>,
@@ -121,6 +125,8 @@ pub struct Probe {
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
     pub status: Status,
+    /// How the server's instance runs ("vm", or "sandbox: <why>"); empty before it has started.
+    pub launcher: String,
     pub last_used_ms: u64,
     pub last_error: Option<String>,
     pub server_info: Option<ServerInfo>,
@@ -132,6 +138,8 @@ pub struct Runtime {
     slots: Mutex<BTreeMap<(String, String), Arc<Slot>>>,
     /// The egress proxy stdio servers reach the network through. None runs them with no network (tests).
     egress: Option<Arc<Egress>>,
+    /// The microVM host of this hub's node. None runs every server under the sandbox.
+    vm: Option<Arc<dyn VmHost>>,
     /// Where the servers' directories (`<state>/mcp/<id>/`) and the runtimes (`<state>/runtimes/`) are.
     state_dir: PathBuf,
     runtimes: Runtimes,
@@ -291,19 +299,41 @@ impl Runtime {
             launcher,
             slots: Mutex::new(BTreeMap::new()),
             egress,
+            vm: None,
             runtimes: Runtimes::new(&state_dir, fetch),
             state_dir,
         }
     }
 
-    /// Removes a stdio server's data directory (its storage). Its installed packages and binaries stay.
+    /// Runs the servers of this hub's node in microVMs that `vm` boots, when it can (see [`Runtime::microvm`]).
+    pub fn with_vm(mut self, vm: Arc<dyn VmHost>) -> Runtime {
+        self.vm = Some(vm);
+        self
+    }
+
+    /// Removes a stdio server's data directory (its storage) and the storage its microVM keeps. Its installed packages
+    /// and binaries stay.
     pub fn purge_data(&self, server_id: &str) -> Result<(), String> {
+        if let Some(vm) = &self.vm {
+            vm.purge(server_id)?;
+        }
         let data = Layout::new(&self.state_dir, server_id).data;
         match std::fs::remove_dir_all(&data) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(format!("cannot remove {}: {e}", data.display())),
         }
+    }
+
+    /// The microVM host that runs a server for `node`, or why the sandbox runs it instead. Only this hub's own node
+    /// has microVMs the hub can reach.
+    fn microvm(&self, node: &str) -> Result<&Arc<dyn VmHost>, String> {
+        if node != LOCAL {
+            return Err(format!("node {node} is not this hub's node"));
+        }
+        let vm = self.vm.as_ref().ok_or("this hub has no microVM host")?;
+        vm.available()?;
+        Ok(vm)
     }
 
     fn slot(&self, server: &str, node: &str) -> Arc<Slot> {
@@ -626,7 +656,29 @@ impl Runtime {
             network,
             limits: apz_sandbox::Limits::default(),
         };
-        let child = self.launcher.launch(&spec)?;
+        let child: Box<dyn Child> = match (self.microvm(&ctx.node), &lease) {
+            (Ok(vm), Some(lease)) => {
+                let run = vm::run_id(&server.id);
+                let request = vm::request(
+                    &spec,
+                    &layout.root,
+                    &server.id,
+                    &run,
+                    server.storage.volume,
+                    lease.port(),
+                )?;
+                lock(&slot.state).launcher = "vm".into();
+                vm.launch(&request)?
+            }
+            (Ok(_), None) => {
+                lock(&slot.state).launcher = "sandbox: the server has no egress proxy".into();
+                Box::new(self.launcher.launch(&spec)?)
+            }
+            (Err(why), _) => {
+                lock(&slot.state).launcher = format!("sandbox: {why}");
+                Box::new(self.launcher.launch(&spec)?)
+            }
+        };
         let sink_slot = Arc::clone(slot);
         let on_stderr: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
             let mut st = lock(&sink_slot.state);
@@ -708,6 +760,9 @@ impl Runtime {
             out.last_used_ms = out.last_used_ms.max(st.last_used_ms);
             if out.last_error.is_none() {
                 out.last_error = st.last_error.clone();
+            }
+            if out.launcher.is_empty() {
+                out.launcher = st.launcher.clone();
             }
             if out.server_info.is_none() {
                 out.server_info = st.server_info.clone();

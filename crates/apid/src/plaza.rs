@@ -1,5 +1,4 @@
-//! The plaza's domain state (apz-plaza) and its REST routes: tasks, treasury and
-//! the board.
+//! The plaza's domain state (apz-plaza) and its REST routes: tasks and the board.
 //!
 //! OWNER: slice "plaza-api". The handlers port noded's former ones — see
 //! `git show 82d6286:crates/noded/src/lib.rs` (fn list_tasks … fn withdraw_task).
@@ -12,9 +11,7 @@ use apz_plaza::events::EventBus;
 use apz_plaza::social::{self, PostRequest, ReadRequest, Social};
 use apz_plaza::tasks::{
     ClaimError, ClaimRequest, CreateTask, FinishRequest, Task, TaskLedger, TasksView,
-    resolve_budget,
 };
-use apz_plaza::treasury::{self, Treasury};
 use apz_proto::wire::WorkKind;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -27,42 +24,22 @@ use crate::state::App;
 pub struct Plaza {
     pub events: Arc<EventBus>,
     pub tasks: TaskLedger,
-    pub treasury: Arc<Treasury>,
     pub social: Social,
-    /// Whether the treasury came back from `treasury.json`.
-    pub restored: bool,
 }
 
 impl Plaza {
-    /// A plaza whose treasury is restored from `snapshot` (a `treasury.json`) when
-    /// one is given and holds to the ledger's invariants. The plaza budget is seeded
-    /// only when nothing was restored.
-    pub fn new(snapshot: Option<&str>) -> Self {
+    /// A plaza with no tasks and an empty board.
+    pub fn new() -> Self {
         let events = EventBus::new();
-        let restored = snapshot.and_then(|json| {
-            let treasury = Treasury::empty(Arc::clone(&events));
-            match treasury.restore(json) {
-                Ok(()) => Some(treasury),
-                Err(err) => {
-                    eprintln!("apid: treasury.json refused, starting a fresh treasury: {err}");
-                    None
-                }
-            }
-        });
-        let was_restored = restored.is_some();
-        let treasury = Arc::new(restored.unwrap_or_else(|| Treasury::new(Arc::clone(&events))));
-        let tasks = TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(&treasury));
         Self {
             social: Social::new(Arc::clone(&events)),
-            tasks,
-            treasury,
+            tasks: TaskLedger::new(Arc::clone(&events)),
             events,
-            restored: was_restored,
         }
     }
 }
 
-/// `/v1/tasks…`, `/v1/treasury…`, `/v1/board…`.
+/// `/v1/tasks…`, `/v1/board…`.
 pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/tasks", list_tasks)
@@ -100,26 +77,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
             finish_task(app, p.get("id"), &req.body)
         })
         .doc(RouteDoc::new("Finish a claimed task").errors(&[400, 404]))
-        .get("/v1/treasury", |app, _, _| treasury_view(app))
-        .doc(RouteDoc::new("Show the treasury balances"))
-        .get("/v1/treasury/journal", |app, req, _| {
-            treasury_journal(app, req)
-        })
-        .doc(RouteDoc::new("List the treasury journal").errors(&[400]))
-        .get("/v1/treasury/series", |app, req, _| {
-            treasury_series(app, req)
-        })
-        .doc(RouteDoc::new("Show the treasury over time").errors(&[400]))
-        .post("/v1/treasury/mint", |app, req, _| {
-            treasury_mint(app, &req.body)
-        })
-        .doc(RouteDoc::new("Mint credits into the plaza budget").errors(&[400]))
-        .post("/v1/treasury/fine", |app, req, _| {
-            treasury_fine(app, &req.body)
-        })
-        .doc(RouteDoc::new("Fine an agent's wallet").errors(&[400]))
-        .get("/v1/treasury/wallets", |app, _, _| treasury_wallets(app))
-        .doc(RouteDoc::new("List the agent wallets"))
         .get("/v1/board", |app, req, _| board_view(app, req))
         .doc(RouteDoc::new("Read the board").errors(&[400]))
         .post("/v1/board", |app, req, _| board_post(app, &req.body))
@@ -236,261 +193,16 @@ pub(crate) fn project_tasks(app: &App, pid: &str) -> Vec<Arc<Task>> {
         .collect()
 }
 
-/// `GET /v1/treasury`: balances (derived from the journal), totals and v0's
-/// note on real spend.
-fn treasury_view(app: &App) -> Response {
-    let mut view =
-        serde_json::to_value(app.plaza.treasury.view()).unwrap_or(serde_json::Value::Null);
-    if let Some(fields) = view.as_object_mut() {
-        fields.insert(
-            "plaza_budget".to_string(),
-            serde_json::json!(app.plaza.treasury.plaza_budget_balance()),
-        );
-    }
-    Response::json(200, &view)
-}
-
-/// The longest `task` a journal filter may name, in bytes.
-const JOURNAL_TASK_MAX: usize = 256;
-
-/// The span a treasury series covers when the request names no `from`: 30 days.
-const SERIES_SPAN_MS: u64 = 30 * 86_400_000;
-
-/// `GET /v1/treasury/journal?before=&limit=&kind=&wallet=&task=`: the double-entry
-/// journal a page at a time, newest first. `before` is an entry id (the page is
-/// the entries below it), `limit` is `1..=256` (default 50), `kind` an entry
-/// kind, `wallet` an agent's cid (the entries posting to its wallet) and `task` a
-/// task id. The body is `{entries, total, limit, truncated, next_before}`:
-/// `total` counts the entries the filters match, `truncated` says older matches
-/// remain, and `next_before` is the `before` for the next page.
-fn treasury_journal(app: &App, req: &Request) -> Response {
-    let query = match journal_query(req) {
-        Ok(query) => query,
-        Err(response) => return response,
-    };
-    let limit = query.limit;
-    let page = app.plaza.treasury.journal_page(&query);
-    let truncated = page.next_before.is_some();
-    Response::json(
-        200,
-        &serde_json::json!({
-            "entries": page.entries,
-            "total": page.total,
-            "limit": limit,
-            "truncated": truncated,
-            "next_before": page.next_before,
-        }),
-    )
-}
-
-/// The paging and filters a journal read asks for. An empty `kind`, `wallet` or
-/// `task` names no filter.
-fn journal_query(req: &Request) -> Result<treasury::JournalQuery, Response> {
-    let limit = match req.query_param("limit") {
-        None => treasury::JOURNAL_PAGE,
-        Some(raw) => match raw.parse::<usize>() {
-            Ok(n) if (1..=treasury::JOURNAL_LIMIT).contains(&n) => n,
-            _ => {
-                return Err(Response::error(
-                    400,
-                    &format!("limit must be 1..={}, not {raw:?}", treasury::JOURNAL_LIMIT),
-                ));
-            }
-        },
-    };
-    let before = match req.query_param("before") {
-        None => None,
-        Some(raw) => match raw.parse::<u64>() {
-            Ok(id) => Some(id),
-            Err(_) => {
-                return Err(Response::error(
-                    400,
-                    &format!("before must name an entry id, not {raw:?}"),
-                ));
-            }
-        },
-    };
-    let kind = match req.query_param("kind").map(percent_decode) {
-        Some(kind) if !kind.is_empty() => {
-            if !treasury::EntryKind::ALL
-                .iter()
-                .any(|known| known.as_str() == kind)
-            {
-                let kinds: Vec<&str> = treasury::EntryKind::ALL
-                    .iter()
-                    .map(|known| known.as_str())
-                    .collect();
-                return Err(Response::error(
-                    400,
-                    &format!("kind must be one of {}, not {kind:?}", kinds.join(", ")),
-                ));
-            }
-            Some(kind)
-        }
-        _ => None,
-    };
-    let wallet = match req.query_param("wallet") {
-        Some(raw) if !raw.is_empty() => match raw.parse::<u64>() {
-            Ok(cid) => Some(cid.to_string()),
-            Err(_) => {
-                return Err(Response::error(
-                    400,
-                    &format!("wallet must name an agent cid, not {raw:?}"),
-                ));
-            }
-        },
-        _ => None,
-    };
-    let task = match req.query_param("task").map(percent_decode) {
-        Some(task) if task.len() > JOURNAL_TASK_MAX => {
-            return Err(Response::error(
-                400,
-                &format!("task is longer than {JOURNAL_TASK_MAX} bytes"),
-            ));
-        }
-        Some(task) if !task.is_empty() => Some(task),
-        _ => None,
-    };
-    Ok(treasury::JournalQuery {
-        before,
-        limit,
-        kind,
-        wallet,
-        task,
-    })
-}
-
-/// `GET /v1/treasury/series?from=&to=&bucket=hour|day`: the treasury over time,
-/// one point per bucket of `[from, to)`, in milliseconds since the Unix epoch.
-/// `to` defaults to now, `from` to 30 days before `to`, and `bucket` to `day`
-/// (hours and days are UTC). A range of more than 2000 buckets is refused.
-fn treasury_series(app: &App, req: &Request) -> Response {
-    const HOUR_MS: u64 = 3_600_000;
-    const DAY_MS: u64 = 86_400_000;
-    let bucket_ms = match req.query_param("bucket").unwrap_or("day") {
-        "hour" => HOUR_MS,
-        "day" => DAY_MS,
-        other => {
-            return Response::error(400, &format!("bucket must be hour or day, not {other:?}"));
-        }
-    };
-    let to = match instant_param(req, "to") {
-        Ok(to) => to.unwrap_or_else(apz_plaza::now_ms),
-        Err(response) => return response,
-    };
-    let from = match instant_param(req, "from") {
-        Ok(from) => from.unwrap_or_else(|| to.saturating_sub(SERIES_SPAN_MS)),
-        Err(response) => return response,
-    };
-    match app.plaza.treasury.series(from, to, bucket_ms) {
-        Ok(series) => Response::json(200, &series),
-        Err(reason) => Response::error(400, &reason),
-    }
-}
-
-/// A query parameter naming an instant, in milliseconds since the Unix epoch.
-fn instant_param(req: &Request, name: &str) -> Result<Option<u64>, Response> {
-    match req.query_param(name) {
-        None => Ok(None),
-        Some(raw) => raw.parse::<u64>().map(Some).map_err(|_| {
-            Response::error(
-                400,
-                &format!("{name} must be milliseconds since the epoch, not {raw:?}"),
-            )
-        }),
-    }
-}
-
-/// `POST /v1/treasury/mint` `{amount}`: mints credits into the plaza's budget.
-fn treasury_mint(app: &App, body: &[u8]) -> Response {
-    #[derive(serde::Deserialize)]
-    struct Mint {
-        amount: i64,
-    }
-    let request: Mint = match serde_json::from_slice(body) {
-        Ok(request) => request,
-        Err(e) => return Response::error(400, &e.to_string()),
-    };
-    if request.amount <= 0 {
-        return Response::error(
-            400,
-            &format!("an amount must be positive, got {}", request.amount),
-        );
-    }
-    match app.plaza.treasury.mint_plaza_budget(request.amount) {
-        Ok(entry) => Response::json(
-            200,
-            &serde_json::json!({ "entry": entry, "plaza_budget": app.plaza.treasury.plaza_budget_balance() }),
-        ),
-        Err(e) => Response::error(e.status(), &e.to_string()),
-    }
-}
-
-/// `POST /v1/treasury/fine` `{cid, amount, memo}`: fines an agent's wallet into the plaza's treasury.
-fn treasury_fine(app: &App, body: &[u8]) -> Response {
-    #[derive(serde::Deserialize)]
-    struct Fine {
-        cid: u64,
-        amount: i64,
-        memo: String,
-    }
-    let request: Fine = match serde_json::from_slice(body) {
-        Ok(request) => request,
-        Err(e) => return Response::error(400, &e.to_string()),
-    };
-    match app
-        .plaza
-        .treasury
-        .fine(request.cid, request.amount, &request.memo)
-    {
-        Ok(entry) => Response::json(200, &serde_json::json!({ "entry": entry })),
-        Err(e) => Response::error(e.status(), &e.to_string()),
-    }
-}
-
-/// `GET /v1/treasury/wallets`: every agent wallet as `{cid, name, balance}`.
-fn treasury_wallets(app: &App) -> Response {
-    let rows: Vec<serde_json::Value> = app
-        .plaza
-        .treasury
-        .wallets()
-        .into_iter()
-        .map(|(cid, balance)| {
-            let name = app.agents.get(cid).map_or_else(String::new, |a| a.label());
-            serde_json::json!({ "cid": cid, "name": name, "balance": balance })
-        })
-        .collect();
-    Response::json(200, &rows)
-}
-
-/// The request with its budget resolved: the default when none is named, and a
-/// 400 (naming the minimum) when the named budget is below it.
-fn with_budget(mut request: CreateTask) -> Result<CreateTask, Response> {
-    let budget =
-        resolve_budget(request.budget).map_err(|refusal| Response::error(400, &refusal))?;
-    request.budget = Some(budget);
-    Ok(request)
-}
-
 /// `POST /v1/tasks`: creates a task in `open`. With an `assignee`, the
 /// assignee is checked first (so a refusal leaves the ledger untouched), the
-/// task is claimed for it, and the assignee's work queue gets the task. An
-/// absent `budget` gets `DEFAULT_TASK_BUDGET`; one under `MIN_TASK_BUDGET` is a 400.
+/// task is claimed for it, and the assignee's work queue gets the task.
 ///
 /// `after` names the tasks it runs after: it is handed out once they are all done, so an assignee is refused
 /// while any of them is not. `project` is required: every task belongs to a project whose plan is approved
 /// (implementation or review, as for an agent's `plaza_post_task`) and that is not archived. The task is linked
 /// there, its `after` stays inside that project, and an assignee must work on it.
 pub(crate) fn create_task(app: &App, body: &[u8]) -> Response {
-    let mut request: CreateTask = match parse(body, "create") {
-        Ok(request) => request,
-        Err(refused) => return refused,
-    };
-    // A task that names no budget gets its project's, when the project sets one.
-    if request.budget.is_none() {
-        request.budget = crate::project_settings::task_budget(app, request.project.as_deref());
-    }
-    let request = match with_budget(request) {
+    let request: CreateTask = match parse(body, "create") {
         Ok(request) => request,
         Err(refused) => return refused,
     };
@@ -686,8 +398,7 @@ fn claim_task(app: &App, id: &str, body: &[u8]) -> Response {
     }
 }
 
-/// `POST /v1/tasks/{id}/finish`: ends a claimed task as `done` or `failed`,
-/// refunding the escrow it still holds.
+/// `POST /v1/tasks/{id}/finish`: ends a claimed task as `done` or `failed`.
 fn finish_task(app: &App, id: &str, body: &[u8]) -> Response {
     let Some(task) = app.plaza.tasks.find(id) else {
         return Response::error(404, &format!("no task with id {id}"));
@@ -701,7 +412,7 @@ fn finish_task(app: &App, id: &str, body: &[u8]) -> Response {
     }
     match task.finish(request.outcome, request.note) {
         Ok(()) => Response::json(200, &task.view()),
-        Err(refused) => Response::error(refused.status(), &refused.to_string()),
+        Err(refused) => Response::error(409, &refused.to_string()),
     }
 }
 
@@ -710,7 +421,7 @@ fn withdraw_task(app: &App, id: &str) -> Response {
     match app.plaza.tasks.find(id) {
         Some(task) => match task.withdraw() {
             Ok(()) => Response::json(200, &task.view()),
-            Err(refused) => Response::error(refused.status(), &refused.to_string()),
+            Err(refused) => Response::error(409, &refused.to_string()),
         },
         None => Response::error(404, &format!("no task with id {id}")),
     }
@@ -952,34 +663,6 @@ mod tests {
         assert!(request.after.is_empty());
         assert_eq!(request.project, None);
         assert!(parse::<CreateTask>(br#"{"goal": "work", "after": "t1"}"#, "create").is_err());
-    }
-
-    #[test]
-    fn an_absent_task_budget_gets_the_default_and_a_low_one_is_a_400() {
-        use apz_plaza::tasks::{DEFAULT_TASK_BUDGET, MIN_TASK_BUDGET};
-        let resolve = |body: &str| {
-            let request: CreateTask =
-                parse(body.as_bytes(), "create").expect("a valid create body");
-            with_budget(request)
-        };
-        assert_eq!(
-            resolve(r#"{"goal": "work"}"#).ok().and_then(|r| r.budget),
-            Some(DEFAULT_TASK_BUDGET as u64)
-        );
-        assert_eq!(
-            resolve(r#"{"goal": "work", "budget": 200}"#)
-                .ok()
-                .and_then(|r| r.budget),
-            Some(MIN_TASK_BUDGET as u64)
-        );
-        for body in [
-            r#"{"goal": "work", "budget": 100}"#,
-            r#"{"goal": "work", "budget": 0}"#,
-        ] {
-            let refusal = resolve(body).expect_err("below the minimum is refused");
-            assert_eq!(refusal.status, 400);
-            assert!(String::from_utf8_lossy(refusal.bytes()).contains("minimum of 200"));
-        }
     }
 }
 

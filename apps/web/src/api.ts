@@ -281,7 +281,7 @@ export interface ForkResult { forks: ForkedAgent[]; checkpoint: VmCheckpoint }
 export interface VmRestoreResult { ok: boolean; safety: VmCheckpoint }
 
 export interface Task {
-  id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
+  id: string; state: string; goal: string; acceptance: string | null; role: string | null;
   assignee_id: string | null; agent_cid: number | null; note: string | null; outcome: string | null;
   created_at: number; updated_at: number;
   /** The project it is for, or null. */
@@ -340,34 +340,7 @@ export interface ProjectSettings {
 }
 /** A setting the project's agents get, and where it comes from. */
 export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
-/** The credits view of a project's budget (the settings answer keeps it): its own account once credits are set aside, and the plaza's. */
-export interface CreditsBudget { project: string; own: boolean; balance: number; plaza: number }
-export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: CreditsBudget }
-/** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
- * work ended), or a plaza notice (a project started, a task ended). */
-export interface OwnerMessage {
-  from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped';
-  /** The files the owner attached (api-projects.ts `attach`). */
-  attachments?: { id: string; name: string; size: number; type: string }[];
-}
-export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
-export interface ProjectDraft {
-  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[];
-  budget?: number; settings?: ProjectSettings; updated_by: 'owner' | 'orchestrator'; updated_ms: number; started_ms?: number;
-  /** What still stops Start. */
-  problems: string[];
-}
-export interface OwnerConversation {
-  id: string; title: string; cid: number; messages: OwnerMessage[]; works: number[]; created_ms: number; updated_ms: number;
-  archived: boolean; project?: string; draft?: ProjectDraft; draft_seen: number; thread: string;
-  /** The owner's messages still waiting for an answer, by work item. */
-  pending: number[];
-}
-export interface OwnerConversationSummary {
-  id: string; title: string; cid: number; created_ms: number; updated_ms: number; archived: boolean; project: string | null;
-  draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
-}
-export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[] }
+export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue> }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface LawInfo {
@@ -401,23 +374,6 @@ export interface BoardComment { id: string; post: string; agent_cid: number | nu
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[]; owner?: boolean; project?: string | null; mentions?: string[] }
 /** The board as the list endpoint answers it: the posts (newest first), and whether its deliveries are paused. */
 export interface BoardView { posts: BoardPost[]; total: number; limit: number; truncated: boolean; unread: { agent_cid: number; count: number }[]; project: string | null; paused: boolean; paused_all: boolean; paused_projects: string[] }
-export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
-export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
-/** One leg of a journal entry: a debit is negative, a credit positive. `account` is the account id. */
-export interface Posting { account: number; amount: number; kind: string; owner_ref: string }
-/** A posted entry. `amount` is the size of the movement; `postings` say where it went. Newest first by `id`. */
-export interface JournalEntry { id: number; kind: string; amount: number; created_at: number; memo: string; posted_by: string; postings: Posting[]; task_id: string | null; root_task: string | null }
-export interface JournalPage { entries: JournalEntry[]; total: number; limit: number; truncated: boolean; next_before: number | null }
-export interface JournalQuery { before?: number; limit?: number; kind?: string; wallet?: number; task?: string }
-/** One bucket of the series: the flows inside [at_ms, end_ms) and the balances at its end. */
-export interface TreasuryPoint {
-  at_ms: number; end_ms: number; entries: number;
-  minted: number; escrowed: number; paid: number; refunded: number; fined: number; spent: number;
-  by_kind: Record<string, number>;
-  plaza_budget_end: number; circulating_end: number; treasury_end: number;
-}
-export interface TreasurySeries { from_ms: number; to_ms: number; bucket_ms: number; points: TreasuryPoint[] }
-export interface Wallet { cid: number; balance: number }
 export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
@@ -551,8 +507,6 @@ export type Takeover = 'agent_waits' | 'release_lease' | 'keep_working_pointer_p
 export interface StationSettings {
   takeover: Takeover; record: boolean; retention_days: number; record_fps: number;
   record_takeovers: boolean; work_folder: string; snapshot_reset: boolean;
-  /** What an hour of a lease costs the lease's task, in plaza credits (1 credit is $0.001); 0 is free. */
-  rate_per_hour: number;
 }
 export type LeaseKind = 'shared' | 'pixel';
 export type LeaseState = 'queued' | 'opening' | 'active';
@@ -687,7 +641,7 @@ export const api = {
   tasksWhere: readableAt((q: { project?: string; ready?: boolean }) => `/v1/tasks${query({ project: q.project, ready: q.ready === undefined ? undefined : String(q.ready) })}`, (r: { tasks: Task[] }) => r.tasks),
   task: readableAt<[string], Task>((id) => `/v1/tasks/${id}`),
   /** Every task belongs to a project. */
-  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; budget?: number; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
+  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
   /** Moves a task from before projects into one, with the tasks linked to it. */
   moveTask: (id: string, project: string) => post<{ project: string; moved: Task[] }>(`/v1/tasks/${encodeURIComponent(id)}/move`, { project }),
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
@@ -704,16 +658,6 @@ export const api = {
     post<{ project: string | null; on: boolean; changed: boolean; paused: boolean; paused_all: boolean; paused_projects: string[] }>('/v1/board/pause', { on, project }),
   /** The thread as a download: Markdown or JSON, for a project or the whole board. */
   boardExportUrl: (format: 'md' | 'json', project?: string) => `/v1/board/export${query({ format, project })}`,
-  treasury: () => get<Treasury>('/v1/treasury'),
-  /** Entries newest first. Pass the previous page's `next_before` to load older ones. */
-  treasuryJournal: (q: JournalQuery = {}) =>
-    get<JournalPage>(`/v1/treasury/journal${query({ before: q.before, limit: q.limit, kind: q.kind, wallet: q.wallet, task: q.task })}`),
-  /** Flows per bucket over [from, to) in unix ms, empty buckets included. Day buckets above 2000 buckets are refused. */
-  treasurySeries: (from: number, to: number, bucket: 'hour' | 'day') => get<TreasurySeries>(`/v1/treasury/series${query({ from, to, bucket })}`),
-  treasuryWallets: () => get<Wallet[]>('/v1/treasury/wallets'),
-  mintBudget: (amount: number) => post<unknown>('/v1/treasury/mint', { amount }),
-  fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
-
 
   machine: () => get<Machine>('/v1/machine'),
   machines: readable<MachineNode[]>('/v1/machines'),
@@ -737,18 +681,6 @@ export const api = {
   /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
   patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),
   effectiveSettings: (id: string) => get<EffectiveSettings>(`/v1/projects/${id}/settings/effective`),
-  ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
-  ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
-  /** Starts a conversation with the orchestrator, `text` its first message. */
-  openConversation: (text: string, attachments: string[] = []) => post<OwnerConversation>('/v1/owner/conversations', attachments.length ? { text, attachments } : { text }),
-  sayInConversation: (id: string, text: string, attachments: string[] = []) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, attachments.length ? { text, attachments } : { text }),
-  patchConversation: (id: string, change: { title?: string; archived?: boolean }) => patch<OwnerConversation>(`/v1/owner/conversations/${id}`, change),
-  conversationTranscript: (id: string, after = 0, limit = 1000) => get<Entry[]>(`/v1/owner/conversations/${id}/transcript${query({ after, limit })}`),
-  conversationDraft: (id: string) => get<ProjectDraft>(`/v1/owner/conversations/${id}/draft`),
-  editDraft: (id: string, edit: Partial<Omit<ProjectDraft, 'problems' | 'updated_by' | 'updated_ms' | 'started_ms'>> & { revision: number }) =>
-    patch<OwnerConversation>(`/v1/owner/conversations/${id}/draft`, edit),
-  /** Starts the drafted project at `revision`, the one the owner looked at. */
-  startDraft: (id: string, revision: number) => post<OwnerConversation & { started: StartedProject }>(`/v1/owner/conversations/${id}/start`, { revision }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
   loops: () => get<HarnessLoop[]>('/v1/loops'),
   startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
@@ -979,8 +911,8 @@ export interface JoinCode { id: string; label: string; created_ms: number; expir
 
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used' | 'withdrawn';
 /**
- * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call) or "payment" (a held
- * payment). For a tool call `subject` is the tool and `detail` its input.
+ * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call), "review", "deploy" or
+ * "artifact.share". For a tool call `subject` is the tool and `detail` its input.
  */
 export interface Approval {
   id: string; cid: number; tool: string; input: unknown; created_ms: number; state: ApprovalState; reason: string | null;
