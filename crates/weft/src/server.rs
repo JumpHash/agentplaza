@@ -730,6 +730,19 @@ fn repo_routes(router: Router<H>) -> Router<H> {
                 Err(e) => fail(502, e),
             }
         })
+        .post("/v1/repos/{repo}/lanes/{change}/export", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(conn) = v["connection"].as_str() else { return fail(400, "a lane's export needs a connection") };
+            let Some(branch) = v["branch"].as_str() else { return fail(400, "a lane's export needs a branch") };
+            let keys = crate::export::Keys { token: v["token"].as_str().map(str::to_string), signing: h.signing.as_ref() };
+            match h.exporter.export_lane(&h.store, p.get("repo"), p.get("change"), conn, branch, keys, v["dry_run"].as_bool().unwrap_or(false)) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => refused(e),
+            }
+        })
         .post("/v1/repos/{repo}/import", |h: &H, req, p| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;

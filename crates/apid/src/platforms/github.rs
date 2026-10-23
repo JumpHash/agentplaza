@@ -391,7 +391,119 @@ impl Platform for GitHub {
     }
 }
 
+/// A pull request as GitHub lists it (`ci` mode: one per lane, PLAN 21.5).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pull {
+    pub number: u64,
+    /// `open` or `closed`.
+    pub state: String,
+    /// Merged (on GitHub): its merge commit, when GitHub gives one.
+    pub merged: bool,
+    pub merge_commit: Option<String>,
+    pub html_url: String,
+}
+
+/// A check run of a commit (a GitHub Actions job or another app's check).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckRun {
+    pub name: String,
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// On a completed run: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, …
+    pub conclusion: Option<String>,
+    pub html_url: String,
+}
+
+fn pull_of(v: &Value) -> Pull {
+    Pull {
+        number: v["number"].as_u64().unwrap_or(0),
+        state: s(&v["state"]),
+        merged: v["merged_at"].as_str().is_some() || v["merged"] == true,
+        merge_commit: v["merge_commit_sha"].as_str().map(str::to_string),
+        html_url: s(&v["html_url"]),
+    }
+}
+
 impl GitHub {
+    /// The pull requests of `owner/repo` whose head is `branch` on the same repository, open or not.
+    pub fn pulls(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<Vec<Pull>, String> {
+        let head = escape(&format!("{owner}:{branch}"));
+        let raw = self.pages(
+            token,
+            &format!(
+                "/repos/{}/{}/pulls?state=all&head={head}",
+                escape(owner),
+                escape(repo)
+            ),
+            "listing the pull requests",
+            |v| v.as_array().cloned().unwrap_or_default(),
+        )?;
+        Ok(raw.iter().map(pull_of).collect())
+    }
+
+    /// Opens a pull request from `head` into `base` (a lane's branch into the repository's main).
+    pub fn open_pull(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        head: &str,
+        base: &str,
+        body: &str,
+    ) -> Result<Pull, String> {
+        let reply = self.http.call(
+            "POST",
+            &format!(
+                "{}/repos/{}/{}/pulls",
+                self.api,
+                escape(owner),
+                escape(repo)
+            ),
+            &headers(token),
+            Some(Body::Json(
+                json!({ "title": title, "head": head, "base": base, "body": body }),
+            )),
+        )?;
+        reply.ok("opening the pull request").map(|v| pull_of(&v))
+    }
+
+    /// The check runs of a commit, every page.
+    pub fn check_runs(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<CheckRun>, String> {
+        let raw = self.pages(
+            token,
+            &format!(
+                "/repos/{}/{}/commits/{}/check-runs?filter=latest",
+                escape(owner),
+                escape(repo),
+                escape(sha)
+            ),
+            "listing the check runs",
+            |v| v["check_runs"].as_array().cloned().unwrap_or_default(),
+        )?;
+        Ok(raw
+            .iter()
+            .map(|c| CheckRun {
+                name: s(&c["name"]),
+                status: s(&c["status"]),
+                conclusion: c["conclusion"].as_str().map(str::to_string),
+                html_url: s(&c["html_url"]),
+            })
+            .collect())
+    }
+
     fn token(&self, body: Value, what: &str) -> Result<Tokens, String> {
         let v = self
             .http
@@ -841,6 +953,88 @@ mod tests {
             fake.seen()
                 .iter()
                 .all(|(_, _, a, _)| a.as_deref() == Some("Bearer ghu_1"))
+        );
+    }
+
+    #[test]
+    fn a_lane_branch_has_its_pull_request_and_its_check_runs() {
+        let (gh, fake) = github(|m, u, b| match (m, u) {
+            ("GET", u)
+                if u.starts_with(
+                    "https://api.github.com/repos/JumpHash/site/pulls?state=all&head=",
+                ) =>
+            {
+                (
+                    200,
+                    json!([{ "number": 3, "state": "closed", "merged_at": "2026-10-23T10:00:00Z", "merge_commit_sha": "abc", "html_url": "https://github.example/pull/3" }]),
+                )
+            }
+            ("POST", "https://api.github.com/repos/JumpHash/site/pulls") => {
+                assert!(
+                    matches!(b, Some(Body::Json(v)) if v["head"] == "agentplaza/w-12" && v["base"] == "main")
+                );
+                (
+                    201,
+                    json!({ "number": 4, "state": "open", "merged_at": null, "html_url": "https://github.example/pull/4" }),
+                )
+            }
+            ("GET", u)
+                if u.starts_with(
+                    "https://api.github.com/repos/JumpHash/site/commits/c0ffee/check-runs",
+                ) =>
+            {
+                (
+                    200,
+                    json!({ "total_count": 2, "check_runs": [
+                    { "name": "lint", "status": "completed", "conclusion": "success", "html_url": "h1" },
+                    { "name": "tests", "status": "in_progress", "conclusion": null, "html_url": "h2" }
+                ] }),
+                )
+            }
+            _ => (404, json!({})),
+        });
+        let pulls = gh
+            .pulls("ghs_1", "JumpHash", "site", "agentplaza/w-12")
+            .unwrap();
+        assert_eq!(
+            pulls,
+            [Pull {
+                number: 3,
+                state: "closed".into(),
+                merged: true,
+                merge_commit: Some("abc".into()),
+                html_url: "https://github.example/pull/3".into()
+            }]
+        );
+        assert!(fake.urls()[0].contains("head=JumpHash%3Aagentplaza%2Fw-12"));
+        let open = gh
+            .open_pull(
+                "ghs_1",
+                "JumpHash",
+                "site",
+                "Lane w-12",
+                "agentplaza/w-12",
+                "main",
+                "body",
+            )
+            .unwrap();
+        assert_eq!((open.number, open.merged), (4, false));
+        let runs = gh
+            .check_runs("ghs_1", "JumpHash", "site", "c0ffee")
+            .unwrap();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            (
+                runs[0].conclusion.as_deref(),
+                runs[1].conclusion.as_deref(),
+                runs[1].status.as_str()
+            ),
+            (Some("success"), None, "in_progress")
+        );
+        assert!(
+            fake.seen()
+                .iter()
+                .all(|(_, _, a, _)| a.as_deref() == Some("Bearer ghs_1"))
         );
     }
 

@@ -326,6 +326,33 @@ impl Runs {
         }
     }
 
+    /// Ends a run whose checks ran outside the hub (GitHub's check runs in `ci` mode, PLAN 21.5): its rows are the checks
+    /// it was given, and its outcome is `passed`, or failed with `why`. A run that has an outcome already is left as it is.
+    pub fn close_external(
+        &self,
+        run: &str,
+        checks: Vec<CheckRow>,
+        passed: bool,
+        why: &str,
+        now: u64,
+    ) {
+        self.update(run, now, |e| {
+            if e.walk.outcome.is_none() {
+                e.run.checks = checks;
+                e.walk.outcome = Some(if passed {
+                    Outcome::Passed
+                } else {
+                    Outcome::Failed(why.to_string())
+                });
+                e.run.outcome = Some(if passed {
+                    "passed".to_string()
+                } else {
+                    why.to_string()
+                });
+            }
+        });
+    }
+
     /// Records a check's result on run `run`, replacing the one the same step recorded before.
     pub fn record_check(&self, run: &str, check: CheckRow, now: u64) {
         self.update(run, now, |e| {

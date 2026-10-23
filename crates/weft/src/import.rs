@@ -212,12 +212,20 @@ pub fn import(
         line.push((id, c));
     }
     line.reverse();
+    // The commits Weft already has: what it imported, and what a landed change exported (a `ci` landing's merge commit).
     let imported: HashMap<String, RevId> = {
         let st = store.state();
         st.changes
             .values()
             .filter(|c| c.repo == repo)
-            .filter_map(|c| Some((c.import.as_ref()?.git.clone(), c.landed.clone()?)))
+            .flat_map(|c| {
+                let imported = c.import.as_ref().map(|i| i.git.clone());
+                let exported = c.exported.values().flatten().map(|e| e.git.clone());
+                imported
+                    .into_iter()
+                    .chain(exported)
+                    .filter_map(|git| Some((git, c.landed.clone()?)))
+            })
             .collect()
     };
     let mut report = ImportReport {
