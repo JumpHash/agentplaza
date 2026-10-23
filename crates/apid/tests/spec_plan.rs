@@ -1,7 +1,9 @@
 //! Specs and plans through a booted hub (PLAN 21.2, 14.5; Engine 5.4), against a fake Linear GraphQL server that records
 //! its calls. A Linear ticket above its project's threshold (its words, title and text together) starts a spec-and-plan
-//! task on the `plan` recipe: its planner's session writes `.plaza/specs/<id>.md` on the task's lane in Weft, the spec's
-//! question the project memory cannot answer reaches the owner in the task's chat, and the planner posts the task list
+//! task on the `plan` recipe: its planner's session writes `.plaza/specs/<id>.md` on the task's lane in Weft. A spec's
+//! question the project memory answers is answered from it; one it cannot answer is an owner thread, which the owner
+//! answers through POST /v1/threads/{id}/answer. The plan step waits for that answer, reads it in its prompt, and the
+//! planner posts the task list
 //! with plan_post. The plan's tasks are created with their links and recipes, and the two that share a file are one
 //! task. A ticket below the threshold becomes its task directly, on its rule's recipe.
 //!
@@ -366,6 +368,29 @@ fn item_of(hub: &Hub, external: &str) -> Value {
         .unwrap_or_else(|| panic!("no intake item {external}: {list}"))
 }
 
+/// A memory entry as the project memory reads it: its front matter and its title.
+fn memory_entry(id: &str, kind: &str, title: &str) -> String {
+    format!("---\nid: {id}\ntype: {kind}\nstatus: active\n---\n{title}\n")
+}
+
+/// Lands `files` on the project's main as one change, through the hub's weft route.
+fn land(hub: &Hub, repo: &str, title: &str, files: &[(String, String)]) {
+    let files: Vec<Value> = files
+        .iter()
+        .map(|(path, text)| json!({ "path": path, "text": text }))
+        .collect();
+    let (status, body) = hub.call(
+        "POST",
+        &format!("/v1/weft/repos/{repo}/edits"),
+        Some(json!({ "title": title, "files": files })),
+    );
+    assert!(
+        status == 200 || status == 201,
+        "{status} {body}\n{}",
+        hub.log()
+    );
+}
+
 /// The messages of the task's chat, as one text.
 fn task_chat_says(hub: &Hub, task: &str) -> String {
     let (_, chats) = hub.call("GET", "/v1/chats", None);
@@ -429,6 +454,24 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     );
     assert_eq!(status, 200, "{settings}\n{}", hub.log());
 
+    // The project's memory on main: an active decision that answers the spec's second question.
+    let project = hub.wait_for(&format!("/v1/projects/{pid}"), WAIT, |p| {
+        p["repo"].is_string()
+    });
+    let repo = text(&project["repo"]);
+    land(
+        &hub,
+        &repo,
+        "Record how the export streams",
+        &[(
+            ".plaza/memory/decisions/D-0001-export-streams-rows.md".to_string(),
+            memory_entry("D-0001", "decision", "Export streams its rows."),
+        )],
+    );
+    hub.wait_for(&format!("/v1/projects/{pid}/memory"), WAIT, |m| {
+        m.to_string().contains("D-0001")
+    });
+
     // ── The long ticket: above the threshold, so a spec-and-plan task on the plan recipe, not a task of its own.
     let (status, started) = linear_hook(&hub, BIG_ISSUE);
     assert_eq!(status, 202, "{started}\n{}", hub.log());
@@ -479,21 +522,75 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     );
     hub.work_done(spec_cid, work_id, "done", "The spec is written.");
 
-    // The two questions the project memory cannot answer went to the owner, in the task's chat.
+    // The spec's questions: the memory answers the second; the first went to the owner as a thread.
+    let spec = hub.wait_for(&format!("/v1/tasks/{spec_task}/spec"), WAIT, |s| {
+        s["state"] == "ready"
+    });
+    let questions = spec["questions"].as_array().cloned().unwrap_or_default();
+    assert_eq!(questions.len(), 2, "{spec}");
+    assert_eq!(questions[1]["state"], "memory", "{spec}");
+    assert_eq!(questions[1]["answer"], "D-0001", "{spec}");
+    assert_eq!(questions[0]["state"], "owner", "{spec}");
+    let thread = text(&questions[0]["thread"]);
+    assert!(!thread.is_empty(), "{spec}");
+    let (_, threads) = hub.call("GET", &format!("/v1/tasks/{spec_task}/threads"), None);
+    let asked = threads
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["id"] == thread.as_str())
+        .cloned()
+        .unwrap_or_else(|| panic!("no thread {thread}: {threads}"));
+    assert_eq!(asked["messages"][0]["to_seat"], "owner", "{asked}");
+    assert!(
+        text(&asked["messages"][0]["text"]).contains("Which currency does the exported total use?"),
+        "{asked}"
+    );
     let chat = task_chat_says(&hub, &spec_task);
     assert!(
-        chat.contains("Which currency does the exported total use?")
-            && chat.contains("asks the owner"),
+        chat.contains(&format!("asks the owner in thread {thread}")),
         "the owner was asked: {chat}\n{}",
         hub.log()
     );
 
-    // The planner's second step posts the plan: one list, two tasks that share a file (merged), and links.
+    // The plan step waits for the owner: no session of it starts before the answer.
+    std::thread::sleep(Duration::from_secs(2));
+    let (_, sessions) = hub.call("GET", &format!("/v1/sessions?task={spec_task}"), None);
+    assert!(
+        !sessions.to_string().contains("\"seat\":\"tasks\""),
+        "the plan step waits for the answer: {sessions}"
+    );
+
+    // The owner answers through the route: the spec's question is answered, a second answer is refused.
+    let answer = "Dollars: the total is in the account's currency.";
+    let (status, reply) = hub.call(
+        "POST",
+        &format!("/v1/threads/{thread}/answer"),
+        Some(json!({ "text": answer })),
+    );
+    assert_eq!(status, 200, "{reply}\n{}", hub.log());
+    assert_eq!(reply["spec"], spec["id"], "{reply}");
+    let (status, _) = hub.call(
+        "POST",
+        &format!("/v1/threads/{thread}/answer"),
+        Some(json!({ "text": "Again." })),
+    );
+    assert_eq!(status, 409, "a question is answered once");
+    let spec = hub.wait_for(&format!("/v1/tasks/{spec_task}/spec"), WAIT, |s| {
+        s["questions"][0]["state"] == "answered"
+    });
+    assert_eq!(spec["questions"][0]["answer"], answer, "{spec}");
+
+    // The planner's second step posts the plan, and its prompt carries the owner's answer.
     let plan_session = next_session(&hub, &spec_task, "tasks", &known);
     let plan_cid = plan_session["cid"].as_u64().expect("its VM");
     known.insert(plan_cid);
     hello(&hub, plan_cid, "planner");
     let plan_work = first_work(&hub, &gateway, plan_cid);
+    assert!(
+        text(&plan_work["prompt"]).contains(answer),
+        "the plan step's prompt carries the answer: {plan_work}"
+    );
     let plan_work_id = plan_work["work"].as_u64().expect("a work id");
     let plan_vm = vm_of(&hub, plan_cid, &home, &token);
     let reply = plan_vm.tool(

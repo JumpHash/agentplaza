@@ -69,6 +69,10 @@ pub fn tick(app: &App) {
     crate::verifier::tick(app, now);
     assign_tasks(app, now);
     for seat in app.seats.ready() {
+        // The plan step waits for the owner's answers to its spec's questions (planning.rs).
+        if crate::planning::waits_for_owner(app, &seat.task, &seat.step) {
+            continue;
+        }
         start_seat(app, &seat, now);
     }
     reap(app, now);

@@ -8,8 +8,10 @@
 //! - **The spec.** The spec-and-plan task runs the `plan` recipe (`builtin/plan.toml`). Its `spec` step is a planner's
 //!   session on the task's lane in Weft: it writes `.plaza/specs/<id>.md` with the sections [`SPEC_SECTIONS`] name.
 //!   [`step_holds`] reads that file from the lane's latest draft and records its open questions. The planner answers a
-//!   question from the project's memory where a live entry matches it; each other question goes to the owner as a note
-//!   in the task's chat (the thread the owner reads and answers in).
+//!   question from the project's memory where a live entry matches it; each other question becomes an owner thread
+//!   (threads.rs: a message to `owner`), named in the task's chat. The owner answers it with
+//!   `POST /v1/threads/{id}/answer` ([`answer`]): the answer is a message to the plan step's seat in that thread, and
+//!   the plan step waits for every answer before it starts ([`waits_for_owner`]), so the planner plans with them.
 //! - **The plan.** The `tasks` step is the same planner, which calls `plan_post` with the task list. [`couple`] merges
 //!   the tasks that share a file or a definition (coupled work is one task with one builder); `task_plan::check` and
 //!   `task_plan::post` link and create the rest in one batch. Each planned task records its recipe (default `change`),
@@ -76,8 +78,8 @@ pub struct Spec {
     pub updated_ms: u64,
 }
 
-/// One open question of a spec, and where it went: `memory` (answered by the project memory entry `answer`) or `owner`
-/// (asked in the task's chat `chat`, not yet answered).
+/// One open question of a spec, and where it went: `memory` (answered by the project memory entry `answer`), `owner`
+/// (an owner thread `thread`, named in the task's chat `chat`, not yet answered) or `answered` (the owner's `answer`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, apz_store::Table)]
 #[table(name = "spec_question")]
 pub struct Question {
@@ -87,6 +89,8 @@ pub struct Question {
     pub state: String,
     pub answer: String,
     pub chat: String,
+    /// The owner's thread the question was asked in, or empty when memory answered it.
+    pub thread: String,
     pub asked_ms: u64,
 }
 
@@ -196,6 +200,15 @@ impl Store {
         if let Some(spec) = self.lock().specs.iter_mut().find(|s| s.id == id) {
             change(spec);
         }
+    }
+
+    /// The spec whose owner question is in `thread`.
+    pub fn spec_by_thread(&self, thread: &str) -> Option<Spec> {
+        self.lock()
+            .specs
+            .iter()
+            .find(|s| s.questions.iter().any(|q| q.thread == thread))
+            .cloned()
     }
 
     /// Records the recipe a task runs (the spec-and-plan task's `plan`, a planned task's own).
@@ -382,6 +395,82 @@ fn project_of(app: &App, task: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a planning seat waits: the plan step (`tasks`) waits while an owner question of its spec is unanswered, so the
+/// planner plans with the owner's answers.
+pub fn waits_for_owner(app: &App, task: &str, step: &str) -> bool {
+    step == "tasks"
+        && app
+            .planning
+            .spec_of_task(task)
+            .is_some_and(|s| s.questions.iter().any(|q| q.state == "owner"))
+}
+
+/// The owner answered `thread`, a spec's owner question: the answer goes to the plan step's seat in that thread (its
+/// session reads it in its prompt), and the question is answered. Returns the spec's id, or the status and why.
+pub fn answer(app: &App, thread: &str, text: &str, now: u64) -> Result<String, (u16, String)> {
+    let text = text.trim();
+    let spec = app
+        .planning
+        .spec_by_thread(thread)
+        .ok_or((404, format!("no owner question in thread {thread}")))?;
+    let open = spec
+        .questions
+        .iter()
+        .any(|q| q.thread == thread && q.state == "owner");
+    if !open {
+        return Err((409, format!("thread {thread} is answered already")));
+    }
+    if text.is_empty() {
+        return Err((400, "the answer needs text".into()));
+    }
+    app.threads
+        .send(
+            &spec.task,
+            Some(thread),
+            "owner",
+            None,
+            "tasks",
+            text,
+            None,
+            now,
+        )
+        .map_err(|why| (409, why))?;
+    app.planning.update_spec(&spec.id, |s| {
+        for q in s.questions.iter_mut().filter(|q| q.thread == thread) {
+            q.state = "answered".into();
+            q.answer = text.to_string();
+        }
+        s.updated_ms = now;
+    });
+    let chat = work_loop::task_chat(app, &spec.task, &spec.project, now);
+    work_loop::notice(
+        app,
+        &chat,
+        &format!("The owner answered {} in thread {thread}: {text}", spec.id),
+        now,
+    );
+    Ok(spec.id)
+}
+
+/// A spec-and-plan task's spec as the API shows it: its file, its state and its questions with their threads and answers.
+pub fn spec_view(app: &App, task: &str) -> Option<Value> {
+    let spec = app.planning.spec_of_task(task)?;
+    let questions: Vec<Value> = spec
+        .questions
+        .iter()
+        .map(|q| {
+            json!({
+                "seq": q.seq, "text": q.text, "state": q.state, "answer": q.answer,
+                "thread": q.thread, "chat": q.chat,
+            })
+        })
+        .collect();
+    Some(json!({
+        "id": spec.id, "task": spec.task, "project": spec.project, "item": spec.item,
+        "path": spec.path, "state": spec.state, "questions": questions,
+    }))
+}
+
 /// Reads the spec step's file from the task's lane (its latest draft) and settles its questions. False, with a note in
 /// the task's chat, when the file is not there or lacks a section.
 fn spec_written(app: &App, task: &str, now: u64) -> bool {
@@ -413,19 +502,41 @@ fn spec_written(app: &App, task: &str, now: u64) -> bool {
     let entries = crate::project_memory::entries(app, &spec.project);
     let mut questions = Vec::new();
     for (seq, text) in open_questions(&text).into_iter().enumerate() {
-        let (state, answer, chat) = match answer_from_memory(&entries, &text) {
-            Some(entry) => ("memory", entry.id, String::new()),
+        let (state, answer, chat, thread) = match answer_from_memory(&entries, &text) {
+            Some(entry) => ("memory", entry.id, String::new(), String::new()),
             None => {
+                let sent = match app.threads.send(
+                    task,
+                    None,
+                    "spec",
+                    None,
+                    "owner",
+                    &text,
+                    Some(&format!("{} question", spec.id)),
+                    now,
+                ) {
+                    Ok(sent) => sent,
+                    Err(why) => {
+                        work_loop::notice(
+                            app,
+                            &chat,
+                            &format!("{} cannot ask the owner: {why}.", spec.id),
+                            now,
+                        );
+                        return false;
+                    }
+                };
                 work_loop::notice(
                     app,
                     &chat,
                     &format!(
-                        "{} asks the owner (the planner could not answer it from project memory): {text}",
-                        spec.id
+                        "{} asks the owner in thread {}, as the planner could not answer it from project memory: {text} \
+                         Answer with POST /v1/threads/{}/answer.",
+                        spec.id, sent.thread, sent.thread
                     ),
                     now,
                 );
-                ("owner", String::new(), chat.clone())
+                ("owner", String::new(), chat.clone(), sent.thread)
             }
         };
         questions.push(Question {
@@ -434,6 +545,7 @@ fn spec_written(app: &App, task: &str, now: u64) -> bool {
             state: state.into(),
             answer,
             chat,
+            thread,
             asked_ms: now,
         });
     }

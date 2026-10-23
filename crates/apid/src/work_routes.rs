@@ -83,6 +83,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
             }
         })
         .doc(RouteDoc::new("Read a thread").errors(&[404]))
+        .route("POST", "/v1/threads/{id}/answer", answer_thread)
+        .doc(RouteDoc::new("Answer a thread the hub opened for the owner: a spec's question. The answer goes to the plan step, which then goes on").errors(&[400, 404, 409]))
+        .get("/v1/tasks/{id}/spec", |app, _, p| {
+            match crate::planning::spec_view(app, p.get("id")) {
+                Some(view) => Response::json(200, &view),
+                None => Response::error(404, &format!("task {} has no spec", p.get("id"))),
+            }
+        })
+        .doc(RouteDoc::new("Read a spec-and-plan task's spec: its file, its state and its questions with their threads and answers").errors(&[404]))
         .get("/v1/projects/{id}/budget", |app, _, p| {
             project_budget_view(app, p.get("id"))
         })
@@ -319,6 +328,22 @@ fn budget_refusal(body: &BudgetBody, task: bool) -> Option<&'static str> {
         Some(0) => Some("a disk quota is more than zero bytes: send null for none"),
         Some(_) if task => Some("a task has no disk quota: its project does"),
         _ => None,
+    }
+}
+
+/// `POST /v1/threads/{id}/answer {text}`: the owner's answer to a spec's question (planning.rs).
+fn answer_thread(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let body: Value = match req.json() {
+        Ok(body) => body,
+        Err(e) => return Response::error(400, &format!("bad answer: {e}")),
+    };
+    let text = body.get("text").and_then(Value::as_str).unwrap_or("");
+    match crate::planning::answer(app, p.get("id"), text, now()) {
+        Ok(spec) => Response::json(
+            200,
+            &json!({ "thread": p.get("id"), "spec": spec, "answer": text.trim() }),
+        ),
+        Err((status, why)) => Response::error(status, &why),
     }
 }
 
