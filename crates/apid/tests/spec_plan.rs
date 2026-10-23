@@ -281,17 +281,18 @@ fn post_signed(hub: &Hub, path: &str, headers: &[(&str, &str)], body: &[u8]) -> 
     (reply.status, value)
 }
 
-/// The Linear webhook for `issue`: an issue created, signed with the signing secret.
-fn linear_hook(hub: &Hub, issue: &str) -> (u16, Value) {
+/// The Linear delivery for `issue` (an issue created) to the connector's hook at `path`, signed with the signing secret.
+fn linear_hook(hub: &Hub, path: &str, issue: &str) -> (u16, Value) {
     let body = json!({
-        "action": "create", "type": "Issue", "data": { "id": issue },
+        "action": "create", "type": "Issue",
+        "data": { "id": issue, "identifier": linear_issue(issue)["identifier"] },
         "webhookTimestamp": now_ms(), "createdAt": "2026-10-23T09:00:00.000Z"
     })
     .to_string();
     let signature = sign(LINEAR_SIGNING, body.as_bytes());
     post_signed(
         hub,
-        "/v1/intake/linear",
+        path,
         &[("linear-signature", &signature)],
         body.as_bytes(),
     )
@@ -426,13 +427,20 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     std::fs::write(&token, hub.token()).unwrap();
     let home = scratch.0.join("vms");
 
-    // The stand-in for Linear, and its connection with the key in the vault.
+    // The stand-in for Linear, the connector's hook (its signing secret), and its connection with the key in the vault.
     let linear = FakeDaemon::serve(linear_answer);
     let linear_url = format!("http://127.0.0.1:{}/graphql", linear.port);
+    let (status, hook) = hub.call(
+        "POST",
+        "/v1/connectors/linear/webhook",
+        Some(json!({ "secret": LINEAR_SIGNING })),
+    );
+    assert_eq!(status, 201, "{hook}\n{}", hub.log());
+    let linear_path = text(&hook["path"]);
     let (status, view) = hub.call(
         "PUT",
         "/v1/intake/connections/linear",
-        Some(json!({ "enabled": true, "base_url": linear_url, "secrets": { "LINEAR_API_KEY": "lin_api_TESTKEY_5401", "LINEAR_WEBHOOK_SECRET": LINEAR_SIGNING } })),
+        Some(json!({ "enabled": true, "base_url": linear_url, "secrets": { "LINEAR_API_KEY": "lin_api_TESTKEY_5401" } })),
     );
     assert_eq!(status, 200, "{view}\n{}", hub.log());
 
@@ -473,9 +481,9 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     });
 
     // ── The long ticket: above the threshold, so a spec-and-plan task on the plan recipe, not a task of its own.
-    let (status, started) = linear_hook(&hub, BIG_ISSUE);
+    let (status, started) = linear_hook(&hub, &linear_path, BIG_ISSUE);
     assert_eq!(status, 202, "{started}\n{}", hub.log());
-    assert_eq!(started["status"], "started", "{started}");
+    assert_eq!(started["intake"]["status"], "started", "{started}");
     let big = item_of(&hub, BIG_ISSUE);
     assert_eq!(big["recipe"], "plan", "{big}");
     let spec_task = text(&big["task"]);
@@ -654,9 +662,9 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     }
 
     // ── The short ticket: below the threshold, so a task of its own on the rule's recipe.
-    let (status, started) = linear_hook(&hub, SMALL_ISSUE);
+    let (status, started) = linear_hook(&hub, &linear_path, SMALL_ISSUE);
     assert_eq!(status, 202, "{started}\n{}", hub.log());
-    assert_eq!(started["status"], "started", "{started}");
+    assert_eq!(started["intake"]["status"], "started", "{started}");
     let small = item_of(&hub, SMALL_ISSUE);
     assert_eq!(small["recipe"], "change", "{small}");
     let small_task = text(&small["task"]);
