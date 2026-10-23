@@ -81,10 +81,16 @@ fn session_of(hub: &Hub, pid: &str, role: &str) -> u64 {
         .unwrap_or_else(|| panic!("a {role} session on {pid}: {found}\n{}", hub.log()))
 }
 
-/// The system prompt parts agent `cid` is welcomed with, as its harness says hello.
-fn parts_of(hub: &Hub, cid: u64, role: &str) -> Vec<Value> {
+/// The welcome agent `cid` gets when its harness says hello: its profile and the rest.
+fn welcome_of(hub: &Hub, cid: u64, role: &str) -> Value {
     let (status, body) = hub.guest(cid, "hello", json!({ "role": role, "vm": 0 }));
     assert_eq!(status, 200, "{body}");
+    body
+}
+
+/// The system prompt parts agent `cid` is welcomed with, as its harness says hello.
+fn parts_of(hub: &Hub, cid: u64, role: &str) -> Vec<Value> {
+    let body = welcome_of(hub, cid, role);
     body["profile"]["system_parts"]
         .as_array()
         .unwrap_or_else(|| panic!("system parts: {body}"))
@@ -156,4 +162,20 @@ fn the_sessions_of_one_project_share_parts_one_to_three_and_another_project_diff
             "{part}"
         );
     }
+}
+
+#[test]
+fn a_seats_profile_compacts_at_seventy_per_cent_of_its_window_and_states_the_window() {
+    let (noded, gateway) = daemons(400);
+    let scratch = Scratch::new("profile-compaction");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let (_, planner, _) = project_with_seat(&hub, "Gamma");
+    let profile = welcome_of(&hub, planner, "planner")["profile"].clone();
+    assert_eq!(profile["compact_at_pct"], json!(70), "{profile}");
+    assert!(profile["context_window"].is_u64(), "{profile}");
 }

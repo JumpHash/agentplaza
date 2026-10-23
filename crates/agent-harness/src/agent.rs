@@ -260,6 +260,9 @@ struct Agent<'a, 'l, S, W> {
     /// The conversation's size right after the last compression of this work item: an automatic
     /// compression waits until it has grown by a quarter of `compress_at` since.
     compressed_size: u64,
+    /// The context the work item's latest model call used, in tokens (its input and cache reads and
+    /// writes). After a compression it waits for the next call's count.
+    context_used: u64,
     /// Model calls the operator allowed beyond the profile's turn budget.
     extra_turns: u32,
     /// Set while a local tool runs, once the work item is cancelled or the agent is stopping: an
@@ -424,6 +427,7 @@ pub fn serve<S: Duplex, W: Write + Send>(
             compress_requested: false,
             lane: None,
             compressed_size: 0,
+            context_used: 0,
             extra_turns: 0,
             tool_cancel: Arc::new(AtomicBool::new(false)),
             stopping: None,
@@ -850,6 +854,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         self.steers.clear();
         self.compress_requested = false;
         self.compressed_size = 0;
+        self.context_used = 0;
         self.extra_turns = 0;
         self.deferred = Deferred::new(&profile.tools);
         let result = self.drive(job.work, &profile, &mut messages);
@@ -919,9 +924,18 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 }
             }
             let size = serialized_len(messages.as_slice()) as u64;
-            let auto = profile.compress_at > 0
-                && size > profile.compress_at
-                && size > self.compressed_size.saturating_add(profile.compress_at / 4);
+            // With the model's window known, the conversation compresses once its last call used `compact_at_pct` of
+            // the window; without it, once it is larger than `compress_at` bytes and has grown by a quarter of that.
+            let auto = if profile.context_window > 0 && profile.compact_at_pct > 0 {
+                self.context_used.saturating_mul(100)
+                    >= profile
+                        .context_window
+                        .saturating_mul(u64::from(profile.compact_at_pct))
+            } else {
+                profile.compress_at > 0
+                    && size > profile.compress_at
+                    && size > self.compressed_size.saturating_add(profile.compress_at / 4)
+            };
             if self.compress_requested || auto {
                 let reason = if self.compress_requested {
                     "asked"
@@ -929,6 +943,8 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                     "auto"
                 };
                 self.compress_requested = false;
+                // The next call's count measures the compressed conversation.
+                self.context_used = 0;
                 self.compress(work, profile, messages, reason)?;
             }
             if turns >= profile.max_turns.saturating_add(self.extra_turns) {
@@ -955,7 +971,14 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
                 }
                 Err(reason) => return Ok((WorkStatus::Failed, reason)),
             };
-            let ChatResponse { content, stop, .. } = response;
+            let ChatResponse {
+                content,
+                stop,
+                usage,
+                ..
+            } = response;
+            self.context_used =
+                usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
             messages.push(Message::assistant(content.clone()));
 
             let uses: Vec<(String, String, Value, Option<Value>)> = content
@@ -1109,7 +1132,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             }
         }
         let request = format!(
-            "Summarize this work so far for yourself, so you can continue it without the transcript: the goal, what you did, what you found, files you created or changed (paths), decisions, what failed, and the next steps. Be specific and complete; at most 600 words.\n\n{transcript}"
+            "Summarize this work so far for yourself, so you can continue it without the transcript. The transcript may start with an earlier summary: keep what it says that still holds. Write four parts, each as short points: Decisions (each with its reason); Dead ends (what was tried and why it failed); Open questions; Where it stands (the goal, what is done, files you created or changed (paths), and the next steps). Be specific and complete; at most 600 words.\n\n{transcript}"
         );
         let mut summary_profile = profile.clone();
         summary_profile.tools.clear();
@@ -1141,6 +1164,7 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
             after,
             folded: (cut - 1) as u32,
             reason: reason.to_string(),
+            summary,
         })?;
         Ok(())
     }
@@ -1901,10 +1925,15 @@ mod tests {
     }
 
     fn answer(req: u64, content: Value, stop: &str) -> String {
+        answer_using(req, content, stop, 1)
+    }
+
+    /// The answer to model call `req`, whose context used `input` tokens.
+    fn answer_using(req: u64, content: Value, stop: &str, input: u64) -> String {
         json!({
             "type": "model_result", "req": req, "ok": true,
             "response": {"model": "anthropic/x", "content": content, "stop": stop,
-                         "usage": {"input_tokens": 1, "output_tokens": 1}},
+                         "usage": {"input_tokens": input, "output_tokens": 1}},
         })
         .to_string()
     }
@@ -2493,6 +2522,154 @@ mod tests {
             );
             host.send(&answer(4, json!([text("done")]), "end_turn"))
                 .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    /// A profile that compacts once its last call used 70 % of a 1000-token window; it has no byte threshold.
+    fn windowed_welcome() -> String {
+        json!({
+            "type": "welcome", "echo": "plaza-orchestrator", "role": "builder", "keepalive": true,
+            "profile": {
+                "name": "ada", "role": "builder", "model": "anthropic/x", "system_parts": [{"text": "be brief", "cache": true}],
+                "tools": [{"name": "search", "description": "find", "input_schema": {"type": "object"}}],
+                "max_turns": 20, "compress_at": 0, "keep_recent": 1,
+                "compact_at_pct": 70, "context_window": 1000,
+            },
+        })
+        .to_string()
+    }
+
+    /// One turn of a windowed session: the call (request `req`) asks for the search `id`, which runs, and its
+    /// context used 800 of the window's 1000 tokens.
+    fn windowed_turn(host: &mut Lines<UnixStream>, req: u64, id: &str) {
+        expect_type(host, "model_call");
+        host.send(&answer_using(
+            req,
+            json!([tool_use(id, "search", json!({"pattern": id}))]),
+            "tool_use",
+            800,
+        ))
+        .unwrap();
+        expect_type(host, "tool_batch");
+        host.send(&decision(id, "done", "hits", false)).unwrap();
+    }
+
+    /// A compaction: the summary call (request `req`) is answered with `summary`. Returns the call and the
+    /// `compressed` message.
+    fn compaction(host: &mut Lines<UnixStream>, req: u64, summary: &str) -> (Value, Value) {
+        let call = expect_type(host, "model_call");
+        let asked = call["request"]["messages"][0]["content"][0]["text"].to_string();
+        assert!(
+            asked.contains("Summarize")
+                && [
+                    "Decisions",
+                    "Dead ends",
+                    "Open questions",
+                    "Where it stands"
+                ]
+                .iter()
+                .all(|part| asked.contains(part)),
+            "{asked}"
+        );
+        host.send(&answer_using(req, json!([text(summary)]), "end_turn", 1))
+            .unwrap();
+        (call, expect_type(host, "compressed"))
+    }
+
+    #[test]
+    fn a_context_under_the_share_of_the_window_is_not_compressed() {
+        let workspace = scratch("under-share");
+        run_hub(&workspace, |host| {
+            host.send(&windowed_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "go")).unwrap();
+            for (req, id) in [(1, "s1"), (2, "s2")] {
+                expect_type(host, "model_call");
+                host.send(&answer_using(
+                    req,
+                    json!([tool_use(id, "search", json!({"pattern": id}))]),
+                    "tool_use",
+                    600,
+                ))
+                .unwrap();
+                expect_type(host, "tool_batch");
+                host.send(&decision(id, "done", "hits", false)).unwrap();
+            }
+            // 600 of 1000 is under 70 %: the next call sees the whole conversation, with no summary asked.
+            let next = expect_type(host, "model_call");
+            assert_eq!(
+                next["request"]["messages"].as_array().map(Vec::len),
+                Some(5),
+                "{next}"
+            );
+            host.send(&answer_using(3, json!([text("done")]), "end_turn", 600))
+                .unwrap();
+            expect_type(host, "work_done");
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_decision_survives_three_compactions_of_the_context() {
+        let workspace = scratch("three-compactions");
+        run_hub(&workspace, |host| {
+            host.send(&windowed_welcome()).unwrap();
+            host.send(&work(1, "task", "t", "decide how agents are named"))
+                .unwrap();
+            // Two turns first: a compaction folds only what is older than the latest turn.
+            windowed_turn(host, 1, "s1");
+            windowed_turn(host, 2, "s2");
+            let first = "Decisions: sessions, not named agents, because a seat is a session with its own history.\nDead ends: none.\nOpen questions: none.\nWhere it stands: the naming is settled.";
+            let (_, compressed) = compaction(host, 3, first);
+            assert_eq!(
+                (compressed["folded"].clone(), compressed["reason"].clone()),
+                (json!(2), json!("auto")),
+                "{compressed}"
+            );
+            assert!(
+                compressed["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains("sessions, not named agents")),
+                "{compressed}"
+            );
+            windowed_turn(host, 4, "s3");
+            // The second summary is asked for with the first one in its transcript: the decision carries forward.
+            let (second_call, _) = compaction(
+                host,
+                5,
+                "Decisions: sessions, not named agents (a seat is a session).\nDead ends: none.\nOpen questions: none.\nWhere it stands: naming settled, two turns folded.",
+            );
+            assert!(
+                second_call["request"]["messages"][0]["content"][0]["text"]
+                    .to_string()
+                    .contains("sessions, not named agents"),
+                "{second_call}"
+            );
+            windowed_turn(host, 6, "s4");
+            let (_, third) = compaction(
+                host,
+                7,
+                "Decisions: sessions, not named agents (a seat is a session).\nDead ends: none.\nOpen questions: none.\nWhere it stands: naming settled, three compactions in.",
+            );
+            assert_eq!(third["folded"], json!(2), "{third}");
+            // The call after the third compaction answers from the summary, not from the folded turns.
+            let answering = expect_type(host, "model_call");
+            let messages = &answering["request"]["messages"];
+            assert_eq!(messages.as_array().map(Vec::len), Some(3), "{messages}");
+            assert!(
+                messages[0]
+                    .to_string()
+                    .contains("sessions, not named agents"),
+                "{messages}"
+            );
+            host.send(&answer_using(
+                8,
+                json!([text("We decided on sessions, not named agents.")]),
+                "end_turn",
+                1,
+            ))
+            .unwrap();
             expect_type(host, "work_done");
             stop(host);
         });

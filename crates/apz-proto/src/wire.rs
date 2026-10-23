@@ -148,13 +148,16 @@ pub enum GuestMessage {
         summary: String,
     },
     /// v3: the harness compressed work item `work`'s conversation: its size in bytes before
-    /// and after, how many messages were folded into the summary, and why ("auto" or "asked").
+    /// and after, how many messages were folded into the summary, why ("auto" or "asked"), and the
+    /// summary itself (decisions, dead ends, open questions, where it stands).
     Compressed {
         work: u64,
         before: u64,
         after: u64,
         folded: u32,
         reason: String,
+        #[serde(default)]
+        summary: String,
     },
     /// The harness's stats, about once a minute while it runs: the size and use of `/workspace` in
     /// MiB, and the busiest processes since the last report as (name, CPU %, RSS MiB).
@@ -390,10 +393,17 @@ pub struct AgentProfile {
     pub tools: Vec<ToolSpec>,
     /// Model calls per work item before the agent stops as over budget.
     pub max_turns: u32,
-    /// Compress the conversation once it is larger than this many bytes (serialized);
-    /// 0 never compresses on its own.
+    /// Compress the conversation once it is larger than this many bytes (serialized), when the
+    /// window is not known (see `compact_at_pct`); 0 never compresses on its own.
     #[serde(default)]
     pub compress_at: u64,
+    /// Compress the conversation once its last model call used this share of the window (per cent);
+    /// 0 leaves it to `compress_at`. Applies only with `context_window` known.
+    #[serde(default)]
+    pub compact_at_pct: u32,
+    /// The model's context window in tokens; 0 when it is not known.
+    #[serde(default)]
+    pub context_window: u64,
     /// The most recent turns (an assistant message and the results after it) kept verbatim
     /// when compressing; older ones are folded into a summary.
     #[serde(default)]

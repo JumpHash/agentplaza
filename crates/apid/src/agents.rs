@@ -413,10 +413,12 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // The agent's own limits, over the project's, over the plaza's defaults.
     let limits = app.harness.limits(agent.cid);
     let project = crate::project_settings::of_agent(app, agent.cid).unwrap_or_default();
+    let model = model_of(app, agent);
     AgentProfile {
         name: format!("{} #{}", agent.role, agent.cid),
         role: agent.role.clone(),
-        model: model_of(app, agent),
+        context_window: crate::providers::context_window(app, &model).unwrap_or(0),
+        model,
         system_parts: system_parts(app, agent, role_prompt),
         tools: crate::tools::offered_to(app, agent),
         max_turns: limits
@@ -427,6 +429,7 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
             .compress_at
             .or(project.compress_at)
             .unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
+        compact_at_pct: crate::harness_control::DEFAULT_COMPACT_AT_PCT,
         keep_recent: limits
             .keep_recent
             .or(project.keep_recent)
