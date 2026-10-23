@@ -2773,8 +2773,39 @@ CREATE TABLE "review_graph_run_nodes_findings" (
     "severity" TEXT NOT NULL,
     "node" TEXT NOT NULL,
     "round" INTEGER NOT NULL CHECK ("round" >= 0),
+    "id" TEXT NOT NULL,
+    "scenario" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "verdict" TEXT NOT NULL CHECK ("verdict" IN ('pending', 'confirmed', 'dropped')),
+    "proof" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "contest" TEXT NOT NULL,
+    "ruling" TEXT NOT NULL,
+    "ruling_reason" TEXT NOT NULL,
     PRIMARY KEY ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos"),
     FOREIGN KEY ("review_graph_pos", "runs_key", "nodes_pos") REFERENCES "review_graph_run_nodes" ("review_graph_pos", "runs_key", "nodes_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "review_graph_run_nodes_findings_by" (
+    "review_graph_pos" INTEGER NOT NULL CHECK ("review_graph_pos" >= 0),
+    "runs_key" TEXT NOT NULL,
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "seat" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "session" TEXT NOT NULL,
+    PRIMARY KEY ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos"),
+    FOREIGN KEY ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos") REFERENCES "review_graph_run_nodes_findings" ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "review_graph_run_nodes_findings_verified_by" (
+    "review_graph_pos" INTEGER NOT NULL CHECK ("review_graph_pos" >= 0),
+    "runs_key" TEXT NOT NULL,
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "seat" TEXT NOT NULL,
+    "model" TEXT NOT NULL,
+    "session" TEXT NOT NULL,
+    PRIMARY KEY ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos"),
+    FOREIGN KEY ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos") REFERENCES "review_graph_run_nodes_findings" ("review_graph_pos", "runs_key", "nodes_pos", "findings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "review_graph_run_nodes_touches" (
     "review_graph_pos" INTEGER NOT NULL CHECK ("review_graph_pos" >= 0),
@@ -2821,6 +2852,17 @@ CREATE TABLE "review_graph_run_outcome_replan" (
     "value" TEXT NOT NULL,
     PRIMARY KEY ("review_graph_pos", "runs_key", "replan_pos"),
     FOREIGN KEY ("review_graph_pos", "runs_key") REFERENCES "review_graph_run_outcome" ("review_graph_pos", "runs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "review_graph_run_model" (
+    "review_graph_pos" INTEGER NOT NULL CHECK ("review_graph_pos" >= 0),
+    "runs_key" TEXT NOT NULL,
+    "models_pos" INTEGER NOT NULL CHECK ("models_pos" >= 0),
+    "node" TEXT NOT NULL,
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "model" TEXT NOT NULL,
+    "session" TEXT NOT NULL,
+    PRIMARY KEY ("review_graph_pos", "runs_key", "models_pos"),
+    FOREIGN KEY ("review_graph_pos", "runs_key") REFERENCES "review_graph_run" ("review_graph_pos", "runs_key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "review_graph_recipe" (
     "review_graph_pos" INTEGER NOT NULL CHECK ("review_graph_pos" >= 0),
