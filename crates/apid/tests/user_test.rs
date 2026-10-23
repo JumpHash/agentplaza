@@ -170,3 +170,71 @@ fn a_test_user_step_confirms_a_seeded_bug_and_passes_the_fixed_build_on_a_booted
     assert_eq!(code, 200, "{run}");
     assert_eq!(run["state"], json!("passed"), "{run}");
 }
+
+/// The `ci` recipe's version `version` with a `test:user` step whose target table is `target`.
+fn recipe_with_target(version: u32, target: &str) -> String {
+    format!(
+        r#"id = "ci"
+version = {version}
+
+[[steps]]
+id = "user"
+engine = "test:user"
+
+[steps.user]
+planner = "mock/script"
+driver = "mock/script"
+escalate = "mock/script"
+checker = "mock/script"
+exploratory = 0
+acceptance = ["Paying reaches the receipt"]
+
+{target}
+"#
+    )
+}
+
+#[test]
+fn a_web_or_terminal_target_that_cannot_run_says_why_and_fails_the_step() {
+    let scratch = Scratch::new("user-test-targets");
+    let script_path = scratch.0.join("mock-script.json");
+    std::fs::write(&script_path, script().to_string()).expect("the mock script is written");
+    let hub = Hub::start_with_env(
+        &scratch,
+        None,
+        None,
+        None,
+        &[(
+            "APZ_MOCK_SCRIPT",
+            script_path.to_str().expect("a UTF-8 path"),
+        )],
+    );
+
+    // A web target reaches the change's lane preview: a change with no preview has none to test, and the step says so.
+    let (code, body) = hub.call(
+        "PUT",
+        "/v1/recipes/ci",
+        Some(json!({ "toml": recipe_with_target(4, "[steps.user.web]\npath = \"\"") })),
+    );
+    assert_eq!(code, 200, "{body}");
+    let web = fire_and_wait(&hub, "cart-ok");
+    assert_eq!(web["state"], json!("failed"), "{web}");
+    let summary = web["checks"][0]["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("has no preview to test"), "{web}");
+
+    // A terminal target runs in the hub's own process: the hub refuses it unless its owner has opted in.
+    let (code, body) = hub.call(
+        "PUT",
+        "/v1/recipes/ci",
+        Some(json!({
+            "toml": recipe_with_target(5, "[steps.user.tui]\ncommand = [\"/bin/sh\", \"-c\", \"true\"]\ncwd = \"/\"")
+        })),
+    );
+    assert_eq!(code, 200, "{body}");
+    let terminal = fire_and_wait(&hub, "cart-ok");
+    assert_eq!(terminal["state"], json!("failed"), "{terminal}");
+    let summary = terminal["checks"][0]["summary"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(summary.contains("APZ_USER_TEST_TERMINAL"), "{terminal}");
+}

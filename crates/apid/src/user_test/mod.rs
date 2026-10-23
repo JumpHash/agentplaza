@@ -11,18 +11,25 @@
 //! planner reads the failure first: a failure it judges not a defect of the product is dropped without a re-run.
 //!
 //! A run is started by the owner's fire route (`triggers/routes.rs`) and queued here; the scheduler's tick runs it on its
-//! own thread (checks.rs is the same shape). The target is the step's `stand_in` (target.rs): the stand-in is the only
-//! target in 8.1, and the web, terminal, desktop, simulator and device targets of 8.2–8.5 implement the same trait.
+//! own thread (checks.rs is the same shape). The target is the one the step's config names (`opener`): the stand-in
+//! (target.rs), a web page of the lane's preview in a headless browser (web.rs, 8.2), or a program in a pseudo-terminal
+//! (tui.rs, 8.2). The desktop, simulator and device targets of 8.3–8.5 implement the same trait.
 
 pub mod models;
 pub mod run;
 pub mod scenario;
 pub mod target;
+#[cfg(test)]
+mod targets_test;
+pub mod tui;
+pub mod web;
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::previews::{TOKEN_PARAM, USE};
 use crate::recipes::graph::StepState;
-use crate::recipes::model::{USER_TEST, UserTest};
+use crate::recipes::model::{USER_TEST, UserTest, WebTarget};
 use crate::recipes::runs::CheckRow;
 use crate::recipes::{Move, Report};
 use crate::review_graph::user::by;
@@ -32,6 +39,8 @@ use models::{GatewayModels, Models, PlanRequest, Roles};
 use run::{Ctx, Failure, Timed, run_scenario};
 use scenario::{Origin, Scenario, accessibility};
 use target::Target;
+use tui::Tui;
+use web::Web;
 
 /// The inputs of one execution: the change's symbol, its acceptance, the regression scenarios and the exploratory budget.
 pub struct Input<'a> {
@@ -382,6 +391,83 @@ fn finish(app: &App, run: &str, step: &str, settled: Settled, now: u64) -> Vec<M
     )
 }
 
+/// Opens a fresh target for each scenario and each re-run.
+type Opener = Box<dyn FnMut() -> Result<Box<dyn Target>, String>>;
+
+/// The lifetime of the link a web target's browser uses: an hour, which is longer than a run's scenarios take.
+const LINK_MS: u64 = 60 * 60 * 1000;
+
+/// The environment variable that lets the hub run a terminal target. A terminal target's program runs in the hub's own
+/// process, not in a fork, so the hub's owner turns it on for their own machine and nothing else.
+pub const TERMINAL_ENV: &str = "APZ_USER_TEST_TERMINAL";
+
+/// The target a step's config names, as an opener: the stand-in, a page of the change's lane preview in a headless
+/// browser (the hub mints a link for it), or a program in a terminal. An error says why the step has none.
+fn opener(app: &App, config: &UserTest, project: &str, change: &str) -> Result<Opener, String> {
+    if let Some(stand) = &config.stand_in {
+        let stand = stand.clone();
+        let open: Opener =
+            Box::new(move || -> Result<Box<dyn Target>, String> { Ok(Box::new(stand.open())) });
+        return Ok(open);
+    }
+    if let Some(page) = &config.web {
+        let url = preview_address(app, page, project, change)?;
+        let chrome = web::find_chrome()?;
+        let open: Opener = Box::new(move || -> Result<Box<dyn Target>, String> {
+            Ok(Box::new(Web::open(&chrome, &url)?))
+        });
+        return Ok(open);
+    }
+    if let Some(tui) = &config.tui {
+        if std::env::var_os(TERMINAL_ENV).is_none() {
+            return Err(format!(
+                "a terminal target runs in the hub's own process, which the hub allows only with {TERMINAL_ENV} set"
+            ));
+        }
+        let (command, cwd) = (tui.command.clone(), PathBuf::from(&tui.cwd));
+        let (cols, rows) = (tui.cols, tui.rows);
+        let open: Opener = Box::new(move || -> Result<Box<dyn Target>, String> {
+            Ok(Box::new(Tui::open(&command, &cwd, cols, rows)?))
+        });
+        return Ok(open);
+    }
+    Err("the step names no target (stand_in, web or tui)".into())
+}
+
+/// The address of a page of the change's lane preview (6.4's `/preview/<project>/<lane>/`) on the hub's public address,
+/// with a link to the preview for the run in the query: the browser is not signed in as the owner.
+fn preview_address(
+    app: &App,
+    page: &WebTarget,
+    project: &str,
+    change: &str,
+) -> Result<String, String> {
+    let preview = app
+        .previews
+        .lane_preview(project, change)
+        .ok_or_else(|| format!("the lane {change} has no preview to test"))?;
+    let now = apz_plaza::now_ms();
+    let link = app
+        .previews
+        .add_link(
+            &preview.id,
+            USE,
+            "user test",
+            Some(now + LINK_MS),
+            "user-test",
+            now,
+        )
+        .map_err(|e| format!("the preview's link: {e}"))?;
+    let token = app.previews.mint(&link.id);
+    Ok(format!(
+        "{}/preview/{}/{}/{}?{TOKEN_PARAM}={token}",
+        app.config.public_url.trim_end_matches('/'),
+        preview.project,
+        preview.lane,
+        page.path.trim_start_matches('/'),
+    ))
+}
+
 /// One `test:user` step of a run, from its config: the models, the target and the regressions of the project.
 fn run_step(
     app: &App,
@@ -398,19 +484,22 @@ fn run_step(
         escalate: config.escalate.clone(),
         checker: config.checker.clone(),
     };
-    let Some(stand) = config.stand_in.as_ref() else {
-        return Ok(finish(
-            app,
-            run,
-            step,
-            Settled {
-                passed: false,
-                findings: 0,
-                commands: "no target".into(),
-                summary: "no target: the step has no stand_in, so no scenario ran".into(),
-            },
-            now,
-        ));
+    let mut open = match opener(app, config, project, change) {
+        Ok(open) => open,
+        Err(why) => {
+            return Ok(finish(
+                app,
+                run,
+                step,
+                Settled {
+                    passed: false,
+                    findings: 0,
+                    commands: "no target".into(),
+                    summary: format!("no target: {why}, so no scenario ran"),
+                },
+                now,
+            ));
+        }
     };
     let gateway = app.providers.gateway();
     let models = GatewayModels {
@@ -438,11 +527,7 @@ fn run_step(
         regressions: &regressions,
         exploratory: config.exploratory,
     };
-    let mut open = || -> Result<Box<dyn Target>, String> {
-        let target: Box<dyn Target> = Box::new(stand.open());
-        Ok(target)
-    };
-    let execution = match execute(&ctx, &input, &mut open) {
+    let execution = match execute(&ctx, &input, &mut *open) {
         Ok(execution) => execution,
         Err(why) => {
             return Ok(finish(

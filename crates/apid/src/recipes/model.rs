@@ -142,6 +142,13 @@ pub struct UserTest {
     /// The target the scenarios drive. Without one the step is not run (it fails, and says why).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stand_in: Option<StandIn>,
+    /// A web target (PLAN 19.3): a headless browser on the change's lane preview, at `path` under its address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebTarget>,
+    /// A terminal target (PLAN 19.3): a program in a pseudo-terminal, typed into by the scenarios. It runs in the hub's
+    /// process, so the hub must opt in with `APZ_USER_TEST_TERMINAL` (see `user_test`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tui: Option<TuiTarget>,
     /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acceptance: Vec<String>,
@@ -183,11 +190,66 @@ impl UserTest {
         if self.actions == 0 {
             return Err("a scenario step takes at least one action".into());
         }
+        let named = [
+            self.stand_in.is_some(),
+            self.web.is_some(),
+            self.tui.is_some(),
+        ]
+        .iter()
+        .filter(|set| **set)
+        .count();
+        if named > 1 {
+            return Err("a test:user step names one target: stand_in, web or tui".into());
+        }
+        if let Some(web) = &self.web
+            && web.path.contains("://")
+        {
+            return Err("a web target's path is under the lane's preview, not an address".into());
+        }
+        if let Some(tui) = &self.tui {
+            if tui.command.first().is_none_or(|p| p.trim().is_empty()) {
+                return Err("a terminal target names a program to run".into());
+            }
+            if !tui.cwd.starts_with('/') {
+                return Err("a terminal target's cwd is an absolute path".into());
+            }
+            if tui.cols == 0 || tui.rows == 0 {
+                return Err("a terminal target has a size of at least 1 by 1".into());
+            }
+        }
         match &self.stand_in {
             Some(stand) => stand.check(),
             None => Ok(()),
         }
     }
+}
+
+/// A web target's configuration (PLAN 19.3): the page of the lane's preview the scenarios start on. `path` is under the
+/// preview's address (`/` or empty is its root). The browser reaches the preview through a link the hub mints for the run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebTarget {
+    #[serde(default)]
+    pub path: String,
+}
+
+/// A terminal target's configuration (PLAN 19.3): the program (argv, its first item the program), its working directory
+/// (absolute) and the terminal's size in cells.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuiTarget {
+    pub command: Vec<String>,
+    pub cwd: String,
+    #[serde(default = "columns")]
+    pub cols: u16,
+    #[serde(default = "rows")]
+    pub rows: u16,
+}
+
+fn columns() -> u16 {
+    100
+}
+
+fn rows() -> u16 {
+    30
 }
 
 /// What makes a change large or risky: more than `lines` changed lines, or a path one of `paths` matches. Then the
