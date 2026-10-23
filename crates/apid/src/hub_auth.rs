@@ -187,6 +187,8 @@ pub fn is_public(method: &str, path: &str) -> bool {
             | ("GET", "/v1/acp")
             // A git platform sends the owner's browser back here; it acts only on a state an owner's call made.
             | ("GET", "/v1/platforms/callback")
+            // An issue tracker's webhooks: each one checks its own signature (`intake`).
+            | ("POST", "/v1/intake/github" | "/v1/intake/linear")
     ) || (path.starts_with("/v1/platforms/flows/") && path.ends_with("/go") && method == "GET")
         // A project's ingest address: the token in the path names the project (`maintenance`).
         || (method == "POST" && path.starts_with("/v1/ingest/") && path.len() > "/v1/ingest/".len())

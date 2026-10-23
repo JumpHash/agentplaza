@@ -70,6 +70,7 @@ pub fn tick(app: &App) {
     }
     reap(app, now);
     crate::disk::tick(app, now);
+    crate::intake::tick(app, now);
 }
 
 /// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks, or in
@@ -860,6 +861,8 @@ pub fn landed(app: &App, task: &str, change: &str) {
         );
     }
     app.bus.publish("task", &serde_json::json!({ "id": task }));
+    // An item the task came from hears of its landing (intake's write-back).
+    crate::intake::landed(app, task, change);
 }
 
 /// The project's chat for the loop's notices: its newest, or one made for it.

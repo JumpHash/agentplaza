@@ -327,6 +327,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.platforms.load(conn),
         },
         Component {
+            name: "intake",
+            def: crate::intake::def,
+            rows: |app| app.intake.rows(),
+            load: |app, conn| app.intake.load(conn),
+        },
+        Component {
             name: "hf_imports",
             def: crate::foundry::hf_import::def,
             rows: |app| app.hf.rows(),

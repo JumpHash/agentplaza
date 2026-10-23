@@ -26,7 +26,7 @@ use manifest::Manifest;
 use secrecy::SecretString;
 
 /// The connector manifests (14.4): what each connector may do, approved by the owner.
-mod manifest;
+pub(crate) mod manifest;
 
 /// How much of a response body `call` returns.
 const BODY_CAP: usize = 256 * 1024;

@@ -1,0 +1,9 @@
+id = "github"
+kind = ["intake"]
+version = "1.0.0"
+scopes = ["read", "write"]
+egress = ["api.github.com"]
+secrets = ["GITHUB_WEBHOOK_SECRET"]
+events = ["issues.opened", "issues.edited", "issues.labeled", "issues.reopened"]
+actions = ["issue_read", "comment_create", "label_add", "issue_close"]
+webhook = true

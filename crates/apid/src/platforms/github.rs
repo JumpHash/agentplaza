@@ -72,6 +72,67 @@ impl GitHub {
             .ok(what)
     }
 
+    /// A write to the API under `token`: `method` on `path` with `body` as JSON; the answer's JSON.
+    pub fn write(
+        &self,
+        token: &str,
+        method: &str,
+        path: &str,
+        body: serde_json::Value,
+        what: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.http
+            .call(
+                method,
+                &format!("{}{path}", self.api),
+                &headers(token),
+                Some(super::http::Body::Json(body)),
+            )?
+            .ok(what)
+    }
+
+    /// Comments `text` on issue `number` of `repo` (`owner/name`) (the intake's write-back).
+    pub fn comment(&self, token: &str, repo: &str, number: u64, text: &str) -> Result<(), String> {
+        self.write(
+            token,
+            "POST",
+            &format!("/repos/{repo}/issues/{number}/comments"),
+            serde_json::json!({ "body": text }),
+            "the comment",
+        )
+        .map(|_| ())
+    }
+
+    /// Adds `label` to issue `number` of `repo`.
+    pub fn add_label(
+        &self,
+        token: &str,
+        repo: &str,
+        number: u64,
+        label: &str,
+    ) -> Result<(), String> {
+        self.write(
+            token,
+            "POST",
+            &format!("/repos/{repo}/issues/{number}/labels"),
+            serde_json::json!({ "labels": [label] }),
+            "the label",
+        )
+        .map(|_| ())
+    }
+
+    /// Closes issue `number` of `repo`.
+    pub fn close_issue(&self, token: &str, repo: &str, number: u64) -> Result<(), String> {
+        self.write(
+            token,
+            "PATCH",
+            &format!("/repos/{repo}/issues/{number}"),
+            serde_json::json!({ "state": "closed" }),
+            "the close",
+        )
+        .map(|_| ())
+    }
+
     /// Every page of a listing (`per_page=100`); `items` picks the array out of a page.
     fn pages(
         &self,

@@ -1,0 +1,25 @@
+meta {
+  name: The intake view lists the three sources, none set, and no items
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/intake
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("three connections, each off, and no items on a fresh hub", function () {
+    const body = res.getBody();
+    expect(body.connections.map((c) => c.source)).to.eql(["github", "linear", "notion"]);
+    expect(body.connections.every((c) => c.enabled === false)).to.equal(true);
+    expect(body.items).to.eql([]);
+  });
+}

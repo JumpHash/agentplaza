@@ -1,0 +1,11 @@
+id = "linear"
+kind = ["intake"]
+version = "1.0.0"
+scopes = ["read", "write"]
+egress = ["api.linear.app"]
+secrets = ["LINEAR_API_KEY", "LINEAR_WEBHOOK_SECRET"]
+events = ["issue.create", "issue.update"]
+actions = ["issue_read", "comment_create", "issue_update"]
+webhook = true
+auth_header = "Authorization"
+auth_format = "${SECRET}"

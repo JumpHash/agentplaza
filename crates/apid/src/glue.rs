@@ -293,52 +293,113 @@ fn fetch(state: &mut State, request: &str) -> String {
 fn send(state: &State, request: &str) -> Result<Reply, String> {
     let req: Request =
         serde_json::from_str(request).map_err(|e| format!("the request is not JSON: {e}"))?;
-    let rest = req
-        .url
-        .strip_prefix("https://")
-        .ok_or("only https:// URLs can be requested")?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.contains('@') {
-        return Err("a URL may not carry credentials".into());
+    Mediator {
+        egress: &state.egress,
+        secret: state.secret.as_ref(),
+        outbound: &*state.outbound,
+        loopback_http: false,
     }
-    let host = match authority.strip_suffix(":443") {
-        Some(host) => host,
-        None if authority.contains(':') => return Err("only the default port may be used".into()),
-        None => authority,
-    }
-    .to_ascii_lowercase();
-    if !state.egress.contains(&host) {
-        return Err(format!(
-            "egress: `{host}` is not a host this connector may reach"
-        ));
-    }
-    let method = req.method.to_ascii_uppercase();
-    if !METHODS.contains(&method.as_str()) {
-        return Err(format!("method `{method}` is not allowed"));
-    }
-    let auth_header = state.secret.as_ref().map(|s| s.header.to_ascii_lowercase());
-    let mut headers: Vec<(String, String)> = Vec::new();
-    for (name, value) in req.headers {
-        let lower = name.to_ascii_lowercase();
-        if REFUSED_HEADERS.contains(&lower.as_str())
-            || auth_header.as_deref() == Some(lower.as_str())
-        {
-            continue;
+    .send(&req.method, &req.url, &req.headers, &req.body)
+}
+
+/// The hub's way out for one request: the checks on the URL, the method and the headers, the secret's header added,
+/// the send. The glue tier's `fetch` goes through it, and so do the intake connectors' calls (`intake`), whose
+/// secrets are the same kind: never handed to anything that runs code. `loopback_http` lets a request go to a
+/// service on this machine over plain http (a stand-in for a service in the tests, or a local one the owner runs);
+/// the glue tier never does.
+pub struct Mediator<'a> {
+    pub egress: &'a [String],
+    pub secret: Option<&'a Secret>,
+    pub outbound: &'a dyn Outbound,
+    pub loopback_http: bool,
+}
+
+impl Mediator<'_> {
+    /// Sends `method` `url` with `headers` and `body` when the checks pass; the reply's body is redacted of the secret.
+    pub fn send(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        body: &str,
+    ) -> Result<Reply, String> {
+        let (https, rest) = match url.strip_prefix("https://") {
+            Some(rest) => (true, rest),
+            None => match url.strip_prefix("http://") {
+                Some(rest) if self.loopback_http => (false, rest),
+                _ if self.loopback_http => {
+                    return Err(
+                        "only https:// URLs, or http:// to this machine, can be requested".into(),
+                    );
+                }
+                _ => return Err("only https:// URLs can be requested".into()),
+            },
+        };
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        if authority.contains('@') {
+            return Err("a URL may not carry credentials".into());
         }
-        headers.push((name, value));
+        let host = if https {
+            match authority.strip_suffix(":443") {
+                Some(host) => host,
+                None if authority.contains(':') => {
+                    return Err("only the default port may be used".into());
+                }
+                None => authority,
+            }
+        } else {
+            authority.split(':').next().unwrap_or("")
+        }
+        .to_ascii_lowercase();
+        let loopback = matches!(host.as_str(), "127.0.0.1" | "localhost");
+        if https {
+            if !self.egress.contains(&host) {
+                return Err(format!(
+                    "egress: `{host}` is not a host this connector may reach"
+                ));
+            }
+        } else if !loopback {
+            return Err(format!(
+                "egress: `{host}` is not this machine, so it needs https"
+            ));
+        }
+        let method = method.to_ascii_uppercase();
+        if !METHODS.contains(&method.as_str()) {
+            return Err(format!("method `{method}` is not allowed"));
+        }
+        let auth_header = self.secret.map(|s| s.header.to_ascii_lowercase());
+        let mut out_headers: Vec<(String, String)> = Vec::new();
+        for (name, value) in headers {
+            let lower = name.to_ascii_lowercase();
+            if REFUSED_HEADERS.contains(&lower.as_str())
+                || auth_header.as_deref() == Some(lower.as_str())
+            {
+                continue;
+            }
+            out_headers.push((name.clone(), value.clone()));
+        }
+        if let Some(secret) = self.secret {
+            out_headers.push((secret.header.clone(), secret.value.clone()));
+        }
+        if body.len() > BODY_CAP {
+            return Err("a request body is at most 256 KiB".into());
+        }
+        let reply = self.outbound.send(&Outgoing {
+            method,
+            url: url.to_string(),
+            headers: out_headers,
+            body: body.to_string(),
+        })?;
+        Ok(Reply {
+            status: reply.status,
+            body: match self.secret {
+                Some(secret) if !secret.value.is_empty() => {
+                    reply.body.replace(&secret.value, "[redacted]")
+                }
+                _ => reply.body,
+            },
+        })
     }
-    if let Some(secret) = &state.secret {
-        headers.push((secret.header.clone(), secret.value.clone()));
-    }
-    if req.body.len() > BODY_CAP {
-        return Err("a request body is at most 256 KiB".into());
-    }
-    state.outbound.send(&Outgoing {
-        method,
-        url: req.url,
-        headers,
-        body: req.body,
-    })
 }
 
 /// Replaces the secret's value wherever it appears, so a reply that echoes it reaches the component without it.
