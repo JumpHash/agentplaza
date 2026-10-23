@@ -1,0 +1,30 @@
+{
+  "data": [
+    {
+      "files": [],
+      "functions": [
+        {
+          "name": "_ZN8apz_link8identity4save17h0a1b2c3d4e5f6a7bE",
+          "count": 0,
+          "filenames": ["<ROOT>/crates/apz-link/src/identity.rs"],
+          "regions": [[40, 1, 60, 2, 0, 0, 0, 0]]
+        },
+        {
+          "name": "_ZN8apz_link8identity5token17h1122334455667788E",
+          "count": 3,
+          "filenames": ["<ROOT>/crates/apz-link/src/identity.rs"],
+          "regions": [[80, 1, 90, 2, 3, 0, 0, 0]]
+        },
+        {
+          "name": "_ZN8apz_link8identity7expand17h99AABBCCDDEEFF00E",
+          "count": 0,
+          "filenames": ["<ROOT>/crates/apz-link/src/identity.rs", "<ROOT>/crates/apz-link/src/macros.rs"],
+          "regions": [[100, 1, 104, 2, 0, 0, 0, 0]]
+        }
+      ],
+      "totals": {}
+    }
+  ],
+  "type": "llvm.coverage.json.export",
+  "version": "2.0.1"
+}
