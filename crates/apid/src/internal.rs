@@ -599,6 +599,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 ok: false,
                 response: None,
                 error: Some("unknown agent".to_string()),
+                window: None,
             }),
             GuestMessage::ToolRequest { call, .. } => Some(HostMessage::ToolDecision {
                 call,
@@ -825,6 +826,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
@@ -851,6 +853,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
@@ -869,6 +872,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     request.model = model.clone();
@@ -907,6 +911,7 @@ fn model_call(
                 ok: false,
                 response: None,
                 error: Some(paused),
+                window: None,
             };
         }
     };
@@ -1032,6 +1037,7 @@ fn model_call(
                 ok: true,
                 response: Some(resp),
                 error: None,
+                window: crate::providers::context_window(app, &model),
             }
         }
         Err(e) => {
@@ -1049,6 +1055,7 @@ fn model_call(
                 ok: false,
                 response: None,
                 error: Some(message),
+                window: None,
             }
         }
     }

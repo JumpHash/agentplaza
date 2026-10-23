@@ -334,6 +334,10 @@ pub enum HostMessage {
         response: Option<ChatResponse>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// The context window, in tokens, of the model that answered (or was asked): the window of a chat's
+        /// own model when it overrides the agent's. None when the model's window is not known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<u64>,
     },
     /// v6: one fragment of model call `req`'s answer, as the provider streams it. The hub sends them in order, all
     /// before the call's [`HostMessage::ModelResult`].
