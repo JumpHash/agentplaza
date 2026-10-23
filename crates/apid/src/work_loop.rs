@@ -195,6 +195,14 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     let Some(project) = task.project().map(str::to_string) else {
         return;
     };
+    // A project past its disk quota starts no fork: the seat stays ready, and the disk card asks the owner (10.5).
+    if crate::disk::admit_fork(app, &project, now).is_err() {
+        return;
+    }
+    // Nor one whose declared pools have no node with room: the seat waits for one (16.7).
+    if !crate::placement::has_room_for_fork(app, &seat.role, &project) {
+        return;
+    }
     let Some(model) = pick_model(app, &project, seat) else {
         ask_seat(app, seat, &project, now);
         return;

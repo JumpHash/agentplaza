@@ -236,7 +236,9 @@ fn a_finished_tasks_journal_lands_through_the_curator_and_the_owner_edits_the_me
     );
 
     // The hub lands memory through Weft: wait until it runs (it can start late on a busy machine).
-    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| w["running"] == true);
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
     assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
 
     // Its one answer: a decision from the journal, and the proposal accepted as a pitfall.

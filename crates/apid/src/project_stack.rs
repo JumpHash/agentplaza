@@ -126,16 +126,9 @@ pub enum Arch {
     Aarch64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Hypervisor {
-    Kvm,
-    Hvf,
-    Whp,
-}
-
 impl Arch {
-    /// The name the declaration and a pool's key use.
+    /// The name the declaration and a pool's key use, which a node reports its architecture under
+    /// (`GET /v1/machine`'s `arch`).
     pub fn name(self) -> &'static str {
         match self {
             Arch::X86_64 => "x86_64",
@@ -144,8 +137,17 @@ impl Arch {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Hypervisor {
+    Kvm,
+    Hvf,
+    Whp,
+}
+
 impl Hypervisor {
-    /// The name the declaration and a pool's key use.
+    /// The name the declaration and a pool's key use, which a node reports its VMM backend under
+    /// (`GET /v1/machine`'s `backend`).
     pub fn name(self) -> &'static str {
         match self {
             Hypervisor::Kvm => "kvm",
