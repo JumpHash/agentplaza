@@ -752,6 +752,24 @@ impl Store {
         Ok(json!({ "id": p.id, "health": health }))
     }
 
+    /// The ids of the providers the gateway holds, in its order.
+    pub fn provider_ids(&self) -> Vec<String> {
+        self.gateway.providers().into_iter().map(|p| p.id).collect()
+    }
+
+    /// The model ids provider `id` lists now. The listing is refreshed, as a health check refreshes it (the engine
+    /// watch reads these, PLAN 12.6).
+    pub fn listed_model_ids(&self, id: &str) -> Result<Vec<String>, String> {
+        let p = self
+            .gateway
+            .providers()
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| format!("no provider {id}"))?;
+        let listing = self.listings.fetch(&self.gateway, &p, true)?;
+        Ok(listing.models.iter().map(|m| m.id.clone()).collect())
+    }
+
     /// Checks every enabled provider at once (one thread each, each under the listing deadline) and returns each
     /// one's result by id. A check refreshes the listing it probes; it clears nothing.
     pub fn check_all(&self) -> Value {
