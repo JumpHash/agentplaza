@@ -476,19 +476,20 @@ mod tests {
                 _ => None,
             })
             .collect();
-        // install rust (two), git init, alternates, weft checkout, cargo fetch, cargo build.
-        assert_eq!(argvs.len(), 7, "{argvs:?}");
+        // install rust (two), sccache's start, git init, alternates, weft checkout, cargo fetch, cargo build.
+        assert_eq!(argvs.len(), 8, "{argvs:?}");
         assert_eq!(argvs[0][..3], ["rustup", "toolchain", "install"]);
-        assert_eq!(argvs[2], ["git", "init", "--quiet", WORKSPACE]);
+        assert_eq!(argvs[2], ["sccache", "--start-server"]);
+        assert_eq!(argvs[3], ["git", "init", "--quiet", WORKSPACE]);
         // The alternates file: the node's objects, written by a shell that takes the path and text as arguments.
-        assert_eq!(argvs[3][3], "/data/git-objects/objects\n");
-        assert_eq!(argvs[3][4], base_recipe::ALTERNATES_FILE);
+        assert_eq!(argvs[4][3], "/data/git-objects/objects\n");
+        assert_eq!(argvs[4][4], base_recipe::ALTERNATES_FILE);
         assert_eq!(
-            argvs[4],
+            argvs[5],
             ["weft", "checkout", "--candidate", "c1", "--dir", WORKSPACE]
         );
-        assert_eq!(argvs[5], ["cargo", "fetch"]);
-        assert_eq!(argvs[6], ["cargo", "build", "--all-targets"]);
+        assert_eq!(argvs[6], ["cargo", "fetch"]);
+        assert_eq!(argvs[7], ["cargo", "build", "--all-targets"]);
         let Some(HostMessage::Exec { env, cwd, .. }) = sent.last() else {
             panic!("the last item is not an exec: {sent:?}")
         };
@@ -608,6 +609,7 @@ mod tests {
                 output: String::new(),
             },
         );
-        assert!(lock().waiting.is_empty());
+        // The waiter map is shared by the tests that run in parallel: only this VM's entry is asserted.
+        assert!(!lock().waiting.contains_key(&(777, 1)));
     }
 }

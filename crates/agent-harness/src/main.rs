@@ -108,6 +108,8 @@ mod v2;
 #[cfg(target_os = "linux")]
 mod vsock;
 #[cfg(target_os = "linux")]
+mod warm;
+#[cfg(target_os = "linux")]
 mod weft_lane;
 
 use std::process::ExitCode;
@@ -177,6 +179,17 @@ fn main() -> ExitCode {
         && command == "apz-hook"
     {
         return hooks::hook_main(rest);
+    }
+    // The base's warm language servers (PLAN 3.8): the base recipe's commands, not the vsock session.
+    if let [_, command, rest @ ..] = args.as_slice()
+        && command == "lsp-serve"
+    {
+        return warm::serve(rest);
+    }
+    if let [_, command, rest @ ..] = args.as_slice()
+        && command == "lsp-warm"
+    {
+        return warm::warm(rest);
     }
     match run() {
         Ok(()) => ExitCode::SUCCESS,

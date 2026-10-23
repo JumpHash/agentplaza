@@ -277,6 +277,14 @@ pub fn installed(language: Language) -> bool {
     which(language.server().command).is_some()
 }
 
+/// The server of the table with the id `id` (the name the pool and a base's warm server use), when the table has one.
+pub fn by_id(id: &str) -> Option<&'static ServerSpec> {
+    Language::ALL
+        .iter()
+        .map(|language| language.server())
+        .find(|spec| spec.id == id)
+}
+
 /// The path of an installed command: searched on `PATH`, or the command itself when it names a path.
 pub fn which(command: &str) -> Option<PathBuf> {
     let direct = Path::new(command);
