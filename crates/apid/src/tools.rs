@@ -148,6 +148,7 @@ const IN_VM: &[&str] = &[
 const GATED: &[&str] = &[
     "plaza_agent_propose",
     "plaza_project_draft",
+    "plan_post",
     "plaza_project_open",
     "plaza_project_advance",
     "plaza_project_approve",
@@ -237,6 +238,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::test_select::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::planning::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
@@ -699,7 +701,8 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::review_graph::tools::spec(name))
         .or_else(|| crate::test_select::spec(name))
         .or_else(|| crate::skills::agent_tools::spec(name))
-        .or_else(|| crate::stations::tools::spec(name))?;
+        .or_else(|| crate::stations::tools::spec(name))
+        .or_else(|| crate::planning::spec(name))?;
     Some(ToolSpec {
         deferred: false,
         name: name.to_string(),
@@ -1050,6 +1053,9 @@ fn host_call(
         }
         other if crate::journal::TOOLS.contains(&other) => {
             crate::journal::run(app, agent, other, input)
+        }
+        other if crate::planning::TOOLS.contains(&other) => {
+            crate::planning::run(app, agent, other, input)
         }
         other if crate::skills::agent_tools::TOOLS.contains(&other) => {
             crate::skills::agent_tools::run(app, agent, other, input)

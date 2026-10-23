@@ -69,6 +69,10 @@ pub fn tick(app: &App) {
     crate::verifier::tick(app, now);
     assign_tasks(app, now);
     for seat in app.seats.ready() {
+        // The plan step waits for the owner's answers to its spec's questions (planning.rs).
+        if crate::planning::waits_for_owner(app, &seat.task, &seat.step) {
+            continue;
+        }
         start_seat(app, &seat, now);
     }
     reap(app, now);
@@ -123,6 +127,8 @@ fn step_ended(
         return app.seats.ended(task, seat, passed, crashed, said, now, &[]);
     }
     let step = app.seats.get(task, seat)?.step;
+    // A planning step holds when its file is on the lane or its plan is posted (planning.rs).
+    let passed = crate::planning::step_holds(app, task, &step, passed, now);
     let report = Report {
         findings: (step == "verify").then(|| review_graph::seat_findings(app, task)),
         ..Report::verdict(passed)
@@ -214,7 +220,9 @@ fn assign_tasks(app: &App, now: u64) {
             ask_budget(app, &short, Some(task.id()), &project, now);
             continue;
         }
-        let (recipe, source) = task_recipe(app, &project, "change");
+        // The recipe the task runs: the one planning gave it (planning.rs), else the change recipe.
+        let recipe_id = crate::planning::recipe_id_of(app, task.id());
+        let (recipe, source) = task_recipe(app, &project, &recipe_id);
         if let Err(why) = app.seats.open(task.id(), &recipe, now) {
             app.budgets.end_task(task.id(), now);
             notice(
@@ -691,7 +699,8 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
     let Some(task_id) = session.task.clone() else {
         return true;
     };
-    if session.seat.as_deref() == Some("builder")
+    // The builder claims the task, and so does a spec-and-plan task's planner (it is finished when its plan is posted).
+    if (session.seat.as_deref() == Some("builder") || crate::planning::is_plan(app, &task_id))
         && let Some(task) = app.plaza.tasks.find(&task_id)
         && task.is_open()
         && let Some(agent) = app.agents.get(cid)
@@ -777,7 +786,10 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     } else {
         let passed = status == WorkStatus::Done;
         let crashed = status == WorkStatus::Stopped;
-        if passed && let Some(t) = app.plaza.tasks.find(&task) {
+        if passed
+            && !crate::planning::is_plan(app, &task)
+            && let Some(t) = app.plaza.tasks.find(&task)
+        {
             // The builder's lane is sealed while its VM still holds the key: the reviewer reviews that revision.
             crate::weft_hub::seal(app, &task, cid, summary);
             size_review(app, &task, now);
@@ -883,6 +895,10 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 &format!("The review sent task {task_id} back to its builder: {said}"),
                 now,
             );
+        }
+        // A spec-and-plan task is done when its plan is posted: nothing lands from it (planning.rs).
+        Next::Done if crate::planning::is_plan(app, task_id) => {
+            crate::planning::finish(app, task_id, now);
         }
         Next::Done => {
             // The project's land hooks check the change before it joins the landing queue: a finding of a block-mode
@@ -1117,7 +1133,7 @@ pub fn clashed(app: &App, task: &str, prompt: &str) {
     }
 }
 
-fn close_task(app: &App, task: &str, now: u64) {
+pub(crate) fn close_task(app: &App, task: &str, now: u64) {
     // The task's journal waits for its project's curator (curator.rs).
     if let Some(project) = app
         .plaza

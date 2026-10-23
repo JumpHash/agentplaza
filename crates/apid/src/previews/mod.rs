@@ -163,21 +163,6 @@ impl Store {
             .tempdir()
             .expect("a temporary folder");
         let store = crate::store::open(dir.path()).expect("the store opens");
-        // The preview tables are not in `0001_init.sql` yet (the lead regenerates it after the merge): the test store
-        // creates them from their definitions, as the schema dump does.
-        let ddl = format!(
-            "{}\n{}\n{}",
-            def().ddl(),
-            link_def().ddl(),
-            opening_def().ddl()
-        );
-        store
-            .db(crate::store::PLAZA)
-            .write(move |conn| {
-                conn.execute_batch(&ddl)?;
-                Ok(())
-            })
-            .expect("the preview tables");
         let mut previews = Store::open(Arc::clone(store.db(crate::store::PLAZA)), dir.path());
         previews._keep = Some((dir, store));
         previews

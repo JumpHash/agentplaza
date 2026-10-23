@@ -469,7 +469,25 @@ max = 2
     fn the_built_in_recipes_check_and_round_trip() {
         let recipes = builtin();
         assert_eq!(recipes.len(), 13);
-        for stub in ["intake", "plan", "deploy", "incident", "upgrade", "cve"] {
+        // The intake and plan recipes are real (planning.rs): their steps are the engine's and the planner's.
+        let intake = builtin_named("intake").unwrap();
+        assert!(!intake.description.contains("Stub"), "intake is real");
+        assert_eq!(
+            intake
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["classify", "task", "spec"]
+        );
+        let plan = builtin_named("plan").unwrap();
+        assert!(!plan.description.contains("Stub"), "plan is real");
+        assert!(
+            plan.steps
+                .iter()
+                .all(|s| s.role.as_deref() == Some("planner"))
+        );
+        for stub in ["deploy", "incident", "upgrade", "cve"] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
                 r.description.contains("Stub until"),

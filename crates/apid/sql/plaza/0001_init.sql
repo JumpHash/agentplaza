@@ -125,6 +125,7 @@ CREATE TABLE "project_setting" (
     "team_max" INTEGER CHECK ("team_max" >= 0),
     "team_target" INTEGER CHECK ("team_target" >= 0),
     "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
+    "spec_over_words" INTEGER CHECK ("spec_over_words" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
@@ -2764,6 +2765,7 @@ CREATE TABLE "chat_draft_settings" (
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
+    "spec_over_words" INTEGER CHECK ("spec_over_words" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
@@ -3642,6 +3644,70 @@ CREATE TABLE "intake_items_writes" (
     "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
     PRIMARY KEY ("intake_pos", "items_pos", "writes_pos"),
     FOREIGN KEY ("intake_pos", "items_pos") REFERENCES "intake_items" ("intake_pos", "items_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component planning
+CREATE TABLE "planning" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "next" INTEGER NOT NULL CHECK ("next" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "planning_specs" (
+    "planning_pos" INTEGER NOT NULL CHECK ("planning_pos" >= 0),
+    "specs_pos" INTEGER NOT NULL CHECK ("specs_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "project" TEXT NOT NULL,
+    "task" TEXT NOT NULL,
+    "item" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("planning_pos", "specs_pos"),
+    FOREIGN KEY ("planning_pos") REFERENCES "planning" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE INDEX "planning_specs_task" ON "planning_specs" ("task");
+CREATE TABLE "planning_specs_questions" (
+    "planning_pos" INTEGER NOT NULL CHECK ("planning_pos" >= 0),
+    "specs_pos" INTEGER NOT NULL CHECK ("specs_pos" >= 0),
+    "questions_pos" INTEGER NOT NULL CHECK ("questions_pos" >= 0),
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "text_content" TEXT,
+    "state" TEXT NOT NULL,
+    "answer" TEXT NOT NULL,
+    "chat" TEXT NOT NULL,
+    "thread" TEXT NOT NULL,
+    "asked_ms" INTEGER NOT NULL CHECK ("asked_ms" >= 0),
+    PRIMARY KEY ("planning_pos", "specs_pos", "questions_pos"),
+    FOREIGN KEY ("planning_pos", "specs_pos") REFERENCES "planning_specs" ("planning_pos", "specs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "planning_planned" (
+    "planning_pos" INTEGER NOT NULL CHECK ("planning_pos" >= 0),
+    "planned_pos" INTEGER NOT NULL CHECK ("planned_pos" >= 0),
+    "task" TEXT NOT NULL,
+    "recipe" TEXT NOT NULL,
+    "planner" TEXT NOT NULL,
+    "spec" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    PRIMARY KEY ("planning_pos", "planned_pos"),
+    FOREIGN KEY ("planning_pos") REFERENCES "planning" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE INDEX "planning_planned_planner" ON "planning_planned" ("planner");
+CREATE TABLE "planning_planned_files" (
+    "planning_pos" INTEGER NOT NULL CHECK ("planning_pos" >= 0),
+    "planned_pos" INTEGER NOT NULL CHECK ("planned_pos" >= 0),
+    "files_pos" INTEGER NOT NULL CHECK ("files_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("planning_pos", "planned_pos", "files_pos"),
+    FOREIGN KEY ("planning_pos", "planned_pos") REFERENCES "planning_planned" ("planning_pos", "planned_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "planning_planned_definitions" (
+    "planning_pos" INTEGER NOT NULL CHECK ("planning_pos" >= 0),
+    "planned_pos" INTEGER NOT NULL CHECK ("planned_pos" >= 0),
+    "definitions_pos" INTEGER NOT NULL CHECK ("definitions_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("planning_pos", "planned_pos", "definitions_pos"),
+    FOREIGN KEY ("planning_pos", "planned_pos") REFERENCES "planning_planned" ("planning_pos", "planned_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component hf_imports

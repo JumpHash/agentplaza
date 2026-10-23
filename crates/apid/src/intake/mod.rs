@@ -581,9 +581,15 @@ fn start_recipe(app: &App, item: &mut Item, rule: &IntakeRule, now: u64) {
     item.error.clear();
 }
 
+/// Starts an item's work: the intake recipe decides between a spec and plan above the project's threshold and a task
+/// below it (planning.rs), and [`start_task`] makes the task.
+fn start(app: &App, item: &mut Item) {
+    crate::planning::start(app, item, start_task);
+}
+
 /// Starts an item's task on its project: the project must be open for tasks (not archived; at implementation or
 /// review). A task that cannot start leaves the item held, with the reason.
-fn start(app: &App, item: &mut Item) {
+fn start_task(app: &App, item: &mut Item) {
     let outcome = (|| -> Result<String, String> {
         let project = app
             .projects
