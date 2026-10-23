@@ -22,7 +22,7 @@ use flate2::write::DeflateEncoder;
 use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
-use crate::tunnel::{self, Connect, PortMap};
+use crate::tunnel::{self, Connect};
 use crate::{forward, join};
 
 /// How often the node reports itself.
@@ -40,8 +40,8 @@ pub struct Local {
     /// The node's internal token, sent on every call to noded and vsockd (`run` sets it to
     /// `node/internal-token`, the file they are started with).
     pub token: InternalToken,
-    /// Where the ports of forks on this node lead (`tunnel`: the port streams from the hub).
-    pub ports: PortMap,
+    /// vsockd's inbound listener, on loopback: the port streams from the hub are handed to it (`inbound.rs`).
+    pub inbound: u16,
 }
 
 impl Default for Local {
@@ -51,7 +51,7 @@ impl Default for Local {
             vsockd: 9180,
             forward: 7701,
             token: InternalToken::none(),
-            ports: PortMap::default(),
+            inbound: 19095,
         }
     }
 }

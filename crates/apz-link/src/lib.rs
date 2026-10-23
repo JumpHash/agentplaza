@@ -5,6 +5,7 @@
 
 pub mod forward;
 pub mod identity;
+pub mod inbound;
 pub mod join;
 pub mod run;
 pub mod tunnel;

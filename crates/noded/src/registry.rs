@@ -3168,6 +3168,22 @@ impl Registry {
         self.lock().runs.iter().find(|run| run.id == id).cloned()
     }
 
+    /// Registers a port a fork of run `id` serves on guest `cid` (see [`Run::register_port`]).
+    pub fn register_port(&self, id: &str, cid: u64, port: u16) -> Result<(), String> {
+        self.find(id)
+            .ok_or_else(|| format!("no run with id {id}"))?
+            .register_port(cid, port)
+    }
+
+    /// Whether some live run of this node serves `port` on guest `cid`: the check vsockd makes before it dials a
+    /// guest for an inbound stream.
+    pub fn port_served(&self, cid: u64, port: u16) -> bool {
+        self.lock()
+            .runs
+            .iter()
+            .any(|run| run.serves_port(cid, port))
+    }
+
     /// Every run, oldest first.
     pub fn list(&self) -> Vec<Arc<Run>> {
         self.lock().runs.clone()
@@ -3207,6 +3223,7 @@ impl Registry {
             cids: Arc::clone(&self.cids),
             snapshots: self.snapshots.clone(),
             recoveries: Mutex::new(Vec::new()),
+            ports: Mutex::new(BTreeSet::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Starting,
                 ended_at: None,
@@ -3362,6 +3379,9 @@ pub struct Run {
     /// The recoveries this run's VMs have started, as `(VM index, when)`, kept
     /// for the last [`RECOVERY_WINDOW_MS`] (the crash-loop limit counts them).
     recoveries: Mutex<Vec<(u32, u64)>>,
+    /// The ports this run's forks serve, as `(guest CID, port)`: an inbound stream to one is allowed (vsockd asks
+    /// [`Registry::port_served`]). Kept per run, so a run that ends takes its ports with it.
+    ports: Mutex<BTreeSet<(u64, u16)>>,
     inner: Mutex<RunInner>,
 }
 
@@ -3975,6 +3995,44 @@ impl Run {
         }
     }
 
+    /// Registers a port a fork of this run serves on its guest `cid`, which must be one of the run's guests.
+    pub fn register_port(&self, cid: u64, port: u16) -> Result<(), String> {
+        if port == 0 {
+            return Err("port 0 is not a port a fork serves".to_string());
+        }
+        if !self
+            .lock()
+            .vms
+            .iter()
+            .any(|slot| slot.guest_cid == Some(cid))
+        {
+            return Err(format!("CID {cid} is not a guest of run {}", self.id));
+        }
+        self.ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((cid, port));
+        Ok(())
+    }
+
+    /// Stops serving a port; `false` when it was not registered.
+    pub fn unregister_port(&self, cid: u64, port: u16) -> bool {
+        self.ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(cid, port))
+    }
+
+    /// Whether this run serves `port` on guest `cid`, while the run is live.
+    pub fn serves_port(&self, cid: u64, port: u16) -> bool {
+        let live = self.lock().ended_at.is_none();
+        live && self
+            .ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(cid, port))
+    }
+
     fn lock(&self) -> MutexGuard<'_, RunInner> {
         self.inner
             .lock()
@@ -4481,6 +4539,7 @@ mod tests {
             cids,
             snapshots: None,
             recoveries: Mutex::new(Vec::new()),
+            ports: Mutex::new(BTreeSet::new()),
             inner: Mutex::new(RunInner {
                 state: run_state,
                 ended_at: None,
@@ -5289,6 +5348,47 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_port_is_served_only_on_its_guest_and_while_the_run_lives() {
+        let (registry, run) = registry_with_run(VmState::Running, None);
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7681),
+            "nothing is registered yet"
+        );
+        // A port on a CID the run does not hold is refused, and so is port 0.
+        assert!(
+            registry
+                .register_port(&run.id, RUN_CID_BASE + 9, 7681)
+                .is_err()
+        );
+        assert!(registry.register_port(&run.id, RUN_CID_BASE, 0).is_err());
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 7681)
+            .expect("the run's guest registers its port");
+        assert!(registry.port_served(RUN_CID_BASE, 7681));
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7682),
+            "only the registered port"
+        );
+        assert!(
+            !registry.port_served(RUN_CID_BASE + 1, 7681),
+            "only the run's guest"
+        );
+        assert!(run.unregister_port(RUN_CID_BASE, 7681));
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7681),
+            "unregistered ports are refused"
+        );
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 7681)
+            .expect("registers again");
+        run.lock().ended_at = Some(1);
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7681),
+            "an ended run serves nothing"
+        );
+    }
+
+    #[test]
     fn the_snapshot_states_and_refusals_have_their_api_names() {
         assert_eq!(VmState::Paused.as_str(), "paused");
         assert_eq!(VmState::Asleep.as_str(), "asleep");
@@ -5539,6 +5639,7 @@ mod sandbox_tests {
             cids: Arc::new(CidBook::default()),
             snapshots: None,
             recoveries: Mutex::new(Vec::new()),
+            ports: Mutex::new(BTreeSet::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Running,
                 ended_at: None,

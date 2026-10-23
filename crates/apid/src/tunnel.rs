@@ -9,6 +9,7 @@
 //!
 //! The handshake is the caller's to authenticate (the route checks the node's signature before [`open`]).
 
+use std::io;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::thread;
@@ -155,8 +156,8 @@ fn build_request(header: &Value, body: Vec<u8>, peer: Option<IpAddr>) -> Result<
     })
 }
 
-/// The answer, as the node reads it: one line of JSON (`status`, `content_type`), then the body. A streamed answer
-/// does not travel the tunnel; the node gets a 501 for it.
+/// The answer, as the node reads it: one line of JSON (`status`, `content_type`, `stream`), then the body. A streamed
+/// body (`stream`: true) is written as the response produces it, so the node passes each chunk on as it comes.
 fn write_response(stream: &Stream, response: Response) {
     let content_type = response
         .headers
@@ -165,26 +166,56 @@ fn write_response(stream: &Stream, response: Response) {
         .map(|(_, value)| value.clone())
         .unwrap_or_default();
     let status = response.status;
-    let (status, bytes) = match response.body {
-        Body::Bytes(bytes) => (status, bytes),
-        _ => (
-            501,
-            b"a streamed answer does not travel the tunnel".to_vec(),
-        ),
+    let head = |status: u16, streamed: bool| {
+        format!(
+            "{}\n",
+            json!({"status": status, "content_type": content_type, "stream": streamed})
+        )
     };
-    let head = format!(
-        "{}\n",
-        json!({"status": status, "content_type": content_type})
-    );
-    if stream.send(head.as_bytes()).is_ok() && stream.send(&bytes).is_ok() {
-        let _ = stream.finish();
+    match response.body {
+        Body::Bytes(bytes) => {
+            if stream.send(head(status, false).as_bytes()).is_ok() && stream.send(&bytes).is_ok() {
+                let _ = stream.finish();
+            }
+        }
+        Body::Stream(write) => {
+            if stream.send(head(status, true).as_bytes()).is_err() {
+                return;
+            }
+            match write(&mut Chunks(stream)) {
+                Ok(()) => {
+                    let _ = stream.finish();
+                }
+                Err(err) => stream.reset(&format!("the streamed answer failed: {err}")),
+            }
+        }
+        Body::Upgrade(_) => {
+            let message = b"an upgraded answer does not travel the tunnel";
+            if stream.send(head(501, false).as_bytes()).is_ok() && stream.send(message).is_ok() {
+                let _ = stream.finish();
+            }
+        }
+    }
+}
+
+/// The writer a streamed body writes into: each write goes down the stream, in order.
+struct Chunks<'a>(&'a Stream);
+
+impl io::Write for Chunks<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.send(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::time::Instant;
@@ -297,6 +328,16 @@ mod tests {
         let check = Arc::clone(&store);
         let dispatch: Dispatch = Arc::new(move |request: &Request| {
             match check.authenticate(request, apz_plaza::now_ms()) {
+                Ok(_) if request.path == "/v1/nodes/n1/stream" => Response {
+                    status: 200,
+                    headers: vec![("Content-Type".to_string(), "text/event-stream".to_string())],
+                    body: Body::Stream(Box::new(|out: &mut dyn Write| -> io::Result<()> {
+                        for index in 0..5 {
+                            write!(out, "data: {index}\n\n")?;
+                        }
+                        Ok(())
+                    })),
+                },
                 Ok(node) => Response::json(
                     200,
                     &json!({"node": node.id, "bytes": request.body.len(), "path": request.path, "query": request.query}),
@@ -323,7 +364,7 @@ mod tests {
             .spawn(move |request| router.handle(&(), request))
             .expect("serves");
 
-        // A fake noded for the command, and a fork's terminal and model ports, reached through the node's port map.
+        // A fake noded for the command, and a fork's terminal and model ports, reached through the node's relay and vsockd's inbound listener.
         let noded_router: Router<()> = Router::new().get("/v1/runs", |_, _, _| {
             Response::json(200, &json!({"runs": []}))
         });
@@ -333,9 +374,16 @@ mod tests {
             .expect("serves");
         let terminal = echo_fork();
         let (model, model_result) = model_fork();
-        let ports = node_tunnel::PortMap::default();
-        ports.set(1000, 7681, terminal);
-        ports.set(1000, 7690, model);
+        // vsockd's inbound listener, with the table of what runs serve and where their guests answer on loopback.
+        let mut table = apz_link::inbound::Table::default();
+        table.served.lock().unwrap().insert((1000, 7681));
+        table.served.lock().unwrap().insert((1000, 7690));
+        table.guests.insert((1000, 7681), terminal);
+        table.guests.insert((1000, 7690), model);
+        let inbound_listener = TcpListener::bind("127.0.0.1:0").expect("binds");
+        let inbound_port = inbound_listener.local_addr().expect("address").port();
+        let table = Arc::new(table);
+        thread::spawn(move || apz_link::inbound::serve(inbound_listener, table.clone(), table));
 
         let identity = Identity {
             hub_url: format!("https://localhost:{}", hub.port()),
@@ -350,7 +398,7 @@ mod tests {
             vsockd: 0,
             forward: 0,
             token: apz_http::auth::InternalToken::none(),
-            ports,
+            inbound: inbound_port,
         };
 
         // The node dials the hub, and serves the hub's streams.
@@ -418,6 +466,31 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(result.status, 200);
         assert_eq!(result.body, json!({"runs": []}));
+
+        // A streamed answer from the hub: the node's request reports it streamed, and its body arrives whole, in order.
+        let target = identity
+            .signed(&node_key, "GET", "/v1/nodes/n1/stream", &[])
+            .expect("signs");
+        let mut answer = node_tunnel::request_answer(
+            &target,
+            "GET",
+            "/v1/nodes/n1/stream",
+            None,
+            Duration::from_secs(10),
+        )
+        .expect("the hub answers");
+        assert!(answer.streamed, "the hub streamed this answer");
+        assert_eq!(answer.status, 200);
+        assert_eq!(answer.content_type, "text/event-stream");
+        let mut text = String::new();
+        answer
+            .body
+            .read_to_string(&mut text)
+            .expect("reads to the end");
+        assert_eq!(
+            text,
+            "data: 0\n\ndata: 1\n\ndata: 2\n\ndata: 3\n\ndata: 4\n\n"
+        );
 
         // A node request, signed as the node signs them, answered by the hub's dispatch.
         let target = identity

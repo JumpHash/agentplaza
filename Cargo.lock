@@ -10513,6 +10513,7 @@ version = "0.1.0"
 dependencies = [
  "apz-egress-rules",
  "apz-http",
+ "apz-link",
  "apz-metrics",
  "apz-os",
  "apz-proto",

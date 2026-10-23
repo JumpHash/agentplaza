@@ -1885,6 +1885,22 @@ fn router() -> Router<Node> {
         .delete("/v1/runs/{id}", |node, _, params| {
             delete_run(node, params.get("id"))
         })
+        // The ports a run's forks serve: an inbound stream (vsockd, for the hub's terminal and model streams) is
+        // allowed to a port only while a live run registered it.
+        .post("/v1/runs/{id}/ports", |node, request, params| {
+            register_port(node, params.get("id"), &request.body)
+        })
+        .delete("/v1/runs/{id}/ports/{cid}/{port}", |node, _, params| {
+            unregister_port(
+                node,
+                params.get("id"),
+                params.get("cid"),
+                params.get("port"),
+            )
+        })
+        .get("/v1/forks/{cid}/ports/{port}", |node, _, params| {
+            served_port(node, params.get("cid"), params.get("port"))
+        })
         .post("/v1/runs/{id}/input", |node, request, params| {
             send_input(node, params.get("id"), &request.body)
         })
@@ -2542,6 +2558,56 @@ struct MemoryRequest {
 /// answers with the VM's memory as the balloon now reads it. An unknown run or
 /// VM is a 404; a VM with no balloon, or one that has stopped, is a 409 (see
 /// `registry::MemoryError::status`).
+/// `POST /v1/runs/{id}/ports` with `{"cid", "port"}`: a fork of the run serves that port on that guest.
+fn register_port(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Ok(request) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return Response::error(400, "a port request is JSON {cid, port}");
+    };
+    let (Some(cid), Some(port)) = (
+        request["cid"].as_u64(),
+        request["port"].as_u64().and_then(|p| u16::try_from(p).ok()),
+    ) else {
+        return Response::error(400, "a port request needs a cid and a port");
+    };
+    if node.registry().find(id).is_none() {
+        return Response::error(404, &format!("no run with id {id}"));
+    }
+    match node.registry().register_port(id, cid, port) {
+        Ok(()) => Response::json(
+            200,
+            &serde_json::json!({"cid": cid, "port": port, "served": true}),
+        ),
+        Err(err) => Response::error(409, &err),
+    }
+}
+
+/// `DELETE /v1/runs/{id}/ports/{cid}/{port}`: the run's fork stops serving that port.
+fn unregister_port(node: &Node, id: &str, cid: &str, port: &str) -> Response {
+    let (Ok(cid), Ok(port)) = (cid.parse::<u64>(), port.parse::<u16>()) else {
+        return Response::error(400, "a CID and a port");
+    };
+    let Some(run) = node.registry().find(id) else {
+        return Response::error(404, &format!("no run with id {id}"));
+    };
+    Response::json(
+        200,
+        &serde_json::json!({"removed": run.unregister_port(cid, port)}),
+    )
+}
+
+/// `GET /v1/forks/{cid}/ports/{port}`: 200 when a live run serves the port on that guest, 404 otherwise. vsockd asks
+/// this before it dials a guest for an inbound stream.
+fn served_port(node: &Node, cid: &str, port: &str) -> Response {
+    let (Ok(cid), Ok(port)) = (cid.parse::<u64>(), port.parse::<u16>()) else {
+        return Response::error(400, "a CID and a port");
+    };
+    if node.registry().port_served(cid, port) {
+        Response::json(200, &serde_json::json!({"served": true}))
+    } else {
+        Response::json(404, &serde_json::json!({"served": false}))
+    }
+}
+
 fn set_vm_memory(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
     let Ok(vm) = index.parse::<u32>() else {
         return Response::error(404, &format!("no VM {index} in run {id}"));

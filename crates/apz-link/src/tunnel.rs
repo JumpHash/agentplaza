@@ -1,17 +1,16 @@
 //! The node's end of its tunnel (PLAN 17.4): one outbound WebSocket to the hub, `/v1/nodes/{id}/tunnel`, carrying every
 //! stream between the node and the hub (apz_http::mux). Four kinds of stream, named by the header each opens with:
 //! - `command` (hub → node): one command for noded or vsockd, run by [`execute`]; its result JSON is the answer.
-//! - `port` (hub → node): bytes both ways to a fork's port, dialled at the address the node's [`PortMap`] gives. A
-//!   terminal's bytes and a model call's deltas ride these.
+//! - `port` (hub → node): bytes both ways to a fork's port. The relay hands the stream to vsockd's inbound listener
+//!   (`inbound.rs`), which checks noded and dials the guest. A terminal's bytes and a model call's deltas ride these.
 //! - `request` (node → hub): one signed HTTP request (heartbeats, results, metrics, the agents' calls to the hub). The
-//!   answer is one line of JSON `{status, content_type}`, then the body. [`request`] sends them; the hub's router answers.
+//!   answer is one line of JSON (`status`, `content_type`, `stream`), then the body. A streamed answer (`stream`: true)
+//!   arrives as the hub produces it, and [`request_answer`] hands its body on as it comes.
 //!
 //! A hub that predates the tunnel answers the upgrade with 401 or 404; the node then keeps the long poll and its HTTP
 //! requests ([`LEGACY`]) and tries the tunnel again between polls. A refused upgrade with 403 is a revoked node.
 
-use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -24,12 +23,11 @@ use apz_trust::node::NodeKey;
 use serde_json::{Value, json};
 
 use crate::identity::Identity;
+use crate::inbound;
 use crate::run::{Local, execute};
 
 /// The longest the upgrade handshake may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long a fork's port may take to answer a dial.
-const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often a relayed port checks whether the tunnel is still up.
 const RELAY_POLL: Duration = Duration::from_millis(500);
 /// How often the accepting loop looks for a stream while the tunnel is quiet.
@@ -42,27 +40,6 @@ static CURRENT: Mutex<Option<Arc<Mux>>> = Mutex::new(None);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Where the ports of forks on this node lead: (guest CID, guest port) → the local address its traffic goes to.
-#[derive(Debug, Clone, Default)]
-pub struct PortMap(Arc<Mutex<BTreeMap<(u64, u16), SocketAddr>>>);
-
-impl PortMap {
-    /// Routes a fork's port to `addr`.
-    pub fn set(&self, cid: u64, port: u16, addr: SocketAddr) {
-        lock(&self.0).insert((cid, port), addr);
-    }
-
-    /// Stops routing a fork's port.
-    pub fn clear(&self, cid: u64, port: u16) {
-        lock(&self.0).remove(&(cid, port));
-    }
-
-    /// Where a fork's port leads, if it is routed.
-    pub fn resolve(&self, cid: u64, port: u16) -> Option<SocketAddr> {
-        lock(&self.0).get(&(cid, port)).copied()
-    }
 }
 
 /// Why the tunnel could not be opened.
@@ -163,17 +140,16 @@ fn answer(stream: Stream, local: &Local) {
     }
 }
 
-/// Carries a port stream to the fork's port, both ways, until either side closes.
+/// Carries a port stream to a guest's port through vsockd's inbound listener, both ways, until either side closes.
 fn relay(stream: Stream, local: &Local, cid: u64, port: u16) {
-    let Some(addr) = local.ports.resolve(cid, port) else {
-        stream.reset("no fork listens on that port");
-        return;
+    let mut guest = match inbound::connect(local.inbound, cid, port) {
+        Ok(guest) => guest,
+        Err(err) => {
+            stream.reset(&format!("the node cannot reach the fork's port: {err}"));
+            return;
+        }
     };
-    let Ok(mut fork) = TcpStream::connect_timeout(&addr, DIAL_TIMEOUT) else {
-        stream.reset("the fork's port is not reachable");
-        return;
-    };
-    let Ok(mut from_fork) = fork.try_clone() else {
+    let Ok(mut from_guest) = guest.try_clone() else {
         stream.reset("the fork's port could not be read");
         return;
     };
@@ -182,7 +158,7 @@ fn relay(stream: Stream, local: &Local, cid: u64, port: u16) {
     thread::spawn(move || {
         let mut buf = vec![0u8; MAX_CHUNK];
         loop {
-            match from_fork.read(&mut buf) {
+            match from_guest.read(&mut buf) {
                 Ok(0) | Err(_) => {
                     let _ = outgoing.finish();
                     break;
@@ -198,16 +174,16 @@ fn relay(stream: Stream, local: &Local, cid: u64, port: u16) {
     loop {
         match stream.recv(RELAY_POLL) {
             Some(Event::Data(bytes)) => {
-                if fork.write_all(&bytes).is_err() {
+                if std::io::Write::write_all(&mut guest, &bytes).is_err() {
                     stream.reset("the fork closed its port");
                     break;
                 }
             }
             Some(Event::Fin) => {
-                let _ = fork.shutdown(Shutdown::Write);
+                let _ = guest.shutdown(std::net::Shutdown::Write);
             }
             Some(Event::Reset(_) | Event::Closed) => {
-                let _ = fork.shutdown(Shutdown::Both);
+                let _ = guest.shutdown(std::net::Shutdown::Both);
                 break;
             }
             None => {}
@@ -215,17 +191,32 @@ fn relay(stream: Stream, local: &Local, cid: u64, port: u16) {
     }
 }
 
-/// One request to the hub. Over the tunnel while it is up; over HTTP to a hub that predates the tunnel. The target's
-/// headers (the node's signature, and any the caller added) travel with it.
-pub fn request(
+/// A hub's answer whose body may still be arriving: a streamed answer is read as it comes, not all at once.
+pub struct Answer {
+    pub status: u16,
+    pub content_type: String,
+    /// Whether the hub streamed the body (its `stream` head field), rather than sending it whole.
+    pub streamed: bool,
+    pub body: Box<dyn Read + Send>,
+}
+
+/// One request to the hub, answered with its body still to be read. Over the tunnel while it is up; over HTTP to a hub
+/// that predates the tunnel. The target's headers (the node's signature, and any the caller added) travel with it.
+pub fn request_answer(
     target: &Target,
     method: &str,
     path: &str,
     body: Option<&[u8]>,
     timeout: Duration,
-) -> io::Result<Reply> {
+) -> io::Result<Answer> {
     if LEGACY.load(Ordering::SeqCst) {
-        return client::request(target, method, path, body, timeout);
+        let reply = client::request(target, method, path, body, timeout)?;
+        return Ok(Answer {
+            status: reply.status,
+            content_type: reply.content_type,
+            streamed: false,
+            body: Box::new(io::Cursor::new(reply.body)),
+        });
     }
     let mux = current().ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotConnected, "the tunnel to the hub is down")
@@ -235,19 +226,91 @@ pub fn request(
     let stream = mux.open(header.to_string().as_bytes())?;
     stream.send(body.unwrap_or_default())?;
     stream.finish()?;
-    let answer = stream.read_all(timeout)?;
-    reply(&answer)
+    let (head, rest) = read_head(&stream, timeout)?;
+    Ok(Answer {
+        status: head.status,
+        content_type: head.content_type,
+        streamed: head.streamed,
+        body: Box::new(Rest {
+            stream,
+            pending: rest,
+            wait: timeout,
+            ended: false,
+        }),
+    })
 }
 
-/// The hub's answer: one line of JSON (`status`, `content_type`), then the body.
-fn reply(answer: &[u8]) -> io::Result<Reply> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "the hub's answer has no head");
-    let at = answer
-        .iter()
-        .position(|b| *b == b'\n')
-        .ok_or_else(invalid)?;
-    let head: Value = serde_json::from_slice(&answer[..at]).map_err(|_| invalid())?;
+/// One request to the hub, answered whole. See [`request_answer`].
+pub fn request(
+    target: &Target,
+    method: &str,
+    path: &str,
+    body: Option<&[u8]>,
+    timeout: Duration,
+) -> io::Result<Reply> {
+    let mut answer = request_answer(target, method, path, body, timeout)?;
+    let mut bytes = Vec::new();
+    answer.body.read_to_end(&mut bytes)?;
     Ok(Reply {
+        status: answer.status,
+        content_type: answer.content_type,
+        body: bytes,
+        headers: Vec::new(),
+    })
+}
+
+/// The head line of a hub answer.
+struct Head {
+    status: u16,
+    content_type: String,
+    streamed: bool,
+}
+
+/// Reads the head line of an answer, and returns the bytes that followed it on the stream.
+fn read_head(stream: &Stream, wait: Duration) -> io::Result<(Head, Vec<u8>)> {
+    let mut buf = Vec::new();
+    loop {
+        if let Some(at) = buf.iter().position(|b| *b == b'\n') {
+            let head = parse_head(&buf[..at])?;
+            return Ok((head, buf[at + 1..].to_vec()));
+        }
+        match stream.recv(wait) {
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the hub did not answer",
+                ));
+            }
+            Some(Event::Data(bytes)) => buf.extend_from_slice(&bytes),
+            Some(Event::Fin) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the hub's answer has no head",
+                ));
+            }
+            Some(Event::Reset(reason)) => {
+                return Err(io::Error::new(io::ErrorKind::ConnectionReset, reason));
+            }
+            Some(Event::Closed) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "the tunnel closed",
+                ));
+            }
+        }
+    }
+}
+
+/// The head line: `{"status", "content_type", "stream"}`. A missing status is a 502.
+fn parse_head(line: &[u8]) -> io::Result<Head> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the hub's answer has a bad head",
+        )
+    };
+    let head: Value = serde_json::from_slice(line).map_err(|_| invalid())?;
+    Ok(Head {
         status: head["status"]
             .as_u64()
             .and_then(|s| u16::try_from(s).ok())
@@ -256,9 +319,64 @@ fn reply(answer: &[u8]) -> io::Result<Reply> {
             .as_str()
             .unwrap_or_default()
             .to_string(),
-        body: answer[at + 1..].to_vec(),
-        headers: Vec::new(),
+        streamed: head["stream"].as_bool().unwrap_or(false),
     })
+}
+
+/// The rest of a hub answer: what its tunnel stream carries after the head, in order.
+struct Rest {
+    stream: Stream,
+    pending: Vec<u8>,
+    wait: Duration,
+    ended: bool,
+}
+
+impl Read for Rest {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if !self.pending.is_empty() {
+            let n = out.len().min(self.pending.len());
+            out[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            return Ok(n);
+        }
+        loop {
+            if self.ended {
+                return Ok(0);
+            }
+            match self.stream.recv(self.wait) {
+                None => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "the hub stopped answering",
+                    ));
+                }
+                Some(Event::Data(bytes)) => {
+                    let n = out.len().min(bytes.len());
+                    out[..n].copy_from_slice(&bytes[..n]);
+                    self.pending.extend_from_slice(&bytes[n..]);
+                    if n > 0 {
+                        return Ok(n);
+                    }
+                }
+                Some(Event::Fin) => {
+                    self.ended = true;
+                    return Ok(0);
+                }
+                Some(Event::Reset(reason)) => {
+                    return Err(io::Error::new(io::ErrorKind::ConnectionReset, reason));
+                }
+                Some(Event::Closed) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the tunnel closed",
+                    ));
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -275,23 +393,20 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_is_its_head_line_then_the_body() {
-        let answer = b"{\"status\":201,\"content_type\":\"application/json\"}\n{\"ok\":true}";
-        let got = reply(answer).expect("parses");
-        assert_eq!(got.status, 201);
-        assert_eq!(got.content_type, "application/json");
-        assert_eq!(got.body, b"{\"ok\":true}");
-        assert!(reply(b"no newline here").is_err());
-    }
-
-    #[test]
-    fn a_port_map_routes_and_forgets() {
-        let map = PortMap::default();
-        let addr: SocketAddr = "127.0.0.1:9".parse().expect("an address");
-        assert_eq!(map.resolve(1000, 7681), None);
-        map.set(1000, 7681, addr);
-        assert_eq!(map.resolve(1000, 7681), Some(addr));
-        map.clear(1000, 7681);
-        assert_eq!(map.resolve(1000, 7681), None);
+    fn a_head_says_its_status_type_and_whether_the_body_streams() {
+        let head =
+            parse_head(br#"{"status":201,"content_type":"text/event-stream","stream":true}"#)
+                .expect("parses");
+        assert_eq!(head.status, 201);
+        assert_eq!(head.content_type, "text/event-stream");
+        assert!(head.streamed);
+        let whole =
+            parse_head(br#"{"status":200,"content_type":"application/json"}"#).expect("parses");
+        assert!(!whole.streamed, "a body sent whole is not a stream");
+        assert_eq!(
+            parse_head(b"not json").err().map(|e| e.kind()),
+            Some(io::ErrorKind::InvalidData)
+        );
+        assert_eq!(parse_head(br#"{}"#).expect("parses").status, 502);
     }
 }

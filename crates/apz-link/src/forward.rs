@@ -13,7 +13,9 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use apz_http::{Request, Response};
+use std::io::{self, Read, Write};
+
+use apz_http::{Body, Request, Response};
 use apz_trust::node::NodeKey;
 
 use crate::identity::Identity;
@@ -168,8 +170,33 @@ pub fn handle(identity: &Identity, key: &NodeKey, token: &str, request: &Request
     } else {
         Some(request.body.as_slice())
     };
-    match crate::tunnel::request(&target, &request.method, &full_path, body, HUB_TIMEOUT) {
-        Ok(reply) => Response::new(reply.status, &reply.content_type, reply.body),
+    match crate::tunnel::request_answer(&target, &request.method, &full_path, body, HUB_TIMEOUT) {
+        Ok(answer) => passed_on(answer),
+        Err(error) => Response::error(502, &error.to_string()),
+    }
+}
+
+/// The hub's answer as the VM gets it: a streamed one (a model's SSE reply) is passed on as it arrives, and any other
+/// is read whole, as before.
+fn passed_on(answer: crate::tunnel::Answer) -> Response {
+    let crate::tunnel::Answer {
+        status,
+        content_type,
+        streamed,
+        mut body,
+    } = answer;
+    if streamed {
+        return Response {
+            status,
+            headers: vec![("Content-Type".to_string(), content_type)],
+            body: Body::Stream(Box::new(move |out: &mut dyn Write| {
+                io::copy(&mut body, out).map(|_| ())
+            })),
+        };
+    }
+    let mut bytes = Vec::new();
+    match body.read_to_end(&mut bytes) {
+        Ok(_) => Response::new(status, &content_type, bytes),
         Err(error) => Response::error(502, &error.to_string()),
     }
 }
