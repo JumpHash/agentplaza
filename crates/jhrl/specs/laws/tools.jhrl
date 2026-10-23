@@ -167,12 +167,24 @@ law "T-021" "An agent given a review step reports on it" {
   tier statute
   enforcement preventive
   severity info
-  statement "Any agent may read, score and rule on the review step the review graph gave it, and add sub-reviews within that step's limit."
-  rationale "A review recipe names the role of each step; the step's tools act only on the step the agent was given, and its verdict is signed with its own key."
+  statement "Any agent may read, score and rule on the review step the review graph gave it, add sub-reviews within that step's limit, and the verifier of a review rules on its findings; the author may contest one confirmed finding."
+  rationale "A review recipe names the role of each step; the step's tools act only on the step the agent was given, and its verdict is signed with its own key. A finding is confirmed only with its proof, and the verifier's ruling and the author's contest are the only ways a finding changes."
   permit tool.call
   principal is Agent
   resource is Tool
-  when resource.name in ["review_tree", "review_score", "review_verdict", "review_spawn"]
+  when resource.name in ["review_tree", "review_score", "review_verdict", "review_spawn", "finding_verify", "finding_contest"]
+}
+
+law "T-033" "Only the planner rules on a contested finding" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "A contested finding the verifier held is ruled on by the planner, on a model other than the author's and the verifier's, or by the owner."
+  rationale "A contest that the verifier holds goes to a judge who did neither the review nor the fix; the model rule keeps the judge independent of both."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "finding_arbitrate" and principal.role == "planner"
 }
 
 law "T-022" "The orchestrator proposes recipes" {

@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Finding, Score, Touch};
+use super::{Finding, Score, Touch, Verdict};
 use crate::agents::Agent;
 use crate::state::App;
 
@@ -15,6 +15,9 @@ pub const TOOLS: &[&str] = &[
     "review_score",
     "review_verdict",
     "review_spawn",
+    "finding_verify",
+    "finding_contest",
+    "finding_arbitrate",
     "recipe_propose",
     "weft_status",
     "weft_diff",
@@ -37,7 +40,12 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "basis": {"type": "string", "enum": ["measured", "estimated"]},
         "evidence": {"type": "string"}
     }, "required": ["symbol", "axis", "level", "basis", "evidence"], "additionalProperties": false});
-    let finding = json!({"type": "object", "properties": {"symbol": {"type": "string"}, "text": {"type": "string"}, "severity": {"type": "string", "enum": ["info", "minor", "major", "blocker"]}}, "required": ["symbol", "text"], "additionalProperties": false});
+    let finding = json!({"type": "object", "properties": {
+        "symbol": {"type": "string"}, "text": {"type": "string"},
+        "severity": {"type": "string", "enum": ["info", "minor", "major", "blocker"]},
+        "scenario": {"type": "string", "description": "the failure: the inputs or state, and the wrong outcome they cause"},
+        "kind": {"type": "string", "description": "the kind of defect, for the project's pitfalls (default: your axis)"}
+    }, "required": ["symbol", "text", "scenario"], "additionalProperties": false});
     let touch = json!({"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "how": {"type": "string"}, "note": {"type": "string"}}, "required": ["from", "to", "how"], "additionalProperties": false});
     let intent = json!({"type": "object", "properties": {"title": {"type": "string"}, "kind": {"type": "string", "enum": ["feature", "fix", "improvement", "refactor", "docs", "test", "research", "chore"]}, "summary": {"type": "string"}, "covers": {"type": "array", "items": {"type": "string"}, "description": "paths, globs, or path::definition"}}, "required": ["title", "kind", "covers"], "additionalProperties": false});
     Some(match name {
@@ -67,6 +75,27 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             obj(
                 json!({"kind": {"type": "string", "enum": ["check", "agent"]}, "role": {"type": "string"}, "axes": {"type": "array", "items": {"type": "string"}}, "commands": {"type": "array", "items": {"type": "string"}}, "ask": {"type": "string"}}),
                 &["kind", "ask"],
+            ),
+        ),
+        "finding_verify" => (
+            "Rule on a finding of your review (you are its verifier): confirmed, with the proof (a failing test you wrote, a run, or the exact lines and the reasoning), or dropped, with the reason it is not a defect.",
+            obj(
+                json!({"finding": {"type": "string", "description": "the finding's id (f1, f2, …)"}, "verdict": {"type": "string", "enum": ["confirmed", "dropped"]}, "proof": {"type": "string"}, "reason": {"type": "string"}}),
+                &["finding", "verdict"],
+            ),
+        ),
+        "finding_contest" => (
+            "Contest a confirmed finding of the review you are reworking, once, with your reason: the verifier looks again. Only before you seal a newer revision.",
+            obj(
+                json!({"finding": {"type": "string"}, "reason": {"type": "string"}}),
+                &["finding", "reason"],
+            ),
+        ),
+        "finding_arbitrate" => (
+            "Rule on a contested finding the verifier held (you are the planner, on a model other than the author's and the verifier's): fix it, accept the risk, or drop it, with your reason.",
+            obj(
+                json!({"run": {"type": "string"}, "finding": {"type": "string"}, "ruling": {"type": "string", "enum": ["fix", "accept", "drop"]}, "reason": {"type": "string"}}),
+                &["run", "finding", "ruling", "reason"],
             ),
         ),
         "recipe_propose" => (
@@ -254,6 +283,57 @@ pub fn run(
                 arr(input, "axes")?,
                 arr(input, "commands")?,
                 input.get("ask").and_then(Value::as_str).unwrap_or(""),
+            )
+        }
+        "finding_verify" => {
+            let finding = input
+                .get("finding")
+                .and_then(Value::as_str)
+                .ok_or("missing `finding`")?;
+            let verdict = match input.get("verdict").and_then(Value::as_str) {
+                Some("confirmed") => Verdict::Confirmed,
+                Some("dropped") => Verdict::Dropped,
+                _ => return Err("verdict is confirmed or dropped".into()),
+            };
+            let text_of = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or("");
+            super::verify(
+                app,
+                agent.cid,
+                work,
+                finding,
+                verdict,
+                text_of("proof"),
+                text_of("reason"),
+            )
+        }
+        "finding_contest" => {
+            let finding = input
+                .get("finding")
+                .and_then(Value::as_str)
+                .ok_or("missing `finding`")?;
+            let reason = input
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or("missing `reason`")?;
+            super::contest(app, agent.cid, finding, reason)
+        }
+        "finding_arbitrate" => {
+            if agent.role != crate::work_loop::PLANNER_ROLE {
+                return Err("only the planner rules on a contested finding".into());
+            }
+            let text_of = |key: &str| {
+                input
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("missing `{key}`"))
+            };
+            super::arbitrate(
+                app,
+                agent.cid,
+                text_of("run")?,
+                text_of("finding")?,
+                text_of("ruling")?,
+                text_of("reason")?,
             )
         }
         "recipe_propose" => {

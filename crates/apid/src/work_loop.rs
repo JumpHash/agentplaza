@@ -775,26 +775,12 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 );
                 return;
             }
-            // A code task lands first: its change joins the project's landing queue, and the landing finishes it.
-            if join_landing_queue(app, task_id) {
-                notice(
-                    app,
-                    &chat,
-                    &format!("Task {task_id} passed review: its change lands next."),
-                    now,
-                );
+            // The reviewer ran on another model than the builder (8.2): with the same one, the owner rules.
+            if let Some(gap) = seat_gap(app, task_id) {
+                ask_cross_model(app, task_id, &gap, now);
                 return;
             }
-            if let Some(t) = &task {
-                let _ = t.finish(FinishOutcome::Done, Some("passed review".into()));
-            }
-            close_task(app, task_id, now);
-            notice(
-                app,
-                &chat,
-                &format!("Task {task_id} is done: it passed review."),
-                now,
-            );
+            admit(app, task_id, now);
         }
         Next::Failed(why) => {
             if let Some(t) = &task {
@@ -852,6 +838,78 @@ fn landing_refusals(app: &App, task: &str, project: &str) -> Vec<String> {
         .filter_map(|file| file["unified"].as_str())
         .collect();
     crate::project_settings::land_refusals(&hooks, &unified.join("\n"))
+}
+
+/// The reviewer seat's model is the builder seat's: the gap, named. None when they differ, or a seat has no model yet.
+fn seat_gap(app: &App, task: &str) -> Option<String> {
+    let builder = app.seats.get(task, "builder")?.last_model?;
+    let reviewer = app.seats.get(task, "reviewer")?.last_model?;
+    (builder == reviewer)
+        .then(|| format!("the reviewer ran on {reviewer}, the builder's own model"))
+}
+
+/// The review passed and the change is admitted: it joins its project's landing queue, or the task is done at once
+/// when it has no lane. Its owner-approved admission (a cross-model card) and the review's pass both come here.
+pub fn admit(app: &App, task_id: &str, now: u64) {
+    let task = app.plaza.tasks.find(task_id);
+    let project = task
+        .as_ref()
+        .and_then(|t| t.project().map(str::to_string))
+        .unwrap_or_default();
+    let chat = task_chat(app, task_id, &project, now);
+    // A code task lands first: its change joins the project's landing queue, and the landing finishes it.
+    if join_landing_queue(app, task_id) {
+        notice(
+            app,
+            &chat,
+            &format!("Task {task_id} passed review: its change lands next."),
+            now,
+        );
+    } else {
+        if let Some(t) = &task {
+            let _ = t.finish(FinishOutcome::Done, Some("passed review".into()));
+        }
+        close_task(app, task_id, now);
+        notice(
+            app,
+            &chat,
+            &format!("Task {task_id} is done: it passed review."),
+            now,
+        );
+    }
+    app.bus
+        .publish("task", &serde_json::json!({ "id": task_id }));
+}
+
+/// The owner's card for a reviewer on the builder's own model: the task waits for the owner to admit it or fail it.
+fn ask_cross_model(app: &App, task: &str, gap: &str, now: u64) {
+    let Some(record) = app.plaza.tasks.find(task) else {
+        return;
+    };
+    let view = record.view();
+    let worker = view.agent_cid.unwrap_or(0);
+    let detail = serde_json::json!({
+        "gate": "cross_model",
+        "task": task,
+        "cid": worker,
+        "worker": app.agents.get(worker).map(|a| a.label()).unwrap_or_default(),
+        "goal": record.goal(),
+        "summary": gap,
+        "verdict": gap,
+        "needs_you": gap,
+        "readings": [],
+        "choices": ["pass", "fail"],
+    });
+    let item = app
+        .approvals
+        .submit(worker, "review", &format!("review of task {task}"), detail);
+    crate::approvals::announce(app, &item);
+    notice(
+        app,
+        &task_chat(app, task, record.project().unwrap_or_default(), now),
+        &format!("Task {task} waits for the owner: {gap}."),
+        now,
+    );
 }
 
 fn join_landing_queue(app: &App, task: &str) -> bool {
@@ -1498,6 +1556,11 @@ pub fn stop_task(app: &App, task_id: &str, why: &str, now: u64) {
 }
 
 /// The live long-lived session of `project` (its planner), if one runs.
+/// The planner session's VM of `project`, if it has a live one.
+pub fn planner_cid(app: &App, project: &str) -> Option<u64> {
+    planner_of(app, project).and_then(|s| s.cid)
+}
+
 fn planner_of(app: &App, project: &str) -> Option<Session> {
     app.sessions
         .list(&crate::sessions::Filter {
@@ -1525,7 +1588,7 @@ fn orchestrator_cid(app: &App) -> Option<u64> {
 }
 
 /// Sends `text` to `project`'s planner (or, until the project has one, to the orchestrator, naming the project).
-fn to_planner(app: &App, project: &str, text: &str) {
+pub fn to_planner(app: &App, project: &str, text: &str) {
     let (cid, prompt) = match planner_of(app, project) {
         Some(s) => (s.cid, text.to_string()),
         None => (orchestrator_cid(app), format!("[project {project}] {text}")),
