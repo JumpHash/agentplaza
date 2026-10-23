@@ -194,39 +194,6 @@ law "S-004c" "The orchestrator approves plans and merges below threshold" {
   when principal.role == "orchestrator" and context.budget <= context.threshold and not context.ambiguous
 }
 
-law "S-005a" "Departments may read audit logs" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Finance and Incident response may read audit logs."
-  permit audit.read
-  principal is Agent
-  resource is AuditLog
-  when principal.role == "finance" or principal.role == "incident"
-}
-
-law "S-005b" "Finance and Incident response may read usage" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Finance and Incident response may read the usage ledger (tokens, tool calls, VM time, spend)."
-  permit usage.read
-  principal is Agent
-  resource is UsageLedger
-  when principal.role == "finance" or principal.role == "incident"
-}
-
-law "S-005c" "Departments submit their own kind of report" {
-  tier statute
-  enforcement preventive
-  severity info
-  statement "Finance submits finance reports and detections of economic gaming, Incident response incident reports and detections."
-  permit report.submit
-  principal is Agent
-  resource is Report
-  when (principal.role == "finance" and (context.kind == "finance" or context.kind == "detection")) or (principal.role == "incident" and (context.kind == "incident" or context.kind == "detection")) 
-}
-
 law "S-005d" "Incident response may request per-case grants" {
   tier statute
   enforcement preventive
@@ -457,7 +424,7 @@ law "S-016d" "Edge operators submit device reports" {
   when principal.role == "edge-operator" and context.kind == "device"
 }
 
-// S-006: the breeder bundle, moved here from docs/codex-draft/statutes/S-006-breeder-bundle.cedar.
+// S-006: the breeder bundle.
 // Breeders may submit jobs up to 8 GPU-hours (S-006c) and are forbidden above that (S-006d).
 // Model agents take no tasks and no messages (S-006f, S-006g). invoke_model runs a model only where
 // its card allows the role (S-006e).

@@ -21,17 +21,13 @@ entity Agent "An agent with a Sigil (AP-035)" {
   field name: String
   field status: AgentStatus
   field role: String
-  field town: Town optional
   field predecessor: Agent optional
-  field reputation: Number computed "T, 0 to 1 (AP-072)"
   store "core.agents"
 }
 
-entity Town "A logical unit of agents (AP-047)" {
+entity Town "The plaza as a whole: the resource that plaza-wide laws name" {
   field id: Id<Town>
   field name: String
-  field template: String
-  store "core.towns"
 }
 
 entity Task "A unit of work with a budget (AP-029)" {
