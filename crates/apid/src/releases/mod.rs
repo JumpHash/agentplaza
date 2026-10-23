@@ -8,12 +8,19 @@
 //! - `channels.rs`: channels, their qualification depth and the store tracks they follow (22.3).
 //! - `lanes.rs`: release lines, backports with their own review, and the lines' queues (22.3).
 //! - `routes.rs`: `/v1/projects/{id}/releases`, `/v1/releases/{id}/…` and the backports.
+//! - `sbom.rs`, `attest.rs`, `signing.rs`: each artifact's CycloneDX SBOM, its in-toto provenance in a DSSE envelope,
+//!   and its platform signatures (9.3); publish verifies them all first.
 
+pub mod attest;
 pub mod channels;
 pub mod entity;
 pub mod flow;
 pub mod lanes;
 pub mod routes;
+pub mod sbom;
+#[cfg(test)]
+mod sign_tests;
+pub mod signing;
 #[cfg(test)]
 mod tests;
 pub mod versions;

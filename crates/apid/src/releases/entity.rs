@@ -64,12 +64,6 @@ pub struct Release {
     /// The release recipe's run (recipes/runs.rs): the latest attempt at the candidate.
     #[serde(default)]
     pub run: Option<String>,
-    /// The software bill of materials of the release (9.3; empty until then).
-    #[serde(default)]
-    pub sbom: String,
-    /// The release's SLSA provenance (9.3; empty until then).
-    #[serde(default)]
-    pub provenance: String,
     #[table(child = "release_change")]
     pub changes: Vec<ReleaseChange>,
     #[table(child = "release_artifact")]
@@ -96,8 +90,8 @@ pub struct ReleaseChange {
     pub review_run: Option<String>,
 }
 
-/// One artifact per target: the file Weft holds, its digest and size, its signatures, and the pool, base and run that
-/// built it (the pool is 7.5's placement; empty until a pool builds it).
+/// One artifact per target: the file Weft holds, its digest and size, its signatures, its SBOM and provenance, and the
+/// pool, base and run that built it (the pool is 7.5's placement; empty until a pool builds it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct ReleaseArtifact {
     #[table(key)]
@@ -106,9 +100,15 @@ pub struct ReleaseArtifact {
     pub artifact: String,
     pub digest: String,
     pub size: u64,
-    /// The signatures on the artifact, one line each (9.3).
+    /// The signatures on the artifact, one line each (`signing.rs`: the hub's, and the platform's).
     #[serde(default)]
     pub signatures: String,
+    /// The artifact's software bill of materials, a CycloneDX 1.5 document (`sbom.rs`).
+    #[serde(default)]
+    pub sbom: String,
+    /// The artifact's provenance: an in-toto statement in a DSSE envelope the hub signed (`attest.rs`).
+    #[serde(default)]
+    pub provenance: String,
     #[serde(default)]
     pub pool: String,
     #[serde(default)]

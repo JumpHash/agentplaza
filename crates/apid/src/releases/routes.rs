@@ -20,11 +20,13 @@
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
+use weft::keys::KeyPair;
 
 use super::channels;
 use super::entity::Release;
 use super::flow::{self, Builder, Cut, Deps, NoPools};
 use super::lanes::{self, Agents};
+use super::signing::{Notary, Signing, StandInNotary};
 use crate::state::App;
 
 fn deps(app: &App) -> Deps<'_> {
@@ -33,6 +35,28 @@ fn deps(app: &App) -> Deps<'_> {
         runs: &app.recipe_runs,
         reviews: &app.reviews,
         releases: &app.releases,
+        signing: app,
+    }
+}
+
+/// The release step's keys (9.3): the hub's key is Weft's own, and the stand-in platform keys are kept in the vault
+/// beside it (made on first use). Only the release step reads them (`releases::signing`).
+impl Signing for App {
+    fn hub(&self) -> Result<KeyPair, String> {
+        crate::weft_hub::hub_key(self)
+    }
+
+    fn platform(&self, scheme: &str) -> Result<KeyPair, String> {
+        let (name, label) = match scheme {
+            "apksigner-standin" => ("RELEASE_ANDROID_KEY", "Android signing key (stand-in)"),
+            "authenticode-standin" => ("RELEASE_WINDOWS_KEY", "Windows signing key (stand-in)"),
+            other => return Err(format!("no key for the signature scheme {other}")),
+        };
+        crate::weft_hub::key(self, name, label)
+    }
+
+    fn notary(&self) -> &dyn Notary {
+        &StandInNotary
     }
 }
 

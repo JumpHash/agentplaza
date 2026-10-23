@@ -153,7 +153,7 @@ pub fn owner_key_path(_app: &App) -> PathBuf {
 static KEY_MAKING: Mutex<()> = Mutex::new(());
 
 /// A key the vault keeps (made on first use); a file in the state folder while the vault is sealed or absent.
-fn key(app: &App, name: &str, label: &str) -> Result<KeyPair, String> {
+pub(crate) fn key(app: &App, name: &str, label: &str) -> Result<KeyPair, String> {
     let _making = KEY_MAKING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(hex) = app
         .vault
