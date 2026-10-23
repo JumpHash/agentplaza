@@ -199,6 +199,9 @@ struct Hello {
     /// The harness's features (`acp`); absent from a harness from before v4.
     #[serde(default)]
     caps: Vec<String>,
+    /// The session's kind (`base` for a base build's VM); absent for an agent.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -250,6 +253,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 let hello: Hello = req
                     .json()
                     .map_err(|e| Response::error(400, &e.to_string()))?;
+                // A base build's VM is no agent: apid notes that it is up, and the build's steps go to it.
+                if hello.kind.as_deref() == Some(apz_proto::wire::KIND_BASE) {
+                    crate::base_vm::arrive(cid);
+                    return Ok(Response::json(
+                        200,
+                        &json!({ "profile": null, "policy": null }),
+                    ));
+                }
                 let profile = crate::agents::hello(app, cid, &hello.role, hello.vm, &hello.caps);
                 // The session's first policy: the VM sends it right after its welcome.
                 let policy = crate::policy::at_hello(app, cid);
@@ -562,6 +573,25 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
 /// One v3 guest line from agent `cid`; the reply for the guest, if any.
 // contract
 pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage> {
+    // A base build's command answered: the step waiting for it takes the answer (base_vm.rs), and nothing is sent back.
+    if let GuestMessage::ExecResult {
+        id,
+        ok,
+        exit_code,
+        output,
+    } = message
+    {
+        crate::base_vm::answer(
+            cid,
+            id,
+            crate::base_vm::Answer {
+                ok,
+                exit_code,
+                output,
+            },
+        );
+        return None;
+    }
     let Some(agent) = app.agents.get(cid) else {
         return match message {
             GuestMessage::ModelCall { req, .. } => Some(HostMessage::ModelResult {

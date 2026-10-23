@@ -128,6 +128,27 @@ pub fn pick(candidates: &[Candidate]) -> Option<String> {
     best.map(|(_, candidate)| candidate.node.clone())
 }
 
+/// The node a base build of `project` runs its VM on, in `pool` (`any` for a project that declares none), with the
+/// `needs` volumes (base_recipe.rs). The node that holds the project's base is preferred, as a fork's is (3.5). The
+/// node's room is reserved, as a new agent's is.
+pub fn base_node(app: &App, project: &str, pool: &str, needs: &[&str]) -> Option<String> {
+    let declared = declared_pools(app, project);
+    let needs: Vec<String> = needs.iter().map(|volume| volume.to_string()).collect();
+    let candidates: Vec<Candidate> = candidates(app, "", &needs, Some(project))
+        .into_iter()
+        .filter(|candidate| {
+            pool == "any"
+                || candidate
+                    .pool
+                    .as_ref()
+                    .is_some_and(|p| format!("{}-{}", p.arch, p.hypervisor) == pool)
+        })
+        .collect();
+    let chosen = fork_node(candidates, &declared)?;
+    reserve(&chosen);
+    Some(chosen)
+}
+
 /// The key of the base a project's forks start from (16.1): the project's `build` base. A node that holds it
 /// reports it among its `bases` (17.1).
 pub fn base_key(project: &str) -> String {
@@ -324,9 +345,21 @@ struct Facts {
     idle_cpus: Option<u64>,
 }
 
-/// A node's facts (17.1): `n0`'s from noded's machine view and stats asked now, a joined node's from its last
-/// heartbeat. Empty when they did not answer, so the node has no base and an unknown disk.
+/// A node's facts (17.1): what it reported (see [`reported_facts_of`]), and the bases the builds on this hub held on it
+/// (base_vm.rs), which a node's own report does not list.
 fn facts_of(app: &App, node: &str) -> Facts {
+    let mut facts = reported_facts_of(app, node);
+    for key in crate::base_vm::held_on(node) {
+        if !facts.bases.contains(&key) {
+            facts.bases.push(key);
+        }
+    }
+    facts
+}
+
+/// A node's facts as it reported them (17.1): `n0`'s from noded's machine view and stats asked now, a joined node's from
+/// its last heartbeat. Empty when they did not answer, so the node has no base and an unknown disk.
+fn reported_facts_of(app: &App, node: &str) -> Facts {
     if node == LOCAL {
         let machine = fleet::noded(app, LOCAL, "GET", "/v1/machine", None);
         let stats = fleet::noded(app, LOCAL, "GET", "/v1/machine/stats", None);

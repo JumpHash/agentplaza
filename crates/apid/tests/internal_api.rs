@@ -401,3 +401,30 @@ fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
         "{transcript}"
     );
 }
+
+/// A base build's VM says hello as the base session it is (`kind` base): apid registers no agent for it and answers with
+/// no profile, and its exec answers need no reply (PLAN 16.4).
+#[test]
+fn a_base_builds_vm_says_hello_as_a_base_and_its_answers_need_no_reply() {
+    let scratch = Scratch::new("internal-base-hello");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 430;
+
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": "", "vm": 0, "kind": "base" }));
+    assert_eq!(status, 200, "{body}");
+    assert!(body["profile"].is_null(), "{body}");
+    assert!(body["policy"].is_null(), "{body}");
+    let (status, agents) = hub.call("GET", "/v1/agents", None);
+    assert_eq!(status, 200, "{agents}");
+    assert!(
+        !agents.to_string().contains(&format!("\"cid\":{cid}")),
+        "a base is not an agent: {agents}"
+    );
+
+    let reply = message(
+        &hub,
+        cid,
+        json!({ "type": "exec_result", "id": 1, "ok": true, "exit_code": 0, "output": "" }),
+    );
+    assert!(reply["reply"].is_null(), "{reply}");
+}

@@ -38,6 +38,7 @@ use serde_json::{Value, json};
 
 use crate::acp::hub::HubLink;
 use crate::bash;
+use crate::exec;
 use crate::files::{self, Workspace};
 use crate::lane::{Duplex, Inbound, OPERATOR_EXPIRY, Shared, read_host, serve_operators};
 use crate::session::{SessionError, escape_for_transcript, kind_of};
@@ -401,9 +402,11 @@ pub fn serve<S: Duplex, W: Write + Send>(
     let baseline = sample_processes(Path::new(PROC_DIR));
     let (inbox_tx, inbox_rx) = mpsc::channel();
     let (operator_tx, operator_rx) = mpsc::channel();
+    let (exec_tx, exec_rx) = mpsc::channel();
     let shared_ref = &shared;
     let outcome = thread::scope(|scope| {
-        scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx));
+        scope.spawn(move || read_host(lines, shared_ref, inbox_tx, operator_tx, exec_tx));
+        scope.spawn(move || exec::serve(exec_rx, shared_ref, workspace));
         scope.spawn(move || {
             let exec = |name: &str, args: &Value| match name {
                 "read" | "edit" | "find" | "search" | "run" | "run_tests" => {
@@ -2030,6 +2033,7 @@ mod tests {
             &IDENTITY,
             workspace,
             Some("builder"),
+            None,
             HEARTBEAT,
         );
         drop(guest);

@@ -69,6 +69,8 @@ mod engines;
 #[cfg(target_os = "linux")]
 mod envd;
 #[cfg(target_os = "linux")]
+mod exec;
+#[cfg(target_os = "linux")]
 mod files;
 #[cfg(target_os = "linux")]
 mod ide;
@@ -423,6 +425,7 @@ fn keepalive_once(
         &identity,
         &workspace,
         config.role.as_deref(),
+        config.kind.as_deref(),
         keepalive::heartbeat_interval(),
     )
     .map_err(|failure| {
