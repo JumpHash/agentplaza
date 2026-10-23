@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::graph::Cond;
+use crate::user_test::target::StandIn;
 
 /// Where a recipe applies: the built-ins, a project's own, or every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +119,75 @@ pub struct Step {
     /// For a fixed fan-out: how many more items a large or risky change runs (8.2: a third sceptic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<Risk>,
+    /// A `test:user` step's configuration (PLAN 19): its three roles' models, the target and the budgets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<UserTest>,
+}
+
+/// The engine of a step that runs user tests of a change (PLAN 19.1).
+pub const USER_TEST: &str = "test:user";
+
+/// A `test:user` step's configuration: the models of its three roles, the target its scenarios drive and the budgets.
+/// The models are `provider/model` names (the gateway's).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserTest {
+    /// The planner: writes the scenarios from the acceptance, the past confirmed findings and an exploratory budget,
+    /// and reads each failure.
+    pub planner: String,
+    /// The driver's fast picker, and the stronger model it escalates to with a screenshot.
+    pub driver: String,
+    pub escalate: String,
+    /// The checker: looks at checkpoints, and at screens the target gives no tree for.
+    pub checker: String,
+    /// The target the scenarios drive. Without one the step is not run (it fails, and says why).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stand_in: Option<StandIn>,
+    /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance: Vec<String>,
+    /// Below this confidence the fast pick escalates (0 to 1).
+    #[serde(default = "threshold")]
+    pub threshold: f64,
+    /// Most actions one scenario step takes.
+    #[serde(default = "actions")]
+    pub actions: u32,
+    /// Most exploratory scenarios the planner may add.
+    #[serde(default)]
+    pub exploratory: u32,
+}
+
+fn threshold() -> f64 {
+    0.6
+}
+
+fn actions() -> u32 {
+    8
+}
+
+impl UserTest {
+    /// The configuration must make sense before a run starts on it.
+    pub fn check(&self) -> Result<(), String> {
+        for (role, model) in [
+            ("planner", &self.planner),
+            ("driver", &self.driver),
+            ("escalate", &self.escalate),
+            ("checker", &self.checker),
+        ] {
+            if !model.contains('/') {
+                return Err(format!("the {role} is a provider/model name, not {model}"));
+            }
+        }
+        if !(self.threshold > 0.0 && self.threshold <= 1.0) {
+            return Err("the driver's threshold is between 0 and 1".into());
+        }
+        if self.actions == 0 {
+            return Err("a scenario step takes at least one action".into());
+        }
+        match &self.stand_in {
+            Some(stand) => stand.check(),
+            None => Ok(()),
+        }
+    }
 }
 
 /// What makes a change large or risky: more than `lines` changed lines, or a path one of `paths` matches. Then the
@@ -251,6 +321,22 @@ impl Recipe {
             }
             for condition in step.gate_conditions() {
                 Cond::parse(&condition).map_err(|e| format!("step {} gate: {e}", step.id))?;
+            }
+            match (step.engine.as_deref() == Some(USER_TEST), &step.user) {
+                (true, Some(user)) => user.check().map_err(|e| format!("step {}: {e}", step.id))?,
+                (true, None) => {
+                    return Err(format!(
+                        "step {} is a test:user step with no [user] table",
+                        step.id
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(format!(
+                        "step {}: a [user] table is for test:user steps",
+                        step.id
+                    ));
+                }
+                (false, None) => {}
             }
         }
         for edge in &self.edges {

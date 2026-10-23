@@ -21,6 +21,7 @@
 pub mod recipe;
 pub mod routes;
 pub mod tools;
+pub mod user;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
