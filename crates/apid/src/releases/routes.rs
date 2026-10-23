@@ -34,7 +34,7 @@ use super::lanes::{self, Agents, Chain};
 use super::signing::{Notary, Signing, StandInNotary};
 use crate::state::App;
 
-fn deps(app: &App) -> Deps<'_> {
+pub(crate) fn deps(app: &App) -> Deps<'_> {
     Deps {
         weft: &app.weft,
         runs: &app.recipe_runs,
@@ -76,7 +76,7 @@ impl Agents for AppAgents<'_> {
 
 /// The production review chain of a backport (4.2): a plaza task claimed by its worker and bound to the change on the
 /// line, which `review_graph::start` reviews like any landing change.
-struct AppChain<'a>(&'a App);
+pub(crate) struct AppChain<'a>(pub(crate) &'a App);
 
 impl Chain for AppChain<'_> {
     fn task(&self, project: &str, title: &str, worker: u64) -> Result<String, String> {
@@ -329,14 +329,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             let Some(notes) = v["notes"].as_str() else {
                 return Response::error(400, "the notes are a string");
             };
-            let stamp = apz_plaza::now_ms();
-            match app.releases.update(p.get("id"), |r| {
-                r.notes = notes.to_string();
-                r.updated_ms = stamp;
-            }) {
-                Some(release) => Response::json(200, &release),
-                None => Response::error(404, "no such release"),
-            }
+            answer(flow::notes(&deps(app), p.get("id"), notes))
         })
         .doc(
             RouteDoc::new("Edit a release's notes; the platforms get them on the next sync")

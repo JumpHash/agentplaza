@@ -332,7 +332,7 @@ fn an_artifact_too_large_to_attach_is_linked_from_the_notes() {
     );
     let body = created["body"].as_str().unwrap();
     assert!(
-        body.contains("## Assets") && body.contains("https://hub.example/artifacts/d1"),
+        body.contains("## Assets") && body.contains("https://hub.example/artifacts/a-1/content"),
         "{body}"
     );
     assert!(

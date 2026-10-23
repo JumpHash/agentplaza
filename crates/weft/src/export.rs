@@ -317,7 +317,7 @@ impl Exporter {
         let mut objects: Vec<(Oid, Kind, Vec<u8>)> = Vec::new();
         let mut per_change: Vec<(String, Vec<ExportedCommit>)> = Vec::new();
         for l in &chain[start..] {
-            let (change, rev, intents) = {
+            let (change, rev, intents, review) = {
                 let st = store.state();
                 let rev = st
                     .revisions
@@ -335,7 +335,8 @@ impl Exporter {
                     .cloned()
                     .or_else(|| c.intents.values().last().cloned())
                     .unwrap_or_default();
-                (c, rev, intents)
+                let review = crate::history::review_run_of(&st, &c);
+                (c, rev, intents, review)
             };
             if change.import.is_some() {
                 return self.moved(store, &mut report, &format!("{} is an imported commit the remote does not have; push the imported history first", change.name));
@@ -373,7 +374,7 @@ impl Exporter {
                 author: who.clone(),
                 committer: who,
                 extra: vec![],
-                message: landing_message(&change.title, &intents),
+                message: landing_message(&change.title, &intents, review.as_deref()),
             };
             let unsigned = git::write_commit(&commit, None);
             let bytes = match keys.signing {
@@ -647,7 +648,7 @@ fn landed_change(st: &State, rev: &str) -> Option<u64> {
 
 /// A landing's commit message (22.4): its summary line is the change's title, then each intent with its summary.
 /// No agent names and no credit lines (W13).
-pub fn landing_message(title: &str, intents: &[IntentDef]) -> String {
+pub fn landing_message(title: &str, intents: &[IntentDef], review: Option<&str>) -> String {
     let mut out = format!("{}\n", title.trim());
     if !intents.is_empty() {
         out.push('\n');
@@ -657,6 +658,10 @@ pub fn landing_message(title: &str, intents: &[IntentDef]) -> String {
                 out.push_str(&format!("  {line}\n"));
             }
         }
+    }
+    // The review that checked the landing (its gate, signed by the hub), as a trailer.
+    if let Some(run) = review {
+        out.push_str(&format!("\nReview-Run: {run}\n"));
     }
     out
 }

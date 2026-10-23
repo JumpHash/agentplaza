@@ -54,6 +54,8 @@ pub struct Release {
     pub exports: Vec<ReleaseExport>,
     /// Its life as its statements made it (22.2).
     pub life: ReleaseLife,
+    /// Whether the owner edited its notes (`release.notes`): the edited notes are the release's from then on.
+    pub notes_edited: bool,
 }
 
 /// A verdict on a release (`release.verdict`).
@@ -275,6 +277,7 @@ const HUB_KINDS: &[&str] = &[
     "release.promote",
     "release.yank",
     "release.lane",
+    "release.notes",
 ];
 
 /// The digest of a revision: its base and its deltas.
@@ -1236,6 +1239,7 @@ impl State {
                             proposed_seq: seq,
                             signed: None,
                             exports: vec![],
+                            notes_edited: false,
                             life: ReleaseLife {
                                 state: "draft".into(),
                                 ..ReleaseLife::default()
@@ -1484,6 +1488,17 @@ impl State {
                     let life = &mut self.release_mut(&m.repo, &m.version)?.life;
                     life.state = "yanked".into();
                     life.yanked = Some((m.reason, seq));
+                }
+                s
+            }
+            "release.notes" => {
+                let m: ReleaseNotes = parse(&stmt.body, kind)?;
+                self.release(&m.repo, &m.version)?;
+                let s = format!("{} {} notes edited", m.repo, m.version);
+                if !dry {
+                    let r = self.release_mut(&m.repo, &m.version)?;
+                    r.propose.notes = m.notes;
+                    r.notes_edited = true;
                 }
                 s
             }

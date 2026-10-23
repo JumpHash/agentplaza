@@ -12,6 +12,7 @@ use crate::export::landing_message;
 use crate::hash::Hash;
 use crate::model::RevId;
 use crate::state::ChangeState;
+use crate::state::{Change, State};
 use crate::store::{Store, tree_hash};
 
 /// A landing's content id: its revision, its tree and the landing before it (`l-` and 16 hex digits).
@@ -22,6 +23,18 @@ pub fn content_id(rev: &str, tree: &Hash, parent: Option<&str>) -> String {
         parent.unwrap_or("root").as_bytes(),
     ]);
     format!("l-{}", &h.hex()[..16])
+}
+
+/// The review run that checked a change: the run its last gate record names (the hub signs the gate when a review
+/// settles). None until a review has settled.
+pub fn review_run_of(st: &State, change: &Change) -> Option<String> {
+    change
+        .records
+        .iter()
+        .rev()
+        .filter_map(|s| st.records.get(s))
+        .find(|r| r.attest.predicate_type == "gate")
+        .and_then(|r| r.attest.predicate["run"].as_str().map(str::to_string))
 }
 
 /// The history of `reference` in `repo`: its landings oldest first, and its lanes.
@@ -80,9 +93,10 @@ pub fn view(store: &Store, repo: &str, reference: &str) -> Result<Value, String>
             "intents": intents.iter().map(|i| json!({ "title": i.title, "summary": i.summary, "kind": i.kind })).collect::<Vec<_>>(),
             "author": author,
             "time_ms": revision.at_ms,
+            "review_run": review_run_of(&st, change),
             "message": match &change.import {
                 Some(i) => i.message.clone(),
-                None => landing_message(&change.title, &intents),
+                None => landing_message(&change.title, &intents, review_run_of(&st, change).as_deref()),
             },
             "exported": exported,
             "records": change.records.iter().filter_map(|s| st.records.get(s)).map(|r| json!({ "seq": r.seq, "at_ms": r.at_ms, "actor": r.actor, "key_id": r.key_id, "attest": r.attest })).collect::<Vec<_>>(),

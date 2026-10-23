@@ -529,8 +529,23 @@ pub fn export_all(app: &App, repo: &str) {
     }
 }
 
-/// The commits a mirror's remote received on its own become a lane (Weft's adopt, 22.4): the lane is queued, and the
-/// project's chat is told. The owner's landing gate (the queue) decides when it lands.
+/// An adoption on its way (21.6): the change Weft made of a remote's own commits, its project and title, and whether its
+/// review has opened.
+#[derive(Clone)]
+struct Adoption {
+    repo: String,
+    change: String,
+    project: String,
+    title: String,
+    opened: bool,
+}
+
+/// The adoptions not landed yet.
+static ADOPTIONS: std::sync::Mutex<Vec<Adoption>> = std::sync::Mutex::new(Vec::new());
+
+/// The commits a mirror's remote received on its own become a lane (Weft's adopt, 22.4). The lane goes through the review
+/// chain like any lane (`adoptions_tick` opens its review and lands it once the review passed), and the project's chat
+/// is told.
 fn adopt_remote(app: &App, repo: &str, connection: &str, token: Option<String>) {
     let report = match app.weft.post(
         &format!("/repos/{repo}/adopt"),
@@ -542,35 +557,96 @@ fn adopt_remote(app: &App, repo: &str, connection: &str, token: Option<String>) 
     let Some(change) = report["change"].as_str().map(str::to_string) else {
         return;
     };
-    if let Err(e) = app.weft.hub(
-        "queue.add",
-        json!({ "repo": repo, "ref": "main", "change": change, "n": 1 }),
-    ) {
-        eprintln!("apid: queueing the adoption {change} of {repo}: {e}");
-    }
-    if let Some(project) = crate::github_modes::project_of(app, repo) {
-        let now = apz_plaza::now_ms();
-        let chat = match app.chats.list(Some(&project.id), false).first() {
-            Some(c) => c.id.clone(),
-            None => app.chats.open_project(&project.id, "Adoption", now).id,
+    let Some(project) = crate::github_modes::project_of(app, repo) else {
+        return eprintln!("apid: {repo} has no project to review its adoption {change}");
+    };
+    let commits = report["commits"].as_array().map(Vec::len).unwrap_or(0);
+    ADOPTIONS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(Adoption {
+            repo: repo.to_string(),
+            change: change.clone(),
+            project: project.id.clone(),
+            title: format!("Adopt {commits} commit(s) from the remote"),
+            opened: false,
+        });
+    let now = apz_plaza::now_ms();
+    let chat = match app.chats.list(Some(&project.id), false).first() {
+        Some(c) => c.id.clone(),
+        None => app.chats.open_project(&project.id, "Adoption", now).id,
+    };
+    let text = format!(
+        "The remote received {commits} commit(s) on its own. They are adopted as {change}: reviewed through the review chain, and they land when the review passes."
+    );
+    app.chats.post(
+        &chat,
+        crate::chats::Post {
+            author: crate::chats::Author::System,
+            session: None,
+            seat: None,
+            kind: crate::chats::MessageKind::Notice,
+            text,
+            card: None,
+            attachments: vec![],
+        },
+        now,
+    );
+    adoptions_tick(app);
+}
+
+/// Moves the adoptions along (21.6). An adoption's review opens through the chain once the planner runs (its task is
+/// bound to the change, as a backport's is), and the change lands once that review passed. An adoption that landed, or
+/// whose review did not pass, leaves the list. The scheduler calls it on each pass.
+pub fn adoptions_tick(app: &App) {
+    let pending: Vec<Adoption> = ADOPTIONS.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    for a in pending {
+        let finished = if !a.opened {
+            match crate::work_loop::planner_cid(app, &a.project) {
+                Some(planner) => {
+                    let chain = crate::releases::routes::AppChain(app);
+                    match crate::releases::lanes::review_adoption(
+                        &chain, &a.project, &a.change, planner, &a.title,
+                    ) {
+                        Ok(_) => {
+                            let mut list = ADOPTIONS.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(x) = list.iter_mut().find(|x| x.change == a.change) {
+                                x.opened = true;
+                            }
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "apid: {}: the review of {} did not open: {e}",
+                                a.repo, a.change
+                            );
+                            false
+                        }
+                    }
+                }
+                None => false,
+            }
+        } else {
+            match crate::releases::lanes::land_backport(
+                &crate::releases::routes::deps(app),
+                &a.change,
+            ) {
+                Ok(_) => true,
+                Err(e) if e.contains("not passed yet") || e.contains("waits for the owner") => {
+                    false
+                }
+                Err(e) => {
+                    eprintln!("apid: {}: adopted {} did not land: {e}", a.repo, a.change);
+                    true
+                }
+            }
         };
-        let commits = report["commits"].as_array().map(Vec::len).unwrap_or(0);
-        let text = format!(
-            "The remote received {commits} commit(s) on its own. They are adopted as {change}: queued like any change, and they land when its review and checks pass."
-        );
-        app.chats.post(
-            &chat,
-            crate::chats::Post {
-                author: crate::chats::Author::System,
-                session: None,
-                seat: None,
-                kind: crate::chats::MessageKind::Notice,
-                text,
-                card: None,
-                attachments: vec![],
-            },
-            now,
-        );
+        if finished {
+            ADOPTIONS
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|x| x.change != a.change);
+        }
     }
 }
 

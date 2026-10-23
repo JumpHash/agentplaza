@@ -335,6 +335,31 @@ fn land(
     }
 }
 
+/// A push to GitHub's repository `full_name` (`owner/name`): every `ci` project whose GitHub connection is that repository
+/// imports its main now, instead of on the next poll (21.6). Returns the repos it imported.
+pub fn on_push(app: &App, full_name: &str) -> Vec<String> {
+    let mut done = Vec::new();
+    for project in app.projects.list() {
+        if project.github != CI {
+            continue;
+        }
+        let Some(repo) = project.repo.clone() else {
+            continue;
+        };
+        let Ok(t) = target(app, &repo) else {
+            continue;
+        };
+        if format!("{}/{}", t.owner, t.name) != full_name {
+            continue;
+        }
+        match poll(app, &repo) {
+            Ok(()) => done.push(repo),
+            Err(e) => eprintln!("apid: importing {repo}'s main after a push: {e}"),
+        }
+    }
+    done
+}
+
 /// Imports what landed on a `ci` repo's GitHub main since the last import (the catch-up pass polls for it).
 pub fn poll(app: &App, repo: &str) -> Result<(), String> {
     let t = target(app, repo)?;

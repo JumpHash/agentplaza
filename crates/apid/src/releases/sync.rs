@@ -31,8 +31,8 @@ pub struct Target {
 }
 
 /// What a sync reads of the world: the release, the commit its tag names, the artifacts' bytes by digest, where a
-/// too-large artifact can be downloaded (none: its entry says it was not attached), and the size above which
-/// artifacts are linked.
+/// too-large artifact can be downloaded (the address up to the artifact's id, `…/{artifact}/content`; none: its entry
+/// says it was not attached), and the size above which artifacts are linked.
 pub struct Input<'a> {
     pub release: &'a Release,
     pub commit: &'a str,
@@ -88,7 +88,7 @@ fn body(rel: &Release, link_base: Option<&str>, asset_limit: u64) -> String {
         out.push_str("\n## Assets\n\n");
         for a in big {
             let place = match link_base {
-                Some(base) => format!("{base}/{}", a.digest),
+                Some(base) => format!("{base}/{}/content", a.artifact),
                 None => "not attached: too large for a release asset".to_string(),
             };
             out.push_str(&format!(
@@ -265,6 +265,9 @@ pub fn sync_release(app: &crate::state::App, id: &str) -> Result<Release, String
     let now = apz_plaza::now_ms();
     let mut rows = Vec::new();
     let mut touched: Vec<&str> = Vec::new();
+    // The hub's artifact download route, under its public address: a platform's link to an artifact too large to attach.
+    let public = app.config.public_url.trim_end_matches('/');
+    let link_base = (!public.is_empty()).then(|| format!("{public}/v1/weft/artifacts"));
     for c in detail["connections"].as_array().into_iter().flatten() {
         let Some(kind) = kind_of(c["platform"].as_str().unwrap_or("")) else {
             continue;
@@ -295,7 +298,7 @@ pub fn sync_release(app: &crate::state::App, id: &str) -> Result<Release, String
                 release: &rel,
                 commit: &commit,
                 bytes: &bytes,
-                link_base: None,
+                link_base: link_base.as_deref(),
                 asset_limit: ASSET_LIMIT,
             };
             let target = Target {

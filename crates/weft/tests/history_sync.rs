@@ -399,3 +399,92 @@ fn the_history_reads_each_landing_as_a_commit() {
     assert_eq!(lanes[0]["base"], landings[1]["id"]);
     std::fs::remove_dir_all(&p.dir).ok();
 }
+
+#[test]
+fn a_landing_names_the_review_that_checked_it() {
+    if !have_git() {
+        eprintln!("git is not installed: skipped");
+        return;
+    }
+    let p = plaza("history-review", &[]);
+    p.add_packs(&["rust", "markdown"]);
+    let derived = Derived::new(p.dir.join("derived"));
+    let lander = Lander::default();
+    let exporter = Exporter::default();
+    let signing = KeyPair::generate();
+    let (remote, _url) = connected(&p);
+    let keys = || Keys {
+        token: None,
+        signing: Some(&signing),
+    };
+    let change = one_lane(
+        &p,
+        "t1",
+        107,
+        "Greet the reader",
+        "src/greet.rs",
+        "pub fn greet() {}\n",
+    );
+    land_all(&p, &derived, &lander);
+
+    // The hub signs the gate of the review that checked the landed revision.
+    let (rev, digest) = {
+        let st = p.store.state();
+        let landed = st.change(&change).unwrap().landed.clone().unwrap();
+        (landed.clone(), st.revisions[&landed].digest)
+    };
+    p.hub_says(
+        "attest",
+        json!({ "revision": rev, "digest": digest, "predicate_type": "gate", "predicate": { "run": "rv7", "outcome": "passed" } }),
+    )
+    .unwrap();
+    exporter
+        .export(&p.store, "app", "origin", keys(), false)
+        .unwrap();
+
+    let message = git(&remote, &["log", "-n", "1", "--format=%B"]);
+    assert!(message.lines().any(|l| l == "Review-Run: rv7"), "{message}");
+    let view = weft::history::view(&p.store, "app", "main").unwrap();
+    let landings = view["landings"].as_array().unwrap();
+    assert_eq!(landings[2]["review_run"], "rv7");
+    assert!(
+        landings[0]["review_run"].is_null(),
+        "an imported landing was not reviewed here"
+    );
+}
+
+#[test]
+fn a_release_note_edit_is_a_statement_that_survives_a_replay() {
+    if !have_git() {
+        eprintln!("git is not installed: skipped");
+        return;
+    }
+    let p = plaza("history-notes", &[]);
+    connected(&p);
+    let proposal = weft::release::proposal(&p.store, "app", "v0.1.0", None, None).unwrap();
+    p.hub_says("release.propose", proposal).unwrap();
+    p.hub_says(
+        "release.notes",
+        json!({ "repo": "app", "version": "v0.1.0", "notes": "Edited by the owner.\n" }),
+    )
+    .unwrap();
+    assert_eq!(
+        p.store.state().repos["app"].releases["v0.1.0"]
+            .propose
+            .notes,
+        "Edited by the owner.\n"
+    );
+    // A replay of the log (the store opened again from its folder) has the edit too.
+    let dir = p.dir.clone();
+    let hub = KeyPair::from_hex(&p.hub_seed).unwrap();
+    drop(p);
+    let reopened = weft::store::Store::open(&dir, Some(hub)).unwrap();
+    assert_eq!(
+        reopened.state().repos["app"].releases["v0.1.0"]
+            .propose
+            .notes,
+        "Edited by the owner.\n"
+    );
+    reopened.verify_deep().unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+}
