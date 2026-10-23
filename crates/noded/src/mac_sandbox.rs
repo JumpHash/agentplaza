@@ -743,6 +743,7 @@ mod tests {
     use std::time::Duration;
 
     /// The Seatbelt wrapper a session runs under (apz-sandbox's macOS backend).
+    #[cfg(target_os = "macos")]
     const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
     fn scratch(name: &str) -> PathBuf {
@@ -753,6 +754,7 @@ mod tests {
     }
 
     /// A session of `root` with a warm DerivedData and an Xcode bundle of its own under `root`.
+    #[cfg(target_os = "macos")]
     fn session_fixture(root: &Path) -> (Session, PathBuf) {
         let bundle = root.join("Xcode_test.app");
         let developer = bundle.join("Contents/Developer");
@@ -1243,12 +1245,14 @@ mod tests {
     }
 
     /// A spawner that records each line it starts and hands out pids, or refuses every start.
+    #[cfg(target_os = "macos")]
     struct FakeSpawner {
         pid: u32,
         lines: Vec<Invocation>,
         refuse: bool,
     }
 
+    #[cfg(target_os = "macos")]
     impl Spawner for FakeSpawner {
         fn spawn(&mut self, line: &Invocation) -> io::Result<u32> {
             if self.refuse {

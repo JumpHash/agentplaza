@@ -30,6 +30,10 @@
 //! [[targets]]
 //! name = "web"
 //! kind = "preview"
+//!
+//! [[targets]]                   # a build target: the platform a release builds (20.5)
+//! name = "linux-x86_64"
+//! platform = "linux-x86_64"
 //! ```
 
 use std::collections::{BTreeMap, HashSet};
@@ -39,6 +43,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::state::App;
+use crate::targets;
 
 /// Where a project's declaration lives in its repo.
 pub const FILE: &str = ".plaza/project.toml";
@@ -157,12 +162,16 @@ impl Hypervisor {
     }
 }
 
-/// A target: a place a change is previewed or tried by hand, and the kind of base that serves it.
+/// A target: a place a change is previewed or tried by hand (`kind`, and the kind of base that serves it), or a platform
+/// a release builds it for (`platform`, PLAN 20.5). A target names one or both.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub name: String,
-    pub kind: TargetKind,
+    #[serde(default)]
+    pub kind: Option<TargetKind>,
+    #[serde(default)]
+    pub platform: Option<targets::Platform>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -217,6 +226,14 @@ impl Stack {
             }
             if service.command.is_empty() {
                 return Err(format!("{FILE}: service {} has no command", service.name));
+            }
+        }
+        for target in &self.targets {
+            if target.kind.is_none() && target.platform.is_none() {
+                return Err(format!(
+                    "{FILE}: target {} names neither a kind nor a platform",
+                    target.name
+                ));
             }
         }
         let commands = self
@@ -318,7 +335,7 @@ kind = "preview"
                 hypervisor: Hypervisor::Kvm
             }]
         );
-        assert_eq!(stack.targets[0].kind, TargetKind::Preview);
+        assert_eq!(stack.targets[0].kind, Some(TargetKind::Preview));
         assert_eq!(stack.build, Build::default());
     }
 
@@ -346,6 +363,12 @@ kind = "preview"
         assert!(parse("[toolchains]\nruby = \"3\"\n").is_err());
         assert!(parse("[[pools]]\narch = \"sparc\"\nhypervisor = \"kvm\"\n").is_err());
         assert!(parse("[[targets]]\nname = \"w\"\nkind = \"sandbox\"\n").is_err());
+        assert!(
+            parse("[[targets]]\nname = \"w\"\n").is_err(),
+            "a target names a kind or a platform"
+        );
+        assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"linux-x86_64\"\n").is_ok());
+        assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"solaris-sparc\"\n").is_err());
     }
 
     #[test]

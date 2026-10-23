@@ -289,6 +289,7 @@ pub fn builtin() -> Vec<Recipe> {
         include_str!("builtin/ci.toml"),
         include_str!("builtin/base.toml"),
         include_str!("builtin/distill.toml"),
+        include_str!("builtin/release.toml"),
     ]
     .iter()
     .map(|t| Recipe::parse(t).expect("a built-in recipe parses"))
@@ -359,7 +360,7 @@ max = 2
     #[test]
     fn the_built_in_recipes_check_and_round_trip() {
         let recipes = builtin();
-        assert_eq!(recipes.len(), 5);
+        assert_eq!(recipes.len(), 6);
         for r in recipes {
             r.check().unwrap();
             assert_eq!(Recipe::parse(&r.to_toml()).unwrap(), r, "{}", r.id);
