@@ -161,6 +161,11 @@ pub enum GuestMessage {
         exit_code: Option<i32>,
         output: String,
     },
+    /// v10: a background command the host asked to be announced listens on `port` of the guest (a preview's app). The
+    /// hub registers the port with noded for the VM, so an inbound stream to it is let through (6.1, 18.1).
+    Listening {
+        port: u16,
+    },
     /// v3: the work item is over.
     WorkDone {
         work: u64,
@@ -394,6 +399,10 @@ pub enum HostMessage {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         background: bool,
         timeout_s: u64,
+        /// v10: for a background command, the port it listens on: the guest announces it with
+        /// [`GuestMessage::Listening`] once the port answers. Absent for every other command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listen: Option<u16>,
     },
     /// v3: abort work item `work` after the current step.
     Cancel { work: u64, reason: String },
@@ -1081,6 +1090,7 @@ mod tests {
             cwd: "/workspace".into(),
             background: false,
             timeout_s: 1800,
+            listen: None,
         };
         let line = exec.to_line().unwrap();
         assert_eq!(
@@ -1096,6 +1106,7 @@ mod tests {
             cwd: "/workspace".into(),
             background: true,
             timeout_s: 0,
+            listen: None,
         };
         let line = daemon.to_line().unwrap();
         assert_eq!(

@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+apz-link = { path = "../apz-link" }
 # The hub's store (SQLite, typed tables) and its caches (PLAN 30.3, 30.4).
 apz-store = { path = "../apz-store", features = ["json"] }
 # The object store (apz-blobs, storage.rs): the bytes of the Library, the artifacts, the skills and the stations.
@@ -56,6 +57,7 @@ chacha20poly1305.workspace = true
 argon2.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 zeroize.workspace = true
 secrecy.workspace = true
 base64.workspace = true
@@ -91,7 +93,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-# The node end of the tunnel, for the end-to-end test in src/tunnel.rs.
-apz-link = { path = "../apz-link" }
 # The glue tests build their components from WAT text (glue.rs).
 wat = "1"

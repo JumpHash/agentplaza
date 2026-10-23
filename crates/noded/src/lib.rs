@@ -1954,6 +1954,10 @@ fn router() -> Router<Node> {
         .post("/v1/runs/{id}/ports", |node, request, params| {
             register_port(node, params.get("id"), &request.body)
         })
+        // The guest side: a VM's port that listens is registered by its CID (the run is the one with that guest).
+        .post("/v1/forks/{cid}/ports", |node, request, params| {
+            register_port_by_cid(node, params.get("cid"), &request.body)
+        })
         .delete("/v1/runs/{id}/ports/{cid}/{port}", |node, _, params| {
             unregister_port(
                 node,
@@ -2642,6 +2646,26 @@ fn register_port(node: &Node, id: &str, body: &[u8]) -> Response {
             &serde_json::json!({"cid": cid, "port": port, "served": true}),
         ),
         Err(err) => Response::error(409, &err),
+    }
+}
+
+/// `POST /v1/forks/{cid}/ports` with `{"port"}`: the VM at `cid` announced that `port` listens. The live run that has
+/// that guest serves it; a CID no live run has is refused.
+fn register_port_by_cid(node: &Node, cid: &str, body: &[u8]) -> Response {
+    let Ok(cid) = cid.parse::<u64>() else {
+        return Response::error(400, "a CID is a number");
+    };
+    let port = match serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value["port"].as_u64())
+        .and_then(|port| u16::try_from(port).ok())
+    {
+        Some(port) => port,
+        None => return Response::error(400, "a port is a number from 1 to 65535"),
+    };
+    match node.registry().register_port_by_cid(cid, port) {
+        Ok(()) => Response::json(200, &serde_json::json!({"registered": true})),
+        Err(why) => Response::error(404, &why),
     }
 }
 

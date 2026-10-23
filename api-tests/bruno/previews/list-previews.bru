@@ -1,0 +1,33 @@
+meta {
+  name: List a project's previews: none for a project with no lanes
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{project}}/previews
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  project: p999
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.previews: isArray
+}
+
+tests {
+  test("a project the hub does not run no lanes, so it has no previews", function () {
+    expect(res.getBody().previews).to.deep.equal([]);
+  });
+}
+
+docs {
+  A preview is a lane's app running on a node, and the scratch hub has no node, so no preview exists here: the
+  requests below check the 404s. On a hub where a lane runs an app, set `project` to its project's id; each preview
+  answers its id, lane, node, port, status (awake, asleep or closed), its times, its ends and its path.
+}

@@ -47,6 +47,9 @@ pub enum BaseKind {
     Build,
     /// A build base with the project's services running and its test setup done.
     Test,
+    /// A lane's preview (PLAN 18.1): the checkout and its build, then the app the project's preview target serves,
+    /// started and listening before the base answers. It is never snapshotted: the preview's VM keeps running.
+    Preview,
 }
 
 impl BaseKind {
@@ -54,6 +57,7 @@ impl BaseKind {
         match self {
             BaseKind::Build => "build",
             BaseKind::Test => "test",
+            BaseKind::Preview => "preview",
         }
     }
 }
@@ -91,6 +95,8 @@ pub struct Command {
     pub cwd: &'static str,
     pub timeout_s: u64,
     pub env: Vec<(&'static str, &'static str)>,
+    /// The port a background command listens on, announced by the guest once it does (a preview's app).
+    pub listen: Option<u16>,
 }
 
 impl Command {
@@ -101,6 +107,7 @@ impl Command {
             cwd: WORKSPACE,
             timeout_s: STEP_TIMEOUT_S,
             env: Vec::new(),
+            listen: None,
         }
     }
 }
@@ -160,6 +167,32 @@ pub fn fork_steps(stack: &Stack, repo: &str, commit: &str) -> Vec<Step> {
     steps
 }
 
+/// The steps of a lane's preview (PLAN 18.1): the preview base's steps at `commit` of `repo` (no snapshot), then the
+/// app's `serve` command started in the background and a wait until it listens on `port`. A failed wait fails the start.
+pub fn preview_steps(stack: &Stack, repo: &str, commit: &str, serve: &str, port: u16) -> Vec<Step> {
+    let mut steps = steps_of(stack, BaseKind::Preview, repo, commit, true);
+    steps.retain(|step| !matches!(step, Step::Snapshot { .. }));
+    let mut app = Command::new("serve", &[]);
+    app.argv = vec!["sh".into(), "-c".into(), serve.to_string()];
+    app.env = cache_env(stack);
+    app.listen = Some(port);
+    steps.push(Step::Background(app));
+    let mut wait = Command::new("wait for the app", &[]);
+    wait.argv = vec![
+        "bash".into(),
+        "-c".into(),
+        format!(
+            "for i in $(seq 1 300); do (exec 3<>/dev/tcp/127.0.0.1/{port}) 2>/dev/null && exit 0; sleep 0.2; done; exit 1"
+        ),
+    ];
+    wait.timeout_s = PREVIEW_WAIT_S;
+    steps.push(Step::Run(wait));
+    steps
+}
+
+/// How long a preview's app may take to listen (2 minutes).
+pub const PREVIEW_WAIT_S: u64 = 120;
+
 /// The build's commands: the declaration's, or each toolchain's default (what a base builds, and a CI build checks).
 pub fn build_commands(stack: &Stack) -> Vec<Vec<String>> {
     commands(stack.build.build.as_ref(), stack, Toolchain::build)
@@ -212,7 +245,12 @@ fn steps_of(
     }
     // Each server runs behind its socket for the VM's life (PLAN 3.8), and is warmed before the snapshot: the warm-up
     // waits until the server has indexed, so a fork restored from the base finds it running and indexed.
-    let servers = servers(&stack.languages);
+    // A preview serves an app, not an editor: no language servers start in its VM.
+    let servers = if kind == BaseKind::Preview {
+        Vec::new()
+    } else {
+        servers(&stack.languages)
+    };
     for spec in &servers {
         let label = format!("start {}", spec.id);
         steps.push(Step::Background(command(

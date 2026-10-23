@@ -127,6 +127,7 @@ CREATE TABLE "project_setting" (
     "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
+    "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("project")
 ) STRICT;
@@ -2599,6 +2600,7 @@ CREATE TABLE "chat_draft_settings" (
     "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
+    "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
@@ -4325,6 +4327,53 @@ CREATE TABLE "share_event" (
     PRIMARY KEY ("seq")
 ) STRICT;
 CREATE INDEX "share_event_share_at_ms" ON "share_event" ("share", "at_ms");
+
+-- preview (written through)
+CREATE TABLE "preview" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "lane" TEXT NOT NULL,
+    "node" TEXT NOT NULL,
+    "run" TEXT NOT NULL,
+    "cid" INTEGER NOT NULL CHECK ("cid" >= 0),
+    "port" INTEGER NOT NULL CHECK ("port" >= 0),
+    "kind" TEXT NOT NULL,
+    "station" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "used_ms" INTEGER NOT NULL CHECK ("used_ms" >= 0),
+    "ends_ms" INTEGER CHECK ("ends_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- preview link (written through)
+CREATE TABLE "preview_link" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "preview" TEXT NOT NULL,
+    "scope" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "created_by" TEXT NOT NULL,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "expires_ms" INTEGER CHECK ("expires_ms" >= 0),
+    "revoked_ms" INTEGER CHECK ("revoked_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+
+-- preview opening (written through)
+CREATE TABLE "preview_opening" (
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "link" TEXT NOT NULL,
+    "preview" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "from" TEXT NOT NULL,
+    "method" TEXT NOT NULL,
+    "path" TEXT NOT NULL,
+    PRIMARY KEY ("seq")
+) STRICT;
+CREATE INDEX "preview_opening_link_at_ms" ON "preview_opening" ("link", "at_ms");
 
 -- skill (written through)
 CREATE TABLE "skill" (
