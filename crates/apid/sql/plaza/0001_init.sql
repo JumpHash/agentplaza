@@ -130,6 +130,7 @@ CREATE TABLE "project_setting" (
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
+    "subscription_fallback" INTEGER NOT NULL CHECK ("subscription_fallback" IN (0, 1)),
     PRIMARY KEY ("project")
 ) STRICT;
 CREATE TABLE "project_setting_role_models" (
@@ -819,6 +820,13 @@ CREATE TABLE "settings_model_policy_worker" (
     "worker_pos" INTEGER NOT NULL CHECK ("worker_pos" >= 0),
     "value" TEXT NOT NULL,
     PRIMARY KEY ("settings_pos", "worker_pos"),
+    FOREIGN KEY ("settings_pos") REFERENCES "settings_model_policy" ("settings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "settings_model_policy_subscription" (
+    "settings_pos" INTEGER NOT NULL CHECK ("settings_pos" >= 0),
+    "subscription_pos" INTEGER NOT NULL CHECK ("subscription_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("settings_pos", "subscription_pos"),
     FOREIGN KEY ("settings_pos") REFERENCES "settings_model_policy" ("settings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "settings_fetch_block" (
@@ -1631,6 +1639,11 @@ CREATE TABLE "test_lab_run" (
     "started_ms" INTEGER CHECK ("started_ms" >= 0),
     "ended_ms" INTEGER CHECK ("ended_ms" >= 0),
     "outcome" TEXT,
+    "change" TEXT NOT NULL,
+    "topology" TEXT NOT NULL,
+    "token_sha" TEXT NOT NULL,
+    "observed" INTEGER NOT NULL CHECK ("observed" >= 0),
+    "dropped" INTEGER NOT NULL CHECK ("dropped" >= 0),
     PRIMARY KEY ("test_lab_pos", "runs_pos"),
     FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
@@ -1651,6 +1664,73 @@ CREATE TABLE "test_lab_reservation" (
     "memory_mib" INTEGER NOT NULL CHECK ("memory_mib" >= 0),
     PRIMARY KEY ("test_lab_pos", "runs_pos", "reservations_pos"),
     FOREIGN KEY ("test_lab_pos", "runs_pos") REFERENCES "test_lab_run" ("test_lab_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_log" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "logs_pos" INTEGER NOT NULL CHECK ("logs_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "t_ms" INTEGER NOT NULL CHECK ("t_ms" >= 0),
+    "service" TEXT NOT NULL,
+    "severity" TEXT NOT NULL,
+    "body" TEXT NOT NULL,
+    "trace_id" TEXT NOT NULL,
+    "span_id" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "logs_pos"),
+    FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_log_attr" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "logs_pos" INTEGER NOT NULL CHECK ("logs_pos" >= 0),
+    "attrs_pos" INTEGER NOT NULL CHECK ("attrs_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "logs_pos", "attrs_pos"),
+    FOREIGN KEY ("test_lab_pos", "logs_pos") REFERENCES "test_lab_log" ("test_lab_pos", "logs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_span" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "spans_pos" INTEGER NOT NULL CHECK ("spans_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "trace_id" TEXT NOT NULL,
+    "span_id" TEXT NOT NULL,
+    "parent_id" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "service" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "start_ms" INTEGER NOT NULL CHECK ("start_ms" >= 0),
+    "end_ms" INTEGER NOT NULL CHECK ("end_ms" >= 0),
+    "status" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "spans_pos"),
+    FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_span_attr" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "spans_pos" INTEGER NOT NULL CHECK ("spans_pos" >= 0),
+    "attrs_pos" INTEGER NOT NULL CHECK ("attrs_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "spans_pos", "attrs_pos"),
+    FOREIGN KEY ("test_lab_pos", "spans_pos") REFERENCES "test_lab_span" ("test_lab_pos", "spans_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_verdict" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "verdicts_pos" INTEGER NOT NULL CHECK ("verdicts_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "id" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "passed" INTEGER NOT NULL CHECK ("passed" IN (0, 1)),
+    "detail" TEXT NOT NULL,
+    "finding" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "verdicts_pos"),
+    FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_verdict_cite" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "verdicts_pos" INTEGER NOT NULL CHECK ("verdicts_pos" >= 0),
+    "cites_pos" INTEGER NOT NULL CHECK ("cites_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_lab_pos", "verdicts_pos", "cites_pos"),
+    FOREIGN KEY ("test_lab_pos", "verdicts_pos") REFERENCES "test_lab_verdict" ("test_lab_pos", "verdicts_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component stations
@@ -2767,6 +2847,7 @@ CREATE TABLE "chat_draft_settings" (
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "spec_over_words" INTEGER CHECK ("spec_over_words" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
+    "subscription_fallback" INTEGER NOT NULL CHECK ("subscription_fallback" IN (0, 1)),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
@@ -3480,6 +3561,15 @@ CREATE TABLE "usage_provider" (
     "url" TEXT NOT NULL,
     "label" TEXT,
     PRIMARY KEY ("id")
+) STRICT;
+
+-- component login_bridges
+CREATE TABLE "login_bridge" (
+    "vendor" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "enabled" INTEGER NOT NULL CHECK ("enabled" IN (0, 1)),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("vendor")
 ) STRICT;
 
 -- component hub_config
