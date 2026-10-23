@@ -82,6 +82,7 @@ pub fn convert(text: &str, name: Option<&str>) -> Result<Conversion, String> {
         k3s: None,
         observe: Default::default(),
         traffic: None,
+        assertions: Vec::new(),
         egress: Default::default(),
     };
     topology.check()?;

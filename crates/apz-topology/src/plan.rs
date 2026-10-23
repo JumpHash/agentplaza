@@ -15,7 +15,7 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{Data, Health, Kind, Observe, Serve, Topology, Traffic, Volume};
+use crate::spec::{Collect, Data, Health, Kind, Observe, Serve, Topology, Traffic, Volume};
 
 /// The bridge inside the guest.
 pub const BRIDGE: &str = "apz0";
@@ -27,6 +27,8 @@ pub const PREFIX: u8 = 24;
 pub const PROXY_URL: &str = "http://10.88.0.1:3128";
 /// The most containers a topology's VM holds (`.2` to `.254` on the bridge).
 pub const MAX_CONTAINERS: usize = 253;
+/// The port the lab VM's collector serves OTLP on, on the bridge's gateway (PLAN 22.7).
+pub const OTLP_PORT: u16 = 4318;
 
 /// A topology's guest plan: the containers of its lab VM, its network and its egress, and what its lab base holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +48,10 @@ pub struct GuestPlan {
     pub pinned_images: Vec<String>,
     /// The seed sets the lab base loads (sorted, each once).
     pub seeds: Vec<String>,
+    /// Where the containers export OTLP (JSON) when the topology collects metrics or traces: the collector on the
+    /// gateway (PLAN 22.7). None when it collects neither.
+    #[serde(default)]
+    pub otlp: Option<String>,
 }
 
 /// One replica of a service: a container with its address on the bridge.
@@ -173,7 +179,15 @@ pub fn plan(
         traffic: topology.traffic.clone(),
         pinned_images: pinned_images.into_iter().collect(),
         seeds: seeds.into_iter().collect(),
+        otlp: (topology.observe.metrics == Collect::Otlp
+            || topology.observe.traces == Collect::Otlp)
+            .then(|| format!("http://{GATEWAY}:{OTLP_PORT}")),
     })
+}
+
+/// The address the lab VM's collector listens on: the bridge's gateway, OTLP's port.
+pub fn collector_listen() -> String {
+    format!("{GATEWAY}:{OTLP_PORT}")
 }
 
 /// The address of the container at `index` on the bridge (the first is `.2`).

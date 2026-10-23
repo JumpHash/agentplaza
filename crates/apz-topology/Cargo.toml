@@ -11,11 +11,18 @@ serde.workspace = true
 serde_json.workspace = true
 toml = "1"
 serde_yaml_ng = "0.10"
+# The collector's relay to the hub's receiver (collector.rs): the workspace's HTTP client.
+ureq.workspace = true
 
 [[bin]]
 # The guest's topology runner: builds the bridge (--net) and runs the containers' artifacts on it.
 name = "apz-topo-run"
 path = "src/bin/apz-topo-run.rs"
+
+[[bin]]
+# The lab VM's collector (PLAN 22.7): serves OTLP for the services, ships their logs and relays to the hub.
+name = "apz-topo-collect"
+path = "src/bin/apz-topo-collect.rs"
 
 [[bin]]
 # A stand-in service for the topology tests: echoes, or relays to another service by name.

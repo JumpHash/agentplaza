@@ -13,6 +13,9 @@
 //!                                       when it fits now); the qualification recipe (10.12) queues its runs the same way
 //!   GET  /v1/test-lab/runs/{id}        → one run, with its reservations and its place in the queue (null once it runs)
 //!   POST /v1/test-lab/runs/{id}/cancel → ends a queued or running run as cancelled and admits the queue again
+//!
+//! What a run observes (its collector's OTLP and logs, its assertions) is in `lab_observe`: a run keeps its change and
+//! topology, and the hash of the ingest token its collector posts with.
 
 use std::collections::BTreeSet;
 use std::sync::Mutex;
@@ -22,6 +25,7 @@ use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 
+use crate::lab_observe::{LabLog, LabSpan, LabVerdict};
 use crate::nodes::Machine;
 use crate::state::App;
 
@@ -74,14 +78,35 @@ pub struct LabRun {
     pub ended_ms: Option<u64>,
     /// passed | failed | cancelled; None until it is done.
     pub outcome: Option<String>,
+    /// The change a failing assertion of the run is a finding on (empty when none).
+    #[serde(default)]
+    pub change: String,
+    /// The topology the run observes (its name in the project's `.plaza/topologies`), whose assertions assess checks.
+    #[serde(default)]
+    pub topology: String,
+    /// The SHA-256 (hex) of the ingest token its collector posts with; the token itself is given once, when queued.
+    #[serde(default)]
+    pub token_sha: String,
+    /// The log lines and spans the run kept (its collector's observations), and those refused past the cap.
+    #[serde(default)]
+    pub observed: u64,
+    #[serde(default)]
+    pub dropped: u64,
 }
 
-/// The lab's state of record: its runs, with their reservations and needs as child rows.
+/// The lab's state of record: its runs, and what each run observed (its logs, spans and verdicts, child rows keyed by
+/// their run).
 #[derive(Default, apz_store::Table)]
 #[table(name = "test_lab")]
-struct Persisted {
+pub(crate) struct Persisted {
     #[table(child = "test_lab_run")]
-    runs: Vec<LabRun>,
+    pub(crate) runs: Vec<LabRun>,
+    #[table(child = "test_lab_log")]
+    pub(crate) logs: Vec<LabLog>,
+    #[table(child = "test_lab_span")]
+    pub(crate) spans: Vec<LabSpan>,
+    #[table(child = "test_lab_verdict")]
+    pub(crate) verdicts: Vec<LabVerdict>,
 }
 
 /// The lab's table: `test_lab`, with its runs and their reservations and needs.
@@ -92,7 +117,10 @@ pub fn def() -> &'static TableDef {
 /// The lab's runs, in memory (plaza.db is the record; the saver writes what changed).
 #[derive(Default)]
 pub struct Store {
-    inner: Mutex<Persisted>,
+    pub(crate) inner: Mutex<Persisted>,
+    /// The last cumulative total of each counter a run's collector reported (not kept: a restart counts the first total
+    /// of each as an increase).
+    pub(crate) totals: Mutex<std::collections::BTreeMap<String, f64>>,
 }
 
 impl Store {
@@ -307,7 +335,9 @@ pub(crate) fn lab_nodes(app: &App) -> Vec<LabNode> {
 }
 
 /// Queues a qualification run and admits what fits. `channel` is one of [`CHANNELS`]; it asks for `cpus` CPUs and
-/// `memory_mib` MiB on nodes with `needs`. Returns the run as it is after admission.
+/// `memory_mib` MiB on nodes with `needs`. `change` names the change its failing steps are findings on, `topology` the
+/// topology it observes (both may be empty). Returns the run as it is after admission, and the ingest token its
+/// collector posts with (the only time the token is given; the run keeps its hash).
 pub fn enqueue(
     app: &App,
     project: &str,
@@ -315,7 +345,8 @@ pub fn enqueue(
     cpus: u32,
     memory_mib: u64,
     needs: Vec<String>,
-) -> Result<LabRun, String> {
+    (change, topology): (&str, &str),
+) -> Result<(LabRun, String), String> {
     if project.trim().is_empty() {
         return Err("a run needs its project".into());
     }
@@ -330,6 +361,7 @@ pub fn enqueue(
     }
     let now = apz_plaza::now_ms();
     let nodes = lab_nodes(app);
+    let token = crate::lab_observe::new_token();
     let mut p = app.test_lab.inner.lock().map_err(|e| e.to_string())?;
     let seq = crate::nodes::next_seq(p.runs.iter().map(|run| run.id.as_str()), 'q');
     let id = format!("q{seq}");
@@ -346,13 +378,20 @@ pub fn enqueue(
         started_ms: None,
         ended_ms: None,
         outcome: None,
+        change: change.trim().to_string(),
+        topology: topology.trim().to_string(),
+        token_sha: crate::lab_observe::token_hash(&token),
+        observed: 0,
+        dropped: 0,
     });
     schedule(&mut p.runs, &nodes, now);
-    p.runs
+    let run = p
+        .runs
         .iter()
         .find(|run| run.id == id)
         .cloned()
-        .ok_or_else(|| "the run was not kept".to_string())
+        .ok_or_else(|| "the run was not kept".to_string())?;
+    Ok((run, token))
 }
 
 /// Ends a queued or running run with `outcome` (passed | failed | cancelled), releases what it held, and admits the
@@ -499,6 +538,10 @@ struct EnqueueBody {
     memory_mib: u64,
     #[serde(default)]
     needs: Vec<String>,
+    #[serde(default)]
+    change: String,
+    #[serde(default)]
+    topology: String,
 }
 
 fn enqueue_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
@@ -513,8 +556,14 @@ fn enqueue_route(app: &App, req: &Request, _p: &Params<'_>) -> Response {
         body.cpus,
         body.memory_mib,
         body.needs,
+        (&body.change, &body.topology),
     ) {
-        Ok(run) => Response::json(201, &run),
+        Ok((run, token)) => {
+            // The run's collector posts with this token (`X-Apz-Lab-Token`); it is not given again.
+            let mut view = serde_json::to_value(&run).unwrap_or_default();
+            view["ingest_token"] = serde_json::Value::String(token);
+            Response::json(201, &view)
+        }
         Err(message) => Response::error(400, &message),
     }
 }
@@ -568,6 +617,11 @@ mod tests {
             started_ms: None,
             ended_ms: None,
             outcome: None,
+            change: String::new(),
+            topology: String::new(),
+            token_sha: String::new(),
+            observed: 0,
+            dropped: 0,
         }
     }
 

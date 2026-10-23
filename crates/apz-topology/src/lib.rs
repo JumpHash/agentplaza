@@ -9,10 +9,16 @@
 //! - [`compose`] and [`manifests`]: a Compose file and rendered Kubernetes manifests converted into a topology, with a
 //!   [`report`] of what did not carry over.
 //! - [`k3s`]: the guest config of a k3s topology (a Kubernetes cluster in the lab VM).
+//! - [`observe`] and [`assert`]: what a run observed (OTLP, log lines) and the topology's test steps over it (PLAN 22.7);
+//!   [`collector`] is the lab VM's collector that ships it, and [`pii`] the personal data patterns the steps scan for.
 
+pub mod assert;
+pub mod collector;
 pub mod compose;
 pub mod k3s;
 pub mod manifests;
+pub mod observe;
+pub mod pii;
 pub mod plan;
 pub mod report;
 pub mod resolver;
