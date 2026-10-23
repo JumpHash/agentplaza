@@ -628,9 +628,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
         };
     };
     match message {
-        GuestMessage::ModelCall { req, work, request } => {
-            Some(model_call(app, cid, &agent, req, work, request))
-        }
+        GuestMessage::ModelCall {
+            req,
+            work,
+            request,
+            helper,
+        } => Some(model_call(app, cid, &agent, req, work, request, helper)),
         GuestMessage::ToolRequest {
             work,
             call,
@@ -797,7 +800,29 @@ fn model_call(
     req: u64,
     work: u64,
     mut request: ChatRequest,
+    helper: Option<u64>,
 ) -> HostMessage {
+    // A helper is one level down: it is never offered the tools that start or await helpers (depth is one).
+    if helper.is_some()
+        && request
+            .tools
+            .iter()
+            .any(|tool| matches!(tool.name.as_str(), "spawn_helper" | "await_helper"))
+    {
+        let e = "a helper cannot start or await helpers".to_string();
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error { message: e.clone() },
+        );
+        return HostMessage::ModelResult {
+            req,
+            ok: false,
+            response: None,
+            error: Some(e),
+        };
+    }
     // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
     // paused or over does not think either (see `projects::held`).
     // A held call answers `paused:`, so the harness's turn waits and asks again instead of failing.
@@ -860,6 +885,8 @@ fn model_call(
     );
 
     // A session's call is held on its budget first; one that does not fit pauses the session (work_loop.rs).
+    // A helper's call is held on the VM's session's budget (its task's), and recorded on the helper's session.
+    let helper_session = helper.and_then(|n| crate::work_loop::helper_session(app, cid, n));
     let budget_hold = match crate::work_loop::before_call(app, cid, &model, &request) {
         Ok(held) => held,
         Err(paused) => {
@@ -926,7 +953,13 @@ fn model_call(
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     collect::agent_state(app, cid, "tools");
     if let Some(held) = budget_hold {
-        crate::work_loop::after_call(app, cid, held, result.as_ref().ok().map(|r| &r.usage));
+        crate::work_loop::after_call(
+            app,
+            cid,
+            held,
+            result.as_ref().ok().map(|r| &r.usage),
+            helper_session.as_deref(),
+        );
     }
     match result {
         Ok(resp) => {

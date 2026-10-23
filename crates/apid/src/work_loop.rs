@@ -17,7 +17,7 @@
 //! project's landing queue and the task is done when its change lands ([`landed`]); a clash on landing sends it back to
 //! the builder ([`clashed`]). The task's budget is released when it ends.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
 use apz_plaza::tasks::FinishOutcome;
@@ -33,7 +33,7 @@ use crate::placement;
 use crate::project_settings;
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
-use crate::sessions::{Kind, NewSession, PausedBy, Session, State};
+use crate::sessions::{Filter, Kind, NewSession, PausedBy, Session, State};
 use crate::state::App;
 
 /// How long a session's VM may take from its start to its hello before the session fails.
@@ -526,6 +526,8 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     if session.work != Some(work) {
         return false;
     }
+    // The helpers the work item started end with it.
+    end_helpers(app, &session.id, now());
     // A session that is already ending (its VM being retired) has nothing left to move on.
     if !matches!(
         session.state,
@@ -1678,7 +1680,13 @@ pub fn release_call(app: &App, held: CallHold) {
 
 /// After the call: what it really cost is charged (and the hold released), its usage is added to the session, and a
 /// budget it took past its warning share says so in the task's chat. A failed call (`usage` none) charges nothing.
-pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto::chat::Usage>) {
+pub fn after_call(
+    app: &App,
+    cid: u64,
+    held: CallHold,
+    usage: Option<&apz_proto::chat::Usage>,
+    helper: Option<&str>,
+) {
     let Some(usage) = usage else {
         release_call(app, held);
         return;
@@ -1694,17 +1702,20 @@ pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto:
             cache_write: usage.cache_write_tokens,
         },
         None,
+        helper,
     );
 }
 
 /// [`after_call`] for a call whose usage the caller parsed itself (the LLM proxy's, streams included): `reported_usd` is
-/// the cost the provider reported for the call when it did, and the model's price settles it when it did not.
+/// the cost the provider reported for the call when it did, and the model's price settles it when it did not. A
+/// helper's call (`helper`, its session's id) is recorded on the helper's session.
 pub fn settle_call(
     app: &App,
     cid: u64,
     held: CallHold,
     tokens: crate::prices::Tokens,
     reported_usd: Option<f64>,
+    helper: Option<&str>,
 ) {
     let now = now();
     let all_tokens = tokens.input + tokens.output + tokens.cache_read + tokens.cache_write;
@@ -1712,17 +1723,23 @@ pub fn settle_call(
         Some(usd) => Amount::of((usd * 1_000_000.0).ceil() as u64, all_tokens),
         None => call_cost(app, &held.model, tokens),
     };
-    let _ = app.sessions.add_usage(
-        cid,
-        &crate::sessions::Usage {
-            tokens_in: tokens.input,
-            tokens_out: tokens.output,
-            tokens_cached: tokens.cache_read,
-            cost_micros: actual.micros,
-            model_calls: 1,
-            tool_calls: 0,
-        },
-    );
+    let usage = crate::sessions::Usage {
+        tokens_in: tokens.input,
+        tokens_out: tokens.output,
+        tokens_cached: tokens.cache_read,
+        cost_micros: actual.micros,
+        model_calls: 1,
+        tool_calls: 0,
+    };
+    // A helper's call is recorded on the helper's session; the budget is the session's either way.
+    match helper {
+        Some(id) => {
+            let _ = app.sessions.add_usage_to(id, &usage);
+        }
+        None => {
+            let _ = app.sessions.add_usage(cid, &usage);
+        }
+    }
     let notices = app.budgets.settle(
         &held.hold,
         actual,
@@ -1766,6 +1783,64 @@ pub fn settle_call(
             ),
             now,
         );
+    }
+}
+
+/// The session of helper `helper` that the VM `cid` runs (a `Kind::Helper` session under the VM's session, on its task
+/// and project), created at the helper's first model call. None when the VM runs no session: its calls spend from the
+/// plaza's budget and are not recorded on a helper.
+pub fn helper_session(app: &App, cid: u64, helper: u64) -> Option<String> {
+    static HELPERS: Mutex<BTreeMap<(String, u64), String>> = Mutex::new(BTreeMap::new());
+    let parent = app.sessions.by_cid(cid)?;
+    let key = (parent.id.clone(), helper);
+    if let Some(id) = HELPERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+    {
+        return Some(id.clone());
+    }
+    let now = now();
+    let session = app.sessions.create(
+        NewSession {
+            project: parent.project.clone(),
+            task: parent.task.clone(),
+            seat: None,
+            kind: Kind::Helper,
+            parent: Some(parent.id.clone()),
+            role: parent.role.clone(),
+            engine: parent.engine.clone(),
+            model: parent.model.clone(),
+            attempt: 1,
+        },
+        now,
+    );
+    // A helper runs at once: it is placed and forked with its VM's.
+    for to in [State::Placing, State::Forking, State::Running] {
+        let _ = app.sessions.set_state(&session.id, to, now);
+    }
+    app.bus.publish("session", &app.sessions.get(&session.id));
+    HELPERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(key, session.id.clone());
+    Some(session.id)
+}
+
+/// Ends the helper sessions of `parent` that still run: their work item ended.
+fn end_helpers(app: &App, parent: &str, now: u64) {
+    let live = app.sessions.list(&Filter {
+        live: true,
+        ..Filter::default()
+    });
+    for helper in live
+        .into_iter()
+        .filter(|s| s.kind == Kind::Helper && s.parent.as_deref() == Some(parent))
+    {
+        let _ = app
+            .sessions
+            .finish(&helper.id, "its work item ended", false, now);
+        app.bus.publish("session", &app.sessions.get(&helper.id));
     }
 }
 

@@ -136,6 +136,8 @@ const IN_VM: &[&str] = &[
     "references",
     "diagnostics",
     "outline",
+    "spawn_helper",
+    "await_helper",
 ];
 
 /// Host tools offered only by tier (see [`permitted`]).
@@ -194,7 +196,9 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "definition"
         | "references"
         | "diagnostics"
-        | "outline" => Some(Runs::Guest),
+        | "outline"
+        | "spawn_helper"
+        | "await_helper" => Some(Runs::Guest),
         "transcript_search"
         | "submit_claim"
         | "plaza_tasks"
