@@ -35,6 +35,8 @@ pub struct Weft {
     lanes: Mutex<HashMap<String, String>>,
     /// cid → (key, the project its certificate names).
     agents: Mutex<HashMap<u64, (Arc<KeyPair>, Option<String>)>>,
+    /// change → (the commit its GitHub gate was read on, the gate), so a `ci` gate is recorded once per verdict.
+    pub gates: Mutex<HashMap<String, (String, String)>>,
 }
 
 struct Live {
@@ -472,6 +474,10 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
 
 /// Exports a repo to each of its connections, with each one's credential from the vault.
 pub fn export_all(app: &App, repo: &str) {
+    // In `ci` mode GitHub is the truth: landings reach it as pull requests (github_modes), never as pushes to its main.
+    if crate::github_modes::mode_of(app, repo) == crate::github_modes::CI {
+        return;
+    }
     let Ok(detail) = app.weft.get(&format!("/repos/{repo}")) else {
         return;
     };
@@ -910,6 +916,11 @@ pub fn land_queues(app: &App) {
             if queue.as_array().is_none_or(|q| q.is_empty()) {
                 continue;
             }
+            // In `ci` mode the head lane goes through GitHub (its pull request and checks) before Weft lands it.
+            if crate::github_modes::mode_of(app, name) == crate::github_modes::CI {
+                crate::github_modes::ci_step(app, name, reference);
+                continue;
+            }
             for _ in 0..8 {
                 match app.weft.post(
                     &format!("/repos/{name}/queue/step"),
@@ -943,7 +954,7 @@ pub fn land_queues(app: &App) {
 }
 
 /// A clash on landing: the lane's agent gets a resolve item (its lane now starts from main, with the clash marked).
-fn conflict_task(app: &App, repo: &str, step: &Value) {
+pub fn conflict_task(app: &App, repo: &str, step: &Value) {
     let Some(change) = step["change"].as_str() else {
         return;
     };

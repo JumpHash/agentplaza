@@ -55,6 +55,7 @@ mod events;
 mod fleet;
 mod foundry;
 mod full_run;
+mod github_modes;
 mod harness_control;
 mod hub_auth;
 mod hub_mcp;

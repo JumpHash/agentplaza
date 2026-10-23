@@ -474,6 +474,19 @@ impl Store {
         })
     }
 
+    /// Sets how the project meets GitHub (one of [`GITHUB_MODES`]), as the owner opens it: the create route takes it.
+    pub fn set_github(&self, id: &str, github: &str) -> Result<Project, String> {
+        if !GITHUB_MODES.contains(&github) {
+            return Err(format!("github must be one of {}", GITHUB_MODES.join(", ")));
+        }
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            p.github = github.into();
+            p.updated_ms = now_ms();
+            Ok(p.clone())
+        })
+    }
+
     /// Pauses or resumes a project: while paused, its agents' work waits (`held`).
     pub fn set_paused(&self, id: &str, paused: bool) -> Result<Project, String> {
         self.mutate(|items| {
@@ -1226,6 +1239,14 @@ fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
     {
         Ok(project) => project,
         Err(e) => return Response::error(400, &e),
+    };
+    // The GitHub mode the owner opens it with (none when the body names none).
+    let project = match text("github") {
+        "" => project,
+        github => match app.projects.set_github(&project.id, github) {
+            Ok(project) => project,
+            Err(e) => return Response::error(400, &e),
+        },
     };
     let project = match repo_for(app, &project) {
         Some(_) => app.projects.get(&project.id).unwrap_or(project),
