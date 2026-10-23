@@ -121,6 +121,7 @@ CREATE TABLE "project_setting" (
     "task_budget" INTEGER CHECK ("task_budget" >= 0),
     "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
     "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
+    "full_suite_minutes" INTEGER CHECK ("full_suite_minutes" >= 0),
     "team_max" INTEGER CHECK ("team_max" >= 0),
     "team_target" INTEGER CHECK ("team_target" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
@@ -2283,6 +2284,16 @@ CREATE TABLE "recipe_run_edges" (
     PRIMARY KEY ("recipe_run_id", "edges_pos"),
     FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "recipe_run_checks" (
+    "recipe_run_id" TEXT NOT NULL,
+    "checks_pos" INTEGER NOT NULL CHECK ("checks_pos" >= 0),
+    "step" TEXT NOT NULL,
+    "passed" INTEGER NOT NULL CHECK ("passed" IN (0, 1)),
+    "commands" TEXT NOT NULL,
+    "summary" TEXT NOT NULL,
+    PRIMARY KEY ("recipe_run_id", "checks_pos"),
+    FOREIGN KEY ("recipe_run_id") REFERENCES "recipe_run" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 
 -- component recipe_versions
 CREATE TABLE "recipe_version" (
@@ -2418,6 +2429,7 @@ CREATE TABLE "chat_draft_settings" (
     "task_budget" INTEGER CHECK ("task_budget" >= 0),
     "permission_mode" TEXT CHECK ("permission_mode" IN ('autonomous', 'ask', 'read_only')),
     "review_timeout_minutes" INTEGER CHECK ("review_timeout_minutes" >= 0),
+    "full_suite_minutes" INTEGER CHECK ("full_suite_minutes" >= 0),
     "team_max" INTEGER CHECK ("team_max" >= 0),
     "team_target" INTEGER CHECK ("team_target" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
@@ -3348,6 +3360,83 @@ CREATE TABLE "e2b_template_build_reason" (
     "step" TEXT NOT NULL,
     PRIMARY KEY ("e2b_template_id", "builds_pos"),
     FOREIGN KEY ("e2b_template_id", "builds_pos") REFERENCES "e2b_template_build" ("e2b_template_id", "builds_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component test_maps
+CREATE TABLE "test_map" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "format" INTEGER NOT NULL CHECK ("format" >= 0),
+    "project" TEXT NOT NULL,
+    "commit" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "runner" TEXT NOT NULL,
+    "recorded_ms" INTEGER NOT NULL CHECK ("recorded_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "test_map_package" (
+    "test_map_id" TEXT NOT NULL,
+    "packages_pos" INTEGER NOT NULL CHECK ("packages_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "dir" TEXT NOT NULL,
+    PRIMARY KEY ("test_map_id", "packages_pos"),
+    FOREIGN KEY ("test_map_id") REFERENCES "test_map" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_map_dep" (
+    "test_map_id" TEXT NOT NULL,
+    "packages_pos" INTEGER NOT NULL CHECK ("packages_pos" >= 0),
+    "deps_pos" INTEGER NOT NULL CHECK ("deps_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_map_id", "packages_pos", "deps_pos"),
+    FOREIGN KEY ("test_map_id", "packages_pos") REFERENCES "test_map_package" ("test_map_id", "packages_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_map_test" (
+    "test_map_id" TEXT NOT NULL,
+    "tests_pos" INTEGER NOT NULL CHECK ("tests_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "package" TEXT NOT NULL,
+    "file" TEXT NOT NULL,
+    "smoke" INTEGER NOT NULL CHECK ("smoke" IN (0, 1)),
+    PRIMARY KEY ("test_map_id", "tests_pos"),
+    FOREIGN KEY ("test_map_id") REFERENCES "test_map" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_map_definition" (
+    "test_map_id" TEXT NOT NULL,
+    "definitions_pos" INTEGER NOT NULL CHECK ("definitions_pos" >= 0),
+    "file" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "start" INTEGER NOT NULL CHECK ("start" >= 0),
+    "end" INTEGER NOT NULL CHECK ("end" >= 0),
+    PRIMARY KEY ("test_map_id", "definitions_pos"),
+    FOREIGN KEY ("test_map_id") REFERENCES "test_map" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_map_cover" (
+    "test_map_id" TEXT NOT NULL,
+    "definitions_pos" INTEGER NOT NULL CHECK ("definitions_pos" >= 0),
+    "covered_by_pos" INTEGER NOT NULL CHECK ("covered_by_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_map_id", "definitions_pos", "covered_by_pos"),
+    FOREIGN KEY ("test_map_id", "definitions_pos") REFERENCES "test_map_definition" ("test_map_id", "definitions_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_map_file" (
+    "test_map_id" TEXT NOT NULL,
+    "files_pos" INTEGER NOT NULL CHECK ("files_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("test_map_id", "files_pos"),
+    FOREIGN KEY ("test_map_id") REFERENCES "test_map" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component test_misses
+CREATE TABLE "test_miss" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "commit" TEXT NOT NULL,
+    "test" TEXT NOT NULL,
+    "package" TEXT NOT NULL,
+    "selection" TEXT NOT NULL,
+    "recorded_ms" INTEGER NOT NULL CHECK ("recorded_ms" >= 0),
+    PRIMARY KEY ("id")
 ) STRICT;
 
 -- budget ledger (written through)
