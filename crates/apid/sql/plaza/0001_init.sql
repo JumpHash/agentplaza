@@ -2,6 +2,12 @@
 -- JSON (W69). The components' tables below are generated from their definitions (derive(apz_store::Table)): print
 -- them with `cargo run -p apid -- schema`; the store's tests check that this file matches.
 
+-- Full-text indexes (FTS5, store/search.rs): the journal's notes and the project memory's entries, searched by word and
+-- ranked by bm25. They are not components: the saver rebuilds each one in the same transaction as the rows it indexes
+-- (store/saver.rs), so a search reads what is saved and a restart finds the same index.
+CREATE VIRTUAL TABLE "journal_note_search" USING fts5("task" UNINDEXED, "seq" UNINDEXED, "text", "reason");
+CREATE VIRTUAL TABLE "memory_entry_search" USING fts5("key" UNINDEXED, "title", "body");
+
 -- component tasks
 CREATE TABLE "task_ledger" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),

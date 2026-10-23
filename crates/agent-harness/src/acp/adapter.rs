@@ -185,6 +185,7 @@ impl Instructions {
     }
 
     /// The file this wrote.
+    #[cfg(test)]
     pub fn path(&self) -> &Path {
         &self.path
     }

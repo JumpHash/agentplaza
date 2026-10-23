@@ -118,15 +118,6 @@ pub fn plaza_tools(profile_tools: &[ToolSpec]) -> Vec<ToolSpec> {
         .collect()
 }
 
-/// The helpers' tools (PLAN 1.10), which are not built yet. Both the plaza's MCP server and the engine's
-/// call path answer them here, so the answer is the same wherever they are asked for; it says so until
-/// 1.10 lands.
-pub fn helper_call(name: &str, _input: &Value) -> Result<String, String> {
-    Err(format!(
-        "{name} is not built yet: helpers come with PLAN 1.10"
-    ))
-}
-
 /// The stdio side: the reply to one line the engine sent, or None for a notification (a message
 /// with no id, which gets no reply). `forward` carries `tools/list` and `tools/call` to the session
 /// and returns its reply, a complete JSON-RPC response.
@@ -187,12 +178,12 @@ pub fn handle(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            let outcome = if !arguments.is_object() {
-                Err("invalid input: the arguments must be a JSON object".to_string())
-            } else if group_of(name) == Some(Group::Helpers) {
-                helper_call(name, &arguments)
-            } else {
+            // Every tool goes through the link, helpers included: the hub's gate decides it, and the session runs
+            // the ones the VM runs (a helper's start and await among them) as the agent's own loop does.
+            let outcome = if arguments.is_object() {
                 link.call(name, &arguments, deadline)
+            } else {
+                Err("invalid input: the arguments must be a JSON object".to_string())
             };
             let (text, is_error) = match outcome {
                 Ok(text) => (text, false),
@@ -516,6 +507,8 @@ impl Socket {
 mod tests {
     use super::*;
     use crate::acp::link::Verdict;
+    use crate::helpers::{self, Board};
+    use apz_proto::wire::AgentProfile;
 
     fn spec(name: &str) -> ToolSpec {
         ToolSpec {
@@ -626,26 +619,85 @@ mod tests {
         }
     }
 
+    /// A link that runs the helper tools on `board` for work item 7, as the session does for a call the hub
+    /// lets run in the VM. The helper's own run is a stand-in: see the test below.
+    struct Helpers<'a> {
+        board: &'a Board,
+        profile: AgentProfile,
+    }
+
+    impl EngineLink for Helpers<'_> {
+        fn decide(&self, _: &str, _: &Value, _: Instant) -> Verdict {
+            Verdict::Allow
+        }
+        fn update(&self, _: &str, _: &str, _: &Value) {}
+        fn cancelled(&self) -> bool {
+            false
+        }
+        fn call(&self, name: &str, input: &Value, _: Instant) -> Result<String, String> {
+            helpers::run_tool(self.board, 7, Some(&self.profile), None, name, input)
+        }
+    }
+
     #[test]
-    fn a_helper_is_not_built_yet_and_says_so() {
-        let refused = helper_call("spawn_helper", &json!({})).expect_err("not built");
-        assert!(refused.contains("PLAN 1.10"), "{refused}");
-        // Offered and called through the server, the same answer comes back as an error result, and the
-        // link is never asked: the Fake link has no helper.
-        let tools = [spec("spawn_helper")];
-        let called = handle(
-            &json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
-                    "params": {"name": "spawn_helper", "arguments": {}}}),
-            &tools,
-            &Fake,
-            Instant::now() + Duration::from_secs(5),
-        );
-        assert_eq!(called["result"]["isError"], true);
-        assert!(
-            called["result"]["content"][0]["text"]
+    fn a_helper_started_and_awaited_through_the_server_returns_its_report() {
+        let profile: AgentProfile = serde_json::from_value(json!({
+            "name": "ada", "role": "builder", "model": "anthropic/x",
+            "system_parts": [{"text": "be brief"}],
+            "tools": [{"name": "read", "description": "read", "input_schema": {"type": "object"}}],
+            "max_turns": 4,
+        }))
+        .expect("a profile");
+        let (board, events) = Board::new(1);
+        let link = Helpers {
+            board: &board,
+            profile,
+        };
+        let tools = [spec("spawn_helper"), spec("await_helper")];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let report = thread::scope(|scope| {
+            // The dispatcher's part: the one helper the board starts ends with its report.
+            let board = &board;
+            scope.spawn(move || {
+                let Ok(helpers::Event::Start(start)) = events.recv_timeout(Duration::from_secs(5))
+                else {
+                    panic!("the helper was not started");
+                };
+                assert_eq!(start.job, "find the parser");
+                board.finish(
+                    start.id,
+                    helpers::Report {
+                        status: helpers::Status::Done,
+                        text: "the parser is in lib.rs".to_string(),
+                        branch: None,
+                        stat: None,
+                    },
+                );
+            });
+            let spawned = handle(
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                        "params": {"name": "spawn_helper", "arguments": {"job": "find the parser"}}}),
+                &tools,
+                &link,
+                deadline,
+            );
+            assert_eq!(spawned["result"]["isError"], false, "{spawned}");
+            let started = spawned["result"]["content"][0]["text"]
                 .as_str()
-                .is_some_and(|text| text.contains("PLAN 1.10")),
-            "{called}"
+                .unwrap_or_default();
+            assert!(started.starts_with("started helper h1"), "{started}");
+            handle(
+                &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "await_helper", "arguments": {"id": "h1", "timeout_s": 5}}}),
+                &tools,
+                &link,
+                deadline,
+            )
+        });
+        assert_eq!(report["result"]["isError"], false, "{report}");
+        assert_eq!(
+            report["result"]["content"][0]["text"],
+            "helper h1 ended: the parser is in lib.rs"
         );
     }
 
