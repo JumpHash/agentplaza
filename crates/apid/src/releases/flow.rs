@@ -18,6 +18,7 @@ use super::entity::{
 };
 use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
+use crate::review_graph::{Reviews, Run};
 
 /// What the flow needs from Weft: reads and hub writes through its routes, and the statements the hub signs.
 pub trait Ledger {
@@ -82,6 +83,7 @@ impl Builder for NoPools {
 pub struct Deps<'a> {
     pub weft: &'a dyn Ledger,
     pub runs: &'a Runs,
+    pub reviews: &'a Reviews,
     pub releases: &'a Store,
 }
 
@@ -122,12 +124,44 @@ pub fn get(d: &Deps, id: &str) -> Result<Release, String> {
         .ok_or_else(|| "no such release".to_string())
 }
 
-/// The review run that checked a change's task, if one ran.
-fn review_run_of(runs: &Runs, task: &str) -> Option<String> {
-    runs.list(Some(task), None)
-        .into_iter()
-        .find(|v| v.run.recipe == "review")
-        .map(|v| v.run.id)
+/// The notes a change contributes to a release (22.2): its review graph's account when it has one (the run's summary,
+/// the reasons of its outcome, and the findings its nodes raised), otherwise its intents (the latest round's, Weft's).
+pub fn change_notes(title: &str, intents: &Value, review: Option<&Run>) -> String {
+    let mut lines = vec![format!("## {title}")];
+    if let Some(run) = review {
+        let before = lines.len();
+        if !run.summary.trim().is_empty() {
+            lines.push(run.summary.trim().to_string());
+        }
+        if let Some(outcome) = &run.outcome {
+            lines.extend(outcome.reasons.iter().map(|r| format!("- {r}")));
+        }
+        for node in &run.nodes {
+            for f in &node.findings {
+                lines.push(format!("- [{}] {}: {}", f.severity, f.symbol, f.text));
+            }
+        }
+        if lines.len() > before {
+            return lines.join("\n");
+        }
+    }
+    // The fallback: the latest round's intents, each with its summary.
+    let latest = intents
+        .as_object()
+        .and_then(|rounds| {
+            rounds
+                .iter()
+                .filter_map(|(n, list)| n.parse::<u32>().ok().map(|n| (n, list)))
+                .max_by_key(|(n, _)| *n)
+        })
+        .map(|(_, list)| list);
+    for intent in latest.and_then(|l| l.as_array()).into_iter().flatten() {
+        lines.push(format!("- {}", intent["title"].as_str().unwrap_or("")));
+        if let Some(summary) = intent["summary"].as_str().filter(|s| !s.trim().is_empty()) {
+            lines.push(format!("  {}", summary.trim()));
+        }
+    }
+    lines.join("\n")
 }
 
 /// Starts a release run for `subject` with `targets` build items, and settles its draft (the draft is a stand-in
@@ -157,6 +191,7 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
         return Err("a release needs a version".into());
     }
     let mut changes = Vec::new();
+    let mut sections = Vec::new();
     for change in &cut.changes {
         let detail = d.weft.read(&format!("/changes/{change}"))?;
         if detail["state"].as_str() != Some("landed") {
@@ -165,13 +200,21 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
             ));
         }
         let title = text(&detail["title"]);
-        let review_run = detail["task"]
+        // The change's review run: the newest review of its task (sealed rounds, not re-checks).
+        let review = detail["task"]
             .as_str()
-            .and_then(|task| review_run_of(d.runs, task));
+            .filter(|task| !task.is_empty())
+            .and_then(|task| {
+                d.reviews
+                    .runs_of(task)
+                    .into_iter()
+                    .find(|run| run.purpose == "review")
+            });
+        sections.push(change_notes(&title, &detail["intents"], review.as_ref()));
         changes.push(ReleaseChange {
             change: change.clone(),
             title,
-            review_run,
+            review_run: review.map(|run| run.id),
         });
     }
     let proposal = d.weft.post(
@@ -197,7 +240,13 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
         from: text(&proposal["from"]),
         state: ReleaseState::Draft,
         number: None,
-        notes: text(&proposal["notes"]),
+        notes: if sections.is_empty() {
+            text(&proposal["notes"])
+        } else {
+            // Each change's notes come from its review graph, or from its intents; Weft's proposal notes only when
+            // no change is named.
+            sections.join("\n\n")
+        },
         run: None,
         sbom: String::new(),
         provenance: String::new(),

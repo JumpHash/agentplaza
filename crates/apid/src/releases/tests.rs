@@ -13,6 +13,9 @@ use weft::store::Store;
 use super::entity::{Release, ReleaseState, Store as Releases};
 use super::flow::{self, Builder, Built, Cut, Deps, Ledger};
 use crate::recipes::runs::{RunState, Runs};
+use crate::review_graph::{Reviews, Run};
+use apz_blobs::Blobs;
+use std::sync::Arc;
 
 const TOKEN: &str = "release-test-token";
 const CARGO: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[package.metadata.weft]\ntargets = [\"linux-x86_64\", \"macos-aarch64\"]\n";
@@ -75,7 +78,7 @@ fn put(store: &Store, path: &str, text: &str) -> Delta {
 
 /// A Weft on a scratch store with one landed change (a Cargo package declaring two targets), served in-process.
 /// Returns the client the flow uses, the server's handle (it serves while the handle lives) and the directory.
-fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf) {
+fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String) {
     let dir = std::env::temp_dir().join(format!("apid-release-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let owner = KeyPair::generate();
@@ -83,6 +86,7 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf) {
     let hub_seed = hub.seed_hex();
     let signing = KeyPair::generate();
     let agent = KeyPair::generate();
+    let change;
     {
         let store = Store::init(
             &dir,
@@ -109,7 +113,7 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf) {
             )
             .unwrap();
         let writer = Actor::Agent { cid: 107 };
-        let change = store
+        change = store
             .open_lane(
                 "app",
                 "main",
@@ -118,6 +122,13 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf) {
                 writer.clone(),
                 None,
                 "normal",
+            )
+            .unwrap();
+        // The change's intent: its notes come from it when no review ran on it.
+        store
+            .hub_append(
+                "intent.set",
+                json!({ "change": change, "n": 1, "intents": [{ "title": "Add the app entry point", "summary": "main prints hello", "kind": "feature" }] }),
             )
             .unwrap();
         let deltas = vec![
@@ -164,21 +175,27 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf) {
         ],
     )
     .unwrap();
-    (client, handle, dir)
+    (client, handle, dir, change)
 }
 
-/// The dependencies of one test: its Weft, the recipe runs and the release store.
+/// The dependencies of one test: its Weft, the recipe runs, the review graph's store and the release store.
 struct World {
     ledger: WeftLedger,
     runs: Runs,
+    reviews: Reviews,
     releases: Releases,
 }
 
 impl World {
-    fn new(client: Client) -> World {
+    fn new(client: Client, name: &str) -> World {
+        let dir =
+            std::env::temp_dir().join(format!("apid-release-blobs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let blobs = Arc::new(Blobs::open(&dir).expect("the object store opens"));
         World {
             ledger: WeftLedger(client),
             runs: Runs::default(),
+            reviews: Reviews::new(blobs),
             releases: Releases::default(),
         }
     }
@@ -187,6 +204,7 @@ impl World {
         Deps {
             weft: &self.ledger,
             runs: &self.runs,
+            reviews: &self.reviews,
             releases: &self.releases,
         }
     }
@@ -206,8 +224,11 @@ fn life(world: &World, id: &str) -> ReleaseState {
 
 #[test]
 fn a_release_is_cut_built_per_target_checked_published_and_promoted() {
-    let (client, _handle, _dir) = lab("life");
-    let world = World::new(client);
+    let (client, _handle, _dir, _change) = lab("life");
+    let world = World::new(
+        client,
+        "a_release_is_cut_built_per_target_checked_published_and_promoted",
+    );
     let d = world.deps();
     let drafted = flow::draft(&d, "app", "app", &cut("v0.1.0")).unwrap();
     assert_eq!(drafted.state, ReleaseState::Draft);
@@ -272,8 +293,11 @@ fn a_release_is_cut_built_per_target_checked_published_and_promoted() {
 
 #[test]
 fn a_refused_build_leaves_the_draft_and_the_next_cut_runs_again() {
-    let (client, _handle, _dir) = lab("refused");
-    let world = World::new(client);
+    let (client, _handle, _dir, _change) = lab("refused");
+    let world = World::new(
+        client,
+        "a_refused_build_leaves_the_draft_and_the_next_cut_runs_again",
+    );
     let d = world.deps();
     let drafted = flow::draft(&d, "app", "app", &cut("v0.2.0")).unwrap();
     let first_run = drafted.run.clone().unwrap();
@@ -306,8 +330,11 @@ fn a_refused_build_leaves_the_draft_and_the_next_cut_runs_again() {
 
 #[test]
 fn a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused() {
-    let (client, _handle, _dir) = lab("moves");
-    let world = World::new(client);
+    let (client, _handle, _dir, _change) = lab("moves");
+    let world = World::new(
+        client,
+        "a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused",
+    );
     let d = world.deps();
     let drafted = flow::draft(&d, "app", "app", &cut("v0.3.0")).unwrap();
     flow::candidate(&d, &drafted.id, &FakeBuilder, None).unwrap();
@@ -324,4 +351,70 @@ fn a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused() {
     // Weft has no such change to land (or it is not landed): the draft is refused before anything is proposed.
     assert!(flow::draft(&d, "app", "app", &unlanded).is_err());
     assert!(d.releases.list("app").iter().all(|r| r.version != "v0.3.1"));
+}
+
+#[test]
+fn a_change_without_a_review_contributes_its_intents_to_the_notes() {
+    let (client, _handle, _dir, change) = lab("intents");
+    let world = World::new(client, "intents_notes");
+    let d = world.deps();
+    let cut_with_change = Cut {
+        version: "v0.4.0".into(),
+        changes: vec![change],
+        ..Cut::default()
+    };
+    let drafted = flow::draft(&d, "app", "app", &cut_with_change).unwrap();
+    assert_eq!(drafted.changes.len(), 1);
+    assert_eq!(
+        drafted.changes[0].review_run, None,
+        "no review ran on this change"
+    );
+    assert!(drafted.notes.contains("## The app"), "{}", drafted.notes);
+    assert!(
+        drafted.notes.contains("- Add the app entry point"),
+        "{}",
+        drafted.notes
+    );
+    assert!(
+        drafted.notes.contains("main prints hello"),
+        "{}",
+        drafted.notes
+    );
+}
+
+#[test]
+fn a_review_graph_run_writes_the_notes_of_its_change_before_the_intents() {
+    let run: Run = serde_json::from_value(json!({
+        "id": "rv-1", "task": "t1", "project": "app", "worker": 107, "change": "w-1", "revision": "w-1.r1",
+        "recipe": "review", "round": 1, "rounds": 2, "kind": "code", "state": "passed", "nodes": [],
+        "outcome": { "decision": "pass", "reasons": ["the entry point prints its greeting"], "at_ms": 1 },
+        "summary": "Reviewed on two models: the greeting is right and the tests cover it.",
+        "purpose": "review", "created_ms": 1, "updated_ms": 1
+    }))
+    .unwrap();
+    let notes = flow::change_notes(
+        "The app",
+        &json!({ "1": [{ "title": "Ignored intent" }] }),
+        Some(&run),
+    );
+    assert!(notes.contains("Reviewed on two models"), "{notes}");
+    assert!(
+        notes.contains("- the entry point prints its greeting"),
+        "{notes}"
+    );
+    assert!(
+        !notes.contains("Ignored intent"),
+        "the review's account wins: {notes}"
+    );
+    let fallback = flow::change_notes(
+        "The app",
+        &json!({ "1": [{ "title": "First", "summary": "" }], "2": [{ "title": "Latest", "summary": "the last round" }] }),
+        None,
+    );
+    assert!(
+        fallback.contains("- Latest")
+            && fallback.contains("the last round")
+            && !fallback.contains("First"),
+        "{fallback}"
+    );
 }

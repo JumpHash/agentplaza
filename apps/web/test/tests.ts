@@ -1978,6 +1978,7 @@ import './platforms-tests';
 import './attachments-tests';
 import './new-project-tests';
 import './environments-tests';
+import './releases-tests';
 import './maintenance-tests';
 import './chat-tools-tests';
 import './cache-tests';

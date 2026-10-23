@@ -17,6 +17,7 @@ import { mount as machines } from './machines';
 import { mount as history } from './history';
 import { mount as recipes } from './recipes';
 import { mount as recipeGraph } from './recipe-graph';
+import { mount as releases } from './releases';
 import { mount as hardwareLab } from './hardware-lab';
 import { mount as lab } from './lab';
 import { mount as mcp } from './mcp';
@@ -60,6 +61,7 @@ export const SCREENS: Screen[] = [
   { key: 'projects', label: 'Projects', icon: 'projects', section: 'Plaza', mount: projects },
   { key: 'work', label: 'Work', icon: 'commit', section: 'Plaza', mount: work },
   { key: 'tasks', label: 'Tasks', icon: 'tasks', section: 'Plaza', mount: tasks },
+  { key: 'releases', label: 'Releases', icon: 'git', section: 'Plaza', mount: releases },
   { key: 'history', label: 'History', icon: 'git', section: 'Plaza', mount: history },
   { key: 'recipes', label: 'Recipes', icon: 'rules', section: 'Plaza', mount: recipes },
   { key: 'library', label: 'Library', icon: 'library', section: 'Plaza', mount: files },

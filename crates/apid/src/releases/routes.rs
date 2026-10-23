@@ -25,6 +25,7 @@ fn deps(app: &App) -> Deps<'_> {
     Deps {
         weft: &app.weft,
         runs: &app.recipe_runs,
+        reviews: &app.reviews,
         releases: &app.releases,
     }
 }
