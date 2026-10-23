@@ -356,6 +356,7 @@ dependencies = [
  "apz-station",
  "apz-store",
  "apz-theme",
+ "apz-topology",
  "apz-trust",
  "apz-uds",
  "apz-view",
@@ -831,6 +832,15 @@ dependencies = [
  "apz-theme",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "apz-topology"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]

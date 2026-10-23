@@ -1,0 +1,33 @@
+name = "web-stack"
+
+[[service]]
+name = "api"
+artifact = "api-linux-x86_64"
+replicas = 2
+ports = [8080]
+env = { DATABASE_URL = "postgres://app@db/app", CACHE_URL = "redis://cache:6379" }
+
+[[service]]
+name = "db"
+image = "postgres:17"
+ports = [5432]
+data = "seed:app-small"
+
+[[service]]
+name = "cache"
+image = "redis:7"
+ports = [6379]
+
+[[service]]
+name = "web"
+artifact = "web-dist"
+serve = "static"
+ports = [8080]
+
+[observe]
+logs = "all"
+metrics = "otlp"
+traces = "otlp"
+
+[traffic]
+profile = "steady-200rps"

@@ -22574,6 +22574,76 @@
         }
       }
     },
+    "/v1/projects/{id}/topologies": {
+      "get": {
+        "operationId": "get_v1_projects_id_topologies",
+        "tags": [
+          "projects"
+        ],
+        "summary": "A project's test topologies: each .plaza/topologies/*.toml at main, typed, or the reason it does not parse",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "An upstream failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/nodes/{id}/stop": {
       "post": {
         "operationId": "post_v1_nodes_id_stop",
