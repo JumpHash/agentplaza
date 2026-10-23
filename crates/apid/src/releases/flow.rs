@@ -13,9 +13,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use weft::hash::Hash;
 
+use super::channels;
 use super::entity::{
     Release, ReleaseArtifact, ReleaseChange, ReleasePromotion, ReleaseState, ReleaseVerdict, Store,
 };
+use super::lanes;
+use super::versions::{self, Bump, Note};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
 use crate::review_graph::{Reviews, Run};
@@ -90,9 +93,15 @@ pub struct Deps<'a> {
 /// A request to cut a draft (and optionally a candidate).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Cut {
-    pub version: String,
+    /// The version. When absent it is numbered from the changes since `base` (22.3).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// How the version is numbered when it is not given: `semver` (the default), `calendar` or `build`.
+    #[serde(default)]
+    pub scheme: Option<String>,
     #[serde(default)]
     pub channel: Option<String>,
+    /// The release it follows, by id or version: the version is bumped from its version, and the notes start there.
     #[serde(default)]
     pub base: Option<String>,
     #[serde(default)]
@@ -146,7 +155,18 @@ pub fn change_notes(title: &str, intents: &Value, review: Option<&Run>) -> Strin
         }
     }
     // The fallback: the latest round's intents, each with its summary.
-    let latest = intents
+    for intent in latest_intents(intents) {
+        lines.push(format!("- {}", intent["title"].as_str().unwrap_or("")));
+        if let Some(summary) = intent["summary"].as_str().filter(|s| !s.trim().is_empty()) {
+            lines.push(format!("  {}", summary.trim()));
+        }
+    }
+    lines.join("\n")
+}
+
+/// The intents of a change's latest round (Weft keeps a change's intents per round: round `n` → its list).
+fn latest_intents(intents: &Value) -> &[Value] {
+    intents
         .as_object()
         .and_then(|rounds| {
             rounds
@@ -154,14 +174,60 @@ pub fn change_notes(title: &str, intents: &Value, review: Option<&Run>) -> Strin
                 .filter_map(|(n, list)| n.parse::<u32>().ok().map(|n| (n, list)))
                 .max_by_key(|(n, _)| *n)
         })
-        .map(|(_, list)| list);
-    for intent in latest.and_then(|l| l.as_array()).into_iter().flatten() {
-        lines.push(format!("- {}", intent["title"].as_str().unwrap_or("")));
-        if let Some(summary) = intent["summary"].as_str().filter(|s| !s.trim().is_empty()) {
-            lines.push(format!("  {}", summary.trim()));
-        }
+        .and_then(|(_, list)| list.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+/// The version of a draft that names none: the next one after its base, bumped by its changes, in the project's scheme.
+/// The base is the one the cut names, or the newest release of the line (of main, when the cut is for main).
+fn number(
+    d: &Deps,
+    project: &str,
+    cut: &Cut,
+    lane: &str,
+    bumps: &[Bump],
+) -> Result<String, String> {
+    if bumps.is_empty() {
+        return Err("a release needs a version, or changes to number it from".into());
     }
-    lines.join("\n")
+    let scheme = versions::Scheme::parse(cut.scheme.as_deref())?;
+    let base = match cut.base.as_deref() {
+        Some(base) => Some(
+            d.releases
+                .list(project)
+                .into_iter()
+                .find(|r| r.id == base || r.version == base)
+                .ok_or_else(|| format!("{base} is not a release of {project}"))?
+                .version,
+        ),
+        None => d
+            .releases
+            .list(project)
+            .into_iter()
+            .filter(|r| {
+                !matches!(
+                    r.state,
+                    ReleaseState::Draft | ReleaseState::Failed | ReleaseState::Abandoned
+                )
+            })
+            .find(|r| {
+                if lane == "main" {
+                    r.lane == "main"
+                } else {
+                    lanes::line_of(r) == lane
+                }
+            })
+            .map(|r| r.version),
+    };
+    let (year, month) = versions::year_month(apz_plaza::now_ms());
+    versions::next(
+        scheme,
+        base.as_deref(),
+        bumps,
+        lane != "main",
+        (year, month),
+    )
 }
 
 /// Starts a release run for `subject` with `targets` build items, and settles its draft (the draft is a stand-in
@@ -187,11 +253,13 @@ fn start_run(d: &Deps, project: &str, subject: &str, targets: usize) -> Result<S
 /// Cuts a draft: checks the changes are landed, proposes the release in Weft (the notes and the targets come from its
 /// statement), and starts its run. `repo` is the project's Weft repository.
 pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, String> {
-    if cut.version.trim().is_empty() {
-        return Err("a release needs a version".into());
-    }
+    let channel = channels::of(cut.channel.as_deref().unwrap_or("stable"))?;
+    let lane = cut.lane.clone().unwrap_or_else(|| "main".into());
+    // A release of a line names the line to Weft (`release/1.4`); a release of main names none.
+    let line = Some(lane.as_str()).filter(|l| *l != "main");
     let mut changes = Vec::new();
     let mut sections = Vec::new();
+    let mut bumps = Vec::new();
     for change in &cut.changes {
         let detail = d.weft.read(&format!("/changes/{change}"))?;
         if detail["state"].as_str() != Some("landed") {
@@ -200,6 +268,24 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
             ));
         }
         let title = text(&detail["title"]);
+        // A change with no intents is read by its title, as a patch unless its title says otherwise.
+        let intents = latest_intents(&detail["intents"]);
+        let notes: Vec<Note> = if intents.is_empty() {
+            vec![Note {
+                title: title.clone(),
+                ..Note::default()
+            }]
+        } else {
+            intents
+                .iter()
+                .map(|i| Note {
+                    kind: text(&i["kind"]),
+                    title: text(&i["title"]),
+                    summary: text(&i["summary"]),
+                })
+                .collect()
+        };
+        bumps.push(versions::bump_of(&notes));
         // The change's review run: the newest review of its task (sealed rounds, not re-checks).
         let review = detail["task"]
             .as_str()
@@ -217,9 +303,18 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
             review_run: review.map(|run| run.id),
         });
     }
+    let version = match cut
+        .version
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(version) => version.to_string(),
+        None => number(d, project, cut, &lane, &bumps)?,
+    };
     let proposal = d.weft.post(
         &format!("/repos/{repo}/releases"),
-        &json!({ "version": cut.version, "from": cut.from, "line": cut.lane.as_ref().filter(|l| *l != "main") }),
+        &json!({ "version": version, "from": cut.from, "line": line }),
     )?;
     let targets: Vec<String> = proposal["targets"]
         .as_array()
@@ -233,10 +328,10 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
         id: id.clone(),
         project: project.to_string(),
         repo: repo.to_string(),
-        version: cut.version.clone(),
-        channel: cut.channel.clone().unwrap_or_else(|| "stable".into()),
+        version: version.clone(),
+        channel: channel.name,
         base: cut.base.clone(),
-        lane: cut.lane.clone().unwrap_or_else(|| "main".into()),
+        lane,
         from: text(&proposal["from"]),
         state: ReleaseState::Draft,
         number: None,

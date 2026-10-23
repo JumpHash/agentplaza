@@ -389,7 +389,9 @@ fn relay_events(app: &Arc<App>) {
                     "land" | "import" => "weft_land",
                     "release.propose" | "release.sign" | "release.export" | "artifact.put"
                     | "release.candidate" | "release.qualify" | "release.verdict"
-                    | "release.publish" | "release.promote" | "release.yank" => "weft_release",
+                    | "release.publish" | "release.promote" | "release.yank" | "release.lane" => {
+                        "weft_release"
+                    }
                     "export" | "connection.add" | "connection.state" | "connection.remove" => {
                         "weft_export"
                     }

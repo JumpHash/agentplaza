@@ -12,6 +12,8 @@ use weft::store::Store;
 
 use super::entity::{Release, ReleaseState, Store as Releases};
 use super::flow::{self, Builder, Built, Cut, Deps, Ledger};
+use super::lanes::{self, Agents};
+use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
 use crate::review_graph::{Reviews, Run};
 use apz_blobs::Blobs;
@@ -78,7 +80,7 @@ fn put(store: &Store, path: &str, text: &str) -> Delta {
 
 /// A Weft on a scratch store with one landed change (a Cargo package declaring two targets), served in-process.
 /// Returns the client the flow uses, the server's handle (it serves while the handle lives) and the directory.
-fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String) {
+fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
     let dir = std::env::temp_dir().join(format!("apid-release-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let owner = KeyPair::generate();
@@ -86,6 +88,7 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String) {
     let hub_seed = hub.seed_hex();
     let signing = KeyPair::generate();
     let agent = KeyPair::generate();
+    let agent_seed = agent.seed_hex();
     let change;
     {
         let store = Store::init(
@@ -175,7 +178,7 @@ fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String) {
         ],
     )
     .unwrap();
-    (client, handle, dir, change)
+    (client, handle, dir, change, agent_seed)
 }
 
 /// The dependencies of one test: its Weft, the recipe runs, the review graph's store and the release store.
@@ -212,7 +215,7 @@ impl World {
 
 fn cut(version: &str) -> Cut {
     Cut {
-        version: version.into(),
+        version: Some(version.into()),
         changes: vec![],
         ..Cut::default()
     }
@@ -224,7 +227,7 @@ fn life(world: &World, id: &str) -> ReleaseState {
 
 #[test]
 fn a_release_is_cut_built_per_target_checked_published_and_promoted() {
-    let (client, _handle, _dir, _change) = lab("life");
+    let (client, _handle, _dir, _change, _agent) = lab("life");
     let world = World::new(
         client,
         "a_release_is_cut_built_per_target_checked_published_and_promoted",
@@ -293,7 +296,7 @@ fn a_release_is_cut_built_per_target_checked_published_and_promoted() {
 
 #[test]
 fn a_refused_build_leaves_the_draft_and_the_next_cut_runs_again() {
-    let (client, _handle, _dir, _change) = lab("refused");
+    let (client, _handle, _dir, _change, _agent) = lab("refused");
     let world = World::new(
         client,
         "a_refused_build_leaves_the_draft_and_the_next_cut_runs_again",
@@ -330,7 +333,7 @@ fn a_refused_build_leaves_the_draft_and_the_next_cut_runs_again() {
 
 #[test]
 fn a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused() {
-    let (client, _handle, _dir, _change) = lab("moves");
+    let (client, _handle, _dir, _change, _agent) = lab("moves");
     let world = World::new(
         client,
         "a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused",
@@ -344,7 +347,7 @@ fn a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused() {
     flow::qualify(&d, &drafted.id).unwrap();
     assert_eq!(life(&world, &drafted.id), ReleaseState::Qualifying);
     let unlanded = Cut {
-        version: "v0.3.1".into(),
+        version: Some("v0.3.1".into()),
         changes: vec!["w-99".into()],
         ..Cut::default()
     };
@@ -355,11 +358,11 @@ fn a_candidate_is_not_cut_from_a_candidate_and_unlanded_changes_are_refused() {
 
 #[test]
 fn a_change_without_a_review_contributes_its_intents_to_the_notes() {
-    let (client, _handle, _dir, change) = lab("intents");
+    let (client, _handle, _dir, change, _agent) = lab("intents");
     let world = World::new(client, "intents_notes");
     let d = world.deps();
     let cut_with_change = Cut {
-        version: "v0.4.0".into(),
+        version: Some("v0.4.0".into()),
         changes: vec![change],
         ..Cut::default()
     };
@@ -416,5 +419,327 @@ fn a_review_graph_run_writes_the_notes_of_its_change_before_the_intents() {
             && fallback.contains("the last round")
             && !fallback.contains("First"),
         "{fallback}"
+    );
+}
+
+/// The lab's agent 107 writes its statements with its own key, as the hub's `sign_as_agent` does in production.
+struct TestAgents {
+    client: Client,
+    key: KeyPair,
+}
+
+impl Agents for TestAgents {
+    fn sign(&self, worker: u64, kind: &str, body: Value) -> Result<Value, String> {
+        if worker != 107 {
+            return Err(format!("the lab certified agent 107's key, not {worker}'s"));
+        }
+        let signed = Statement::new(kind, Actor::Agent { cid: worker }, body).sign(&self.key);
+        self.client.post("/records", &signed.to_json())
+    }
+}
+
+/// Agent 107 lands a change of one file on `reference` the way the lander does: opened on the reference, drafted and
+/// sealed, queued, and stepped until it has landed. Returns the change's name.
+fn land_on(
+    world: &World,
+    agents: &TestAgents,
+    reference: &str,
+    title: &str,
+    path: &str,
+    text: &str,
+) -> String {
+    let opened = world
+        .ledger
+        .post(
+            "/lanes",
+            &json!({ "repo": "app", "ref": reference, "title": title, "author": { "kind": "agent", "cid": 107 } }),
+        )
+        .unwrap();
+    let change = opened["change"].as_str().unwrap().to_string();
+    let deltas = vec![Delta {
+        path: path.into(),
+        after: Some(world.ledger.upload(text.as_bytes()).unwrap()),
+        mode: 0o100644,
+    }];
+    agents
+        .sign(107, "revision.draft", json!({ "change": change, "n": 1, "deltas": deltas, "tool_calls": ["ide_write#1"], "turn": 1, "model": "claude-opus-5-5" }))
+        .unwrap();
+    agents
+        .sign(
+            107,
+            "revision.seal",
+            json!({ "change": change, "n": 1, "deltas": deltas, "model": "claude-opus-5-5" }),
+        )
+        .unwrap();
+    world
+        .ledger
+        .statement(
+            "queue.add",
+            json!({ "repo": "app", "ref": reference, "change": change, "n": 1 }),
+        )
+        .unwrap();
+    for _ in 0..4 {
+        let step = world
+            .ledger
+            .post("/repos/app/queue/step", &json!({ "ref": reference }))
+            .unwrap();
+        if step["outcome"] == "landed" {
+            return change;
+        }
+    }
+    panic!("{change} did not land on {reference}");
+}
+
+/// The head of a ref of the test repository, as Weft's repo view names it.
+fn head_of(world: &World, reference: &str) -> String {
+    world.ledger.read("/repos/app").unwrap()["refs"][reference]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn a_fix_is_backported_to_a_release_line_and_a_patch_release_is_cut_from_that_line() {
+    let (client, _handle, _dir, change, agent) = lab("backport");
+    let agents = TestAgents {
+        client: client.clone(),
+        key: KeyPair::from_hex(&agent).unwrap(),
+    };
+    let world = World::new(client, "a_fix_is_backported_to_a_release_line");
+    let d = world.deps();
+
+    // 1.4.0 is cut from main, built, checked and published; its line is cut at its revision.
+    let released = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            version: Some("1.4.0".into()),
+            changes: vec![change],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    let candidate = flow::candidate(&d, &released.id, &FakeBuilder, Some(1)).unwrap();
+    flow::checks(&d, &candidate.id, true, "fake CI: every check passed").unwrap();
+    let published = flow::publish(&d, &candidate.id).unwrap();
+    assert_eq!(published.state, ReleaseState::Published);
+    let line_cut = lanes::cut_lane(&d, &published.id).unwrap();
+    assert_eq!(lanes::line_of(&line_cut), "release/1.4");
+    assert_eq!(head_of(&world, "release/1.4"), published.from);
+
+    // The fix lands on main first; the line does not have it yet.
+    let fix = land_on(
+        &world,
+        &agents,
+        "main",
+        "Fix the greeting",
+        "src/main.rs",
+        "fn main() { println!(\"fixed\") }\n",
+    );
+    let main_after_fix = head_of(&world, "main");
+    assert_ne!(main_after_fix, published.from);
+
+    // The backport is a change on the line with its own review; the review has not passed, so it does not land.
+    let backport = lanes::backport(&d, &agents, "app", "release/1.4", &fix, 107).unwrap();
+    assert_eq!(backport.state, "reviewing");
+    assert_eq!(backport.line, "release/1.4");
+    assert_eq!(
+        d.runs.view(&backport.review_run).unwrap().run.state,
+        RunState::Running
+    );
+    let early = lanes::land_backport(&d, "app", &backport.change).unwrap_err();
+    assert!(early.contains("has not passed yet"), "{early}");
+    assert_eq!(head_of(&world, "release/1.4"), published.from);
+
+    // The review passes, and the line's queue lands the backport on the line only.
+    d.runs.finish_subject(
+        "backport",
+        &backport.change,
+        &Report::verdict(true),
+        "passed",
+        false,
+        apz_plaza::now_ms(),
+    );
+    assert_eq!(
+        d.runs.view(&backport.review_run).unwrap().run.state,
+        RunState::Passed
+    );
+    let landing = lanes::land_backport(&d, "app", &backport.change).unwrap();
+    assert_eq!(landing.line, "release/1.4");
+    assert_eq!(head_of(&world, "release/1.4"), landing.head);
+    assert_ne!(landing.head, published.from);
+    assert_eq!(
+        head_of(&world, "main"),
+        main_after_fix,
+        "main does not move for a backport"
+    );
+    assert!(
+        lanes::land_backport(&d, "app", &backport.change)
+            .unwrap_err()
+            .contains("has landed already")
+    );
+
+    // The patch release is cut from the line: numbered from 1.4.0 by the fix (a patch), drafted from the line's head.
+    let patch = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            base: Some(published.id.clone()),
+            lane: Some("release/1.4".into()),
+            changes: vec![backport.change.clone()],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(patch.version, "1.4.1");
+    assert_eq!(patch.lane, "release/1.4");
+    assert_eq!(patch.from, landing.head);
+    assert!(
+        patch.notes.contains("Backport: Fix the greeting"),
+        "{}",
+        patch.notes
+    );
+    let built = flow::candidate(&d, &patch.id, &FakeBuilder, None).unwrap();
+    assert_eq!(built.state, ReleaseState::Candidate);
+    flow::checks(&d, &built.id, true, "fake CI: every check passed").unwrap();
+    let patched = flow::publish(&d, &built.id).unwrap();
+    assert_eq!(patched.state, ReleaseState::Published);
+    assert_eq!(
+        flow::refresh(&d, &published.id).unwrap().state,
+        ReleaseState::Superseded,
+        "the patch takes the place of 1.4.0 on its line"
+    );
+}
+
+#[test]
+fn a_backport_is_only_of_a_landed_fix_on_main_to_a_cut_line() {
+    let (client, _handle, _dir, change, agent) = lab("backport_refusals");
+    let agents = TestAgents {
+        client: client.clone(),
+        key: KeyPair::from_hex(&agent).unwrap(),
+    };
+    let world = World::new(
+        client,
+        "a_backport_is_only_of_a_landed_fix_on_main_to_a_cut_line",
+    );
+    let d = world.deps();
+    let not_a_line = lanes::backport(&d, &agents, "app", "main", &change, 107).unwrap_err();
+    assert!(not_a_line.contains("is not a release line"), "{not_a_line}");
+    let no_line = lanes::backport(&d, &agents, "app", "release/9.9", &change, 107).unwrap_err();
+    assert!(no_line.contains("has no release/9.9"), "{no_line}");
+    assert!(lanes::backport(&d, &agents, "app", "release/1.4", "w-99", 107).is_err());
+
+    // A draft has no line to cut: only a published release does.
+    let drafted = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            version: Some("1.4.0".into()),
+            changes: vec![change],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    let cut = lanes::cut_lane(&d, &drafted.id).unwrap_err();
+    assert!(cut.contains("from a published release"), "{cut}");
+}
+
+#[test]
+fn a_draft_without_a_version_is_numbered_from_its_changes_and_a_line_takes_patches_only() {
+    let (client, _handle, _dir, change, _agent) = lab("numbering");
+    let world = World::new(client, "a_draft_without_a_version_is_numbered");
+    let d = world.deps();
+    // The lab's change is a feature: the first release is 0.1.0 (the base is 0.0.0).
+    let first = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            changes: vec![change.clone()],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(first.version, "0.1.0");
+    assert_eq!(first.channel, "stable");
+    // The next is numbered from the release it follows.
+    let second = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            base: Some(first.id.clone()),
+            changes: vec![change.clone()],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(second.version, "0.2.0");
+    // The project's build numbers count up from the last one.
+    let build = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            scheme: Some("build".into()),
+            changes: vec![change.clone()],
+            ..Cut::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(build.version, "1");
+
+    // A line takes patches only: a feature on the line is refused before anything is proposed.
+    let feature_on_line = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            base: Some(first.id.clone()),
+            lane: Some("release/0.1".into()),
+            changes: vec![change.clone()],
+            ..Cut::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        feature_on_line.contains("patches only"),
+        "{feature_on_line}"
+    );
+
+    let nothing = flow::draft(&d, "app", "app", &Cut::default()).unwrap_err();
+    assert!(nothing.contains("a version, or changes"), "{nothing}");
+    let unknown_channel = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            version: Some("0.9.0".into()),
+            channel: Some("Nightly".into()),
+            ..Cut::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        unknown_channel.contains("not a channel"),
+        "{unknown_channel}"
+    );
+    let unknown_base = flow::draft(
+        &d,
+        "app",
+        "app",
+        &Cut {
+            base: Some("rel-99".into()),
+            changes: vec![change],
+            ..Cut::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        unknown_base.contains("is not a release of app"),
+        "{unknown_base}"
     );
 }

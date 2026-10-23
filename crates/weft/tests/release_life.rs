@@ -283,3 +283,120 @@ fn copy_dir(from: &Path, to: &Path) {
         }
     }
 }
+
+/// A change written by `cid` on `reference` (main or a release line): one file, sealed and landed through that
+/// reference's queue.
+fn land_on(p: &Plaza, reference: &str, cid: u64, title: &str, path: &str, text: &str) -> String {
+    let actor = p.agent(cid).actor.clone();
+    let change = p
+        .store
+        .open_lane(
+            "app",
+            reference,
+            Some(&format!("task {title}")),
+            title,
+            actor,
+            None,
+            "normal",
+        )
+        .unwrap();
+    let deltas = vec![p.put(path, text)];
+    p.agent_says(cid, "revision.draft", json!({ "change": change, "n": 1, "deltas": deltas, "tool_calls": ["ide_write#1"], "turn": 1, "model": "claude-opus-5-5" }))
+        .unwrap();
+    p.agent_says(
+        cid,
+        "revision.seal",
+        json!({ "change": change, "n": 1, "deltas": deltas, "model": "claude-opus-5-5" }),
+    )
+    .unwrap();
+    let expected = p.store.state().repos["app"].head(reference);
+    p.hub_says(
+        "queue.add",
+        json!({ "repo": "app", "ref": reference, "change": change, "n": 1 }),
+    )
+    .unwrap();
+    p.hub_says("land", json!({ "repo": "app", "ref": reference, "change": change, "n": 1, "expected": expected, "deltas": deltas })).unwrap();
+    change
+}
+
+#[test]
+fn a_published_release_cuts_its_line_and_a_maintenance_release_is_proposed_from_that_line() {
+    let p = proposed("rel-lane");
+    let first = p.store.state().repos["app"].head("main");
+    let artifacts = build(&p, "v0.1.0");
+    // A lane is cut from a published release: a candidate has none yet.
+    candidate(&p, "v0.1.0", &artifacts).unwrap();
+    assert!(
+        say(&p, mv("release.lane", "v0.1.0", json!({})))
+            .unwrap_err()
+            .contains("from a published release")
+    );
+    ci(&p, "v0.1.0", "passed").unwrap();
+    say(&p, mv("release.publish", "v0.1.0", json!({}))).unwrap();
+    say(&p, mv("release.lane", "v0.1.0", json!({}))).unwrap();
+    // Cut again: the line already starts at the release, so nothing changes.
+    say(&p, mv("release.lane", "v0.1.0", json!({}))).unwrap();
+    assert_eq!(
+        p.store.state().repos["app"].refs["release/0.1"],
+        vec![first.clone()]
+    );
+
+    // A fix lands on the line, and main moves on without it: a release of the line is proposed from the line's head.
+    let line_fix = land_on(
+        &p,
+        "release/0.1",
+        107,
+        "Fix the greeting",
+        "src/main.rs",
+        "fn main() { println!(\"hi\") }\n",
+    );
+    assert!(p.store.state().change(&line_fix).is_ok());
+    let line_head = p.store.state().repos["app"].head("release/0.1");
+    assert_ne!(line_head, first);
+    land_on(
+        &p,
+        "main",
+        107,
+        "Work on main",
+        "src/lib.rs",
+        "pub fn x() {}\n",
+    );
+    let main_head = p.store.state().repos["app"].head("main");
+    let off_line = weft::release::proposal(
+        &p.store,
+        "app",
+        "v0.1.1",
+        Some(&main_head),
+        Some("release/0.1"),
+    )
+    .unwrap_err();
+    assert!(off_line.contains("is not on release/0.1"), "{off_line}");
+
+    let mut body =
+        weft::release::proposal(&p.store, "app", "v0.1.1", None, Some("release/0.1")).unwrap();
+    assert_eq!(body["from"], json!(line_head));
+    assert_eq!(body["line"], json!("release/0.1"));
+    let notes = body["notes"].as_str().unwrap().to_string();
+    assert!(notes.contains("Fix the greeting"), "{notes}");
+    assert!(!notes.contains("Work on main"), "{notes}");
+    body["targets"] = json!(TARGETS);
+    p.hub_says("release.propose", body).unwrap();
+    assert_eq!(
+        p.store
+            .state()
+            .release("app", "v0.1.1")
+            .unwrap()
+            .propose
+            .line
+            .as_deref(),
+        Some("release/0.1")
+    );
+
+    // The patch is built, checked and published; it supersedes the release its line was cut from.
+    let patch = build(&p, "v0.1.1");
+    candidate(&p, "v0.1.1", &patch).unwrap();
+    ci(&p, "v0.1.1", "passed").unwrap();
+    say(&p, mv("release.publish", "v0.1.1", json!({}))).unwrap();
+    assert_eq!(life(&p.store, "v0.1.1").state, "published");
+    assert_eq!(life(&p.store, "v0.1.0").state, "superseded");
+}

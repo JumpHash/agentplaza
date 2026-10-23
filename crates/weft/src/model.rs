@@ -448,6 +448,15 @@ pub struct ReleaseMove {
     pub reason: String,
 }
 
+/// `release.lane` (hub-signed): cuts a release's line (`release/1.4`, or the release's own `line`) at the revision the
+/// release was cut from, so maintenance releases and their backports land on it (PLAN 22.3). Only a published release
+/// has a lane.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseLaneCut {
+    pub repo: String,
+    pub version: String,
+}
+
 /// `release.verdict` (hub-signed): a verdict on a release from its source, `ci` (the checks of its commit) or
 /// `qualification`. `verdict` is `passed`, `failed` or `abandoned`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
