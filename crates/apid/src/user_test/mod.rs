@@ -11,16 +11,32 @@
 //! planner reads the failure first: a failure it judges not a defect of the product is dropped without a re-run.
 //!
 //! A run is started by the owner's fire route (`triggers/routes.rs`) and queued here; the scheduler's tick runs it on its
-//! own thread (checks.rs is the same shape). The target is the step's `stand_in` (target.rs): the stand-in is the only
-//! target in 8.1, and the web, terminal, desktop, simulator and device targets of 8.2–8.5 implement the same trait.
+//! own thread (checks.rs is the same shape). The target is the one the step's config names (`opener`): the stand-in
+//! (target.rs, in-process data), or a web page or a terminal program placed in the lane's test fork (fork.rs): the browser
+//! and the program run in the fork, and the hub only drives them over the fork's exec channel and its port streams. The
+//! desktop, simulator and device targets of 8.3–8.5 implement the same trait.
 
+pub mod fork;
 pub mod models;
 pub mod run;
 pub mod scenario;
 pub mod target;
+#[cfg(test)]
+mod targets_test;
+pub mod tui;
+pub mod web;
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::base_builds;
+use crate::base_recipe;
+use crate::base_vm::{Fork, Live};
+use crate::placement;
+use crate::previews::life::publish_port;
+use crate::previews::proxy::LOCAL_INBOUND;
+use crate::project_memory;
+use crate::project_stack::{self, TargetKind};
 use crate::recipes::graph::StepState;
 use crate::recipes::model::{USER_TEST, UserTest};
 use crate::recipes::runs::CheckRow;
@@ -28,10 +44,13 @@ use crate::recipes::{Move, Report};
 use crate::review_graph::user::by;
 use crate::review_graph::{Finding, Verdict};
 use crate::state::App;
+use fork::{Channel, DEVTOOLS_PORT, browser_command, port_dial};
 use models::{GatewayModels, Models, PlanRequest, Roles};
 use run::{Ctx, Failure, Timed, run_scenario};
 use scenario::{Origin, Scenario, accessibility};
 use target::Target;
+use tui::ForkTui;
+use web::Web;
 
 /// The inputs of one execution: the change's symbol, its acceptance, the regression scenarios and the exploratory budget.
 pub struct Input<'a> {
@@ -128,10 +147,10 @@ impl Execution {
 /// Runs the step: the planner's scenarios, the regressions and the accessibility scenario, each on a fresh target from
 /// `open`; the failures are judged, re-run and ruled on. An error is the step failing to run (the models or the target),
 /// not a finding.
-pub fn execute(
+pub fn execute<'a>(
     ctx: &Ctx,
     input: &Input,
-    open: &mut dyn FnMut() -> Result<Box<dyn Target>, String>,
+    open: &mut dyn FnMut() -> Result<Box<dyn Target + 'a>, String>,
 ) -> Result<Execution, String> {
     let titles: Vec<String> = input.regressions.iter().map(|s| s.title.clone()).collect();
     let planned = ctx.models.plan(&PlanRequest {
@@ -382,40 +401,187 @@ fn finish(app: &App, run: &str, step: &str, settled: Settled, now: u64) -> Vec<M
     )
 }
 
-/// One `test:user` step of a run, from its config: the models, the target and the regressions of the project.
-fn run_step(
+/// Opens a fresh target for each scenario and each re-run.
+type Opener<'a> = Box<dyn FnMut() -> Result<Box<dyn Target + 'a>, String> + 'a>;
+
+/// The lane's test fork of a fork-placed target (PLAN 19.3): the fork, the node and the VM it runs in, and the port of the
+/// app a web target's page is served from. The hub retires the fork when the step's scenarios are done.
+pub struct Placed<'h> {
+    pub fork: RefCell<Fork<'h, Live<'h>>>,
+    pub node: String,
+    pub run: String,
+    pub cid: u64,
+    pub app_port: u16,
+}
+
+/// The fork a step's web or terminal target runs in, or `None` for the stand-in. A web target's fork is the lane's
+/// preview base at the lane's revision, serving the app (the preview target's `serve`) and running the browser in it; a
+/// terminal target's fork is the test base at the lane's revision.
+fn placed_for<'h>(
     app: &App,
-    run: &str,
-    step: &str,
+    host: &'h Live<'h>,
     config: &UserTest,
     project: &str,
     change: &str,
-    now: u64,
-) -> Result<Vec<Move>, String> {
-    let roles = Roles {
-        planner: config.planner.clone(),
-        driver: config.driver.clone(),
-        escalate: config.escalate.clone(),
-        checker: config.checker.clone(),
+) -> Result<Option<Placed<'h>>, String> {
+    if config.stand_in.is_some() {
+        return Ok(None);
+    }
+    if config.web.is_none() && config.tui.is_none() {
+        return Err("the step names no target (stand_in, web or tui)".into());
+    }
+    let rev = project_memory::landed_revision(app, change)?;
+    let stack = project_stack::read(app, project)?
+        .ok_or_else(|| format!("{} is not on main", project_stack::FILE))?;
+    let repo = app
+        .projects
+        .get(project)
+        .and_then(|p| p.repo)
+        .ok_or_else(|| format!("{project} has no repo yet"))?;
+    let pool = base_builds::pool_keys(&stack)
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let node = placement::base_node(app, project, &pool, &base_recipe::volumes(&stack))
+        .ok_or_else(|| format!("no node in the pool {pool} has room for a fork"))?;
+    let (steps, app_port) = if config.web.is_some() {
+        let target = stack
+            .targets
+            .iter()
+            .find(|t| t.kind == Some(TargetKind::Preview))
+            .ok_or("the project has no preview target to serve the page's app")?;
+        let (serve, port) = match (
+            target
+                .serve
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            target.port.filter(|port| *port != 0),
+        ) {
+            (Some(serve), Some(port)) => (serve, port),
+            _ => {
+                return Err(format!(
+                    "preview target {} needs a serve command and a port",
+                    target.name
+                ));
+            }
+        };
+        (
+            base_recipe::preview_steps(&stack, &repo, &rev, serve, port),
+            port,
+        )
+    } else {
+        (base_recipe::fork_steps(&stack, &repo, &rev), 0)
     };
-    let Some(stand) = config.stand_in.as_ref() else {
-        return Ok(finish(
-            app,
-            run,
-            step,
-            Settled {
-                passed: false,
-                findings: 0,
-                commands: "no target".into(),
-                summary: "no target: the step has no stand_in, so no scenario ran".into(),
-            },
-            now,
+    let fork = Fork::start(host, node.clone(), project.to_string(), &steps)?;
+    let Some((run, cid)) = fork.location() else {
+        let _ = fork.retire();
+        return Err("the test fork has no VM".into());
+    };
+    let placed = Placed {
+        fork: RefCell::new(fork),
+        node,
+        run,
+        cid,
+        app_port,
+    };
+    if config.web.is_some()
+        && let Err(why) = start_browser(host, &placed)
+    {
+        retire_placed(placed);
+        return Err(why);
+    }
+    Ok(Some(placed))
+}
+
+/// Starts the browser in a web target's fork and makes its DevTools port reachable (6.4: the guest's announcement, or
+/// noded's registration when none comes).
+fn start_browser(host: &Live<'_>, placed: &Placed<'_>) -> Result<(), String> {
+    let answer = placed.fork.borrow_mut().background(&browser_command())?;
+    if !answer.ok {
+        return Err(format!(
+            "the browser did not start in the fork: {}",
+            answer.output.trim_end()
         ));
+    }
+    publish_port(host, &placed.node, &placed.run, placed.cid, DEVTOOLS_PORT)
+}
+
+/// Retires a placed fork: its VM is stopped.
+fn retire_placed(placed: Placed<'_>) {
+    if let Err(why) = placed.fork.into_inner().retire() {
+        eprintln!("apid: a user test's fork: {why}");
+    }
+}
+
+/// The opener of the step's target: the stand-in (scripted data, in-process), a page of the fork's browser, or a program in
+/// the fork's pseudo-terminal.
+fn opener<'a, 'h>(
+    app: &'a App,
+    config: &'a UserTest,
+    placed: Option<&'a Placed<'h>>,
+) -> Result<Opener<'a>, String> {
+    if let Some(stand) = &config.stand_in {
+        let stand = stand.clone();
+        let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+            Ok(Box::new(stand.open()))
+        });
+        return Ok(open);
+    }
+    let placed = placed.ok_or("the step names no target (stand_in, web or tui)")?;
+    if let Some(page) = &config.web {
+        let url = format!(
+            "http://127.0.0.1:{}/{}",
+            placed.app_port,
+            page.path.trim_start_matches('/')
+        );
+        let mut dial = port_dial(
+            &app.nodes,
+            &placed.node,
+            placed.cid,
+            DEVTOOLS_PORT,
+            LOCAL_INBOUND,
+        );
+        let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+            Ok(Box::new(Web::attach(&mut dial, &url)?))
+        });
+        return Ok(open);
+    }
+    let Some(tui) = &config.tui else {
+        return Err("the step names no target (stand_in, web or tui)".into());
+    };
+    let channel: &'a dyn Channel = &placed.fork;
+    let (command, cols, rows) = (tui.command.clone(), tui.cols, tui.rows);
+    let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+        Ok(Box::new(ForkTui::open(channel, &command, cols, rows)?))
+    });
+    Ok(open)
+}
+
+/// What a step's scenarios came to: the execution, or why no target or no run.
+enum Ran {
+    NoTarget(String),
+    Failed(String),
+    Done(Execution),
+}
+
+/// Runs the step's scenarios on its target, with the gateway's models and the project's regressions.
+fn run_scenarios(
+    app: &App,
+    config: &UserTest,
+    project: &str,
+    change: &str,
+    roles: &Roles,
+    placed: Option<&Placed<'_>>,
+) -> Ran {
+    let mut open = match opener(app, config, placed) {
+        Ok(open) => open,
+        Err(why) => return Ran::NoTarget(why),
     };
     let gateway = app.providers.gateway();
     let models = GatewayModels {
         gateway: &gateway,
-        roles: &roles,
+        roles,
     };
     let mut regressions: Vec<Scenario> = Vec::new();
     for json in app.reviews.confirmed_scenarios(project) {
@@ -438,13 +604,54 @@ fn run_step(
         regressions: &regressions,
         exploratory: config.exploratory,
     };
-    let mut open = || -> Result<Box<dyn Target>, String> {
-        let target: Box<dyn Target> = Box::new(stand.open());
-        Ok(target)
+    match execute(&ctx, &input, &mut *open) {
+        Ok(execution) => Ran::Done(execution),
+        Err(why) => Ran::Failed(why),
+    }
+}
+
+/// One `test:user` step of a run, from its config: the models, the target and the regressions of the project.
+fn run_step(
+    app: &App,
+    run: &str,
+    step: &str,
+    config: &UserTest,
+    project: &str,
+    change: &str,
+    now: u64,
+) -> Result<Vec<Move>, String> {
+    let roles = Roles {
+        planner: config.planner.clone(),
+        driver: config.driver.clone(),
+        escalate: config.escalate.clone(),
+        checker: config.checker.clone(),
     };
-    let execution = match execute(&ctx, &input, &mut open) {
-        Ok(execution) => execution,
-        Err(why) => {
+    let no_target = |why: String| {
+        finish(
+            app,
+            run,
+            step,
+            Settled {
+                passed: false,
+                findings: 0,
+                commands: "no target".into(),
+                summary: format!("no target: {why}, so no scenario ran"),
+            },
+            now,
+        )
+    };
+    let host = Live(app);
+    let placed = match placed_for(app, &host, config, project, change) {
+        Ok(placed) => placed,
+        Err(why) => return Ok(no_target(why)),
+    };
+    let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref());
+    if let Some(placed) = placed {
+        retire_placed(placed);
+    }
+    let execution = match ran {
+        Ran::NoTarget(why) => return Ok(no_target(why)),
+        Ran::Failed(why) => {
             return Ok(finish(
                 app,
                 run,
@@ -458,6 +665,7 @@ fn run_step(
                 now,
             ));
         }
+        Ran::Done(execution) => execution,
     };
     let found: Vec<(&'static str, Finding)> = execution
         .found

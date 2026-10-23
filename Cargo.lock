@@ -363,6 +363,7 @@ dependencies = [
  "apz-trust",
  "apz-uds",
  "apz-view",
+ "apz-vt",
  "argon2",
  "base64 0.22.1",
  "blake2",

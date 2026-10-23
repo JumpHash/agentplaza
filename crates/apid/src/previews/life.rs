@@ -168,24 +168,9 @@ pub fn start_on<H: Host>(
     let Some((run, cid)) = fork.location() else {
         return Err("the preview's fork has no VM".to_string());
     };
-    // The guest announces its port once the app listens, and noded registers it then (6.4): the hub does not ask noded.
-    // It waits briefly for that announcement, and registers the port itself only when none came (the fallback).
-    if !await_announcement(cid, port, ANNOUNCE_WAIT) {
-        let registered = ctx.host.noded(
-            node,
-            "POST",
-            &format!("/v1/runs/{run}/ports"),
-            Some(&json!({"cid": cid, "port": port})),
-        );
-        match registered {
-            Ok((200, _)) => {}
-            other => {
-                let _ = fork.retire();
-                return Err(format!(
-                    "noded did not register the preview's port: {other:?}"
-                ));
-            }
-        }
+    if let Err(why) = publish_port(ctx.host, node, &run, cid, port) {
+        let _ = fork.retire();
+        return Err(format!("the preview's {why}"));
     }
     for mut earlier in ctx
         .store
@@ -212,6 +197,32 @@ pub fn start_on<H: Host>(
 
 /// How long the hub waits for a guest's announcement of its port before it registers the port itself.
 const ANNOUNCE_WAIT: Duration = Duration::from_secs(5);
+
+/// Makes `port` of the guest at `cid` reachable through the node's tunnel (6.4): the guest's own announcement counts, and
+/// noded registers the port itself only when none came within [`ANNOUNCE_WAIT`] (the fallback). Used by a preview's app
+/// and by a fork-placed browser's DevTools port (user_test).
+pub fn publish_port<H: Host>(
+    host: &H,
+    node: &str,
+    run: &str,
+    cid: u64,
+    port: u16,
+) -> Result<(), String> {
+    if await_announcement(cid, port, ANNOUNCE_WAIT) {
+        return Ok(());
+    }
+    match host.noded(
+        node,
+        "POST",
+        &format!("/v1/runs/{run}/ports"),
+        Some(&json!({"cid": cid, "port": port})),
+    ) {
+        Ok((200, _)) => Ok(()),
+        other => Err(format!(
+            "port {port} did not register with noded: {other:?}"
+        )),
+    }
+}
 
 /// Whether the guest at `cid` announces `port` within `wait`, polled in the hub's own memory (never noded).
 fn await_announcement(cid: u64, port: u16, wait: Duration) -> bool {
