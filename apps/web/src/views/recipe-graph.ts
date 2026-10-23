@@ -1,5 +1,6 @@
 // The recipe graph editor: the engine's recipes (`#/recipe-graph`), and one of them as its steps and edges
-// (`#/recipe-graph/<id>`). The graph is drawn the way the Work screen draws a task graph: the wasm layout places the
+// (`#/recipe-graph/<id>`). A run of one (`#/recipe-graph/run/<runId>`) is the same graph, read-only, each step and link
+// in its state; the projects' and tasks' pages list their runs with `recipeRunsOf`. The graph is drawn the way the Work screen draws a task graph: the wasm layout places the
 // cards, each link is a curve with an arrowhead, and a loop curls under its cards, dashed, with its bound as its label.
 // A step's fields and the edges are edited in the side panel. Nothing is saved until Save: the draft goes out as TOML
 // with the next version, and the hub's refusal shows under the editor.
@@ -7,10 +8,19 @@
 import '../styles/proto/work.css';
 import '../styles/recipe-graph.css';
 import { ApiError } from '../api';
-import { review, type EngineEdge, type EngineRecipe, type EngineRecipeSummary, type EngineStep } from '../api-review';
+import {
+  review,
+  type EngineEdge,
+  type EngineRecipe,
+  type EngineRecipeSummary,
+  type EngineStep,
+  type RecipeRun,
+  type RecipeRunGraph,
+  type RecipeRunNode,
+} from '../api-review';
 import { loadGraph, type GraphLayout, type Layout } from '../graph/wasm';
-import { go, href } from '../router';
-import { badge, button, empty, field, input, select, table, toast, type Column } from '../ui/components';
+import { go, href, hrefIn } from '../router';
+import { ago, badge, button, empty, field, input, select, table, toast, type Column } from '../ui/components';
 import { h, lu, replace } from '../ui/dom';
 import type { Cleanup } from './index';
 import {
@@ -24,16 +34,25 @@ import {
   MODEL_WORDS,
   modelText,
   nextStepId,
+  nodeClassOf,
+  nodeLabelOf,
   pairKey,
   parseCount,
   parseFanOut,
   parseShare,
   patchStep,
+  plainOf,
   problemOf,
   recipeToml,
   removeEdge,
   removeStep,
   renameStep,
+  runIdOf,
+  runLabelOf,
+  runSummaryOf,
+  runToneOf,
+  runViewOf,
+  type RunView,
   stepLine,
   WHEN_OPTIONS,
 } from './recipe-graph-model';
@@ -46,6 +65,8 @@ const CARD = { card_width: CW, card_height: CH, gap_x: 56, gap_y: 18, pad: 16 };
 /** How far a loop curls below the cards it joins; a second loop between the same two steps curls a step deeper. */
 const LOOP_DIP = 44;
 const LOOP_STEP = 14;
+/** How many of a task's or a project's runs its page lists. */
+const RUN_LIST_LIMIT = 10;
 
 /** The recipe as the hub sent it, and the copy the editor changes. */
 interface Doc { original: EngineRecipe; draft: EngineRecipe }
@@ -57,12 +78,19 @@ function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<strin
   return node;
 }
 
+/** How a graph is painted over its layout: a class for each card and each link (by its place in the recipe), and the line a card shows. */
+interface Paint {
+  card: (id: string) => string;
+  edge: (index: number) => string;
+  line: (id: string) => string;
+}
+
 /** The links of a recipe over its layout: a curve per edge from the card it leaves to the card it enters. */
-function linksOf(recipe: EngineRecipe, lay: Layout): SVGGElement {
+function linksOf(recipe: EngineRecipe, lay: Layout, paint?: Paint): SVGGElement {
   const at = new Map(lay.cards.map((c) => [c.id, c]));
   const layer = svgEl('g');
   const seen = new Map<string, number>();
-  for (const edge of recipe.edges) {
+  for (const [i, edge] of recipe.edges.entries()) {
     const a = at.get(edge.from);
     const b = at.get(edge.to);
     if (!a || !b) continue;
@@ -94,33 +122,37 @@ function linksOf(recipe: EngineRecipe, lay: Layout): SVGGElement {
     }
     const label = svgEl('text', { x: lx, y: ly + n * 12 - 6, 'text-anchor': 'middle' }, 'rg-edge-label');
     label.textContent = edgeLabel(edge);
-    layer.append(svgEl('path', { d, 'marker-end': 'url(#rg-arrow)' }, `wk-route${isLoop(edge) ? ' dash' : ''}`), label);
+    const cls = `wk-route${isLoop(edge) ? ' dash' : ''}${paint ? ` ${paint.edge(i)}` : ''}`;
+    layer.append(svgEl('path', { d, 'marker-end': 'url(#rg-arrow)' }, cls), label);
   }
   return layer;
 }
 
-/** The map of a recipe: its links under its step cards, in the Work screen's map. A card is a button; a click picks it. */
-function graphBody(recipe: EngineRecipe, lay: Layout, active: string | null, pick: (id: string) => void): HTMLElement {
+/**
+ * The map of a recipe: its links under its step cards, in the Work screen's map. With `pick` a card is a button and a
+ * click picks it; without it the cards are plain (the run view's graph is read-only).
+ */
+function graphBody(recipe: EngineRecipe, lay: Layout, active: string | null, pick: ((id: string) => void) | null, paint?: Paint): HTMLElement {
   const height = lay.height + LOOP_DIP * 2;
   const svg = svgEl('svg', { width: lay.width, height, 'aria-hidden': 'true' });
   const defs = svgEl('defs');
   const marker = svgEl('marker', { id: 'rg-arrow', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
   marker.append(svgEl('path', { d: 'M0,0 L10,5 L0,10 z' }, 'wk-arrow'));
   defs.append(marker);
-  svg.append(defs, linksOf(recipe, lay));
+  svg.append(defs, linksOf(recipe, lay, paint));
   const map = h('div.wk-map', { style: `width:${lay.width}px;height:${height}px`, role: 'group', 'aria-label': 'The steps and edges of the recipe' }, svg);
   const at = new Map(lay.cards.map((c) => [c.id, c]));
   for (const step of recipe.steps) {
     const c = at.get(step.id);
     if (!c) continue;
-    const card = h(
-      'button.wk-card',
-      { type: 'button', style: `left:${c.x}px;top:${c.y}px;width:${CW}px;height:${CH}px`, 'aria-pressed': step.id === active ? 'true' : 'false', 'data-id': step.id },
-      h('span.wk-id', null, h('span', null, step.id), h('span', null, step.seat ?? '')),
-      h('span.wk-card-title', null, step.role || 'No role'),
-      h('span.wk-line', null, stepLine(step)),
-    );
-    card.addEventListener('click', () => pick(step.id));
+    const style = `left:${c.x}px;top:${c.y}px;width:${CW}px;height:${CH}px`;
+    const line = paint ? paint.line(step.id) : stepLine(step);
+    const parts = [h('span.wk-id', null, h('span', null, step.id), h('span', null, step.seat ?? '')), h('span.wk-card-title', null, step.role || 'No role'), h('span.wk-line', null, line)];
+    const card = pick
+      ? h('button.wk-card', { type: 'button', style, 'aria-pressed': step.id === active ? 'true' : 'false', 'data-id': step.id }, ...parts)
+      : h('div.wk-card', { style, 'data-id': step.id }, ...parts);
+    if (paint) card.classList.add(paint.card(step.id));
+    if (pick) card.addEventListener('click', () => pick(step.id));
     map.append(card);
   }
   return h('div.wk-scroll', null, map);
@@ -130,7 +162,141 @@ function reason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** A run's state as a badge, and a step's state as a word with its class. */
+const runBadge = (state: RecipeRun['state']): HTMLElement => badge(runLabelOf(state), runToneOf(state));
+function stateWord(state: RecipeRunNode['state']): HTMLElement {
+  const word = h('span.rr-state', null, nodeLabelOf(state));
+  word.classList.add(nodeClassOf(state));
+  return word;
+}
+
+/** The node table under a run's graph: each step with its state, visits, items, reported and what its gate read. */
+function nodesTable(nodes: RecipeRunNode[]): HTMLElement {
+  const cols: Column<RecipeRunNode>[] = [
+    { label: 'Step', cell: (n) => h('div', null, h('span.mono', null, n.id), n.role ? h('div.rr-sub', null, n.role) : null) },
+    { label: 'State', cell: (n) => stateWord(n.state) },
+    { label: 'Visits', num: true, cell: (n) => n.visits },
+    { label: 'Items', num: true, cell: (n) => n.items },
+    { label: 'Reported', num: true, cell: (n) => n.reported },
+    { label: 'Gate read', cell: (n) => plainOf(n.gate_read) || '—' },
+  ];
+  return h('div.tbl-wrap', null, table(cols, nodes));
+}
+
+/** A run's row in a list: its recipe, version and trigger, its state, and when it was created. Opens the run's page. */
+function runRow(run: RecipeRun): HTMLElement {
+  return h(
+    'a.rr-row',
+    { href: hrefIn(null, 'recipe-graph', 'run', run.run) },
+    h('span.mono.rr-row-id', null, run.run),
+    h('span.rr-row-what', null, runSummaryOf(run)),
+    runBadge(run.state),
+    h('span.rr-row-when', null, ago(run.created_ms)),
+  );
+}
+
+/**
+ * The Recipes section of a project's or a task's page: a link to the recipe graphs and the latest runs (up to ten), each
+ * a link to its run. A failed read is a one-line note; the page around it is not affected.
+ */
+export function recipeRunsOf(scope: { task?: string; project?: string }): HTMLElement {
+  const list = h('div.rr-list', null, h('p.muted', null, 'Loading the runs…'));
+  void review.recipeRuns(scope).then(
+    ({ runs }) => replace(list, runs.length ? h('div.rr-rows', null, runs.slice(0, RUN_LIST_LIMIT).map(runRow)) : h('p.muted', null, 'No runs yet.')),
+    () => replace(list, h('p.rr-note', null, 'Could not load the recipe runs.')),
+  );
+  return h('div.rr', null, h('a.rr-link', { href: hrefIn(null, 'recipe-graph') }, 'Recipe graphs'), list);
+}
+
+/** A run's page: its recipe, version, trigger, state and outcome; its graph read-only, each step and link in its state; its steps. */
+function mountRun(root: HTMLElement, runId: string): Cleanup {
+  const view = h('div.rg.rg-run');
+  root.append(view);
+
+  let alive = true;
+  let loaded = false;
+  let failed: string | null = null;
+  let data: { run: RecipeRun; graph: RecipeRunGraph; model: RunView } | null = null;
+  let layouter: GraphLayout | null = null;
+  let layoutError = '';
+
+  const back = (): HTMLElement => h('p', null, h('a.btn.ghost.sm', { href: hrefIn(null, 'recipe-graph') }, lu('arrow-left', 14), h('span', null, 'Recipe graphs')));
+
+  /** The graph, laid out once the layout is loaded: each card and link takes the class of its state. */
+  const graphOf = (model: RunView): HTMLElement => {
+    if (!layouter) return h('p.rg-note', null, layoutError || 'Laying out the graph…');
+    if (model.recipe.steps.length === 0) return h('p.rg-note', null, 'This run has no steps.');
+    try {
+      const lay = layouter.layout(layoutInput(model.recipe), CARD);
+      const byId = new Map(model.nodes.map((n) => [n.id, n]));
+      const paint: Paint = {
+        card: (id) => byId.get(id)?.cls ?? 'rr-none',
+        line: (id) => byId.get(id)?.label ?? 'No walk',
+        edge: (index) => model.edges[index]?.cls ?? '',
+      };
+      return graphBody(model.recipe, lay, null, null, paint);
+    } catch (err) {
+      return h('p.rg-note', null, `Could not lay out the graph: ${reason(err)}`);
+    }
+  };
+
+  const draw = (): void => {
+    if (!alive) return;
+    if (failed !== null) return replace(view, back(), empty('alert', failed));
+    if (!data || !loaded) return replace(view, back(), h('p.muted', null, 'Loading the run…'));
+    const { run, graph, model } = data;
+    const head = h(
+      'div.rg-head',
+      null,
+      h(
+        'div',
+        null,
+        h('h1', null, run.recipe),
+        h('div.rg-meta', null, badge(`version ${run.version}`, 'info'), h('span', null, `Trigger ${run.trigger}`), runBadge(run.state)),
+        run.outcome ? h('p.rr-outcome', null, run.outcome) : null,
+      ),
+    );
+    replace(
+      view,
+      back(),
+      head,
+      h('section.rg-block', null, h('h2', null, 'Steps and edges'), graphOf(model)),
+      h('section.rg-block', null, h('h2', null, 'Steps'), graph.nodes.length ? nodesTable(graph.nodes) : h('p.rg-note', null, 'No steps.')),
+    );
+  };
+
+  const load = async (): Promise<void> => {
+    try {
+      const [run, graph] = await Promise.all([review.recipeRun(runId), review.recipeRunGraph(runId)]);
+      data = { run, graph, model: runViewOf(graph) };
+      failed = null;
+    } catch (err) {
+      failed = reason(err);
+    }
+    loaded = true;
+    draw();
+  };
+
+  void load();
+  loadGraph().then(
+    (graph) => {
+      layouter = graph;
+      if (alive) draw();
+    },
+    (err: unknown) => {
+      layoutError = `Could not lay out the graph: ${reason(err)}`;
+      if (alive) draw();
+    },
+  );
+
+  return () => {
+    alive = false;
+  };
+}
+
 export function mount(root: HTMLElement, params: string[]): Cleanup {
+  const runId = runIdOf(params);
+  if (runId !== null) return mountRun(root, runId);
   const id = params[0] ?? '';
   const view = h('div.rg');
   root.append(view);

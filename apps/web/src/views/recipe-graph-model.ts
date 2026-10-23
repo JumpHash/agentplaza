@@ -1,8 +1,9 @@
 // The recipe graph editor's pure helpers: the TOML a save sends, the checks a save runs before the hub, the edits to a
-// draft recipe, an edge's label and its loop, and the input the layout takes. No DOM and no runtime imports, so the
-// tests load this file on its own.
+// draft recipe, an edge's label and its loop, the input the layout takes, and a run's route and view model (the classes
+// and words of its states). No DOM and no runtime imports, so the tests load this file on its own.
 
-import type { EngineEdge, EngineRecipe, EngineStep } from '../api-review';
+import type { EngineEdge, EngineRecipe, EngineStep, RecipeNodeState, RecipeRun, RecipeRunEdge, RecipeRunGraph, RecipeRunState } from '../api-review';
+import type { Tone } from '../ui/components';
 
 /** The conditions an edge's `when` offers. Any other condition is typed in (`findings == 2`, `score >= 4`). */
 export const WHEN_OPTIONS = ['passed', 'failed', 'tests green', 'no findings', 'findings>0', 'owner'];
@@ -217,4 +218,96 @@ export function addEdge(recipe: EngineRecipe, edge: EngineEdge): EngineRecipe {
 /** The recipe without the edge at `index`. */
 export function removeEdge(recipe: EngineRecipe, index: number): EngineRecipe {
   return { ...recipe, edges: recipe.edges.filter((_, i) => i !== index) };
+}
+
+// ---- The run view: a recipe run's graph, read-only -----------------------------------------------------------------------
+
+const NODE_LABELS: Record<RecipeNodeState, string> = { waiting: 'Waiting', ready: 'Ready', running: 'Running', passed: 'Passed', failed: 'Failed', skipped: 'Skipped' };
+const RUN_LABELS: Record<RecipeRunState, string> = { running: 'Running', owner: 'Waiting for you', passed: 'Passed', failed: 'Failed', cancelled: 'Cancelled' };
+const RUN_TONES: Record<RecipeRunState, Tone> = { running: 'info', owner: 'warn', passed: 'ok', failed: 'danger', cancelled: 'muted' };
+
+/** The run a route names: `#/recipe-graph/run/<id>` gives the params `run` and the id. Null for any other route. */
+export function runIdOf(params: string[]): string | null {
+  return params[0] === 'run' && (params[1] ?? '') !== '' ? params[1]! : null;
+}
+
+/** The class a step takes for its state; `rr-none` when the run has no walk for the step. */
+export function nodeClassOf(state: RecipeNodeState | null): string {
+  return state ? `rr-${state}` : 'rr-none';
+}
+
+/** A step's state as the page words it; `No walk` when the run has none for the step. */
+export function nodeLabelOf(state: RecipeNodeState | null): string {
+  return state ? NODE_LABELS[state] : 'No walk';
+}
+
+/** A link's class: a taken link is solid; an open or dead one is dashed and faded (dead is the faintest). */
+export function edgeClassOf(edge: Pick<RecipeRunEdge, 'state' | 'taken'>): string {
+  if (edge.taken) return 'rr-taken';
+  return edge.state === 'dead' ? 'rr-dead' : 'rr-open';
+}
+
+/** A run's state as the page words it. */
+export function runLabelOf(state: RecipeRunState): string {
+  return RUN_LABELS[state];
+}
+
+/** The badge tone of a run's state. */
+export function runToneOf(state: RecipeRunState): Tone {
+  return RUN_TONES[state];
+}
+
+/** A value the hub sent, as text: a list joined, a string or number as it is, nothing for null. */
+export function plainOf(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(plainOf).join(', ');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+/** A run's graph as the page draws it: the steps and links as a recipe (for the layout and the cards), and each step and link with its classes and words. */
+export interface RunView {
+  recipe: EngineRecipe;
+  nodes: { id: string; cls: string; label: string; visits: number; items: number; reported: number; gateRead: string }[];
+  edges: { index: number; from: string; to: string; cls: string; taken: boolean; dashed: boolean }[];
+}
+
+/** The view model of a run's graph: the steps as the editor's recipe shape, and the classes the cards and links take. */
+export function runViewOf(graph: RecipeRunGraph): RunView {
+  const steps: EngineStep[] = graph.nodes.map((node) => ({
+    id: node.id,
+    seat: node.seat ?? undefined,
+    role: node.role ?? undefined,
+    model: node.model ?? '',
+    engine: node.engine ?? undefined,
+    tools: [],
+    fan_out: node.fan_out,
+    gate: node.gate,
+  }));
+  const edges: EngineEdge[] = graph.edges.map((edge) => ({ from: edge.from, to: edge.to, when: edge.when, ...(isSet(edge.max) ? { max: edge.max as number } : {}) }));
+  return {
+    recipe: { id: graph.recipe, name: graph.recipe, version: 0, scope: '', inputs: [], outputs: [], triggers: [], steps, edges },
+    nodes: graph.nodes.map((node) => ({
+      id: node.id,
+      cls: nodeClassOf(node.state),
+      label: nodeLabelOf(node.state),
+      visits: node.visits,
+      items: node.items,
+      reported: node.reported,
+      gateRead: plainOf(node.gate_read),
+    })),
+    edges: graph.edges.map((edge) => ({
+      index: edge.index,
+      from: edge.from,
+      to: edge.to,
+      cls: edgeClassOf(edge),
+      taken: edge.taken,
+      dashed: !edge.taken,
+    })),
+  };
+}
+
+/** A run's words in a list: its recipe, its version and its trigger. */
+export function runSummaryOf(run: RecipeRun): string {
+  return `${run.recipe} v${run.version} · ${run.trigger}`;
 }

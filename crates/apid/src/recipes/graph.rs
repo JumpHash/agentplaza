@@ -17,7 +17,17 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::model::{Fan, Recipe};
+use super::model::{Fan, Recipe, Step};
+
+/// How many items a step runs: its fixed count, or for a named fan-out the count the caller gives for it (one when the
+/// caller gives none). Seats and the walk both take their item counts from here.
+pub fn items_of(step: &Step, items: &BTreeMap<String, u32>) -> u32 {
+    match &step.fan_out {
+        Fan::Count(n) => *n,
+        Fan::Named(_) => items.get(&step.id).copied().unwrap_or(1),
+    }
+    .max(1)
+}
 
 /// Where a step is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -228,11 +238,7 @@ impl Walk {
             .steps
             .iter()
             .map(|s| {
-                let count = match &s.fan_out {
-                    Fan::Count(n) => *n,
-                    Fan::Named(_) => items.get(&s.id).copied().unwrap_or(1),
-                }
-                .max(1);
+                let count = items_of(s, items);
                 (
                     s.id.clone(),
                     StepRec {

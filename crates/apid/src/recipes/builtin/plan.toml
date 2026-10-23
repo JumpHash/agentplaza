@@ -1,0 +1,26 @@
+# The plan recipe (PLAN 21.1, 21.2). Stub: it needs the planning phase (21.2); none runs yet. Its steps are the spec and
+# the split of the spec into tasks, with their links, seats and budgets.
+id = "plan"
+name = "Plan"
+description = "Stub until the planning phase (21.2): declares its steps, none runs yet."
+version = 1
+inputs = ["spec"]
+outputs = ["plan"]
+triggers = ["spec.ready"]
+
+[[steps]]
+id = "spec"
+engine = "planner"
+gate = ["passed"]
+output = "spec"
+
+[[steps]]
+id = "tasks"
+engine = "planner"
+gate = ["passed"]
+output = "plan"
+
+[[edges]]
+from = "spec"
+to = "tasks"
+when = "passed"
