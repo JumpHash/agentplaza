@@ -514,11 +514,15 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    // An agent the owner holds (its project is paused or over) does not reach the internet either.
-    let held = app
-        .agents
-        .get(cid)
-        .and_then(|agent| crate::projects::held(app, &agent));
+    // An agent the owner holds (its project is paused or over) does not reach the internet either; nor does a
+    // project's own party while the project is paused, over or gone.
+    let held = match &project {
+        Some(id) => crate::projects::held_project(app, id),
+        None => app
+            .agents
+            .get(cid)
+            .and_then(|agent| crate::projects::held(app, &agent)),
+    };
     if let Some(why) = held {
         return json!({
             "allow": false,

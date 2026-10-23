@@ -1456,6 +1456,21 @@ pub fn held_as(app: &App, cid: u64, role: &str) -> Option<String> {
     }
 }
 
+/// Why project `project` may not work now (paused, over or gone), or `None` when it may: what holds its own party,
+/// such as a Mac node's project proxy, which has no session of its own.
+pub fn held_project(app: &App, project: &str) -> Option<String> {
+    match state(app, project) {
+        ProjectState::Active => None,
+        ProjectState::Paused => Some(format!(
+            "project {project} is paused: its work waits until the owner resumes it"
+        )),
+        ProjectState::Over => Some(format!(
+            "project {project} is over (archived or delivered): it takes no more work"
+        )),
+        ProjectState::Missing => Some(format!("project {project} no longer exists")),
+    }
+}
+
 /// Why agent `cid` may not work now (looked up on the roster), or `None` when it may. An agent the roster does not
 /// know is held.
 pub fn held_cid(app: &App, cid: u64) -> Option<String> {
