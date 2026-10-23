@@ -73,6 +73,8 @@ pub fn convert(text: &str, name: Option<&str>) -> Result<Conversion, String> {
             .ok_or_else(|| format!("compose file: service {service_name} is not a mapping"))?;
         services.push(service(service_name, raw, &mut report)?);
     }
+    // By name, whatever order the YAML map keeps: the topology reads the same from any build.
+    services.sort_by(|a, b| a.name.cmp(&b.name));
     let topology = Topology {
         name,
         kind: Kind::Services,
