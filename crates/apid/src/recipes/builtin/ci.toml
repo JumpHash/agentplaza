@@ -51,3 +51,16 @@ when = "passed"
 from = "tests"
 to = "preview"
 when = "passed"
+
+# The against stage (ephemeral environments, `ephemeral`): once the lane's preview is live, the change's tests run against an
+# ephemeral instance of it (the project's first environment with EPHEMERAL=true), and the instance is torn down after. A
+# project with no ephemeral environment passes with a note.
+[[steps]]
+id = "against"
+engine = "check"
+gate = ["passed"]
+
+[[edges]]
+from = "preview"
+to = "against"
+when = "passed"

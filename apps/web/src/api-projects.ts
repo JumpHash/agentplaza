@@ -126,6 +126,24 @@ export interface Attachment { id: string; name: string; size: number; type: stri
 
 const enc = encodeURIComponent;
 
+/** An ephemeral instance (`ephemeral`): a lane or a release in its own short-lived copy of an environment. */
+export type InstanceState = 'creating' | 'ready' | 'failed' | 'torn_down';
+export interface EphemeralInstance {
+  id: string;
+  project: string;
+  environment: string;
+  /** Exactly one of them: the change (`lane`) or the release it is an instance of. */
+  subject: { lane?: string; release?: string };
+  /** What its teardown removes: `platform` says which, the rest are its names. */
+  target: { platform: string; [name: string]: unknown };
+  url: string | null;
+  state: InstanceState;
+  /** Why it failed, when it did. */
+  reason?: string;
+  created_ms: number;
+  expires_ms: number;
+}
+
 export const projectsApi = {
   modes: () => call<ModeDef[]>('GET', '/v1/project-modes'),
   setMode: (id: string, mode: ProjectMode) => call<Project>('POST', `/v1/projects/${enc(id)}/mode`, { mode }),
@@ -157,6 +175,10 @@ export const projectsApi = {
     call<{ name: string; binding: string }>('PUT', `/v1/projects/${enc(id)}/environments/${enc(env)}/secrets/${enc(name)}`, { value }),
   deleteEnvSecret: (id: string, env: string, name: string) =>
     call<{ deleted: boolean }>('DELETE', `/v1/projects/${enc(id)}/environments/${enc(env)}/secrets/${enc(name)}`),
+  /** The project's ephemeral instances, newest first. */
+  ephemeral: (id: string) => call<EphemeralInstance[]>('GET', `/v1/projects/${enc(id)}/ephemeral`),
+  /** Tears one instance down now (its target is removed, the record stays). */
+  tearDownEphemeral: (instance: string) => call<{ torn_down: boolean }>('DELETE', `/v1/ephemeral/${enc(instance)}`),
 
   /** One file's bytes into the project's store (no change yet): its hash for `addFiles`. */
   upload: async (id: string, bytes: Blob): Promise<Uploaded> =>

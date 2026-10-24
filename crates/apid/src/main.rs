@@ -53,6 +53,7 @@ mod engine_feed;
 mod engine_instances;
 mod engine_watch;
 mod environments;
+mod ephemeral;
 mod evals;
 mod events;
 mod fleet;

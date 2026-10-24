@@ -205,6 +205,8 @@ pub struct App {
     pub test_lab: crate::test_lab::Store,
     /// The qualifications of release candidates (PLAN 22.10): their runs, stages, histories and acceptances.
     pub qualify: crate::qualify::Store,
+    /// The ephemeral instances of the projects' environments (`ephemeral`): their rows, their targets and addresses.
+    pub ephemeral: crate::ephemeral::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
     pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
@@ -369,6 +371,7 @@ impl App {
             routes: std::sync::OnceLock::new(),
             test_lab: crate::test_lab::Store::default(),
             qualify: crate::qualify::Store::default(),
+            ephemeral: crate::ephemeral::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
@@ -451,6 +454,7 @@ impl App {
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
         crate::previews::life::spawn_sweeper(Arc::clone(&app));
+        crate::ephemeral::spawn_ticker(Arc::clone(&app));
         crate::e2b::start(&app);
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));
