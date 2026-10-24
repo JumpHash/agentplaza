@@ -6,10 +6,10 @@ use apz_topology::compare::{self, Limit, Metric};
 use apz_topology::load::{self, Summary, Tool};
 use apz_topology::slowserve::SlowServer;
 
-/// The latency the server answers with before the seeded slowdown. A percentile of a loaded runner carries tens of
-/// milliseconds of scheduling noise: against a 100 ms answer a 20 % slowdown (20 ms) hides in it at p95, so the answer is
-/// a second, and the slowdown (20 % of it) stands well clear of that noise.
-const LATENCY_MS: u64 = 1_000;
+/// The latency the server answers with before the seeded slowdown. A percentile of a loaded runner carries scheduling
+/// noise of up to a couple of hundred milliseconds (CI saw 200 ms over a one-second answer), so the answer is two
+/// seconds, and the slowdown (20 % of it, 400 ms) stands clear of that noise.
+const LATENCY_MS: u64 = 2_000;
 /// The profile's length: 20 requests a second for five seconds, so the percentiles are over a hundred samples.
 const PROFILE_MS: u64 = 5_000;
 
@@ -54,18 +54,20 @@ fn a_seeded_twenty_percent_slowdown_fails_against_the_previous_release() {
         .iter()
         .map(|c| c.metric.as_str())
         .collect();
-    assert!(failed.contains(&"load.latency.p50_ms"), "{comparisons:?}");
-    // The tail is the loaded runner's as much as the server's: a CI baseline's p95 came out 200 ms over its answer, so
-    // the seeded 200 ms can hide in it there. The median carries the gate; the candidate's tail only shows the delay.
+    // A loaded runner's scheduling noise lands on the median one run and on the tail the next (CI saw p50 +18 % with
+    // p95 +3.7 %, and p50 +14.7 % with p95 +17.5 %): the gate fails the release on either, as it does on any metric.
     assert!(
-        candidate.p95_ms >= (LATENCY_MS * 6 / 5) as f64,
+        failed.contains(&"load.latency.p50_ms") || failed.contains(&"load.latency.p95_ms"),
+        "the seeded slowdown fails the release: {comparisons:?}"
+    );
+    for metric in ["load.latency.p50_ms", "load.latency.p95_ms"] {
+        let c = comparisons.iter().find(|c| c.metric == metric).unwrap();
+        assert!(c.change > 0.0, "the slowdown shows at {metric}: {c:?}");
+    }
+    assert!(
+        candidate.p50_ms >= (LATENCY_MS * 6 / 5) as f64,
         "the candidate answers after its seeded delay: {candidate:?}"
     );
-    let p50 = comparisons
-        .iter()
-        .find(|c| c.metric == "load.latency.p50_ms")
-        .unwrap();
-    assert!(p50.change > 15.0, "the slowdown is about 20 %: {p50:?}");
 }
 
 #[test]
