@@ -19,6 +19,7 @@
 //! POST /v1/evals/bench/{id}                        → replays archived case `id` (a task in its project; 201 with the task)
 //! GET /v1/evals/tools                              → [`ToolLatency`] per tool, over the newest tool calls kept
 
+pub mod choose;
 pub mod report;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -120,6 +121,14 @@ pub struct Run {
     /// Qualification stages the task's change passed in the lab, and the lab minutes they took.
     pub qual_stages: u64,
     pub lab_minutes: u64,
+    /// How the session's model (and engine) was chosen: `fixed`, `list`, `seat`, or for a step with `model: eval` or
+    /// `engine: any` the rule (`eval:exploited`, `eval:explored`, `eval:untrusted`, `eval:only`), see `choose.rs`.
+    /// Empty when the run was never begun by a recipe step.
+    #[serde(default)]
+    pub choice: String,
+    /// The reason of the choice in words: the scores and samples it compared, and what the budget skipped.
+    #[serde(default)]
+    pub choice_reason: String,
 }
 
 /// Which runs to list. Each field is a match, and None matches any.
@@ -147,6 +156,12 @@ pub struct Score {
     pub time_per_success_ms: Option<f64>,
     /// Clean successes over runs, 0 to 1 (see [`report::clean`]).
     pub quality: f64,
+    /// Micro-dollars over all the runs (the sum the cost per success divides).
+    #[serde(default)]
+    pub cost_micros: u64,
+    /// Milliseconds from start to end over all the runs (the sum the time per success divides).
+    #[serde(default)]
+    pub wall_ms: u64,
 }
 
 /// One finding a review ruled on (a row of `eval_finding`): who raised it, who ruled on it, and how it was ruled.
@@ -269,6 +284,8 @@ struct Begun {
     version: u32,
     step: String,
     round: u32,
+    choice: String,
+    choice_reason: String,
 }
 
 /// What the hub knows of a VM while its session runs: the capabilities it said hello with, its harness version, its
@@ -321,8 +338,17 @@ impl Evals {
                 version,
                 step: step.to_string(),
                 round,
+                ..Begun::default()
             },
         );
+    }
+
+    /// How the session begun under `session` got its model and engine (`choice`, its reason): the record keeps them.
+    pub fn decided(&self, session: &str, choice: &str, reason: &str) {
+        if let Some(begun) = self.begun().get_mut(session) {
+            begun.choice = choice.to_string();
+            begun.choice_reason = reason.to_string();
+        }
     }
 
     /// VM `cid` said hello with `caps`. A `harness=<version>` capability is the harness's version.
@@ -449,6 +475,8 @@ impl Evals {
                     let cost: u64 = r.get(6)?;
                     let wall: u64 = r.get(7)?;
                     let clean: u64 = r.get(8)?;
+                    let cost_micros: u64 = r.get(6)?;
+                    let wall_ms: u64 = r.get(7)?;
                     Ok(Score {
                         step: r.get(0)?,
                         seat: r.get(1)?,
@@ -460,6 +488,8 @@ impl Evals {
                         cost_per_success_micros: per_success(cost, successes),
                         time_per_success_ms: per_success(wall, successes),
                         quality: clean as f64 / runs.max(1) as f64,
+                        cost_micros,
+                        wall_ms,
                     })
                 })?
                 .collect::<Result<Vec<Score>, _>>()?;
@@ -486,6 +516,19 @@ impl Evals {
                 .then_with(|| b.runs.cmp(&a.runs))
         });
         scores
+    }
+
+    /// What the runs of `step` on `task` cost so far, in micro-dollars (the step's spend against its budget share).
+    pub fn step_spend(&self, project: &str, task: &str, step: &str) -> u64 {
+        let filter = RunFilter {
+            project: Some(project.to_string()),
+            ..RunFilter::default()
+        };
+        self.runs_all(&filter)
+            .iter()
+            .filter(|r| r.task.as_deref() == Some(task) && r.step == step)
+            .map(|r| r.cost_micros)
+            .sum()
     }
 
     /// The cost report: the runs `filter` selects, grouped by `by`.
@@ -794,6 +837,7 @@ impl Evals {
             version: CHANGE_VERSION,
             step: session.role.clone(),
             round: session.attempt,
+            ..Begun::default()
         });
         let vm = session
             .cid
@@ -884,6 +928,8 @@ impl Run {
             memory_cites: vm.memory_cites,
             qual_stages: 0,
             lab_minutes: 0,
+            choice: begun.choice,
+            choice_reason: begun.choice_reason,
         }
     }
 }
@@ -1005,6 +1051,8 @@ fn run_at(r: &Row<'_>) -> apz_store::rusqlite::Result<Run> {
         memory_cites: r.get(34)?,
         qual_stages: r.get(35)?,
         lab_minutes: r.get(36)?,
+        choice: r.get(37)?,
+        choice_reason: r.get(38)?,
     })
 }
 
@@ -1374,6 +1422,8 @@ mod tests {
             memory_cites: 0,
             qual_stages: 0,
             lab_minutes: 0,
+            choice: String::new(),
+            choice_reason: String::new(),
         }
     }
 
@@ -1384,6 +1434,79 @@ mod tests {
 
     fn ids(runs: &[Run]) -> Vec<u64> {
         runs.iter().map(|r| r.id).collect()
+    }
+
+    #[test]
+    fn a_step_with_model_eval_takes_the_model_its_evals_favour_and_takes_another_when_they_change()
+    {
+        let (_dir, _store, evals) = fixture();
+        let policy = choose::Policy {
+            min_samples: 5,
+            explore_pct: 0,
+        };
+        let models = vec!["mock/a".to_string(), "mock/b".to_string()];
+        let next = |evals: &Evals, run: u64| {
+            let scores = evals.scores();
+            choose::model(&scores, "build", "harness", &models, None, policy, run).unwrap()
+        };
+        // A has five runs and all succeed; B has five and two succeed.
+        for id in 1..=5 {
+            evals
+                .record(&run(id, "t1", "builder", "mock/a", true, 100, 900))
+                .unwrap();
+        }
+        for id in 6..=10 {
+            evals
+                .record(&run(id, "t1", "builder", "mock/b", id <= 7, 100, 900))
+                .unwrap();
+        }
+        let first = next(&evals, 11);
+        assert_eq!(
+            (first.key.as_str(), first.rule),
+            ("mock/a", choose::EXPLOITED)
+        );
+        assert!(
+            first.reason.contains("mock/a succeeds 100% of 5 runs"),
+            "{}",
+            first.reason
+        );
+        // Reseeded: B takes twenty more successes and A fails ten runs, so B is better and the next run takes it.
+        for id in 11..=30 {
+            evals
+                .record(&run(id, "t2", "builder", "mock/b", true, 100, 900))
+                .unwrap();
+        }
+        for id in 31..=40 {
+            evals
+                .record(&run(id, "t2", "builder", "mock/a", false, 100, 900))
+                .unwrap();
+        }
+        let second = next(&evals, 41);
+        assert_eq!(second.key, "mock/b");
+        assert_eq!(second.rule, choose::EXPLOITED);
+        // What the step spent on its task is the sum of its runs' cost.
+        assert_eq!(evals.step_spend("pr1", "t2", "build"), 3000);
+    }
+
+    #[test]
+    fn a_choice_is_stored_with_its_run_and_reads_back() {
+        let (_dir, _store, evals) = fixture();
+        let mut chosen = run(1, "t1", "builder", "mock/a", true, 100, 900);
+        chosen.choice = choose::EXPLORED.into();
+        chosen.choice_reason = "run 1 is in the 10% explore share".into();
+        evals.record(&chosen).unwrap();
+        evals
+            .record(&run(2, "t1", "builder", "mock/b", true, 100, 900))
+            .unwrap();
+        let back = evals.runs(&RunFilter::default(), 0);
+        assert_eq!(back[1], chosen, "the choice reads back with the run");
+        assert_eq!(back[0].choice, "", "a fixed step's run names no choice");
+        let scores = evals.scores();
+        assert!(
+            scores
+                .iter()
+                .all(|s| s.cost_micros == 100 && s.wall_ms == 900)
+        );
     }
 
     #[test]

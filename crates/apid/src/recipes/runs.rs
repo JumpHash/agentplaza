@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::{EdgeRec, EdgeState, Move, Outcome, Report, StepRec, StepState, Walk};
 
-use super::model::{Fan, Model, Recipe, Risk, builtin};
+use super::model::{Fan, Recipe, Risk, Step, builtin};
 
 /// Where a run is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -327,14 +327,14 @@ impl Runs {
         Some((count, s.risk.clone()))
     }
 
-    /// The model a step of the task's active run is to use, as its recipe file says.
-    pub fn step_model(&self, task: &str, step: &str) -> Option<Model> {
+    /// The step of the task's active run as its recipe file says it (its model, engine and budget share).
+    pub fn step_spec(&self, task: &str, step: &str) -> Option<Step> {
         let inner = self.lock();
         let entry = inner
             .runs
             .values()
             .find(|e| e.run.task.as_deref() == Some(task) && e.walk.outcome.is_none())?;
-        entry.recipe.step(step).map(|s| s.model.clone())
+        entry.recipe.step(step).cloned()
     }
 
     /// A step settled with `report`, in the task's active run. Returns the moves the caller applies.

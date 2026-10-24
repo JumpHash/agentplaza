@@ -281,6 +281,8 @@ mod tests {
             memory_cites: 0,
             qual_stages: 0,
             lab_minutes: 0,
+            choice: String::new(),
+            choice_reason: String::new(),
         }
     }
 
