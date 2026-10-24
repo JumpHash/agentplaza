@@ -941,6 +941,9 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 let _ = t.finish(FinishOutcome::Failed, Some(why.clone()));
             }
             close_task(app, task_id, now);
+            if let Err(err) = app.evals.replay_finished(task_id, false, now) {
+                eprintln!("apid: evals: the replay of {task_id} was not scored: {err}");
+            }
             notice(
                 app,
                 &chat,
@@ -1087,6 +1090,9 @@ pub fn landed(app: &App, task: &str, change: &str) {
     close_task(app, task, now);
     if let Err(err) = app.evals.landed(task, true) {
         eprintln!("apid: evals: the landing of {task} was not recorded: {err}");
+    }
+    if let Err(err) = app.evals.replay_finished(task, true, now) {
+        eprintln!("apid: evals: the replay of {task} was not scored: {err}");
     }
     let project = app
         .plaza

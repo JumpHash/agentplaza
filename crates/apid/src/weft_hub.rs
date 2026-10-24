@@ -134,6 +134,16 @@ impl Weft {
         self.lanes.lock().ok()?.get(task).cloned()
     }
 
+    /// The task whose lane is `change`, when one is bound (the inverse of [`Weft::lane_of`]).
+    pub fn task_of_lane(&self, change: &str) -> Option<String> {
+        self.lanes
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(_, lane)| lane.as_str() == change)
+            .map(|(task, _)| task.clone())
+    }
+
     /// Binds `task` to `change`, the lane that carries its work when the lane was opened outside `open_lane` (a backport
     /// opened on a release line).
     pub fn bind_lane(&self, task: &str, change: &str) {

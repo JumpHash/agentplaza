@@ -77,6 +77,12 @@ impl Drop for Hub {
 }
 
 impl Hub {
+    /// The hub's state folder: its `plaza.db` and the rest (a test may read or seed the store beside the running hub).
+    #[allow(dead_code)] // not every test binary that includes `common` reads the state
+    pub fn state_dir(&self) -> PathBuf {
+        self.dir.join("state")
+    }
+
     /// Stops the hub as a stop signal does (its last state writes run), waits for it to exit, and starts it again on
     /// the same state: the directory of the attempt that came up, not a fresh one.
     #[allow(dead_code)] // not every test binary that includes `common` restarts its hub

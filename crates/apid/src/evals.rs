@@ -6,7 +6,8 @@
 //! ([`Evals::finding`]), or passes qualification in the lab ([`Evals::qualified`]).
 //!
 //! The reports (`report.rs`) fold the rows: costs by project, task, step or model, and each reviewer model's precision
-//! and misses. The recipe benchmark (`bench.rs`) replays an archived task with a known outcome and records its result.
+//! and misses. The recipe benchmark replays an archived task: the replay is a task in its project, run through the work
+//! loop like any other, and when it lands or fails it is scored against the case's known outcome ([`Evals::replay_finished`]).
 //!
 //! GET /v1/evals/runs?project=&model=&seat=&limit=  → [`Run`]s, newest first (limit 1..=200, default 50)
 //! GET /v1/evals/scores                             → [`Score`]s per step, seat, model and engine
@@ -15,19 +16,16 @@
 //! GET /v1/evals/reviewers                          → [`ReviewerScore`]s: each reviewer model's precision and misses
 //! GET /v1/evals/archive                            → the archived tasks with a known outcome (the benchmark's cases)
 //! GET /v1/evals/bench                              → the benchmark's replays, newest first
+//! POST /v1/evals/bench/{id}                        → replays archived case `id` (a task in its project; 201 with the task)
 //! GET /v1/evals/tools                              → [`ToolLatency`] per tool, over the newest tool calls kept
 
-/// The recipe benchmark's runner. It is compiled for the tests: a replay needs an agent session in a fork, and the hub
-/// starts no agent VM for one yet (as `engine_watch.rs` notes for its adapter tests).
-#[cfg(test)]
-pub mod bench;
 pub mod report;
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Request, Response, RouteDoc, Router};
-use apz_store::rusqlite::{Connection, Row, params};
+use apz_store::rusqlite::{Connection, OptionalExtension, Row, params};
 use apz_store::table::Value;
 use apz_store::{RowSet, StoreError, Table, TableDef};
 use serde::{Deserialize, Serialize};
@@ -191,7 +189,7 @@ pub struct Archived {
     /// The commit the task started from.
     pub start: String,
     pub goal: String,
-    /// A shell command run in the replay's workspace: it passes when the change works.
+    /// The acceptance the replay's task is judged by (the task's own acceptance text).
     pub check: String,
     /// `landed` (the change stood) or `reverted` (it was undone): what the replay's check must agree with.
     pub outcome: String,
@@ -207,6 +205,9 @@ pub struct BenchRun {
     pub id: u64,
     #[table(index)]
     pub archive: u64,
+    /// The replay task the route opened in the case's project.
+    #[table(index)]
+    pub task: Option<String>,
     /// `passed` or `failed`: whether the replay's check passed.
     pub outcome: String,
     pub known: String,
@@ -563,35 +564,59 @@ impl Evals {
         })
     }
 
-    /// Records the replay `replay` of archived case `archive` at `replayed_ms`. Returns its id.
-    #[cfg(test)]
-    pub fn record_bench(
-        &self,
-        archive: u64,
-        replay: &bench::Replay,
-        replayed_ms: u64,
-    ) -> Result<u64, StoreError> {
+    /// Starts the replay of archived case `case` in `task` (the replay task the route opened), at `now`: its record is
+    /// written as running until the task ends. Returns its id.
+    pub fn start_replay(&self, case: &Archived, task: &str, now: u64) -> Result<u64, StoreError> {
         let row = BenchRun {
             id: 0,
-            archive,
-            outcome: replay.outcome.clone(),
-            known: replay.known.clone(),
-            matched: replay.matched,
-            cost_micros: replay.cost_micros,
-            wall_ms: replay.wall_ms,
-            replayed_ms,
+            archive: case.id,
+            task: Some(task.to_string()),
+            outcome: "running".into(),
+            known: case.outcome.clone(),
+            matched: false,
+            cost_micros: 0,
+            wall_ms: 0,
+            replayed_ms: now,
         };
         let written = self.db.write(move |conn| {
-            let id = next_id(
-                conn,
-                r#"SELECT COALESCE(MAX("id"), 0) + 1 FROM "eval_bench""#,
-            )?;
+            let id = next_id(conn, sql::EVAL_BENCH_NEXT)?;
             let mut row = row;
             row.id = id;
             insert_row(conn, bench_def(), &row, id)?;
             Ok(id)
         })?;
         Ok(written.value)
+    }
+
+    /// The replay task `task` ended at `now`: `landed` (its change landed) or failed. A running replay of it is scored
+    /// against its case's known outcome (a case that landed must pass; a reverted one must not), with what its sessions
+    /// spent and the time it took. A task that is no replay is left alone.
+    pub fn replay_finished(&self, task: &str, landed: bool, now: u64) -> Result<(), StoreError> {
+        let task = task.to_string();
+        self.db.write(move |conn| {
+            let running: Option<(u64, String, u64)> = conn
+                .prepare_cached(sql::EVAL_BENCH_RUNNING)?
+                .query_row(params![task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .optional()?;
+            let Some((id, known, started)) = running else {
+                return Ok(());
+            };
+            let cost: u64 = conn
+                .prepare_cached(sql::EVAL_TASK_COST)?
+                .query_row(params![task], |r| r.get(0))?;
+            let outcome = if landed { "passed" } else { "failed" };
+            let matched = landed == (known == "landed");
+            conn.prepare_cached(sql::EVAL_BENCH_FINISH)?
+                .execute(params![
+                    id,
+                    outcome,
+                    matched,
+                    bound(cost),
+                    bound(now.saturating_sub(started))
+                ])?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// The benchmark's replays, newest first.
@@ -908,12 +933,13 @@ fn bench_at(r: &Row<'_>) -> apz_store::rusqlite::Result<BenchRun> {
     Ok(BenchRun {
         id: r.get(0)?,
         archive: r.get(1)?,
-        outcome: r.get(2)?,
-        known: r.get(3)?,
-        matched: r.get(4)?,
-        cost_micros: r.get(5)?,
-        wall_ms: r.get(6)?,
-        replayed_ms: r.get(7)?,
+        task: r.get(2)?,
+        outcome: r.get(3)?,
+        known: r.get(4)?,
+        matched: r.get(5)?,
+        cost_micros: r.get(6)?,
+        wall_ms: r.get(7)?,
+        replayed_ms: r.get(8)?,
     })
 }
 
@@ -968,6 +994,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
         )
         .post("/v1/evals/qualified", |app, req: &Request, _| qualified_route(app, req))
         .doc(RouteDoc::new("Record the qualification stages a task passed and the lab minutes they took").errors(&[400]))
+        .post("/v1/evals/bench/{id}", |app, _, p| replay_route(app, p.get("id")))
+        .doc(
+            RouteDoc::new(
+                "Replay archived case {id}: a task in its project at the commit it started from, scored against the case's outcome when it ends",
+            )
+            .status(201)
+            .errors(&[400, 404, 409]),
+        )
         .get("/v1/evals/tools", |app, _, _| {
             Response::json(200, &app.evals.tool_latency())
         })
@@ -1048,6 +1082,50 @@ fn archive_route(app: &App, req: &Request) -> Response {
     match app.evals.archive(&case) {
         Ok(id) => Response::json(201, &json!({ "id": id })),
         Err(err) => Response::error(500, &format!("the case was not archived: {err}")),
+    }
+}
+
+/// Opens the replay of archived case `id`: a task in the case's project whose goal names the commit it started from, and
+/// whose acceptance is the case's check. The replay is recorded as running; the work loop runs the task like any other,
+/// and its end scores it ([`Evals::replay_finished`], called when the task lands or fails).
+fn replay_route(app: &App, id: &str) -> Response {
+    let Ok(id) = id.parse::<u64>() else {
+        return Response::error(400, &format!("{id:?} is no case number"));
+    };
+    let Some(case) = app.evals.archives().into_iter().find(|c| c.id == id) else {
+        return Response::error(404, &format!("no archived case {id}"));
+    };
+    let task = match app.plaza.tasks.create(&apz_plaza::tasks::CreateTask {
+        goal: format!(
+            "Replay archived case {id}: {}. Open your lane at revision {}, the commit the task started from.",
+            case.goal, case.start
+        ),
+        acceptance: Some(case.check.clone()),
+        role: None,
+        after: vec![],
+        project: Some(case.project.clone()),
+    }) {
+        Ok(task) => task,
+        Err(err) => {
+            return Response::error(409, &format!("the replay task was not created: {err:?}"));
+        }
+    };
+    if let Err(err) = app.projects.link_task(&case.project, task.id()) {
+        eprintln!(
+            "apid: evals: replay {} is not linked to {}: {err}",
+            task.id(),
+            case.project
+        );
+    }
+    match app
+        .evals
+        .start_replay(&case, task.id(), apz_plaza::now_ms())
+    {
+        Ok(bench) => {
+            crate::work_loop::tick(app);
+            Response::json(201, &json!({ "task": task.id(), "bench": bench }))
+        }
+        Err(err) => Response::error(500, &format!("the replay was not recorded: {err}")),
     }
 }
 
@@ -1492,9 +1570,9 @@ mod tests {
     }
 
     #[test]
-    fn an_archived_case_and_its_replays_are_kept_and_read_back() {
+    fn a_replay_is_scored_against_its_cases_known_outcome_when_its_task_ends() {
         let (_dir, _store, evals) = fixture();
-        let case = Archived {
+        let landed = Archived {
             id: 0,
             project: "pr1".into(),
             task: "t1".into(),
@@ -1504,34 +1582,96 @@ mod tests {
             outcome: "landed".into(),
             archived_ms: 42,
         };
-        let id = evals.archive(&case).unwrap();
-        assert_eq!(id, 1);
-        assert_eq!(
-            evals.archives(),
-            vec![Archived {
-                id: 1,
-                ..case.clone()
-            }]
-        );
-        let replay = bench::Replay {
-            outcome: "passed".into(),
-            known: "landed".into(),
-            matched: true,
-            cost_micros: 40,
-            wall_ms: 7,
+        let landed_id = evals.archive(&landed).unwrap();
+        assert_eq!(landed_id, 1);
+        let landed = Archived {
+            id: landed_id,
+            ..landed
         };
-        assert_eq!(evals.record_bench(1, &replay, 99).unwrap(), 1);
-        let bench = evals.bench_runs();
-        assert_eq!(bench.len(), 1);
+        // The replay's sessions are its task's runs: the builder and the reviewer.
+        evals
+            .record(&run_step(
+                1,
+                "r1",
+                "builder",
+                "build",
+                "mock/agent",
+                true,
+                250,
+                900,
+            ))
+            .unwrap();
+        evals
+            .record(&run_step(
+                2,
+                "r1",
+                "reviewer",
+                "review",
+                "mock/echo",
+                true,
+                40,
+                300,
+            ))
+            .unwrap();
+        assert_eq!(evals.start_replay(&landed, "r1", 1000).unwrap(), 1);
+        assert_eq!(
+            evals.bench_runs()[0].outcome,
+            "running",
+            "a replay is recorded while its task runs"
+        );
+        evals.replay_finished("r1", true, 3000).unwrap();
+        let replay = evals
+            .bench_runs()
+            .into_iter()
+            .find(|b| b.archive == landed_id)
+            .unwrap();
         assert_eq!(
             (
-                bench[0].archive,
-                bench[0].matched,
-                bench[0].cost_micros,
-                bench[0].replayed_ms
+                replay.task.as_deref(),
+                replay.outcome.as_str(),
+                replay.known.as_str(),
+                replay.matched
             ),
-            (1, true, 40, 99)
+            (Some("r1"), "passed", "landed", true),
+            "a case that landed passes when its replay lands"
         );
+        assert_eq!(
+            (replay.cost_micros, replay.wall_ms),
+            (290, 2000),
+            "the task's spend and its time"
+        );
+
+        // A reverted case that fails its replay agrees with its outcome.
+        let reverted = Archived {
+            id: 0,
+            outcome: "reverted".into(),
+            ..landed.clone()
+        };
+        let reverted_id = evals.archive(&reverted).unwrap();
+        evals
+            .start_replay(
+                &Archived {
+                    id: reverted_id,
+                    ..reverted
+                },
+                "r2",
+                10,
+            )
+            .unwrap();
+        evals.replay_finished("r2", false, 20).unwrap();
+        let replay = evals
+            .bench_runs()
+            .into_iter()
+            .find(|b| b.archive == reverted_id)
+            .unwrap();
+        assert_eq!(
+            (replay.outcome.as_str(), replay.matched, replay.cost_micros),
+            ("failed", true, 0)
+        );
+
+        // A task that is no replay is left alone.
+        evals.replay_finished("t9", true, 5).unwrap();
+        assert_eq!(evals.bench_runs().len(), 2);
     }
 
     #[test]

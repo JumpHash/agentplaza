@@ -917,6 +917,46 @@ struct AssessBody {
     security: Vec<apz_topology::security::Outcome>,
 }
 
+/// The qualification a run's judged stages and its lab minutes count for (PLAN 25.1): the distinct stages that passed,
+/// and the minutes the run held its nodes (from its start to its end; 0 when it never started or ended).
+pub fn qualification<'a>(
+    started_ms: Option<u64>,
+    ended_ms: Option<u64>,
+    stages: impl Iterator<Item = (&'a str, bool)>,
+) -> (u64, u64) {
+    let passed: std::collections::BTreeSet<&str> = stages
+        .filter(|(_, passed)| *passed)
+        .map(|(kind, _)| kind)
+        .collect();
+    let minutes = match (started_ms, ended_ms) {
+        (Some(start), Some(end)) if end > start => (end - start) / 60_000,
+        _ => 0,
+    };
+    (passed.len() as u64, minutes)
+}
+
+/// Writes a judged run's qualification into the eval records of the change it qualifies (its task's sessions): the
+/// stages that passed and the lab minutes (`evals.rs`). A run with no change, or a change with no task, writes nothing.
+fn record_qualification(app: &App, run: &LabRun, verdicts: &[LabVerdict]) {
+    if run.change.is_empty() {
+        return;
+    }
+    let Some(task) = app.weft.task_of_lane(&run.change) else {
+        return;
+    };
+    let (stages, minutes) = qualification(
+        run.started_ms,
+        run.ended_ms,
+        verdicts.iter().map(|v| (v.kind.as_str(), v.passed)),
+    );
+    if let Err(err) = app.evals.qualified(&task, stages, minutes) {
+        eprintln!(
+            "apid: evals: the qualification of {} was not recorded: {err}",
+            run.id
+        );
+    }
+}
+
 fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let body: AssessBody = if req.body.is_empty() {
         AssessBody::default()
@@ -978,9 +1018,40 @@ fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
                 &topology,
                 &security,
             ));
+            record_qualification(app, &run, &verdicts);
             Response::json(200, &json!({"run": id, "verdicts": verdicts}))
         }
         Err((status, message)) => Response::error(status, &message),
+    }
+}
+
+#[cfg(test)]
+mod qualification_tests {
+    use super::qualification;
+
+    #[test]
+    fn a_run_counts_its_distinct_passed_stages_and_the_minutes_it_held_its_nodes() {
+        let stages = [
+            ("topology", true),
+            ("performance", true),
+            ("topology", true),
+            ("security", false),
+            ("ux", true),
+        ];
+        assert_eq!(
+            qualification(Some(0), Some(45 * 60_000 + 5_000), stages.into_iter()),
+            (3, 45)
+        );
+        assert_eq!(
+            qualification(None, Some(60_000), stages.into_iter()),
+            (3, 0),
+            "a run that never started holds no minutes"
+        );
+        assert_eq!(
+            qualification(Some(9), Some(4), std::iter::empty()),
+            (0, 0),
+            "a run that ended before it began holds none"
+        );
     }
 }
 
