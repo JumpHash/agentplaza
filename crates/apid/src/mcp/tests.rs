@@ -2,7 +2,10 @@
 //! access and risk, and the laws. The fixture is the `mcp_fixture` binary (src/bin, built with apid).
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::{BufRead, BufReader, Read};
+#[cfg(not(windows))]
+use std::io::Read;
+use std::io::{BufRead, BufReader};
+#[cfg(not(windows))]
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
@@ -886,7 +889,9 @@ fn a_start_that_fails_before_launch_leaves_its_reason_on_the_server_view() {
     );
 }
 
+// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
 #[test]
+#[cfg(not(windows))]
 fn the_sandboxed_fixture_reaches_the_proxy_port_and_nothing_else() {
     // The proxy's port is the only loopback port a sandboxed server may connect to: another local listener, and an
     // address beyond the loopback, are refused by the sandbox.
@@ -960,7 +965,9 @@ fn a_server_runs_in_a_microvm_with_its_directories_as_volumes_and_the_proxy_on_t
     assert!(request.mounts.iter().all(|m| m.name.starts_with("ro-")));
 }
 
+// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
 #[test]
+#[cfg(not(windows))]
 fn a_node_that_cannot_boot_a_microvm_runs_the_server_in_the_sandbox_and_says_why() {
     let vm = Arc::new(FakeVm {
         available: Err("no /dev/kvm on this host".into()),
@@ -982,7 +989,9 @@ fn a_node_that_cannot_boot_a_microvm_runs_the_server_in_the_sandbox_and_says_why
     runtime.stop("fixture");
 }
 
+// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
 #[test]
+#[cfg(not(windows))]
 fn a_server_on_another_node_or_without_a_proxy_is_not_sent_to_a_microvm() {
     let vm = Arc::new(FakeVm {
         available: Ok(()),
