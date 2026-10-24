@@ -287,19 +287,64 @@ fn the_data_stage_declares_one_source_or_one_previous_schema() {
 }
 
 #[test]
-fn a_postgres_url_reaches_only_a_loopback_host_or_a_socket() {
-    let remote: postgres::Config = "postgres://app@db.example.com/app".parse().expect("parses");
-    assert!(
-        source::check_local(&remote).is_err(),
-        "a remote host needs TLS, not linked here"
+fn a_postgres_url_reaches_loopback_plain_and_any_other_host_over_verified_tls() {
+    let plain = |url: &str| source::transport_for(&url.parse().expect("parses"), None);
+    assert_eq!(
+        plain("postgres://app@localhost/app"),
+        Ok(source::Transport::Plain)
     );
-    let local: postgres::Config = "postgres://app@localhost/app".parse().expect("parses");
-    assert!(source::check_local(&local).is_ok());
-    let socket: postgres::Config = "postgres://app@%2Ftmp/app".parse().expect("parses");
-    assert!(source::check_local(&socket).is_ok());
+    assert_eq!(
+        plain("postgres://app@127.0.0.1:5432/app"),
+        Ok(source::Transport::Plain)
+    );
+    assert_eq!(
+        plain("postgres://app@[::1]/app"),
+        Ok(source::Transport::Plain)
+    );
+    assert_eq!(
+        plain("postgres://app@%2Ftmp/app"),
+        Ok(source::Transport::Plain)
+    );
+    assert_eq!(
+        plain("postgres://app@db.example.com/app"),
+        Ok(source::Transport::Verified { ca: None })
+    );
+    assert_eq!(
+        plain("postgres://app@10.0.0.7/app"),
+        Ok(source::Transport::Verified { ca: None })
+    );
+    // One remote host among local ones is remote: the copy does not split its connection.
+    assert_eq!(
+        plain("postgres://app@localhost,db.example.com/app"),
+        Ok(source::Transport::Verified { ca: None })
+    );
+    assert!(
+        plain("postgres://app@db.example.com/app?sslmode=disable").is_err(),
+        "no clear text to a remote host"
+    );
+    assert_eq!(
+        plain("postgres://app@localhost/app?sslmode=disable"),
+        Ok(source::Transport::Plain),
+        "loopback may stay plain"
+    );
     assert!(
         !source::POSTGRES_COLUMNS
             .to_ascii_uppercase()
             .contains("INSERT")
     );
+}
+
+#[test]
+fn a_connector_ca_must_hold_a_certificate_and_the_public_roots_build_a_connector() {
+    let remote: postgres::Config = "postgres://app@db.example.com/app".parse().expect("parses");
+    assert!(source::transport_for(&remote, Some("not a certificate")).is_err());
+    assert!(
+        source::transport_for(&remote, Some("")).is_err(),
+        "an empty CA is refused"
+    );
+    assert!(
+        source::tls_connector(None).is_ok(),
+        "the public roots and the ring provider build"
+    );
+    assert!(source::tls_connector(Some("garbage")).is_err());
 }

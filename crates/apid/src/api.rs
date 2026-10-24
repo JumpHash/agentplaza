@@ -149,6 +149,7 @@ pub fn router() -> Router<App> {
     let router = crate::nodes::routes(router);
     let router = crate::test_lab::routes(router);
     let router = crate::lab_observe::routes(router);
+    let router = crate::lab_scrub::routes(router);
     let router = crate::lab_ux::routes(router);
     let router = crate::topology::routes(router);
     let router = crate::mover::routes(router);

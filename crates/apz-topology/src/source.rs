@@ -8,8 +8,14 @@
 
 use std::path::Path;
 
+use std::sync::Arc;
+
+use postgres_rustls::tokio_rustls::TlsConnector;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, OpenFlags};
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
+use rustls::{ClientConfig, RootCertStore};
 
 /// A table of a source: its name and its columns in order. A copy declares the columns with their types, not their
 /// constraints (a NOT NULL column would refuse the NULLs a rule leaves).
@@ -129,19 +135,79 @@ impl Source for Sqlite {
     }
 }
 
-/// Whether a Postgres URL names only hosts this machine reaches without TLS: a loopback address or a socket. A remote
-/// host needs TLS, which this build does not link, so the URL is refused before anything connects.
-pub fn check_local(config: &postgres::Config) -> Result<(), String> {
-    for host in config.get_hosts() {
-        if let postgres::config::Host::Tcp(name) = host
-            && !matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1")
-        {
-            return Err(format!(
-                "the copy reaches a Postgres source only at a loopback host or a socket: {name} needs TLS, which this build does not link"
-            ));
-        }
+/// How a Postgres source is reached (PLAN 22.5): a loopback address or a socket is this machine's own server and is
+/// reached without TLS; any other host needs TLS, and its certificate is verified against the connector's CA when one is
+/// given, else against the public web roots.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Transport {
+    Plain,
+    Verified { ca: Option<String> },
+}
+
+/// Whether a host name is this machine: `localhost`, or a loopback address.
+fn is_loopback(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The transport a URL's hosts require (pure). Any non-loopback host forces TLS, and `sslmode=disable` is refused for
+/// one: the copy never sends a remote database's credentials or rows in the clear. A CA the connector gave must hold a
+/// certificate. Nothing here connects.
+pub fn transport_for(config: &postgres::Config, ca: Option<&str>) -> Result<Transport, String> {
+    let remote = config
+        .get_hosts()
+        .iter()
+        .any(|host| matches!(host, postgres::config::Host::Tcp(name) if !is_loopback(name)));
+    if !remote {
+        return Ok(Transport::Plain);
     }
-    Ok(())
+    if config.get_ssl_mode() == postgres::config::SslMode::Disable {
+        return Err(
+            "a Postgres source on a remote host needs TLS: sslmode=disable is refused".into(),
+        );
+    }
+    if let Some(pem) = ca {
+        ca_certificates(pem)?;
+    }
+    Ok(Transport::Verified {
+        ca: ca.map(str::to_string),
+    })
+}
+
+/// The certificates of a PEM text the connector gave as its CA. A text with none is refused.
+fn ca_certificates(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
+    let certs = CertificateDer::pem_slice_iter(pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "the source's CA is not PEM".to_string())?;
+    if certs.is_empty() {
+        return Err("the source's CA holds no certificate".into());
+    }
+    Ok(certs)
+}
+
+/// The TLS connector for a remote Postgres source: rustls on the ring provider, verifying the server against `ca` (only
+/// that CA) or else the public web roots.
+pub fn tls_connector(ca: Option<&str>) -> Result<TlsConnector, String> {
+    let mut roots = RootCertStore::empty();
+    match ca {
+        Some(pem) => {
+            for cert in ca_certificates(pem)? {
+                roots
+                    .add(cert)
+                    .map_err(|_| "the source's CA is not a certificate".to_string())?;
+            }
+        }
+        None => roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+    }
+    let config =
+        ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|_| "the TLS protocol versions are not available".to_string())?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+    Ok(TlsConnector::from(Arc::new(config)))
 }
 
 /// A Postgres server's public schema, read through a session that is read-only.
@@ -150,14 +216,19 @@ pub struct Postgres {
 }
 
 impl Postgres {
-    /// Connects with a URL the hub read from the vault. The URL is never printed: its errors name the parts they refuse.
-    pub fn connect(url: &str) -> Result<Postgres, String> {
+    /// Connects with a URL the hub read from the vault, and the connector's CA when it gave one. The URL is never
+    /// printed: the errors name the parts they refuse, not the values.
+    pub fn connect(url: &str, ca: Option<&str>) -> Result<Postgres, String> {
         let config: postgres::Config = url
             .parse()
             .map_err(|_| "the source's URL is not a Postgres URL".to_string())?;
-        check_local(&config)?;
-        let mut client = config
-            .connect(postgres::NoTls)
+        let connected = match transport_for(&config, ca)? {
+            Transport::Plain => config.connect(postgres::NoTls),
+            Transport::Verified { ca } => config.connect(postgres_rustls::MakeTlsConnector::new(
+                tls_connector(ca.as_deref())?,
+            )),
+        };
+        let mut client = connected
             .map_err(|_| "the Postgres source did not accept the connection".to_string())?;
         client
             .batch_execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")

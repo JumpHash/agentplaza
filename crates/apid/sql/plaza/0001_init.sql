@@ -1790,6 +1790,33 @@ CREATE TABLE "test_lab_reservation" (
     PRIMARY KEY ("test_lab_pos", "runs_pos", "reservations_pos"),
     FOREIGN KEY ("test_lab_pos", "runs_pos") REFERENCES "test_lab_run" ("test_lab_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "test_lab_scrub" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "scrubs_pos" INTEGER NOT NULL CHECK ("scrubs_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "seq" INTEGER NOT NULL CHECK ("seq" >= 0),
+    "source" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "tables" INTEGER NOT NULL CHECK ("tables" >= 0),
+    "cells" INTEGER NOT NULL CHECK ("cells" >= 0),
+    "cut_documents" INTEGER NOT NULL CHECK ("cut_documents" >= 0),
+    "reason" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("test_lab_pos", "scrubs_pos"),
+    FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "test_lab_scrub_finding" (
+    "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
+    "scrub_findings_pos" INTEGER NOT NULL CHECK ("scrub_findings_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "scrub" INTEGER NOT NULL CHECK ("scrub" >= 0),
+    "table" TEXT NOT NULL,
+    "column" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "samples" INTEGER NOT NULL CHECK ("samples" >= 0),
+    PRIMARY KEY ("test_lab_pos", "scrub_findings_pos"),
+    FOREIGN KEY ("test_lab_pos") REFERENCES "test_lab" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 CREATE TABLE "test_lab_log" (
     "test_lab_pos" INTEGER NOT NULL CHECK ("test_lab_pos" >= 0),
     "logs_pos" INTEGER NOT NULL CHECK ("logs_pos" >= 0),

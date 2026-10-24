@@ -848,17 +848,16 @@ max = 2
                 .collect::<Vec<_>>(),
             crate::upgrades::STEPS
         );
-        for stub in ["cve"] {
-            let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
-            assert!(
-                r.description.contains("Stub until"),
-                "{stub} says which phase fills it"
-            );
-            assert!(
-                r.steps.iter().all(|s| s.engine.is_some()),
-                "{stub} runs by its engine"
-            );
-        }
+        let stub = "cve";
+        let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
+        assert!(
+            r.description.contains("Stub until"),
+            "{stub} says which phase fills it"
+        );
+        assert!(
+            r.steps.iter().all(|s| s.engine.is_some()),
+            "{stub} runs by its engine"
+        );
         for r in recipes {
             r.check().unwrap();
             assert_eq!(Recipe::parse(&r.to_toml()).unwrap(), r, "{}", r.id);

@@ -271,6 +271,11 @@ impl Copy {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Gives the copy's file to its run: the guard is disarmed, and the caller removes the file when the run ends.
+    pub fn keep(mut self) -> PathBuf {
+        std::mem::take(&mut self.path)
+    }
 }
 
 impl Drop for Copy {

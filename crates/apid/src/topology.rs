@@ -157,7 +157,7 @@ fn convert_source(
 }
 
 /// The bytes of `path` in the project's repository at main.
-fn read_file(app: &App, project: &str, path: &str) -> Result<Vec<u8>, (u16, String)> {
+pub(crate) fn read_file(app: &App, project: &str, path: &str) -> Result<Vec<u8>, (u16, String)> {
     let Some(repo) = app.projects.get(project).and_then(|p| p.repo) else {
         return Err((404, format!("{path}: the project has no repository yet")));
     };

@@ -383,6 +383,7 @@ dependencies = [
  "qrcode",
  "rcgen",
  "ring",
+ "rusqlite",
  "schemars 1.2.3",
  "secrecy",
  "serde",
@@ -888,8 +889,10 @@ version = "1.0.0"
 dependencies = [
  "apz-secrets",
  "postgres",
+ "postgres_rustls",
  "regex",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -897,6 +900,7 @@ dependencies = [
  "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "ureq",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -7725,6 +7729,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "postgres_rustls"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d71385efdda853344f4cfe66c6a67f8b550e6ff7e4c686fefc1d2937823e004a"
+dependencies = [
+ "sha2 0.11.1",
+ "tokio",
+ "tokio-postgres",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10032,6 +10048,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "whoami",
+]
+
+[[package]]
+name = "tokio-rustls"
+version = "0.26.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
+dependencies = [
+ "rustls",
+ "tokio",
 ]
 
 [[package]]
