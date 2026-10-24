@@ -383,6 +383,7 @@ fn release(version: &str) -> Release {
         promotions: Vec::new(),
         sync: vec![pushed_row(version)],
         store_steps: Vec::new(),
+        compatibility: Vec::new(),
         created_ms: 0,
         updated_ms: 0,
     }

@@ -1592,6 +1592,7 @@ fn published(version: &str) -> Release {
         promotions: Vec::new(),
         sync: Vec::new(),
         store_steps: Vec::new(),
+        compatibility: Vec::new(),
         created_ms: 0,
         updated_ms: 0,
     }
