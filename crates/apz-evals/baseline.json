@@ -10,34 +10,34 @@
       "tool_calls": 11,
       "model_turns": 24,
       "tokens": {
-        "input": 155983,
+        "input": 197462,
         "output": 470,
         "cached": 0
       },
       "dollars": 0.0,
-      "wall_ms": 48486,
-      "tool_ms": 5,
+      "wall_ms": 48279,
+      "tool_ms": 6,
       "tools": [
         {
           "tool": "edit",
           "calls": 1,
           "errors": 0,
-          "p50_ms": 1,
-          "p95_ms": 1
+          "p50_ms": 0,
+          "p95_ms": 0
         },
         {
           "tool": "read",
           "calls": 1,
           "errors": 0,
-          "p50_ms": 1,
-          "p95_ms": 1
+          "p50_ms": 2,
+          "p95_ms": 2
         },
         {
           "tool": "run",
           "calls": 4,
           "errors": 0,
           "p50_ms": 1,
-          "p95_ms": 1
+          "p95_ms": 2
         }
       ]
     },
@@ -50,13 +50,13 @@
       "tool_calls": 13,
       "model_turns": 24,
       "tokens": {
-        "input": 154408,
+        "input": 195886,
         "output": 271,
         "cached": 0
       },
       "dollars": 0.0,
-      "wall_ms": 48532,
-      "tool_ms": 6,
+      "wall_ms": 48355,
+      "tool_ms": 8,
       "tools": [
         {
           "tool": "edit",
@@ -77,7 +77,7 @@
           "calls": 3,
           "errors": 0,
           "p50_ms": 1,
-          "p95_ms": 1
+          "p95_ms": 2
         }
       ]
     },
@@ -90,34 +90,34 @@
       "tool_calls": 11,
       "model_turns": 24,
       "tokens": {
-        "input": 155188,
+        "input": 196667,
         "output": 352,
         "cached": 0
       },
       "dollars": 0.0,
-      "wall_ms": 48606,
-      "tool_ms": 12,
+      "wall_ms": 48384,
+      "tool_ms": 2,
       "tools": [
         {
           "tool": "edit",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 0,
+          "p95_ms": 0
+        },
+        {
+          "tool": "read",
           "calls": 1,
           "errors": 0,
           "p50_ms": 1,
           "p95_ms": 1
         },
         {
-          "tool": "read",
-          "calls": 1,
-          "errors": 0,
-          "p50_ms": 2,
-          "p95_ms": 2
-        },
-        {
           "tool": "run",
           "calls": 4,
           "errors": 0,
-          "p50_ms": 1,
-          "p95_ms": 4
+          "p50_ms": 0,
+          "p95_ms": 1
         }
       ]
     },
@@ -130,13 +130,13 @@
       "tool_calls": 10,
       "model_turns": 23,
       "tokens": {
-        "input": 147694,
+        "input": 187446,
         "output": 286,
         "cached": 0
       },
       "dollars": 0.0,
-      "wall_ms": 48741,
-      "tool_ms": 25,
+      "wall_ms": 48288,
+      "tool_ms": 7,
       "tools": [
         {
           "tool": "edit",
@@ -156,8 +156,8 @@
           "tool": "run",
           "calls": 3,
           "errors": 0,
-          "p50_ms": 3,
-          "p95_ms": 18
+          "p50_ms": 2,
+          "p95_ms": 2
         }
       ]
     },
@@ -170,34 +170,34 @@
       "tool_calls": 15,
       "model_turns": 27,
       "tokens": {
-        "input": 175650,
+        "input": 222320,
         "output": 472,
         "cached": 0
       },
       "dollars": 0.0,
-      "wall_ms": 48838,
-      "tool_ms": 39,
+      "wall_ms": 48278,
+      "tool_ms": 10,
       "tools": [
         {
           "tool": "edit",
           "calls": 4,
           "errors": 0,
-          "p50_ms": 4,
-          "p95_ms": 6
+          "p50_ms": 0,
+          "p95_ms": 1
         },
         {
           "tool": "read",
           "calls": 1,
           "errors": 0,
-          "p50_ms": 7,
-          "p95_ms": 7
+          "p50_ms": 3,
+          "p95_ms": 3
         },
         {
           "tool": "run",
           "calls": 4,
           "errors": 0,
-          "p50_ms": 4,
-          "p95_ms": 6
+          "p50_ms": 1,
+          "p95_ms": 2
         }
       ]
     },
@@ -210,26 +210,26 @@
       "tool_calls": 10,
       "model_turns": 23,
       "tokens": {
-        "input": 148047,
+        "input": 187799,
         "output": 259,
         "cached": 0
       },
       "dollars": 0.0,
-      "wall_ms": 48759,
-      "tool_ms": 17,
+      "wall_ms": 48305,
+      "tool_ms": 9,
       "tools": [
         {
           "tool": "edit",
           "calls": 1,
           "errors": 0,
-          "p50_ms": 12,
-          "p95_ms": 12
+          "p50_ms": 1,
+          "p95_ms": 1
         },
         {
           "tool": "run",
           "calls": 4,
           "errors": 0,
-          "p50_ms": 1,
+          "p50_ms": 2,
           "p95_ms": 2
         }
       ]

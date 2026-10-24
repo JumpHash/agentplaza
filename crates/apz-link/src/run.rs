@@ -227,7 +227,7 @@ fn local_json(local: &Local, port: u16, path: &str) -> Value {
 }
 
 /// The fields noded reports about the machine that a heartbeat carries to the hub.
-const NODED_MACHINE_FIELDS: [&str; 20] = [
+const NODED_MACHINE_FIELDS: [&str; 21] = [
     "transfer_port",
     "transfer_pin",
     "kind",
@@ -244,6 +244,7 @@ const NODED_MACHINE_FIELDS: [&str; 20] = [
     "fabric",
     "memory_mib",
     "storage_gib",
+    "mac",
     "storage_free_gib",
     "clones",
     "cpu_baseline",

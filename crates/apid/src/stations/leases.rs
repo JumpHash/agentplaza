@@ -19,6 +19,20 @@ use serde::{Deserialize, Serialize};
 pub enum Kind {
     Shared,
     Pixel,
+    /// The owner's own screen, as one session the agent works in alone (the macOS and Windows desktops, which have no
+    /// virtual display): it queues for the machine's one session like a pixel lease, and the station opens the owner's
+    /// screen for it (a shared session, under the agent's cid).
+    OwnerScreen,
+    /// A device on the node, named by its serial (an Android emulator or phone, an iPhone through Xcode): leased like a
+    /// workstation, active at once, and held by one agent at a time. It holds no screen session.
+    Device,
+}
+
+impl Kind {
+    /// Whether a lease of this kind holds a screen session the station opens for it, and so queues for one.
+    pub fn holds_session(self) -> bool {
+        matches!(self, Kind::Pixel | Kind::OwnerScreen)
+    }
 }
 
 /// Where a lease is. Only pixel leases are ever `Queued` or `Opening`.
@@ -47,6 +61,9 @@ pub struct Lease {
     /// The owner has taken the session and the agent waits for it to be given back (`agent_waits`, takeover.rs).
     #[serde(default)]
     pub paused: bool,
+    /// The device's serial, for a device lease (`Kind::Device`); None for every other kind.
+    #[serde(default)]
+    pub device: Option<String>,
     /// When the lease became active: at once for a shared lease, when its session was granted for a pixel lease.
     /// The lease's time charged to its task runs from here (hooks.rs). None while it waits.
     #[serde(default)]
@@ -95,15 +112,18 @@ impl Leases {
         kind: Kind,
         now: u64,
     ) -> Result<Lease, String> {
+        if kind == Kind::Device {
+            return Err("a device lease names its device".into());
+        }
         let mut list = self.guard();
-        if kind == Kind::Pixel
+        if kind.holds_session()
             && list
                 .iter()
-                .any(|l| l.station == station && l.agent == agent && l.kind == Kind::Pixel)
+                .any(|l| l.station == station && l.agent == agent && l.kind.holds_session())
         {
-            return Err("this agent already holds a pixel lease on this workstation".into());
+            return Err("this agent already holds a screen lease on this workstation".into());
         }
-        let state = if kind == Kind::Pixel {
+        let state = if kind.holds_session() {
             State::Queued
         } else {
             State::Active
@@ -119,6 +139,41 @@ impl Leases {
             state,
             paused: false,
             active_ms: (state == State::Active).then_some(now),
+            device: None,
+        };
+        list.push(lease.clone());
+        Ok(lease)
+    }
+
+    /// Opens a device lease: the device `device` of `station`, for `agent`. It is active at once, and refused while another
+    /// lease on the station holds the same serial.
+    pub fn open_device(
+        &self,
+        station: &str,
+        agent: u64,
+        task: Option<String>,
+        device: &str,
+        now: u64,
+    ) -> Result<Lease, String> {
+        let mut list = self.guard();
+        if list
+            .iter()
+            .any(|l| l.station == station && l.device.as_deref() == Some(device))
+        {
+            return Err(format!("device {device} is leased on this workstation"));
+        }
+        let lease = Lease {
+            id: format!("l{}", self.seq.fetch_add(1, Ordering::Relaxed) + 1),
+            station: station.to_string(),
+            agent,
+            task,
+            kind: Kind::Device,
+            session: None,
+            started_ms: now,
+            state: State::Active,
+            paused: false,
+            active_ms: Some(now),
+            device: Some(device.to_string()),
         };
         list.push(lease.clone());
         Ok(lease)
@@ -130,14 +185,14 @@ impl Leases {
         let mut list = self.guard();
         let busy = list
             .iter()
-            .filter(|l| l.station == station && l.kind == Kind::Pixel && l.state != State::Queued)
+            .filter(|l| l.station == station && l.kind.holds_session() && l.state != State::Queued)
             .count();
         if capacity.is_some_and(|cap| busy >= cap) {
             return None;
         }
         let next = list
             .iter_mut()
-            .find(|l| l.station == station && l.kind == Kind::Pixel && l.state == State::Queued)?;
+            .find(|l| l.station == station && l.kind.holds_session() && l.state == State::Queued)?;
         next.state = State::Opening;
         Some(next.clone())
     }
@@ -296,6 +351,54 @@ mod tests {
         }
         assert_eq!(leases.views("w1").len(), 5);
         assert!(leases.views("w1").iter().all(|v| v.position.is_none()));
+    }
+
+    #[test]
+    fn a_device_lease_is_active_at_once_and_one_agent_holds_each_serial() {
+        let leases = Leases::default();
+        let phone = leases
+            .open_device("w1", 7, Some("t1".into()), "R58N1234", 10)
+            .unwrap();
+        assert_eq!(phone.state, State::Active);
+        assert_eq!(phone.kind, Kind::Device);
+        assert_eq!(phone.device.as_deref(), Some("R58N1234"));
+        assert!(
+            leases.open_device("w1", 8, None, "R58N1234", 11).is_err(),
+            "the serial is taken on this workstation"
+        );
+        leases
+            .open_device("w1", 8, None, "emulator-5554", 12)
+            .expect("another serial is free");
+        leases
+            .open_device("w2", 8, None, "R58N1234", 13)
+            .expect("the same serial on another workstation is another device");
+        assert!(
+            leases.open("w1", 9, None, Kind::Device, 14).is_err(),
+            "a device lease names its device"
+        );
+        assert!(
+            leases.grant_next("w1", Some(1)).is_none(),
+            "a device lease holds no session"
+        );
+    }
+
+    #[test]
+    fn an_owner_screen_lease_queues_for_the_one_session_with_the_pixel_leases() {
+        let leases = Leases::default();
+        let owner = leases.open("w1", 1, None, Kind::OwnerScreen, 10).unwrap();
+        assert_eq!(owner.state, State::Queued);
+        let pixel = leases.open("w1", 2, None, Kind::Pixel, 11).unwrap();
+        assert_eq!(pixel.state, State::Queued);
+        assert!(
+            leases.open("w1", 1, None, Kind::Pixel, 12).is_err(),
+            "one screen lease per agent"
+        );
+        let granted = leases.grant_next("w1", Some(1)).expect("the first fits");
+        assert_eq!(granted.id, owner.id, "FIFO across both screen kinds");
+        assert!(
+            leases.grant_next("w1", Some(1)).is_none(),
+            "the one session is taken"
+        );
     }
 
     #[test]

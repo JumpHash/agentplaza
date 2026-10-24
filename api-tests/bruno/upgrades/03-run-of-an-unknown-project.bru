@@ -1,0 +1,16 @@
+meta {
+  name: Run of the upgrades of an unknown project
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/no-such-project/upgrades/run
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

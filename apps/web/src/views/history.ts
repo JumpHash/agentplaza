@@ -32,7 +32,7 @@ import { agents } from '../store';
 import { ago, attempt, badge, card, clip, empty, field, modal, select, toast, type Tone } from '../ui/components';
 import { h, lu, replace } from '../ui/dom';
 import { renderMarkdown } from '../ui/markdown';
-import { laneGraph, signOffView } from './history-graph';
+import { landingGraph, laneGraph, signOffView } from './history-graph';
 import {
   HISTORY_TABS,
   QUERY_HELP,
@@ -374,6 +374,8 @@ async function repoView(c: Ctx, name: string, tab: WeftTab): Promise<Built> {
 // Changes: the query box with its help, the presets and saved queries, then the lane graph.
 
 async function changesBody(c: Ctx, repo: WeftRepo): Promise<Built> {
+  // The landings as commits, and the open lanes beside them (21.6); the list below filters by query.
+  const history = await weft.history(repo.name).catch(() => null);
   const q = c.query.trim() || 'all()';
   const syntax = queryError(q);
   const rows = syntax ? null : await weft.log(repo.name, q, 200).then((l) => l).catch((err) => ({ error: errMsg(err) }));
@@ -444,7 +446,7 @@ async function changesBody(c: Ctx, repo: WeftRepo): Promise<Built> {
     return { sig: JSON.stringify(['empty', c.query]), node: h('div.hx-changes', null, bar, h('p.hx-faint', null, 'No changes match this query.')) };
   }
   const graph = laneGraph(repo.name, main, lanes, headOf(repo), nameOfLabel);
-  return { sig: JSON.stringify([log.changes, c.query]), node: h('div.hx-changes', null, bar, graph) };
+  return { sig: JSON.stringify([log.changes, c.query, history?.head ?? null, history?.lanes.length ?? 0]), node: h('div.hx-changes', null, bar, history ? landingGraph(history) : null, graph) };
 }
 
 /** A query commits from the box: Enter runs the typed text. */

@@ -143,7 +143,7 @@ impl Store {
         self
     }
 
-    fn of(&self, project: &str) -> Vec<Environment> {
+    pub(crate) fn of(&self, project: &str) -> Vec<Environment> {
         lock(&self.items)
             .iter()
             .find(|p| p.project == project)
@@ -285,6 +285,16 @@ fn forget_secret(app: &App, project: &str, env: &str, name: &str) -> bool {
         gone |= app.vault.delete(&e.id, "owner", now_ms()).is_ok();
     }
     gone
+}
+
+/// An environment's secret's value, read on the hub (the vault's own binding of the environment). Never returned to a
+/// caller that is not the hub.
+pub(crate) fn secret_value(app: &App, project: &str, env: &str, name: &str) -> Option<String> {
+    app.vault.value_for(
+        &secret_name(project, env, name),
+        &binding(project, env),
+        &crate::vault::OnBehalf::Hub,
+    )
 }
 
 fn hook_url(app: &App, project: &str, env: &str) -> Option<String> {
@@ -459,7 +469,7 @@ fn default_version(app: &App, project: &str, track: &str) -> Option<String> {
 
 /// Records a deploy of `version` to `env` and calls its hook (in the background). With `approval`, the deploy waits
 /// for it instead.
-fn record(
+pub(crate) fn record(
     app: &App,
     project: &str,
     env: &str,
@@ -513,6 +523,38 @@ fn publish(app: &App, project: &str, env: &str, deploy: &Deploy) {
         "environment",
         &json!({"project": project, "environment": env, "deploy": deploy}),
     );
+}
+
+/// Settles a deploy's outcome: its status and what it says, and the version the environment runs now when `running`
+/// says so (a rollout that rolled back leaves the previous one).
+pub(crate) fn settle_deploy(
+    app: &App,
+    project: &str,
+    env: &str,
+    id: &str,
+    status: &str,
+    detail: &str,
+    running: Option<Option<String>>,
+) {
+    let now = now_ms();
+    let changed = app.environments.mutate(project, |p| {
+        let e = p
+            .environments
+            .iter_mut()
+            .find(|e| e.name == env)
+            .ok_or("gone")?;
+        if let Some(version) = running {
+            e.version = version;
+            e.deployed_ms = now;
+        }
+        let d = e.deploys.iter_mut().find(|d| d.id == id).ok_or("gone")?;
+        d.status = status.to_string();
+        d.detail = detail.chars().take(500).collect();
+        Ok(d.clone())
+    });
+    if let Ok(deploy) = changed {
+        publish(app, project, env, &deploy);
+    }
 }
 
 fn set_status(app: &App, project: &str, env: &str, id: &str, status: &str, detail: &str) {
@@ -607,6 +649,21 @@ pub fn deploy_now(
         .into_iter()
         .find(|e| e.name == env)
         .ok_or((404, format!("no environment {env}")))?;
+    // A Cloudflare, Kubernetes or AWS environment deploys a qualified, published release through the deploy recipe (23).
+    if let Some(settings) = crate::deploy::Settings::of(&e).map_err(|e| (409, e))? {
+        let version = match version.map(str::trim).filter(|v| !v.is_empty()) {
+            Some(v) => v.to_string(),
+            None => crate::deploy::newest(app, project)
+                .map(|r| r.version)
+                .ok_or((
+                    409,
+                    "no qualified, published release yet: name a version".to_string(),
+                ))?,
+        };
+        crate::deploy::gate(app, project, &e, &version).map_err(|m| (409, m))?;
+        return crate::deploy::start(app, project, &e, &version, by, settings)
+            .map_err(|m| (409, m));
+    }
     let version = match version.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => v.chars().take(120).collect(),
         None => default_version(app, project, &e.track).ok_or((
@@ -621,7 +678,7 @@ pub fn deploy_now(
 }
 
 /// Asks to deploy: at once to an open environment, through the owner's Approvals to a protected one.
-fn request(
+pub(crate) fn request(
     app: &Arc<App>,
     project: &str,
     env: &str,
@@ -636,6 +693,10 @@ fn request(
         .into_iter()
         .find(|e| e.name == env)
         .ok_or_else(|| format!("no environment {env}"))?;
+    // A protected deploy to a platform asks only for a release that passed staging (23).
+    if e.protected {
+        crate::deploy::gate(app, project, &e, version)?;
+    }
     if !e.protected {
         return deploy_now(app, project, env, Some(version), by).map_err(|(_, e)| e);
     }
@@ -647,7 +708,16 @@ fn request(
             "cid": by_cid, "project": project, "environment": env, "version": version, "by": by, "why": why,
         }),
     );
-    record(app, project, env, version, by, Some(approval.id))
+    let deploy = record(app, project, env, version, by, Some(approval.id))?;
+    let now = now_ms();
+    let chat = crate::work_loop::project_chat(app, project, now);
+    crate::work_loop::notice(
+        app,
+        &chat,
+        &format!("Deploying {version} to {env} waits for the owner's approval in Approvals."),
+        now,
+    );
+    Ok(deploy)
 }
 
 /// The owner's decision on a `deploy` approval: approved, the deploy goes out; denied, it is refused.
@@ -657,16 +727,17 @@ pub fn decided(app: &App, item: &crate::approvals::Approval, approve: bool) -> R
     else {
         return Err("the approval names no environment".into());
     };
-    let waiting = app
+    let found = app
         .environments
         .of(project)
         .into_iter()
-        .find(|e| e.name == env)
-        .and_then(|e| {
-            e.deploys
-                .into_iter()
-                .find(|d| d.approval.as_deref() == Some(item.id.as_str()))
-        });
+        .find(|e| e.name == env);
+    let waiting = found.as_ref().and_then(|e| {
+        e.deploys
+            .iter()
+            .find(|d| d.approval.as_deref() == Some(item.id.as_str()))
+            .cloned()
+    });
     let Some(deploy) = waiting else {
         return Err(format!("no deploy waits for approval {}", item.id));
     };
@@ -679,10 +750,22 @@ pub fn decided(app: &App, item: &crate::approvals::Approval, approve: bool) -> R
             "refused",
             "the owner declined",
         );
+        let now = now_ms();
+        let chat = crate::work_loop::project_chat(app, project, now);
+        crate::work_loop::notice(
+            app,
+            &chat,
+            &format!(
+                "The owner declined the deploy of {} to {env}.",
+                deploy.version
+            ),
+            now,
+        );
         return Ok(());
     }
     let now = now_ms();
     let has_hook = hook_url(app, project, env).is_some();
+    let prior = found.as_ref().and_then(|e| e.version.clone());
     let sent = app.environments.mutate(project, |p| {
         let e = p
             .environments
@@ -701,7 +784,14 @@ pub fn decided(app: &App, item: &crate::approvals::Approval, approve: bool) -> R
         Ok(d.clone())
     })?;
     publish(app, project, env, &sent);
+    // A platform environment runs its rollout instead of the hook.
     if let Some(arc) = app.handle().upgrade() {
+        if let Some(e) = found.as_ref()
+            && let Ok(Some(settings)) = crate::deploy::Settings::of(e)
+        {
+            crate::deploy::approved(&arc, project, e, settings, &sent, prior);
+            return Ok(());
+        }
         send(&arc, project, env, &sent);
     }
     Ok(())
@@ -720,6 +810,10 @@ pub fn tracked(app: &Arc<App>, repo: &str, track: &str, version: &str) {
     };
     for e in app.environments.of(&project.id) {
         if e.track != track || e.version.as_deref() == Some(version) {
+            continue;
+        }
+        // A platform environment that tracks releases deploys once the release is published (23, `published`).
+        if track == "releases" && matches!(crate::deploy::Settings::of(&e), Ok(Some(_))) {
             continue;
         }
         let result = request(

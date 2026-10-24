@@ -1,0 +1,30 @@
+{
+  "receiver": "plaza",
+  "status": "firing",
+  "orgId": 1,
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": { "alertname": "Checkout latency", "grafana_folder": "Site", "service": "site-web", "severity": "warning" },
+      "annotations": { "summary": "p95 checkout latency above 2s" },
+      "startsAt": "2026-10-24T10:03:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://grafana.example.com/alerting/grafana/abc/view",
+      "fingerprint": "9f8e7d6c5b4a3921",
+      "silenceURL": "https://grafana.example.com/alerting/silence/new",
+      "dashboardURL": "https://grafana.example.com/d/site/site",
+      "panelURL": "https://grafana.example.com/d/site/site?viewPanel=2",
+      "values": { "B": 2.4 }
+    }
+  ],
+  "groupLabels": { "grafana_folder": "Site" },
+  "commonLabels": { "grafana_folder": "Site", "service": "site-web", "severity": "warning" },
+  "commonAnnotations": { "summary": "p95 checkout latency above 2s" },
+  "externalURL": "https://grafana.example.com/",
+  "version": "1",
+  "groupKey": "{}:{grafana_folder=\"Site\"}",
+  "truncatedAlerts": 0,
+  "state": "alerting",
+  "title": "[FIRING:1] Checkout latency Site",
+  "message": "**Firing**\n\nValue: B=2.4"
+}

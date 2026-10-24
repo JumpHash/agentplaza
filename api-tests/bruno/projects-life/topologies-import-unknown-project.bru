@@ -1,0 +1,24 @@
+meta {
+  name: Importing a topology into an unknown project
+  type: http
+  seq: 23
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/no-such-project/topologies/import
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"source": "compose", "path": "docker-compose.yml", "dry_run": true}
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

@@ -30,6 +30,12 @@
 //! [[targets]]
 //! name = "web"
 //! kind = "preview"
+//!
+//! [[targets]]                   # a build target: the platform a release builds (20.5)
+//! name = "linux-x86_64"
+//! platform = "linux-x86_64"
+//! command = ["cargo", "build", "--release"]
+//! output = "target/release/app"  # the file the command leaves: the artifact's bytes
 //! ```
 
 use std::collections::{BTreeMap, HashSet};
@@ -39,6 +45,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::state::App;
+use crate::targets;
 
 /// Where a project's declaration lives in its repo.
 pub const FILE: &str = ".plaza/project.toml";
@@ -157,14 +164,24 @@ impl Hypervisor {
     }
 }
 
-/// A target: a place a change is previewed or tried by hand, and the kind of base that serves it. A preview target
-/// names the command that serves the app (`serve`, run by a shell in the lane's checkout), the `port` it listens on,
-/// and how many hours a preview outlives its lane's landing or closing (`grace_hours`, 24 by default; 18.1).
+/// A target: a place a change is previewed or tried by hand (`kind`, and the kind of base that serves it), or a platform
+/// a release builds it for (`platform`, PLAN 20.5). A target names one or both. A preview target names the command that
+/// serves the app (`serve`, run by a shell in the lane's checkout), the `port` it listens on, and how many hours a
+/// preview outlives its lane's landing or closing (`grace_hours`, 24 by default; 18.1).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     pub name: String,
-    pub kind: TargetKind,
+    #[serde(default)]
+    pub kind: Option<TargetKind>,
+    #[serde(default)]
+    pub platform: Option<targets::Platform>,
+    /// The command that builds a platform target, run in a fork of the project's base on the pool that builds it (20.5).
+    #[serde(default)]
+    pub command: Option<Argv>,
+    /// The file the command leaves, relative to the workspace: its bytes are the target's artifact.
+    #[serde(default)]
+    pub output: Option<String>,
     #[serde(default)]
     pub serve: Option<String>,
     #[serde(default)]
@@ -233,6 +250,27 @@ impl Stack {
             }
             if service.command.is_empty() {
                 return Err(format!("{FILE}: service {} has no command", service.name));
+            }
+        }
+        for target in &self.targets {
+            if target.kind.is_none() && target.platform.is_none() {
+                return Err(format!(
+                    "{FILE}: target {} names neither a kind nor a platform",
+                    target.name
+                ));
+            }
+            if target.platform.is_some() {
+                let built = target.command.as_ref().is_some_and(|c| !c.is_empty());
+                let output = target.output.as_deref().unwrap_or("");
+                let relative = !output.is_empty()
+                    && !output.starts_with('/')
+                    && !output.split('/').any(|part| part == "..");
+                if !built || !relative {
+                    return Err(format!(
+                        "{FILE}: target {} builds a platform, so it names its command and the output it leaves (a relative path)",
+                        target.name
+                    ));
+                }
             }
         }
         let commands = self
@@ -334,7 +372,7 @@ kind = "preview"
                 hypervisor: Hypervisor::Kvm
             }]
         );
-        assert_eq!(stack.targets[0].kind, TargetKind::Preview);
+        assert_eq!(stack.targets[0].kind, Some(TargetKind::Preview));
         assert_eq!(stack.build, Build::default());
     }
 
@@ -362,6 +400,15 @@ kind = "preview"
         assert!(parse("[toolchains]\nruby = \"3\"\n").is_err());
         assert!(parse("[[pools]]\narch = \"sparc\"\nhypervisor = \"kvm\"\n").is_err());
         assert!(parse("[[targets]]\nname = \"w\"\nkind = \"sandbox\"\n").is_err());
+        assert!(
+            parse("[[targets]]\nname = \"w\"\n").is_err(),
+            "a target names a kind or a platform"
+        );
+        assert!(
+            parse("[[targets]]\nname = \"l\"\nplatform = \"linux-x86_64\"\ncommand = [\"cargo\", \"build\"]\noutput = \"target/app\"\n").is_ok()
+        );
+        assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"linux-x86_64\"\n").is_err());
+        assert!(parse("[[targets]]\nname = \"l\"\nplatform = \"solaris-sparc\"\n").is_err());
     }
 
     #[test]

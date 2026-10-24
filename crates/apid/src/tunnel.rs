@@ -119,6 +119,11 @@ fn accept_streams(
     loop {
         match mux.accept(ACCEPT_WAIT) {
             Ok(Some(stream)) => {
+                // A lab segment's trunk is spliced to the other node's trunk for the same segment, not answered.
+                if let Some(segment) = apz_http::trunk::trunk_segment(&stream) {
+                    trunks().offer(&segment, stream);
+                    continue;
+                }
                 let dispatch = Arc::clone(dispatch);
                 thread::spawn(move || answer(&stream, peer, &dispatch));
             }
@@ -315,6 +320,12 @@ fn failed(command: String, reason: &str) -> CommandResult {
         status: 502,
         body: json!({"error": reason}),
     }
+}
+
+/// The hub's pairing of lab trunks across nodes: one table for the process, keyed by segment.
+fn trunks() -> &'static apz_http::trunk::TrunkHub {
+    static HUB: std::sync::OnceLock<apz_http::trunk::TrunkHub> = std::sync::OnceLock::new();
+    HUB.get_or_init(apz_http::trunk::TrunkHub::new)
 }
 
 /// Answers one stream the node opened. Only `request` streams come from a node; anything else is reset.
@@ -576,6 +587,8 @@ mod tests {
             draining: false,
             revoked: false,
             address: String::new(),
+            label: String::new(),
+            test_share: 0,
             path: "tunnel".into(),
             mesh_address: String::new(),
             mesh_token: String::new(),

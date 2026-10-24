@@ -648,7 +648,20 @@ struct Admitted {
 
 /// Holds a model call of agent `cid` on its budget before it is sent ([`work_loop::hold_call`]): the request's size and
 /// the answer cap it names are its worst case. A budget that cannot take the call refuses it with the paused message.
-fn admit_call(app: &App, cid: u64, model: &str, body: &Value) -> Result<Admitted, String> {
+/// A subscription model's call also waits while its vendor's allowance is used up ([`allowances::gate`]).
+fn admit_call(
+    app: &App,
+    cid: u64,
+    provider: &str,
+    model: &str,
+    body: &Value,
+) -> Result<Admitted, String> {
+    let canonical = if model.contains('/') {
+        model.to_string()
+    } else {
+        format!("{provider}/{model}")
+    };
+    crate::allowances::gate(app, cid, &canonical, apz_plaza::now_ms())?;
     let hold = work_loop::hold_call(
         app,
         cid,
@@ -940,6 +953,8 @@ fn relay(
         check_model(&mut body, provider, &own, &list)
             .map_err(|message| Response::json(403, &json!({ "error": message })))?;
     }
+    crate::allowances::route_body(app, cid, provider, &mut body)
+        .map_err(|message| paused_answer(provider, &message))?;
     let model = body
         .get("model")
         .and_then(Value::as_str)
@@ -958,8 +973,8 @@ fn relay(
     };
     let (base, key) = provider_upstream(app, provider, cid)?;
     // The call is held on its budget before it is sent; one that does not fit is not sent.
-    let admitted =
-        admit_call(app, cid, &model, &body).map_err(|message| paused_answer(provider, &message))?;
+    let admitted = admit_call(app, cid, provider, &model, &body)
+        .map_err(|message| paused_answer(provider, &message))?;
     let headers = upstream_headers(app, req, provider, path);
     let started = Instant::now();
     let resp = match upstream_post(provider, &base, &key, path, &headers, &body) {
@@ -1096,8 +1111,8 @@ fn relay_gemini(
         .unwrap_or_default()
         .to_string();
     let (base, key) = provider_upstream(app, "gemini", cid)?;
-    let admitted =
-        admit_call(app, cid, &model, &body).map_err(|message| paused_answer("gemini", &message))?;
+    let admitted = admit_call(app, cid, "gemini", &model, &body)
+        .map_err(|message| paused_answer("gemini", &message))?;
     // Only `alt=sse` is forwarded: the query string is otherwise the client's to leave out.
     let event_stream = method == "streamGenerateContent" && req.query_param("alt") == Some("sse");
     let mut path = format!("/v1beta/models/{model}:{method}");
@@ -1272,12 +1287,13 @@ fn admit(grant: &Grant, provider: &str, body: &mut Value) -> Result<Admitted, St
             &list,
         )?;
     }
+    crate::allowances::route_body(&app, grant.cid, provider, body)?;
     let model = body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    admit_call(&app, grant.cid, &model, body)
+    admit_call(&app, grant.cid, provider, &model, body)
 }
 
 fn limits() -> ws::Limits {

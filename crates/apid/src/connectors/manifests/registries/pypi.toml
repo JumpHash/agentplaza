@@ -1,0 +1,11 @@
+id = "pypi"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["upload.pypi.org"]
+secrets = ["PYPI_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Basic ${SECRET}"

@@ -457,6 +457,44 @@ const seg = (s: string): string => encodeURIComponent(s);
 const get = <T>(path: string) => call<T>('GET', `${BASE}${path}`);
 const post = <T>(path: string, body: unknown = {}) => call<T>('POST', `${BASE}${path}`, body);
 
+/** A landing read as a commit (21.6): its content id, its parents, its author as the connection's platform knows it, its
+ *  message (the one export writes), its time, the hub's records of it (its sign-off chain), and the git commit each
+ *  connection received for it. */
+export interface WeftLanding {
+  id: string;
+  parents: string[];
+  rev: string;
+  change: string;
+  title: string;
+  kind: string;
+  imported: boolean;
+  intents: { title: string; summary: string; kind: string }[];
+  author: { name: string; email: string; connection: string } | null;
+  time_ms: number;
+  message: string;
+  exported: Record<string, string>;
+  records: { seq: number; at_ms: number; actor: WeftActor; key_id: string; attest: unknown }[];
+}
+
+/** An open change on the reference, with the landing it starts from (its `base`, by content id). */
+export interface WeftLane {
+  change: string;
+  title: string;
+  state: WeftChangeState;
+  round: number;
+  base: string | null;
+  kind: string;
+}
+
+/** A repo's history on a reference: its landings oldest first (the last is the head) and its open lanes. */
+export interface WeftHistory {
+  repo: string;
+  ref: string;
+  head: string | null;
+  landings: WeftLanding[];
+  lanes: WeftLane[];
+}
+
 export const weft = {
   /** Whether the weft server runs in this hub, and how. */
   status: () => call<WeftStatus>('GET', BASE),
@@ -468,6 +506,9 @@ export const weft = {
   /** Changes matching a query (`all()`, `open()`, `needs(owner)`, …), newest first. */
   log: (repo: string, q = 'all()', limit = 200) => get<WeftLog>(`/repos/${seg(repo)}/log${qs({ q, limit })}`),
   change: (name: string) => get<WeftChange>(`/changes/${seg(name)}`),
+
+  /** A repo's history on a reference: each landing as a commit, and the open lanes (21.6). */
+  history: (repo: string, ref = 'main') => get<WeftHistory>(`/repos/${seg(repo)}/history${qs({ ref })}`),
   revision: (id: string) => get<WeftRevision>(`/revisions/${seg(id)}`),
   files: (rev: string) => get<WeftFiles>(`/revisions/${seg(rev)}/files`),
   /** A file's text at a revision. Binary files fail to decode as text and the call throws. */

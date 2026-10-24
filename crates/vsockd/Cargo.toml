@@ -24,6 +24,10 @@ webpki-roots = "1"
 [dev-dependencies]
 rcgen = "0.13"
 
+[features]
+# The loopback policy the node's tests use for their stand-in internet (`egress::Policy::allow_loopback`).
+test-support = []
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
@@ -33,6 +37,10 @@ windows-sys = { workspace = true, features = [
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
+
+[lib]
+name = "vsockd"
+path = "src/lib.rs"
 
 [[bin]]
 name = "vsockd"

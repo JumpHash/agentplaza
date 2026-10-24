@@ -78,6 +78,9 @@ pub struct VmDevices {
     pub balloon: Option<Weak<Mutex<VirtioMmioTransport>>>,
     /// The shared data volumes' transports, in the spec's order.
     pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
+    /// The lab topology's network device, when the VM has one. A VM with one cannot be snapshotted: the
+    /// device's queues are not in a snapshot (see [`crate::spawner::check_net`]).
+    pub net: Option<Weak<Mutex<VirtioMmioTransport>>>,
 }
 
 /// The in-process [`VmControl`] of one VM.
@@ -262,6 +265,11 @@ impl InProcessControl {
         requested: SnapshotKind,
         keep: bool,
     ) -> Result<SnapshotInfo, SpawnError> {
+        if self.devices.net.is_some() {
+            return Err(snapshot_error(
+                "a VM with a network device cannot be snapshotted yet: its device's queues are not in a snapshot",
+            ));
+        }
         self.check_memory_target(dir)?;
         let vm = self.live_vm()?;
         // The clock starts before the pause: `paused_ms` is how long the guest was stopped.
@@ -548,6 +556,7 @@ mod tests {
                 workspace: None,
                 volumes: Vec::new(),
                 balloon: None,
+                net: None,
             },
             DeviceGate::default(),
             0,
@@ -623,6 +632,7 @@ mod tests {
                 workspace: None,
                 volumes: Vec::new(),
                 balloon: None,
+                net: None,
             },
             DeviceGate::default(),
             0,

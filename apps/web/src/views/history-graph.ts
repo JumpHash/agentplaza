@@ -2,11 +2,11 @@
 // lane graph, which is the line of main with its landed changes as nodes and the open changes as branches off it; and
 // a change's sign-off chain, its six steps as a row of dots that take the outcome's colour.
 
-import type { WeftChangeSummary } from '../api-weft';
+import type { WeftChangeSummary, WeftHistory } from '../api-weft';
 import { href } from '../router';
 import { ago, badge, clip } from '../ui/components';
 import { h, lu } from '../ui/dom';
-import { changeStateLabel, changeStateTone, intentChips, plural, type ChainDot, type ChainRound, type ChainStepView } from './history-model';
+import { changeStateLabel, changeStateTone, intentChips, layoutHistory, plural, type ChainDot, type ChainRound, type ChainStepView } from './history-model';
 
 /** The actor's name for a label such as `agent:301`, supplied by the view (the roster knows the names). */
 export type Namer = (label: string) => string;
@@ -33,6 +33,51 @@ export function laneGraph(repo: string, main: WeftChangeSummary[], lanes: WeftCh
     ...main.map((c) => laneRow(repo, c, name, true)),
   ];
   return h('ol.hx-graph', { 'aria-label': 'Changes on main and in lanes' }, ...rows);
+}
+
+/** The landings as a graph (21.6): main's commits, newest on top, each with its content id, its author, its time, the git
+ *  commit each connection received and its records; the open lanes sit in columns of their own, beside the landing
+ *  they start from. */
+export function landingGraph(history: WeftHistory): HTMLElement {
+  const { nodes } = layoutHistory(history);
+  const landings = new Map(history.landings.map((l) => [l.id, l]));
+  const lanes = new Map(history.lanes.map((l) => [l.change, l]));
+  const rows = [...nodes].sort((a, b) => a.row - b.row || a.column - b.column);
+  return h(
+    'ol.hx-graph.hx-landings',
+    { 'aria-label': 'Landings on main as commits, and the open lanes' },
+    rows.map((n) => {
+      const rail = h('span.hx-rail', { 'aria-hidden': 'true', style: `margin-left:${n.column * 16}px` }, h('i.hx-node'));
+      if (n.kind === 'lane') {
+        const lane = lanes.get(n.id);
+        if (!lane) return null;
+        return h(
+          'li',
+          { class: `hx-row hx-lane is-${lane.state} t-${TONE_OF_STATE[lane.state] ?? 'muted'}` },
+          rail,
+          h('a.hx-rowlink', { href: href('history', history.repo, 'change', lane.change) }, h('span.hx-id', null, lane.change), h('span.hx-title', null, lane.title), badge(changeStateLabel(lane.state), changeStateTone(lane.state))),
+        );
+      }
+      const l = landings.get(n.id);
+      if (!l) return null;
+      const git = Object.values(l.exported)[0];
+      const meta = [l.author?.name ?? '', l.imported ? 'imported' : '', l.time_ms ? ago(l.time_ms) : ''].filter(Boolean).join(' · ');
+      return h(
+        'li',
+        { class: 'hx-row hx-main' },
+        rail,
+        h(
+          'a.hx-rowlink',
+          { href: href('history', history.repo, 'change', l.change) },
+          h('span.hx-id', null, l.id),
+          h('span.hx-title', null, l.title),
+          h('span.hx-faint', null, meta),
+          git ? h('code', null, git.slice(0, 10)) : h('span'),
+          h('span.hx-faint', null, `${plural(l.records.length, 'record')}`),
+        ),
+      );
+    }),
+  );
 }
 
 function laneRow(repo: string, c: WeftChangeSummary, name: Namer, onMain = false): HTMLElement {

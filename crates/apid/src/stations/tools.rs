@@ -64,9 +64,9 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             obj(json!({}), &[]),
         ),
         "station_lease" => (
-            "Opens a lease on a workstation for your task. kind 'shared' is for files, shells, runs and scripts, and is active at once. kind 'pixel' takes the screen for you: it waits up to 25 seconds in the machine's queue for a free session, then answers with its place. Release it with station_release when you are done. The screen tools (station_screenshot, station_click, station_type, station_key, station_scroll, station_drag, station_ui_tree, station_ui_act) need your pixel lease.",
+            "Opens a lease on a workstation for your task. kind 'shared' is for files, shells, runs and scripts, and is active at once. kind 'pixel' takes the screen for you: it waits up to 25 seconds in the machine's queue for a free session, then answers with its place. kind 'owner_screen' takes the owner's own screen on a machine with no virtual display (a Mac): the same queue and the same screen tools, on the owner's screen. kind 'device' (with device, the serial) takes an emulator or phone on the machine: active at once, held by one agent at a time, for device tools and app_script. Release it with station_release when you are done. The screen tools (station_screenshot, station_click, station_type, station_key, station_scroll, station_drag, station_ui_tree, station_ui_act) need your pixel lease.",
             obj(
-                json!({"station": station, "kind": {"type": "string", "enum": ["shared", "pixel"]}, "task": text}),
+                json!({"station": station, "kind": {"type": "string", "enum": ["shared", "pixel", "owner_screen", "device"]}, "task": text, "device": text}),
                 &["station", "kind"],
             ),
         ),
@@ -196,6 +196,8 @@ pub(crate) enum Call {
         station: String,
         kind: Kind,
         task: Option<String>,
+        /// The device's serial, for a device lease.
+        device: Option<String>,
     },
     Release {
         station: String,
@@ -238,12 +240,23 @@ pub(crate) fn parse(tool: &str, input: &Value) -> Result<Call, String> {
             let kind = match str_arg(input, "kind")?.as_str() {
                 "shared" => Kind::Shared,
                 "pixel" => Kind::Pixel,
-                other => return Err(format!("`kind` must be shared or pixel, not {other}")),
+                "owner_screen" => Kind::OwnerScreen,
+                "device" => Kind::Device,
+                other => {
+                    return Err(format!(
+                        "`kind` must be shared, pixel, owner_screen or device, not {other}"
+                    ));
+                }
             };
+            let device = optional(input, "device", str_of, "a string")?;
+            if (kind == Kind::Device) != device.is_some() {
+                return Err("a device lease names its device (the adb serial), and only a device lease does".into());
+            }
             return Ok(Call::Lease {
                 station,
                 kind,
                 task: optional(input, "task", str_of, "a string")?,
+                device,
             });
         }
         "station_release" => {
@@ -400,7 +413,8 @@ pub fn call(app: &App, cid: u64, tool: &str, input: &Value) -> Result<Value, Str
             station,
             kind,
             task,
-        } => act::lease_open(app, cid, &station, kind, task)
+            device,
+        } => act::lease_open(app, cid, &station, kind, task, device)
             .map(|view| json!(view))
             .map_err(message),
         Call::Release { station, lease } => act::lease_release(app, cid, &station, &lease)
@@ -645,10 +659,36 @@ mod tests {
             Call::Lease {
                 station: "w1".into(),
                 kind: Kind::Pixel,
-                task: Some("t1".into())
+                task: Some("t1".into()),
+                device: None,
             }
         );
         assert!(parse("station_lease", &json!({"station": "w1", "kind": "both"})).is_err());
+        assert_eq!(
+            parse(
+                "station_lease",
+                &json!({"station": "w1", "kind": "device", "device": "R58N1234"})
+            )
+            .unwrap(),
+            Call::Lease {
+                station: "w1".into(),
+                kind: Kind::Device,
+                task: None,
+                device: Some("R58N1234".into()),
+            }
+        );
+        assert!(
+            parse("station_lease", &json!({"station": "w1", "kind": "device"})).is_err(),
+            "a device lease names its device"
+        );
+        assert!(
+            parse(
+                "station_lease",
+                &json!({"station": "w1", "kind": "pixel", "device": "x"})
+            )
+            .is_err(),
+            "only a device lease names one"
+        );
         assert_eq!(
             parse("station_release", &json!({"station": "w1", "lease": "l4"})).unwrap(),
             Call::Release {

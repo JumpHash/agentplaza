@@ -1,0 +1,31 @@
+meta {
+  name: Switch a vendor's login bridge on and off again (owner only)
+  type: http
+  seq: 91
+}
+
+put {
+  url: {{baseUrl}}/v1/login-bridges/openai
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": false
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.enabled: eq false
+}
+
+tests {
+  test("the switch answers with its vendor and the binding the bridge would read under", function () {
+    const body = res.getBody();
+    expect(body.vendor).to.equal("openai");
+    expect(body.binding).to.equal("login-bridge:openai");
+  });
+}

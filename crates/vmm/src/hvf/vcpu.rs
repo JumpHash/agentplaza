@@ -92,6 +92,8 @@ const DFSC_TRANSLATION_FAULT_0: u64 = 0b000100;
 const ESR_IL: u64 = 1 << 25;
 /// `ESR_ELx.ISS.WnR`: the faulting access was a write.
 const DABORT_WNR: u64 = 1 << 6;
+/// The `op0` of the debug and trace system registers in the [`sysreg`] encoding.
+const DEBUG_SYSREG_OP0: u16 = 2;
 
 /// The most vCPUs this backend runs: enough for any microVM, and small enough
 /// that the per-VM bookkeeping stays a fixed-size array. `boot` refuses a
@@ -1194,8 +1196,11 @@ impl SharedVm {
         // write which asserts another vCPU's line (an `ISPENDR`, or an
         // `ISENABLER` of a pending interrupt) wakes it. The address is decoded
         // first: a write to a device must not pay for that scan, and the
-        // controller's lock has to be released before the wake.
-        match self.gic().decode_address(ipa) {
+        // controller's lock has to be released before the wake. The decode is a
+        // statement of its own: a guard in a `match` scrutinee lives through the
+        // arms, and they take the lock again in `with_gic`.
+        let target = self.gic().decode_address(ipa);
+        match target {
             Some(GicMmio::Distributor { offset }) => {
                 self.with_gic(|gic| gic.dist_write(offset, size, value));
                 return true;
@@ -1330,6 +1335,10 @@ fn vcpu_loop(shared: &Arc<SharedVm>, index: usize) -> Result<(), HvfError> {
         // A pause (the snapshot control's) parks every vCPU here, the
         // powered-off and halted ones too: they are woken out of their waits.
         shared.park_if_paused(index, &vcpu)?;
+        // A stop that came while the vCPU was parked ends it here: the guest must not run once more.
+        if shared.stop_requested() {
+            return Ok(());
+        }
 
         // A vCPU that is powered off (a secondary CPU at boot, or one that
         // executed CPU_OFF) waits here for a PSCI CPU_ON. Register state is
@@ -1547,6 +1556,19 @@ fn handle_sys_reg(
 ) -> Result<Outcome, HvfError> {
     use crate::hvf::gic as icc;
 
+    // The debug and trace registers (`op0` = 2: OSLAR_EL1, OSDLR_EL1, the breakpoint and watchpoint
+    // registers and their kin) are present on the architecture but not implemented here: this
+    // backend has no debugger, so a read gives zero and a write is dropped. The guest's own
+    // setup of them (the kernel clears the OS double lock at CPU bring-up) must not be an
+    // undefined-instruction fault.
+    if reg.reg >> 14 == DEBUG_SYSREG_OP0 {
+        if reg.read && reg.rt != 31 {
+            vcpu.set_reg(sys::HV_REG_X0 + sys::hv_reg_t::from(reg.rt), 0)?;
+        }
+        vcpu.advance_pc()?;
+        return Ok(Outcome::Again);
+    }
+
     if reg.read {
         let value = match reg.reg {
             // Acknowledging has a side effect on the interrupt state, so it
@@ -1653,3 +1675,6 @@ fn handle_psci(vcpu: &mut HvfVcpu, shared: &Arc<SharedVm>) -> Result<Outcome, Hv
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

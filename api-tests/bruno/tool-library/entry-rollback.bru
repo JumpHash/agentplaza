@@ -1,0 +1,25 @@
+meta {
+  name: One entry: its schema, its policy, and the seats that may use it
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/tool-library/entry?path=deploy.rollback
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the entry carries its input schema and the seats that may use it", function () {
+    const b = res.getBody();
+    expect(b.path).to.equal("deploy.rollback");
+    expect(b.input_schema.required).to.include("id");
+    expect(b.seats).to.be.an("array");
+  });
+}

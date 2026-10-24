@@ -99,7 +99,7 @@
 //! window neither the backstop nor the supervisor covers is a daemon that dies
 //! before the child's `prctl(2)` lands; it is one syscall wide, and it is
 //! documented at the child's `arm_parent_death_signal`
-//! (`crates/vmm/src/bin/apz-vmm/linux.rs`).
+//! (`crates/vmm/src/bin/apz-vmm/child.rs`).
 //!
 //! **The muxer: the child binds its own socket.** `VmSpec::vsock`'s
 //! `uds_path` is handed to the child verbatim (`--uds`), and the child's
@@ -130,12 +130,16 @@
 //! mode).
 
 use crate::cgroup::{VmCgroup, VmLimits};
+use apz_sandbox::Sandboxed;
+use apz_uds::UnixStream;
 
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(unix)]
+use std::process::Command;
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -176,6 +180,7 @@ const RECLAIM_TIMEOUT: Duration = Duration::from_secs(120);
 /// uid/gid target ([`crate::jail::jailer`]) and the seccomp jail's mode
 /// ([`crate::jail`]). A deployment configures the child's confinement through
 /// these and nothing else reaches it (see the `env_clear` in [`boot`]).
+#[cfg(target_os = "linux")]
 const CONFINEMENT_ENV: [&str; 6] = [
     crate::jail::jailer::JAILER_ENV,
     crate::jail::jailer::JAIL_ROOT_ENV,
@@ -185,8 +190,79 @@ const CONFINEMENT_ENV: [&str; 6] = [
     crate::jail::NO_JAIL_ENV,
 ];
 
+/// macOS has no jail (the node's sandbox confines the per-VM process), so there is no switch to pass on.
+#[cfg(all(unix, not(target_os = "linux")))]
+const CONFINEMENT_ENV: [&str; 0] = [];
+
+/// The handle of one VM's child, the same on every platform: a `std` child on Unix (spawned on the supervisor
+/// thread, see [`spawn_supervised`]) and an apz-sandbox process on Windows (a job object and an AppContainer).
+trait Proc: Send {
+    fn pid(&self) -> u32;
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>>;
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>>;
+    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>>;
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    fn wait(&mut self) -> std::io::Result<ExitStatus>;
+    fn kill(&mut self) -> std::io::Result<()>;
+}
+
+impl Proc for Child {
+    fn pid(&self) -> u32 {
+        self.id()
+    }
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        self.stdin
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Write + Send>)
+    }
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>)
+    }
+    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+        self.stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>)
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        Child::wait(self)
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        Child::kill(self)
+    }
+}
+
+impl Proc for Sandboxed {
+    fn pid(&self) -> u32 {
+        Sandboxed::id(self)
+    }
+    fn take_stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        Sandboxed::stdin(self)
+    }
+    fn take_stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        Sandboxed::stdout(self)
+    }
+    fn take_stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+        Sandboxed::stderr(self)
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Sandboxed::try_wait(self)
+    }
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        Sandboxed::wait(self)
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        Sandboxed::kill(self)
+    }
+}
+
 /// A child-spawn request for the supervisor thread: the fully-built command,
 /// and the channel the child (or the spawn error) is answered on.
+#[cfg(unix)]
 struct SpawnRequest {
     command: Command,
     reply: mpsc::Sender<std::io::Result<Child>>,
@@ -197,6 +273,7 @@ struct SpawnRequest {
 /// that) and living until the process exits. It is what makes the child's
 /// parent *thread* outlive the caller that asked for the VM — see the module
 /// documentation for why that is required, not merely tidy.
+#[cfg(unix)]
 static SUPERVISOR: Mutex<Option<mpsc::Sender<SpawnRequest>>> = Mutex::new(None);
 
 /// Numbers the cgroups this process creates, so two VMs of one parent never
@@ -205,6 +282,7 @@ static CGROUP_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 /// Kills a VM's cgroup, if it still has one. The waiter takes the cgroup once
 /// the child is reaped, so after that there is nothing to kill.
+#[cfg(unix)]
 fn kill_cgroup(cgroup: &Mutex<Option<VmCgroup>>) {
     let guard = cgroup.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(cgroup) = guard.as_ref()
@@ -238,6 +316,7 @@ fn remove_cgroup(cgroup: &Mutex<Option<VmCgroup>>) {
 /// and reaped here rather than leaked. The loop ends when the channel closes,
 /// which in practice is when the process exits; the thread is deliberately
 /// never joined, because it is meant to outlive every VM.
+#[cfg(unix)]
 fn supervise(requests: mpsc::Receiver<SpawnRequest>) {
     while let Ok(mut request) = requests.recv() {
         let result = request.command.spawn();
@@ -252,6 +331,7 @@ fn supervise(requests: mpsc::Receiver<SpawnRequest>) {
 
 /// The supervisor sender, starting the thread on first use. A process that
 /// never boots a VM in [`super::SpawnMode::Process`] never starts it.
+#[cfg(unix)]
 fn supervisor() -> Result<mpsc::Sender<SpawnRequest>, SpawnError> {
     let mut slot = SUPERVISOR.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(sender) = slot.as_ref() {
@@ -269,6 +349,7 @@ fn supervisor() -> Result<mpsc::Sender<SpawnRequest>, SpawnError> {
 /// child's parent *thread* is the supervisor and not the caller. The caller
 /// still blocks here until the child exists, so `spawn()` keeps the
 /// synchronous shape it had when it called [`Command::spawn`] itself.
+#[cfg(unix)]
 fn spawn_supervised(command: Command, binary: &std::path::Path) -> Result<Child, SpawnError> {
     let sender = supervisor()?;
     let (reply, answer) = mpsc::channel();
@@ -295,24 +376,6 @@ fn spawn_supervised(command: Command, binary: &std::path::Path) -> Result<Child,
 /// child has reported its VM up.
 pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     let binary = super::child_binary()?;
-    let mut command = Command::new(&binary);
-    command
-        .args(child_args(spec))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    // The child gets a *minimal* environment: the confinement switches (a
-    // deployment's configuration of exactly what this mode exists to apply)
-    // and nothing else. No host environment variable — a token, a path, a
-    // secret — rides into the VM's process, which is invariant 2's posture
-    // ("no credential ever enters a VM") extended to the process that holds
-    // the guest, not just to guest-visible memory.
-    command.env_clear();
-    for name in CONFINEMENT_ENV {
-        if let Ok(value) = std::env::var(name) {
-            command.env(name, value);
-        }
-    }
     // The VM's cgroup, when the host has one, is created before the child
     // exists so its limits are in place for the child's first allocation; the
     // child joins it right after the spawn.
@@ -335,8 +398,8 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
     // The spawn runs on the supervisor thread, not here: the child's
     // parent-death signal watches the *thread* that created it (see the module
     // documentation), and this caller may be an ephemeral request thread.
-    let mut child = spawn_supervised(command, &binary)?;
-    let pid = child.id();
+    let mut child = spawn_child(spec, &binary, child_env())?;
+    let pid = child.pid();
     // The child joins its cgroup before anything waits on it. A child that
     // cannot join is killed here rather than left running without its limits.
     if let Some(cgroup) = &cgroup
@@ -350,9 +413,9 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
     // The three pipes are the whole interface. Missing one is not possible
     // after a successful `spawn` with all three requested, but it is reported
     // rather than unwrapped.
-    let stdin = take(child.stdin.take(), &binary, "stdin")?;
-    let stdout = take(child.stdout.take(), &binary, "stdout")?;
-    let stderr = take(child.stderr.take(), &binary, "stderr")?;
+    let stdin = take(child.take_stdin(), &binary, "stdin")?;
+    let stdout = take(child.take_stdout(), &binary, "stdout")?;
+    let stderr = take(child.take_stderr(), &binary, "stderr")?;
 
     // The child's log (shared with the runtime, so `VmHandle::process_log`
     // shows it), its readiness gate, and the thread that reads both.
@@ -364,7 +427,7 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
             .name(format!("apz_vm{}_child_log", runtime.id))
             .spawn(move || read_child_stderr(stderr, &log, &ready_tx));
         if let Err(source) = spawned {
-            fail_start(&mut child, source)?;
+            fail_start(child.as_mut(), source)?;
         }
     }
 
@@ -469,47 +532,22 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
             .map_err(|err| format!("the per-VM process is not taking console input: {err}"))
     });
 
-    // The stop control: `SIGTERM`, then `SIGKILL` on a second request (the
-    // spawner repeats a request that did not take). A child that has already
-    // been reaped is not signalled again: its pid may have been reused.
-    // Shared by the stop control (which kills it on the escalation to `SIGKILL`)
-    // and the waiter (which removes it once the child is reaped).
+    // The stop control and the waiter share the child: the stop control asks it
+    // to end, and the waiter reaps it and publishes how the VM ended, so
+    // `exit_reason` reads the same in both modes.
     let cgroup = Arc::new(Mutex::new(cgroup));
-    let signals = Arc::new(AtomicUsize::new(0));
     let gone = Arc::new(AtomicBool::new(false));
-    {
-        let signals = Arc::clone(&signals);
-        let gone = Arc::clone(&gone);
-        let cgroup = Arc::clone(&cgroup);
-        runtime.set_stop_control(move || {
-            if gone.load(Ordering::SeqCst) {
-                return;
-            }
-            let signal = if signals.fetch_add(1, Ordering::SeqCst) == 0 {
-                libc::SIGTERM
-            } else {
-                libc::SIGKILL
-            };
-            if let Err(err) = crate::sys::send_signal(pid as i32, signal) {
-                // `ESRCH` here is the VM having stopped between the two checks;
-                // anything else is reported rather than swallowed, because a
-                // VM that cannot be signalled is a VM that cannot be killed.
-                if err.raw_os_error() != Some(libc::ESRCH) {
-                    eprintln!("vmm: cannot signal the per-VM process {pid}: {err}");
-                }
-            }
-            // The escalation ends the VM's whole cgroup, not only the child:
-            // `SIGTERM` was the guest's chance to stop, and this is the end.
-            if signal == libc::SIGKILL {
-                kill_cgroup(&cgroup);
-            }
-        });
-    }
+    let slot: Arc<Mutex<Option<Box<dyn Proc>>>> = Arc::new(Mutex::new(Some(child)));
+    #[cfg(unix)]
+    runtime.set_stop_control(unix_stop_control(
+        pid,
+        Arc::clone(&gone),
+        Arc::clone(&cgroup),
+    ));
+    #[cfg(windows)]
+    runtime.set_stop_control(windows_stop_control(Arc::clone(&gone), Arc::clone(&slot)));
 
-    // The waiter: the last thread, and the one `VmHandle::wait` joins. It
-    // reaps the child and publishes how the VM ended, so `exit_reason` reads
-    // the same in both modes.
-    let slot = Arc::new(Mutex::new(Some(child)));
+    // The waiter: the last thread, and the one `VmHandle::wait` joins.
     let waiter = {
         let runtime = Arc::clone(&runtime);
         let gone = Arc::clone(&gone);
@@ -518,11 +556,9 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
         thread::Builder::new()
             .name(format!("apz_vm{}_child", runtime.id))
             .spawn(move || {
-                // The slot is only held to *take* the child: the wait runs
-                // outside the lock, so a failed start below can still reap it.
-                let child = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
-                let Some(mut child) = child else { return };
-                let status = child.wait();
+                let Some(status) = wait_for_child(&slot) else {
+                    return;
+                };
                 gone.store(true, Ordering::SeqCst);
                 match status.map(|status| status.code()) {
                     Ok(Some(super::CHILD_EXIT_SHUTDOWN)) => runtime.mark_guest_exited(),
@@ -551,6 +587,184 @@ pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnEr
             }
             remove_cgroup(&cgroup);
             Err(SpawnError::Thread(source))
+        }
+    }
+}
+
+/// Starts the VM's child with `env` as its whole environment: a `Command` on Unix, spawned on the supervisor
+/// thread (see [`spawn_supervised`]); on Windows an apz-sandbox process confined by [`monitor_sandbox`].
+#[cfg(unix)]
+fn spawn_child(
+    spec: &VmSpec,
+    binary: &Path,
+    env: Vec<(String, String)>,
+) -> Result<Box<dyn Proc>, SpawnError> {
+    let mut command = Command::new(binary);
+    command
+        .args(child_args(spec))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.env_clear();
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    Ok(Box::new(spawn_supervised(command, binary)?))
+}
+
+/// See the Unix version: the Windows child is confined by its job object and AppContainer, and a
+/// [`monitor_sandbox`] names what it may read and write.
+#[cfg(windows)]
+fn spawn_child(
+    spec: &VmSpec,
+    binary: &Path,
+    env: Vec<(String, String)>,
+) -> Result<Box<dyn Proc>, SpawnError> {
+    let sandbox = monitor_sandbox(binary, spec, env)?;
+    let child = apz_sandbox::spawn(&sandbox, Stdio::piped(), Stdio::piped(), Stdio::piped())
+        .map_err(SpawnError::backend)?;
+    Ok(Box::new(child))
+}
+
+/// The child's whole environment. A Unix child gets the confinement switches a deployment set and nothing
+/// else: no host variable (a token, a path, a secret) rides into the VM's process (invariant 2, extended to
+/// the process that holds the guest). A Windows child gets only `SystemRoot`, which the system DLLs need.
+#[cfg(unix)]
+fn child_env() -> Vec<(String, String)> {
+    CONFINEMENT_ENV
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| ((*name).to_string(), value))
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn child_env() -> Vec<(String, String)> {
+    std::env::var("SystemRoot")
+        .ok()
+        .map(|value| vec![("SystemRoot".to_string(), value)])
+        .unwrap_or_default()
+}
+
+/// The OS sandbox of a Windows monitor process (`apz-vmm`): the kernel, the initrd, the data volumes and a
+/// restore directory are read-only; the state directory (the vsock and control sockets), the workspace image
+/// and the snapshot root are writable; the process has no network and one process; its memory cap is the
+/// guest's RAM plus the monitor's overhead ([`crate::confine::monitor_spec`]). The state directory is the
+/// socket directory of the VM, so a VM without a vsock socket has no directory to name and is refused.
+#[cfg(any(windows, test))]
+fn monitor_sandbox(
+    binary: &Path,
+    spec: &VmSpec,
+    env: Vec<(String, String)>,
+) -> Result<apz_sandbox::Spec, SpawnError> {
+    let uds = spec.vsock.as_ref().map(|vsock| vsock.uds_path.clone());
+    let state_dir = uds
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| SpawnError::SpawnMode {
+            reason: "a Windows monitor process needs the VM's vsock socket: its directory is the one the process may write".to_string(),
+        })?;
+    let mut read_only = vec![spec.kernel.clone()];
+    read_only.extend(spec.initrd.clone());
+    read_only.extend(spec.volumes.iter().map(|volume| volume.image.clone()));
+    read_only.extend(spec.restore.clone());
+    let mut read_write = vec![state_dir.clone()];
+    read_write.extend(spec.workspace.clone());
+    read_write.extend(snapshot_root(spec));
+    let memory = u64::try_from(spec.memory_mib)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(1 << 20);
+    Ok(crate::confine::monitor_spec(
+        binary,
+        child_args(spec),
+        env,
+        &state_dir,
+        &read_only,
+        &read_write,
+        memory,
+    ))
+}
+
+/// The stop control of a Unix child: `SIGTERM` at the first request and `SIGKILL` at the second (the spawner
+/// repeats a request that did not take). The escalation to `SIGKILL` also ends the VM's whole cgroup. A child
+/// already reaped is not signalled: its pid may have been reused.
+#[cfg(unix)]
+fn unix_stop_control(
+    pid: u32,
+    gone: Arc<AtomicBool>,
+    cgroup: Arc<Mutex<Option<VmCgroup>>>,
+) -> impl Fn() + Send + Sync + 'static {
+    let signals = AtomicUsize::new(0);
+    move || {
+        if gone.load(Ordering::SeqCst) {
+            return;
+        }
+        let signal = if signals.fetch_add(1, Ordering::SeqCst) == 0 {
+            libc::SIGTERM
+        } else {
+            libc::SIGKILL
+        };
+        if let Err(err) = send_signal(pid as i32, signal) {
+            // `ESRCH` here is the VM having stopped between the two checks;
+            // anything else is reported rather than swallowed, because a VM
+            // that cannot be signalled is a VM that cannot be killed.
+            if err.raw_os_error() != Some(libc::ESRCH) {
+                eprintln!("vmm: cannot signal the per-VM process {pid}: {err}");
+            }
+        }
+        if signal == libc::SIGKILL {
+            kill_cgroup(&cgroup);
+        }
+    }
+}
+
+/// The stop control of a Windows child. Windows has no `SIGTERM` to ask for a graceful end and the monitor
+/// handles none, so the child is terminated at once; the guest does not get its shutdown.
+#[cfg(windows)]
+fn windows_stop_control(
+    gone: Arc<AtomicBool>,
+    slot: Arc<Mutex<Option<Box<dyn Proc>>>>,
+) -> impl Fn() + Send + Sync + 'static {
+    move || {
+        if gone.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(child) = guard.as_mut()
+            && let Err(err) = child.kill()
+        {
+            eprintln!("vmm: cannot stop the per-VM process: {err}");
+        }
+    }
+}
+
+/// Waits for the VM's child and returns its status; `None` when the slot is already empty. On Unix the child is
+/// taken out and waited on (a blocking `waitpid`, which the stop control's signals end). On Windows it is polled
+/// where it is, because the stop control must reach the handle while the VM runs.
+fn wait_for_child(slot: &Mutex<Option<Box<dyn Proc>>>) -> Option<std::io::Result<ExitStatus>> {
+    #[cfg(unix)]
+    {
+        let child = slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let mut child = child?;
+        Some(child.wait())
+    }
+    #[cfg(windows)]
+    {
+        const POLL: Duration = Duration::from_millis(10);
+        loop {
+            let polled = {
+                let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+                guard.as_mut()?.try_wait()
+            };
+            match polled {
+                Ok(Some(status)) => return Some(Ok(status)),
+                Ok(None) => thread::sleep(POLL),
+                Err(err) => return Some(Err(err)),
+            }
         }
     }
 }
@@ -792,6 +1006,32 @@ fn parse_stats(fields: &str) -> Result<MemoryStats, String> {
 /// `ECONNREFUSED` while the listener exists, and `EINPROGRESS` is waited on
 /// ([`finish_connect`]). A missing path and any other error return at once.
 /// No thread is started, so none is left behind when the deadline passes.
+#[cfg(windows)]
+fn connect_within(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
+    const RETRY: Duration = Duration::from_millis(10);
+    let deadline = Instant::now() + timeout;
+    loop {
+        // A socket the monitor has not bound yet refuses or is missing: retry until the deadline.
+        match UnixStream::connect(path) {
+            Ok(stream) => return Ok(stream),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::ConnectionRefused
+                        | std::io::ErrorKind::WouldBlock
+                ) => {}
+            Err(err) => return Err(err),
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(timed_out());
+        }
+        thread::sleep(RETRY.min(left));
+    }
+}
+
+#[cfg(unix)]
 fn connect_within(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
     const RETRY: Duration = Duration::from_millis(10);
     let (addr, len) = sockaddr_un(path)?;
@@ -825,6 +1065,21 @@ fn timed_out() -> std::io::Error {
 
 /// The `sockaddr_un` for `path`, and its length. A path that leaves no room for
 /// the terminating NUL in `sun_path` (`SUN_LEN`) is refused.
+/// Sends `signal` to the child `pid` (`kill(2)`): the portable form of what the supervisor needs,
+/// with the errno kept for the `ESRCH` check the caller makes.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn send_signal(pid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `kill` takes a pid and a signal number and touches no memory.
+    let rc = unsafe { libc::kill(pid, signal) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn sockaddr_un(path: &Path) -> std::io::Result<(libc::sockaddr_un, libc::socklen_t)> {
     use std::os::unix::ffi::OsStrExt;
@@ -855,6 +1110,7 @@ fn sockaddr_un(path: &Path) -> std::io::Result<(libc::sockaddr_un, libc::socklen
 }
 
 /// A new close-on-exec, non-blocking Unix stream socket.
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn new_socket() -> std::io::Result<OwnedFd> {
     #[cfg(target_os = "linux")]
@@ -892,6 +1148,7 @@ fn new_socket() -> std::io::Result<OwnedFd> {
 }
 
 /// One non-blocking `connect(2)` of `fd` to `addr`.
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn connect_once(
     fd: &OwnedFd,
@@ -910,6 +1167,7 @@ fn connect_once(
 
 /// Waits, until `deadline`, for the connect in progress on `fd` to finish, then
 /// returns the stream, or the error the socket reports (`SO_ERROR`).
+#[cfg(unix)]
 #[allow(unsafe_code)]
 fn finish_connect(fd: OwnedFd, deadline: Instant) -> std::io::Result<UnixStream> {
     let mut waiting = libc::pollfd {
@@ -944,6 +1202,7 @@ fn finish_connect(fd: OwnedFd, deadline: Instant) -> std::io::Result<UnixStream>
 
 /// The connected socket, switched back to blocking mode: the caller bounds each
 /// I/O step with its own timeouts.
+#[cfg(unix)]
 fn blocking(fd: OwnedFd) -> std::io::Result<UnixStream> {
     let stream = UnixStream::from(fd);
     stream.set_nonblocking(false)?;
@@ -1137,7 +1396,7 @@ impl ChildControl {
 /// the readiness line's arrival (or the child's last words, `false`) to the
 /// parent.
 fn read_child_stderr(
-    stderr: std::process::ChildStderr,
+    stderr: Box<dyn Read + Send>,
     log: &Mutex<Vec<String>>,
     ready: &mpsc::Sender<bool>,
 ) {
@@ -1189,13 +1448,13 @@ fn take<T>(pipe: Option<T>, binary: &std::path::Path, which: &str) -> Result<T, 
 
 /// Kills and reaps a child after a failure in the parent's own setup, so a
 /// failed `spawn` leaves no process behind.
-fn fail_start(child: &mut Child, source: std::io::Error) -> Result<(), SpawnError> {
+fn fail_start(child: &mut dyn Proc, source: std::io::Error) -> Result<(), SpawnError> {
     let _ = child.kill();
     let _ = child.wait();
     Err(SpawnError::Thread(source))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::spawner::{DataVolume, GicVersion, VsockConfig};
@@ -1226,7 +1485,20 @@ mod tests {
         fd
     }
 
+    /// A binary that exits 0 at once, where this platform keeps `true` (macOS has no `/bin/true`).
+    const TRUE_BINARY: &str = if cfg!(target_os = "macos") {
+        "/usr/bin/true"
+    } else {
+        "/bin/true"
+    };
+
+    // macOS queues a connect past a zero backlog instead of refusing it (measured), so there is no
+    // full backlog to give up on there.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "macOS never refuses a connect for a full unix-socket backlog"
+    )]
     // `connect_within` starts no thread (it retries a non-blocking connect), so nothing is left behind when it gives
     // up; this pins that it gives up in time.
     fn connect_within_gives_up_on_a_full_backlog_in_time() {
@@ -1327,6 +1599,7 @@ mod tests {
                     image: PathBuf::from("/tmp/data/b.ext4"),
                 },
             ],
+            ..Default::default()
         };
         let args = child_args(&spec);
         let pairs: Vec<(&str, &str)> = args
@@ -1654,12 +1927,91 @@ mod tests {
         // supervisor did not die with the caller that first needed it.
         for _ in 0..2 {
             let mut child =
-                spawn_supervised(Command::new("/bin/true"), std::path::Path::new("/bin/true"))
+                spawn_supervised(Command::new(TRUE_BINARY), std::path::Path::new(TRUE_BINARY))
                     .expect("the supervisor spawns for a later caller");
             assert!(
                 child.wait().expect("the child is reapable").success(),
-                "/bin/true exits 0"
+                "{TRUE_BINARY} exits 0"
             );
         }
+    }
+}
+
+/// The Windows monitor's sandbox spec, built on every host: what the spec grants and caps is the same whichever
+/// platform enforces it.
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+    use crate::spawner::{DataVolume, VsockConfig};
+
+    fn vm() -> VmSpec {
+        VmSpec {
+            kernel: PathBuf::from("/agentplaza/guest/x86_64/vmlinux"),
+            cmdline: "console=ttyS0".to_string(),
+            vcpus: 1,
+            memory_mib: 512,
+            initrd: Some(PathBuf::from("/agentplaza/guest/x86_64/initrd.gz")),
+            vsock: Some(VsockConfig {
+                guest_cid: 3,
+                uds_path: PathBuf::from("/agentplaza/state/vsock/vm3"),
+            }),
+            workspace: Some(PathBuf::from("/agentplaza/state/vm3/workspace.ext4")),
+            volumes: vec![DataVolume {
+                name: "repo".to_string(),
+                image: PathBuf::from("/agentplaza/data/repo.ext4"),
+            }],
+            ..VmSpec::default()
+        }
+    }
+
+    #[test]
+    fn the_images_and_data_are_read_only_and_the_socket_directory_is_writable() {
+        let spec = monitor_sandbox(
+            Path::new("/agentplaza/bin/apz-vmm"),
+            &vm(),
+            vec![("SystemRoot".to_string(), "/windows".to_string())],
+        )
+        .unwrap();
+        assert_eq!(
+            spec.read_only,
+            vec![
+                PathBuf::from("/agentplaza/guest/x86_64/vmlinux"),
+                PathBuf::from("/agentplaza/guest/x86_64/initrd.gz"),
+                PathBuf::from("/agentplaza/data/repo.ext4"),
+            ]
+        );
+        assert!(
+            spec.read_write
+                .contains(&PathBuf::from("/agentplaza/state/vsock"))
+        );
+        assert!(
+            spec.read_write
+                .contains(&PathBuf::from("/agentplaza/state/vm3/workspace.ext4"))
+        );
+        assert_eq!(spec.workdir, PathBuf::from("/agentplaza/state/vsock"));
+        assert_eq!(spec.program, PathBuf::from("/agentplaza/bin/apz-vmm"));
+        assert_eq!(spec.env.len(), 1);
+    }
+
+    #[test]
+    fn the_monitor_runs_the_child_command_line_and_is_capped_at_its_ram_plus_overhead() {
+        let spec =
+            monitor_sandbox(Path::new("/agentplaza/bin/apz-vmm"), &vm(), Vec::new()).unwrap();
+        assert_eq!(spec.args, child_args(&vm()));
+        assert_eq!(spec.network, apz_sandbox::Network::None);
+        assert_eq!(
+            spec.limits.memory_bytes,
+            Some((512u64 << 20) + crate::confine::MONITOR_OVERHEAD_BYTES)
+        );
+        assert_eq!(spec.limits.processes, Some(1));
+    }
+
+    #[test]
+    fn a_vm_without_a_socket_has_no_directory_to_name_and_is_refused() {
+        let mut spec = vm();
+        spec.vsock = None;
+        let err =
+            monitor_sandbox(Path::new("/agentplaza/bin/apz-vmm"), &spec, Vec::new()).unwrap_err();
+        assert!(err.to_string().contains("vsock"), "{err}");
     }
 }

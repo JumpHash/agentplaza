@@ -169,7 +169,6 @@ fn landed_and_exported(p: &Plaza, derived: &Derived, review: bool) -> (String, S
     let report = Exporter::default()
         .export(
             &p.store,
-            derived,
             "app",
             "origin",
             Keys {

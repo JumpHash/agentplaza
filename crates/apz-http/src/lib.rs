@@ -23,6 +23,7 @@ mod message;
 pub mod mux;
 mod router;
 mod server;
+pub mod trunk;
 pub mod ws;
 
 pub use doc::{RouteDoc, RouteInfo, SchemaFn};

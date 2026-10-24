@@ -1,0 +1,11 @@
+id = "npm"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["registry.npmjs.org"]
+secrets = ["NPM_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

@@ -32,8 +32,8 @@ use linux_loader::loader::Cmdline;
 use vm_memory::{Address, Bytes};
 
 use crate::arch::aarch64::layout::{
-    CMDLINE_MAX_SIZE, DATA_GSI_START, DATA_MMIO_START, MMIO_LEN, SERIAL_MEM_START, VSOCK_GSI,
-    VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
+    CMDLINE_MAX_SIZE, DATA_GSI_START, DATA_MMIO_START, MMIO_LEN, NET_GSI, NET_MMIO_START,
+    SERIAL_MEM_START, VSOCK_GSI, VSOCK_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
 };
 use crate::arch::aarch64::{
     FdtError, GicFdt, InitrdConfig, InitrdError, SerialFdtInfo, VirtioMmioFdtInfo,
@@ -67,6 +67,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(10);
 const fn is_virtio_spi(spi: u32) -> bool {
     spi == VSOCK_GSI
         || spi == WORKSPACE_GSI
+        || spi == NET_GSI
         || (spi >= DATA_GSI_START && spi - DATA_GSI_START < MAX_DATA_VOLUMES as u32)
 }
 
@@ -75,7 +76,8 @@ const fn is_virtio_spi(spi: u32) -> bool {
 const _: () = {
     let spis = (gic::NUM_INTIDS - gic::NUM_PRIVATE_INTIDS) as u32;
     assert!(!is_virtio_spi(gic::UART_SPI));
-    assert!(DATA_GSI_START + MAX_DATA_VOLUMES as u32 <= spis);
+    assert!(DATA_GSI_START + MAX_DATA_VOLUMES as u32 == NET_GSI);
+    assert!(NET_GSI < spis);
 };
 
 /// Errors from `boot`.
@@ -157,6 +159,7 @@ pub enum BootError {
 
 /// Boots the VM described by `spec` and returns once its vCPUs are running.
 pub fn boot(spec: &VmSpec, id: u32, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+    crate::spawner::check_net(spec)?;
     // A process holds one VM on this backend, and its devices, vsock connections and event
     // descriptors can outgrow macOS's default of 256 open files; the vsock muxer stops accepting
     // host connections while it has none left. Raising the soft limit is best effort.
@@ -193,12 +196,12 @@ fn check_spec(spec: &VmSpec, id: u32) -> Result<usize, BootError> {
     Ok(vcpu_count)
 }
 
-/// The guest memory, not yet mapped.
-fn guest_memory(spec: &VmSpec) -> Result<GuestMemoryMmap, BootError> {
+/// The guest memory of `memory_mib` MiB, not yet mapped.
+pub(super) fn guest_memory(memory_mib: usize) -> Result<GuestMemoryMmap, BootError> {
     // Guest memory: the aarch64 layout's DRAM regions (one for any size this
     // port boots, two only past the 64-bit MMIO hole). The regions are the
     // process's own pages, which is what `hv_vm_map` maps.
-    let regions = arch_memory_regions(mib_to_bytes(spec.memory_mib));
+    let regions = arch_memory_regions(mib_to_bytes(memory_mib));
     let raw = anonymous(&regions)?;
     let memory = GuestMemoryMmap::from_regions(
         raw.into_iter()
@@ -213,7 +216,7 @@ fn guest_memory(spec: &VmSpec) -> Result<GuestMemoryMmap, BootError> {
 
 fn boot_inner(spec: &VmSpec, id: u32, runtime: &Arc<VmRuntime>) -> Result<(), BootError> {
     let vcpu_count = check_spec(spec, id)?;
-    let memory = guest_memory(spec)?;
+    let memory = guest_memory(spec.memory_mib)?;
 
     // The VM, and the guest memory mapped into its address space. A device
     // access is a load or store to an address this leaves unmapped: that is
@@ -321,7 +324,7 @@ fn restore_inner(
         )));
     }
     let gic = gic::Gic::from_state(&snapshot.gic, vcpu_count).map_err(BootError::Snapshot)?;
-    let memory = guest_memory(spec)?;
+    let memory = guest_memory(spec.memory_mib)?;
     crate::hvf::snapshot::fill_memory(&memory, dir, &snapshot).map_err(BootError::Snapshot)?;
     let mut vm = HvfVm::create()?;
     vm.map_guest_memory(&memory)?;
@@ -418,6 +421,7 @@ fn run(
         vsock: transports.vsock.as_ref().map(Arc::downgrade),
         workspace: transports.workspace.as_ref().map(Arc::downgrade),
         volumes: transports.volumes.iter().map(Arc::downgrade).collect(),
+        net: transports.net.as_ref().map(Arc::downgrade),
         gate,
         vcpus: spec.vcpus,
         memory_mib: spec.memory_mib,
@@ -459,6 +463,7 @@ fn transports_of(spec: &VmSpec) -> Vec<VirtioMmioFdtInfo> {
         spec.vsock.is_some(),
         spec.workspace.is_some(),
         spec.volumes.len(),
+        spec.net.is_some(),
     )
 }
 
@@ -468,6 +473,8 @@ struct Transports {
     vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
     workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
     volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
+    /// The lab topology's network device, when the VM has one.
+    net: Option<Arc<Mutex<VirtioMmioTransport>>>,
 }
 
 /// Builds the virtio devices of `spec` (rebuilt from `restored`'s state for a
@@ -568,6 +575,25 @@ fn attach_devices(
         None => None,
     };
 
+    // The lab topology's network device (PLAN 22.6): a transport in the layout's net slot on its own SPI,
+    // its interface on the segment's switch. Its receive thread wakes the vCPUs through the transport's
+    // interrupt, as the others do. A session VM has none (`check_net`).
+    let net = match &spec.net {
+        Some(attachment) => {
+            let device = crate::devices::virtio::net::attach(
+                &attachment.switch,
+                &attachment.segment,
+                attachment.mac,
+            )
+            .map_err(VirtioError::from)?;
+            let irq = new_irq(&mut irq_sources, NET_GSI)?;
+            let transport =
+                VirtioMmioTransport::new(Box::new(device), shared.memory().clone(), irq);
+            Some(attach(shared, transport, NET_MMIO_START)?)
+        }
+        None => None,
+    };
+
     // The interrupt relay, when there is anything to relay. It holds the VM
     // weakly, upgrading only to raise an SPI, so it never keeps a stopped VM
     // alive. If that upgrade is the last reference when the vCPUs finish, the
@@ -595,6 +621,7 @@ fn attach_devices(
         vsock,
         workspace,
         volumes,
+        net,
     })
 }
 

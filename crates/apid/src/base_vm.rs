@@ -409,6 +409,26 @@ impl<'a, H: Host> Fork<'a, H> {
         )
     }
 
+    /// Starts a command in the fork in the background (a browser, a program under a pty): answered once it has started,
+    /// and left running. A command with `listen` says which port it serves, and the guest announces it once it does.
+    pub fn background(&mut self, command: &Command) -> Result<Answer, String> {
+        let env = command
+            .env
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        self.runner.listen = command.listen;
+        let answer = self.runner.exec(
+            command.argv.clone(),
+            env,
+            command.cwd,
+            command.timeout_s,
+            true,
+        );
+        self.runner.listen = None;
+        answer
+    }
+
     /// Where the fork's VM runs: its noded run and its CID, once the start made the VM (a preview keeps both).
     pub fn location(&self) -> Option<(String, u64)> {
         Some((self.runner.run.clone()?, self.runner.cid?))

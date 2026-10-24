@@ -502,8 +502,10 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
     }
     // A sandbox's CID is a party of its own: the laws see the role `sandbox`, and it never intercepts.
     let sandbox = crate::e2b::sandbox_by_cid(app, cid);
-    // A CID that is neither an agent nor a sandbox is refused before the laws are asked.
-    if sandbox.is_none() && app.agents.get(cid).is_none() {
+    // A Mac node's project proxy asks as its project's party: the project's rules decide (see `project_egress`).
+    let project = crate::project_egress::project_of(app, cid);
+    // A CID that is neither an agent, a sandbox nor a project's party is refused before the laws are asked.
+    if sandbox.is_none() && project.is_none() && app.agents.get(cid).is_none() {
         let verdict = unknown_agent_verdict();
         return json!({
             "allow": verdict.allow,
@@ -512,11 +514,15 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    // An agent the owner holds (its project is paused or over) does not reach the internet either.
-    let held = app
-        .agents
-        .get(cid)
-        .and_then(|agent| crate::projects::held(app, &agent));
+    // An agent the owner holds (its project is paused or over) does not reach the internet either; nor does a
+    // project's own party while the project is paused, over or gone.
+    let held = match &project {
+        Some(id) => crate::projects::held_project(app, id),
+        None => app
+            .agents
+            .get(cid)
+            .and_then(|agent| crate::projects::held(app, &agent)),
+    };
     if let Some(why) = held {
         return json!({
             "allow": false,
@@ -525,9 +531,10 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    let role = match &sandbox {
-        Some(_) => "sandbox".to_string(),
-        None => app
+    let role = match (&sandbox, &project) {
+        (Some(_), _) => "sandbox".to_string(),
+        (None, Some(_)) => crate::project_egress::PROJECT_ROLE.to_string(),
+        (None, None) => app
             .agents
             .get(cid)
             .map(|agent| agent.role)
@@ -685,6 +692,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 Some(name) => name,
                 None => take_tool(cid, &call),
             };
+            // A `run` the VM reports is a command its session ran: a replay's check is the result of its test command.
+            if tool == "run"
+                && let Some(command) = input.as_ref().and_then(|i| i["command"].as_str())
+            {
+                app.evals.ran(cid, command, ok);
+            }
             if let Some(policy) = &policy {
                 let input = input.unwrap_or(Value::Null);
                 record_local(app, cid, work, &call, &tool, &input, policy);
@@ -892,6 +905,7 @@ fn model_call(
     // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
     let model =
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
+    let model = crate::allowances::route(app, cid, &model);
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
         app.transcripts.record(
@@ -928,7 +942,9 @@ fn model_call(
     // A session's call is held on its budget first; one that does not fit pauses the session (work_loop.rs).
     // A helper's call is held on the VM's session's budget (its task's), and recorded on the helper's session.
     let helper_session = helper.and_then(|n| crate::work_loop::helper_session(app, cid, n));
-    let budget_hold = match crate::work_loop::before_call(app, cid, &model, &request) {
+    let budget_hold = match crate::allowances::gate(app, cid, &model, apz_plaza::now_ms())
+        .and_then(|()| crate::work_loop::before_call(app, cid, &model, &request))
+    {
         Ok(held) => held,
         Err(paused) => {
             app.transcripts.record(

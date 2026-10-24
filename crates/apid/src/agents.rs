@@ -507,6 +507,8 @@ fn harness_prompt() -> String {
          agent or the operator. Never try to reach the host, the hub or another agent's machine except through \
          plaza tools. Report honestly; never claim work you did not do.",
     );
+    text.push_str("\n\n");
+    text.push_str(&crate::tool_library::prompt_map());
     text.push_str(
         "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
          sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
@@ -772,6 +774,8 @@ fn reconcile_once(app: &App) {
             .unwrap_or_else(|| agent.role.clone());
         if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role
         {
+            let became_orchestrator = role == crate::settings::ORCHESTRATOR_ROLE
+                && agent.role != crate::settings::ORCHESTRATOR_ROLE;
             let updated = app.agents.update(agent.cid, |slot| {
                 slot.run = Some(run);
                 slot.vm = Some(vm);
@@ -779,6 +783,11 @@ fn reconcile_once(app: &App) {
             });
             if updated && let Some(fresh) = app.agents.get(agent.cid) {
                 app.bus.publish("agent", &fresh);
+            }
+            // An orchestrator whose hello came before its role was known was not adopted then: adopt it now, as its
+            // hello would have (the owner's messages to the main chat wait on the orchestrator's session).
+            if updated && became_orchestrator {
+                crate::work_loop::on_hello(app, agent.cid);
             }
         }
     }

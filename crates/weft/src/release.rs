@@ -2,8 +2,7 @@
 //!
 //! A release is a version of a repo cut from a landed revision, with notes written from the intents landed since
 //! the last release, the targets its build files declare (W20: every one), artifacts with build provenance, and the
-//! owner's signature. Exported, it is a signed annotated tag and, on GitHub, a Release with the artifacts, their
-//! `SHA256SUMS` and each one's provenance.
+//! owner's signature. Exported, it is a signed annotated tag; the platforms get their releases from apid (22.4).
 
 use std::collections::BTreeMap;
 
@@ -15,8 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::git::{self, Kind, Person};
 use crate::gitwire::{self, Remote, Update};
 use crate::hash::Hash;
-use crate::keys::KeyPair;
-use crate::model::*;
+use crate::keys::{KeyPair, PublicKey};
 use crate::state::{ChangeState, State};
 use crate::store::Store;
 
@@ -108,6 +106,27 @@ pub fn targets(store: &Store, rev: &str) -> Result<Vec<Target>, String> {
                             .unwrap_or_else(|| DESKTOP.iter().map(|s| s.to_string()).collect()),
                     });
                 }
+                // A Homebrew tap named in the package (`[package.metadata.weft] homebrew = "owner/tap"`): its formula takes the
+                // package's binaries for macOS and Linux (9.5), one target per tap.
+                let tap = pkg
+                    .get("metadata")
+                    .and_then(|m| m.get("weft"))
+                    .and_then(|w| w.get("homebrew"))
+                    .and_then(|t| t.as_str())
+                    .filter(|t| {
+                        t.split_once('/')
+                            .is_some_and(|(o, r)| !o.is_empty() && !r.is_empty())
+                    });
+                if let Some(tap) = tap {
+                    out.push(Target {
+                        name: format!("brew:{tap}"),
+                        file: path.clone(),
+                        platforms: ["macos-aarch64", "linux-x86_64", "linux-aarch64"]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    });
+                }
             }
             "package.json" if !path.contains("node_modules/") => {
                 let Some(text) = read(path) else { continue };
@@ -155,6 +174,22 @@ pub fn targets(store: &Store, rev: &str) -> Result<Vec<Target>, String> {
                     });
                 }
             }
+            csproj if csproj.ends_with(".csproj") => {
+                // A .NET project that names its package id is a NuGet package (9.5); one that does not is not published.
+                let id = read(path).and_then(|t| {
+                    t.split_once("<PackageId>")
+                        .and_then(|(_, rest)| rest.split_once("</PackageId>"))
+                        .map(|(id, _)| id.trim().to_string())
+                });
+                let Some(id) = id.filter(|id| !id.is_empty()) else {
+                    continue;
+                };
+                out.push(Target {
+                    name: format!("nuget:{id}"),
+                    file: path.clone(),
+                    platforms: vec!["any".into()],
+                });
+            }
             "pyproject.toml" => {
                 let name = read(path)
                     .and_then(|t| t.parse::<toml::Table>().ok())
@@ -176,11 +211,27 @@ pub fn targets(store: &Store, rev: &str) -> Result<Vec<Target>, String> {
 
 /// Release notes in plain words: the intents landed after `since` up to `upto`, by kind.
 pub fn notes(st: &State, repo: &str, since: Option<&str>, upto: &str) -> Result<String, String> {
-    let chain = st.repo(repo)?.refs.get("main").cloned().unwrap_or_default();
+    notes_on(st, repo, "main", since, upto)
+}
+
+/// The notes of the revisions landed on `reference` after `since`, up to `upto` (a release line walks its own line).
+pub fn notes_on(
+    st: &State,
+    repo: &str,
+    reference: &str,
+    since: Option<&str>,
+    upto: &str,
+) -> Result<String, String> {
+    let chain = st
+        .repo(repo)?
+        .refs
+        .get(reference)
+        .cloned()
+        .unwrap_or_default();
     let end = chain
         .iter()
         .position(|r| r == upto)
-        .ok_or_else(|| format!("{upto} is not on main"))?;
+        .ok_or_else(|| format!("{upto} is not on {reference}"))?;
     let begin = match since {
         Some(s) => chain
             .iter()
@@ -269,16 +320,20 @@ pub fn proposal(
 ) -> Result<Value, String> {
     let st = store.state();
     let r = st.repo(repo)?;
-    let from = from.map(str::to_string).unwrap_or_else(|| r.head("main"));
+    // A release of main walks main; a maintenance release walks its release line (PLAN 22.3), `release/1.4`.
+    let reference = line.filter(|l| *l != "main").unwrap_or("main");
+    let from = from
+        .map(str::to_string)
+        .unwrap_or_else(|| r.head(reference));
     if from == "root" {
         return Err("nothing has landed to release".into());
     }
-    // The last release cut from main before this one.
-    let chain = r.refs.get("main").cloned().unwrap_or_default();
+    // The last release cut from this line before this one.
+    let chain = r.refs.get(reference).cloned().unwrap_or_default();
     let at = chain
         .iter()
         .position(|x| *x == from)
-        .ok_or_else(|| format!("{from} is not on main"))?;
+        .ok_or_else(|| format!("{from} is not on {reference}"))?;
     let previous = r
         .releases
         .values()
@@ -291,7 +346,7 @@ pub fn proposal(
         })
         .max_by_key(|x| x.0)
         .map(|x| x.1);
-    let notes = notes(&st, repo, previous.as_deref(), &from)?;
+    let notes = notes_on(&st, repo, reference, previous.as_deref(), &from)?;
     drop(st);
     let targets: Vec<String> = targets(store, &from)?
         .into_iter()
@@ -382,12 +437,12 @@ pub fn artifact_body(
     )
 }
 
-/// A provenance statement in a DSSE envelope signed with `key` (the file that ships beside an artifact).
-pub fn dsse(statement: &Value, key: &KeyPair) -> Value {
-    let payload = serde_json::to_vec(statement).unwrap_or_default();
-    let ty = "application/vnd.in-toto+json";
-    // DSSE's pre-authentication encoding.
-    let pae = [
+/// The payload type of an in-toto statement in a DSSE envelope.
+pub const IN_TOTO: &str = "application/vnd.in-toto+json";
+
+/// DSSE's pre-authentication encoding of `payload` under the payload type `ty`: what a signature covers.
+pub fn pae(ty: &str, payload: &[u8]) -> Vec<u8> {
+    [
         b"DSSEv1 ".to_vec(),
         ty.len().to_string().into_bytes(),
         b" ".to_vec(),
@@ -395,12 +450,46 @@ pub fn dsse(statement: &Value, key: &KeyPair) -> Value {
         b" ".to_vec(),
         payload.len().to_string().into_bytes(),
         b" ".to_vec(),
-        payload.clone(),
+        payload.to_vec(),
     ]
-    .concat();
-    let sig = key.sign(&pae);
+    .concat()
+}
+
+/// A provenance statement in a DSSE envelope signed with `key` (the file that ships beside an artifact).
+pub fn dsse(statement: &Value, key: &KeyPair) -> Value {
+    let payload = serde_json::to_vec(statement).unwrap_or_default();
+    let sig = key.sign(&pae(IN_TOTO, &payload));
     let b64 = base64::engine::general_purpose::STANDARD;
-    json!({ "payloadType": ty, "payload": b64.encode(&payload), "signatures": [{ "keyid": key.id(), "sig": b64.encode(sig) }] })
+    json!({ "payloadType": IN_TOTO, "payload": b64.encode(&payload), "signatures": [{ "keyid": key.id(), "sig": b64.encode(sig) }] })
+}
+
+/// Opens a DSSE envelope of an in-toto statement: the statement it carries, when one of its signatures is `key`'s over
+/// the payload. Refuses any other payload type, and an envelope whose payload or signature has changed.
+pub fn open_dsse(envelope: &Value, key: &PublicKey) -> Result<Value, String> {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let ty = envelope["payloadType"]
+        .as_str()
+        .ok_or("the envelope names no payload type")?;
+    if ty != IN_TOTO {
+        return Err(format!(
+            "the envelope's payload is {ty}, not an in-toto statement"
+        ));
+    }
+    let payload = b64
+        .decode(envelope["payload"].as_str().unwrap_or_default())
+        .map_err(|e| format!("the envelope's payload is not base64: {e}"))?;
+    let signed = pae(ty, &payload);
+    let checked = envelope["signatures"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["sig"].as_str())
+        .filter_map(|sig| b64.decode(sig).ok())
+        .any(|sig| key.verify(&signed, &sig).is_ok());
+    if !checked {
+        return Err("no signature of the envelope is the key's over its payload".into());
+    }
+    serde_json::from_slice(&payload).map_err(|e| format!("the payload is not JSON: {e}"))
 }
 
 // ── export ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -410,12 +499,10 @@ pub struct ReleaseExportReport {
     pub tag: String,
     pub tag_id: String,
     pub commit: String,
-    pub url: Option<String>,
-    pub assets: Vec<String>,
 }
 
-/// Exports a signed release: a signed annotated tag on the release's commit and, on GitHub, a Release with the
-/// artifacts, `SHA256SUMS` and the provenance files.
+/// Exports a signed release: a signed annotated tag on the release's commit. The platforms' releases (their notes,
+/// assets, SBOMs, provenance and checks) are synced by apid (`releases/sync.rs`, 22.4) from this report.
 pub fn export_release(
     store: &Store,
     repo: &str,
@@ -423,9 +510,8 @@ pub fn export_release(
     connection: &str,
     token: Option<String>,
     signing: Option<&KeyPair>,
-    provenance_key: Option<&KeyPair>,
 ) -> Result<ReleaseExportReport, String> {
-    let (rel, conn, artifacts) = {
+    let (rel, conn) = {
         let st = store.state();
         let r = st.repo(repo)?;
         let rel = r
@@ -438,17 +524,10 @@ pub fn export_release(
             .get(connection)
             .cloned()
             .ok_or_else(|| format!("no connection {connection}"))?;
-        let signed = rel
-            .signed
-            .clone()
-            .ok_or("only a signed release is exported")?;
-        let artifacts: Vec<ArtifactPut> = signed
-            .0
-            .artifacts
-            .iter()
-            .filter_map(|a| st.artifacts.get(a).map(|i| i.artifact.clone()))
-            .collect();
-        (rel, conn, artifacts)
+        if rel.signed.is_none() {
+            return Err("only a signed release is exported".into());
+        }
+        (rel, conn)
     };
     let commit_hex = crate::export::commit_of(&store.state(), repo, connection, &rel.propose.from)
         .ok_or("the release's revision has not been exported to this connection yet")?;
@@ -492,71 +571,14 @@ pub fn export_release(
             &[(Kind::Tag, bytes)],
         )?;
     }
-    let mut report = ReleaseExportReport {
+    let report = ReleaseExportReport {
         tag: version.into(),
         tag_id: git::hex(&tag_id),
         commit: commit_hex,
-        url: None,
-        assets: vec![],
     };
-    // A GitHub Release with the artifacts.
-    if conn.conn.platform == "github"
-        && let (Some(token), Some(slug)) = (
-            token.as_deref(),
-            crate::connect::github_slug(&conn.conn.remote),
-        )
-    {
-        let api = crate::connect::github_api();
-        let created = crate::connect::api_post(
-            &api,
-            token,
-            &format!("/repos/{slug}/releases"),
-            &json!({ "tag_name": version, "name": version, "body": rel.propose.notes, "draft": false, "prerelease": version.contains('-') }),
-        )?;
-        let upload = created["upload_url"]
-            .as_str()
-            .ok_or("GitHub did not answer with an upload URL")?
-            .split('{')
-            .next()
-            .unwrap_or("")
-            .to_string();
-        let mut sums = String::new();
-        for a in &artifacts {
-            let data = store.blobs.get(&a.digest)?;
-            let file = format!("{}-{}", a.name, a.target);
-            sums.push_str(&format!(
-                "{}  {file}\n",
-                crate::hash::hex(&Sha256::digest(&data))
-            ));
-            crate::connect::api_upload(
-                token,
-                &format!("{upload}?name={file}"),
-                "application/octet-stream",
-                &data,
-            )?;
-            report.assets.push(file.clone());
-            if let Some(k) = provenance_key {
-                let env = serde_json::to_vec_pretty(&dsse(&a.provenance, k)).unwrap_or_default();
-                crate::connect::api_upload(
-                    token,
-                    &format!("{upload}?name={file}.intoto.jsonl"),
-                    "application/json",
-                    &env,
-                )?;
-                report.assets.push(format!("{file}.intoto.jsonl"));
-            }
-        }
-        if !artifacts.is_empty() {
-            crate::connect::api_upload(
-                token,
-                &format!("{upload}?name=SHA256SUMS"),
-                "text/plain",
-                sums.as_bytes(),
-            )?;
-            report.assets.push("SHA256SUMS".into());
-        }
-        report.url = created["html_url"].as_str().map(str::to_string);
-    }
-    store.hub_append("release.export", json!({ "repo": repo, "version": version, "connection": connection, "tag": version, "url": report.url }))?;
+    store.hub_append(
+        "release.export",
+        json!({ "repo": repo, "version": version, "connection": connection, "tag": version }),
+    )?;
     Ok(report)
 }

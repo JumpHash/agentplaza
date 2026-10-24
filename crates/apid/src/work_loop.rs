@@ -28,7 +28,7 @@ use crate::agents::Agent;
 use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
-use crate::evals::Score;
+use crate::evals::choose;
 use crate::journal;
 use crate::placement;
 use crate::project_settings;
@@ -38,6 +38,7 @@ use crate::review_graph;
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
 use crate::sessions::{Filter, Kind, NewSession, PausedBy, Session, State};
+use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 /// How long a session's VM may take from its start to its hello before the session fails.
@@ -445,48 +446,158 @@ pub fn review_role(role: &str) -> bool {
     role == "reviewer" || role == "verifier"
 }
 
-/// The model for a seat's session, as its step's recipe says it. `any` and `differ` take the seat's own choice
-/// ([`pick_model`]). A model list takes its first model the project allows for the role. `eval` takes the best scorer
-/// among those the project allows for the step, by the eval results (`evals.rs`), and the seat's choice without any
-/// scored model. A named model is used as it is.
-fn pick_step_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
-    let step_model = app
-        .recipe_runs
-        .step_model(&seat.task, &seat.step)
-        .unwrap_or(Model::Name("any".into()));
-    let all = candidates(app, project, &seat.role);
-    match &step_model {
-        Model::Name(name) if name == "eval" => best_scored(&app.evals.scores(), &seat.step, &all)
-            .or_else(|| pick_model(app, project, seat)),
-        Model::Name(name) if name == "any" || name == "differ" => pick_model(app, project, seat),
-        Model::Name(pinned) => Some(pinned.clone()),
-        Model::List(list) => first_listed(list, &all).or_else(|| pick_model(app, project, seat)),
+/// The model a step names when the evals choose it (`model: eval`).
+const EVAL_MODEL: &str = "eval";
+/// The engine a step names when the evals choose it (`engine: any`).
+const ANY_ENGINE: &str = "any";
+
+/// What a seat's session runs on, and how that was chosen: the rule and the reason go on the step's eval record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub engine: String,
+    pub model: String,
+    pub rule: &'static str,
+    pub reason: String,
+}
+
+/// The engines a seat's session can run on. Only the plaza's harness runs a seat today: the vendor engines run through
+/// the relay, not as seats, so `engine: any` chooses among these.
+fn seat_engines() -> Vec<String> {
+    vec![ENGINE.to_string()]
+}
+
+/// The models a step with `model: eval` may take: the policy's list for the seat's tier, in its order, without repeats.
+/// A model the policy does not list for the tier is never picked by the evals.
+fn tier_models(app: &App, role: &str) -> Vec<String> {
+    let policy = app.settings.get().model_policy;
+    let list = match tier_of(role) {
+        Tier::Orchestrator => policy.orchestrator,
+        Tier::Worker => policy.worker,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for model in list {
+        if !out.contains(&model) {
+            out.push(model);
+        }
     }
+    out
+}
+
+/// The eval policy the settings name: the runs a score needs before it is trusted, and the explore share.
+fn eval_policy(app: &App) -> choose::Policy {
+    let settings = app.settings.get();
+    choose::Policy {
+        min_samples: u64::from(settings.eval_min_samples),
+        explore_pct: settings.eval_explore_pct,
+    }
+}
+
+/// What a step may still spend, in the unit of its owner's budget: its share of its task's cap (the project's, when the
+/// task has none), less what the step already spent on the task, and not more than the owner has left. None when the
+/// owner has no cap.
+fn step_budget_left(app: &App, project: &str, seat: &Seat, share: f64) -> Option<choose::Limit> {
+    let owner = [
+        app.budgets.get(OwnerKind::Task, &seat.task),
+        app.budgets.get(OwnerKind::Project, project),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|b| b.cap.is_some())?;
+    let share_of_cap = (owner.cap? as f64 * share) as u64;
+    let spent = app.evals.step_spend(project, &seat.task, &seat.step);
+    let left = owner.left().unwrap_or(u64::MAX);
+    Some(match owner.unit {
+        Unit::Usd => choose::Limit::Usd(left.min(share_of_cap.saturating_sub(spent.micros))),
+        Unit::Tokens => choose::Limit::Tokens(left.min(share_of_cap.saturating_sub(spent.tokens))),
+    })
+}
+
+/// The model for `seat`'s session, as its step's recipe says it: a named model as it is, a model list's first model the
+/// project allows, or the seat's own choice (`any`, `differ`). None when there is none.
+fn named_model(
+    app: &App,
+    project: &str,
+    seat: &Seat,
+    model: &Model,
+) -> Option<(String, &'static str)> {
+    match model {
+        Model::Name(name) if name == "any" || name == "differ" => {
+            pick_model(app, project, seat).map(|m| (m, choose::SEAT))
+        }
+        Model::Name(pinned) => Some((pinned.clone(), choose::FIXED)),
+        Model::List(list) => first_listed(list, &candidates(app, project, &seat.role))
+            .map(|m| (m, choose::LISTED))
+            .or_else(|| pick_model(app, project, seat).map(|m| (m, choose::SEAT))),
+    }
+}
+
+/// The engine and model for `seat`'s session, as its step's recipe says them (13.2). `model: eval` takes the best model
+/// by the evals of the step among the policy's models for the seat's tier, and `engine: any` the best engine; both
+/// within the step's budget, with the exploration share and the minimum sample of the settings. Each choice keeps its
+/// rule and reason. None when no candidate is left: the seat asks the owner.
+fn pick_step_model(app: &App, project: &str, seat: &Seat) -> Option<Choice> {
+    let spec = app.recipe_runs.step_spec(&seat.task, &seat.step);
+    let model = spec
+        .as_ref()
+        .map_or_else(Model::default, |s| s.model.clone());
+    let any_engine = spec
+        .as_ref()
+        .is_some_and(|s| s.engine.as_deref() == Some(ANY_ENGINE));
+    let eval = matches!(&model, Model::Name(name) if name == EVAL_MODEL);
+    if !eval && !any_engine {
+        let (model, rule) = named_model(app, project, seat, &model)?;
+        return Some(Choice {
+            engine: ENGINE.into(),
+            model,
+            rule,
+            reason: String::new(),
+        });
+    }
+    let policy = eval_policy(app);
+    let share = spec.as_ref().map_or(1.0, |s| s.budget_share);
+    let budget = step_budget_left(app, project, seat, share);
+    let scores = app.evals.scores();
+    // The run's number: the seat's task, seat and attempt, so the same seat run always makes the same explore choice.
+    let run = choose::key_of(&format!(
+        "{}/{}#{}",
+        seat.task,
+        seat.name,
+        seat.attempts + 1
+    ));
+    let mut reasons = Vec::new();
+    let engine = if any_engine {
+        let pick = choose::engine(&scores, &seat.step, &seat_engines(), budget, policy, run)?;
+        reasons.push(format!("engine: {}", pick.reason));
+        pick.key
+    } else {
+        ENGINE.to_string()
+    };
+    let (model, rule) = if eval {
+        let pick = choose::model(
+            &scores,
+            &seat.step,
+            &engine,
+            &tier_models(app, &seat.role),
+            budget,
+            policy,
+            run,
+        )?;
+        reasons.push(format!("model: {}", pick.reason));
+        (pick.key, pick.rule)
+    } else {
+        named_model(app, project, seat, &model)?
+    };
+    Some(Choice {
+        engine,
+        model,
+        rule,
+        reason: reasons.join("; "),
+    })
 }
 
 /// The first model of `list` that `allowed` (the project's models for the role, best first) has.
 pub fn first_listed(list: &[String], allowed: &[String]) -> Option<String> {
     list.iter().find(|m| allowed.contains(m)).cloned()
-}
-
-/// The allowed model that did best for `step` in the eval results: the highest success rate over the runs that ran,
-/// then the lower cost per success. None when no allowed model has a run for the step.
-pub fn best_scored(scores: &[Score], step: &str, allowed: &[String]) -> Option<String> {
-    scores
-        .iter()
-        .filter(|s| s.seat == step && s.runs > 0)
-        .filter(|s| s.model.as_ref().is_some_and(|m| allowed.contains(m)))
-        .max_by(|a, b| {
-            a.success_rate
-                .total_cmp(&b.success_rate)
-                .then(cost_of(b).total_cmp(&cost_of(a)))
-        })
-        .and_then(|s| s.model.clone())
-}
-
-/// A score's cost per success, for comparing: a model that never succeeded costs the most.
-fn cost_of(s: &Score) -> f64 {
-    s.cost_per_success_micros.unwrap_or(f64::INFINITY)
 }
 
 /// Starts a session for a ready seat: picks its model, places it and starts its VM.
@@ -506,10 +617,11 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     if !crate::placement::has_room_for_fork(app, &seat.role, &project) {
         return;
     }
-    let Some(model) = pick_step_model(app, &project, seat) else {
+    let Some(choice) = pick_step_model(app, &project, seat) else {
         ask_seat(app, seat, &project, now);
         return;
     };
+    let model = choice.model.clone();
     if review_role(&seat.role) {
         review_graph::open_round(app, &seat.task);
     }
@@ -521,7 +633,7 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
             kind: Kind::Step,
             parent: None,
             role: seat.role.clone(),
-            engine: ENGINE.into(),
+            engine: choice.engine.clone(),
             model: Some(model.clone()),
             attempt: seat.attempts + 1,
         },
@@ -531,8 +643,18 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
         .fill(&seat.task, &seat.name, &session.id, Some(&model), now);
     app.recipe_runs
         .task_step_started(&seat.task, &seat.step, now);
-    app.evals
-        .begin(&session.id, &seat.recipe, &seat.step, seat.round);
+    let recipe_version = app
+        .recipe_runs
+        .recipe(&seat.recipe, None)
+        .map_or(1, |recipe| recipe.version);
+    app.evals.begin(
+        &session.id,
+        &seat.recipe,
+        recipe_version,
+        &seat.step,
+        seat.round,
+    );
+    app.evals.decided(&session.id, choice.rule, &choice.reason);
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, &seat.role, 1, Some(&model), None, Some(&project)) {
         Ok(started) => {
@@ -932,6 +1054,9 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 let _ = t.finish(FinishOutcome::Failed, Some(why.clone()));
             }
             close_task(app, task_id, now);
+            if let Err(err) = app.evals.replay_finished(task_id, false, now) {
+                eprintln!("apid: evals: the replay of {task_id} was not scored: {err}");
+            }
             notice(
                 app,
                 &chat,
@@ -1078,6 +1203,9 @@ pub fn landed(app: &App, task: &str, change: &str) {
     close_task(app, task, now);
     if let Err(err) = app.evals.landed(task, true) {
         eprintln!("apid: evals: the landing of {task} was not recorded: {err}");
+    }
+    if let Err(err) = app.evals.replay_finished(task, true, now) {
+        eprintln!("apid: evals: the replay of {task} was not scored: {err}");
     }
     let project = app
         .plaza
@@ -1702,6 +1830,7 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         cards::Kind::Connector => crate::connectors::card_answered(app, card),
         cards::Kind::Promote | cards::Kind::Tool => crate::tool_life::card_answered(app, card),
         cards::Kind::Disk => crate::disk::card_answered(app, card),
+        cards::Kind::Allowance => crate::allowances::card_answered(app, card),
         cards::Kind::Start => crate::drafts::answered(app, card),
         cards::Kind::Memory => crate::curator::card_answered(app, card),
         _ => "recorded".into(),
@@ -1806,12 +1935,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                 );
                 record_work(app, chat, work);
             } else {
-                notice(
-                    app,
-                    chat,
-                    "The orchestrator is not running: it reads this when it starts.",
-                    now,
-                );
+                notice(app, chat, NOT_RUNNING, now);
             }
         }
         crate::chats::Kind::Project => {
@@ -2521,7 +2645,37 @@ fn adopt_orchestrator(app: &App, cid: u64, now: u64) -> Option<Session> {
     let _ = app.sessions.update(&session.id, |s| s.cid = Some(cid));
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     let _ = app.sessions.set_state(&session.id, State::Forking, now);
+    deliver_waiting_main(app, now);
     app.sessions.get(&session.id)
+}
+
+/// The notice the main chat gets for an owner's message when no orchestrator runs for it yet.
+const NOT_RUNNING: &str = "The orchestrator is not running: it reads this when it starts.";
+
+/// The owner's message to the main chat that got [`NOT_RUNNING`] (the chat's last two messages) goes to the
+/// orchestrator now that it is adopted: a message said in the window before the orchestrator's role is known is
+/// not dropped. A notice says it went.
+fn deliver_waiting_main(app: &App, now: u64) {
+    let Some(chat) = app.chats.get(crate::chats::MAIN) else {
+        return;
+    };
+    let [.., owner, waiting] = chat.messages.as_slice() else {
+        return;
+    };
+    if !matches!(owner.author, Author::Owner)
+        || !matches!(waiting.kind, MessageKind::Notice)
+        || waiting.text != NOT_RUNNING
+    {
+        return;
+    }
+    let text = owner.text.clone();
+    deliver_owner_message(app, crate::chats::MAIN, &text);
+    notice(
+        app,
+        crate::chats::MAIN,
+        "The orchestrator has your message.",
+        now,
+    );
 }
 
 /// The live long-lived sessions of `project`.
@@ -2641,43 +2795,11 @@ mod tests {
     }
 
     #[test]
-    fn a_model_list_takes_its_first_allowed_model_and_eval_the_best_scored_one() {
+    fn a_model_list_takes_its_first_allowed_model() {
         let allowed = vec!["a/fast".to_string(), "b/strong".to_string()];
         let listed = ["c/none", "b/strong", "a/fast"].map(String::from);
         assert_eq!(first_listed(&listed, &allowed), Some("b/strong".into()));
         assert_eq!(first_listed(&["c/none".to_string()], &allowed), None);
-
-        let score = |model: &str, runs: u64, successes: u64, cost: Option<f64>| Score {
-            seat: "build".into(),
-            model: Some(model.into()),
-            engine: "harness".into(),
-            runs,
-            successes,
-            success_rate: successes as f64 / runs.max(1) as f64,
-            cost_per_success_micros: cost,
-            time_per_success_ms: None,
-        };
-        let scores = vec![
-            score("a/fast", 4, 2, Some(10.0)),
-            score("b/strong", 4, 4, Some(50.0)),
-            // Not an allowed model: it does not count, however well it did.
-            score("c/outside", 4, 4, Some(1.0)),
-        ];
-        assert_eq!(
-            best_scored(&scores, "build", &allowed),
-            Some("b/strong".into())
-        );
-        // The eval results of another step do not count.
-        assert_eq!(best_scored(&scores, "review", &allowed), None);
-        // On a tie the cheaper model wins.
-        let tie = vec![
-            score("a/fast", 2, 2, Some(30.0)),
-            score("b/strong", 2, 2, Some(20.0)),
-        ];
-        assert_eq!(
-            best_scored(&tie, "build", &allowed),
-            Some("b/strong".into())
-        );
     }
 
     #[test]

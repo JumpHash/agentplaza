@@ -6,7 +6,8 @@
 #   scripts/mk-guest-kernel.sh <x86_64|aarch64> [out-file]
 #
 # Output: target/guest/<arch>/vmlinux (x86_64: a bzImage; aarch64: the arm64 `Image`), and
-# target/guest/<arch>/kernel.config (the final configuration). Builds natively, or cross-builds
+# target/guest/<arch>/kernel.config (the final configuration). With LAB_KERNEL=1 the lab VM's kernel is built instead,
+# with scripts/guest/lab.config on top, into target/guest/<arch>-lab. Builds natively, or cross-builds
 # with CROSS_COMPILE (e.g. CROSS_COMPILE=aarch64-linux-gnu-). Needs make, gcc, flex, bison, bc,
 # libelf, openssl headers, xz and curl.
 set -euo pipefail
@@ -22,11 +23,19 @@ case "$arch" in
   aarch64) karch=arm64; image=arch/arm64/boot/Image; target=Image ;;
   *) echo "mk-guest-kernel: unknown architecture $arch (x86_64 or aarch64)" >&2; exit 1 ;;
 esac
+# The fragments the kernel is built from; a lab VM's kernel adds lab.config and k3s.config (PLAN 22.6).
+fragments=(scripts/guest/common.config "scripts/guest/$arch.config")
 out_dir="target/guest/$arch"
+suffix=""
+if [ "${LAB_KERNEL:-0}" = 1 ]; then
+  fragments+=(scripts/guest/lab.config scripts/guest/k3s.config)
+  out_dir="target/guest/$arch-lab"
+  suffix="-lab"
+fi
 out=${2:-$out_dir/vmlinux}
 cache="target/guest/src"
 src="$cache/linux-$VERSION"
-build="$cache/build-$arch"
+build="$cache/build-$arch$suffix"
 mkdir -p "$cache" "$out_dir" "$(dirname "$out")"
 
 # The source, once, verified against the pinned checksum.
@@ -55,12 +64,12 @@ export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-agentplaza}"
 export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-agentplaza}"
 kmake() { make -s -C "$src" O="$(pwd)/$build" ARCH="$karch" ${CROSS_COMPILE:+CROSS_COMPILE=$CROSS_COMPILE} "$@"; }
 kmake tinyconfig
-"$src/scripts/kconfig/merge_config.sh" -m -O "$build" "$build/.config" scripts/guest/common.config "scripts/guest/$arch.config" >/dev/null
+"$src/scripts/kconfig/merge_config.sh" -m -O "$build" "$build/.config" "${fragments[@]}" >/dev/null
 kmake olddefconfig
 
 # Every `=y` we asked for must have survived (a renamed or unsatisfiable option fails loudly).
 missing=0
-for fragment in scripts/guest/common.config "scripts/guest/$arch.config"; do
+for fragment in "${fragments[@]}"; do
   while IFS= read -r line; do
     case "$line" in CONFIG_*=y) ;; *) continue ;; esac
     if ! grep -qx "$line" "$build/.config"; then

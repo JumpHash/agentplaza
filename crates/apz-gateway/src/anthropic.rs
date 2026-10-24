@@ -313,6 +313,10 @@ fn blocks<'b>(blocks: impl IntoIterator<Item = &'b Block>) -> Vec<Value> {
         .filter_map(|b| match b {
             Block::Text { text } if text.is_empty() => None,
             Block::Text { text } => Some(json!({"type": "text", "text": text})),
+            Block::Image { media_type, data } => Some(json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            })),
             Block::ToolUse {
                 id, name, input, ..
             } => Some(json!({"type": "tool_use", "id": id, "name": name, "input": input})),
@@ -1237,5 +1241,34 @@ mod tests {
         assert_eq!(b["anthropic_version"], VERTEX_VERSION);
         assert!(b.get("model").is_none() && b.get("fallbacks").is_none());
         assert!(sent.header("anthropic-beta").is_none());
+    }
+
+    #[test]
+    fn an_image_is_an_image_block_with_its_base64_source() {
+        let sent = sent_body(&ChatRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![
+                    Block::Text {
+                        text: "What is on the screen?".into(),
+                    },
+                    Block::Image {
+                        media_type: "image/png".into(),
+                        data: "iVBORw0KGgo=".into(),
+                    },
+                ],
+            }],
+            model: "a/claude-opus-5-5".into(),
+            ..crate::testutil::request("unused")
+        });
+        let content = &sent["messages"][0]["content"];
+        assert_eq!(
+            content[0],
+            json!({"type": "text", "text": "What is on the screen?"})
+        );
+        assert_eq!(
+            content[1],
+            json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}})
+        );
     }
 }

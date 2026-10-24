@@ -1,0 +1,28 @@
+{
+  "SchemaVersion": 2,
+  "ArtifactName": "api:1",
+  "ArtifactType": "container_image",
+  "Results": [
+    {
+      "Target": "api:1 (debian 12.5)",
+      "Class": "os-pkgs",
+      "Type": "debian",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2024-2222",
+          "PkgName": "libc6",
+          "InstalledVersion": "2.36-9",
+          "Severity": "HIGH",
+          "Title": "glibc flaw in name resolution",
+          "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2024-2222"
+        }
+      ]
+    },
+    {
+      "Target": "Node.js",
+      "Class": "lang-pkgs",
+      "Type": "node-pkg",
+      "Vulnerabilities": null
+    }
+  ]
+}

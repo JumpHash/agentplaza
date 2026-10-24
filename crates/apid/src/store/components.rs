@@ -52,6 +52,36 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.environments.rows(),
             load: |app, conn| app.environments.load(conn),
         },
+        Component {
+            name: "ephemeral",
+            def: crate::ephemeral::store::def,
+            rows: |app| app.ephemeral.rows(),
+            load: |app, conn| app.ephemeral.load(conn),
+        },
+        Component {
+            name: "incidents",
+            def: crate::incidents::def,
+            rows: |app| app.incidents.rows(),
+            load: |app, conn| app.incidents.load(conn),
+        },
+        Component {
+            name: "incident_landings",
+            def: crate::incidents::landing_def,
+            rows: |app| app.incidents.landing_rows(),
+            load: |app, conn| app.incidents.load_landings(conn),
+        },
+        Component {
+            name: "upgrades",
+            def: crate::upgrades::def,
+            rows: |app| app.upgrades.rows(),
+            load: |app, conn| app.upgrades.load(conn),
+        },
+        Component {
+            name: "cves",
+            def: crate::cves::def,
+            rows: |app| app.cves.rows(),
+            load: |app, conn| app.cves.load(conn),
+        },
         // batch C2
         Component {
             name: "toolbox",
@@ -182,6 +212,18 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.nodes.load(conn),
         },
         Component {
+            name: "test_lab",
+            def: crate::test_lab::def,
+            rows: |app| app.test_lab.rows(),
+            load: |app, conn| app.test_lab.load(conn),
+        },
+        Component {
+            name: "qualification",
+            def: crate::qualify::store::def,
+            rows: |app| app.qualify.rows(),
+            load: |app, conn| app.qualify.load(conn),
+        },
+        Component {
             name: "stations",
             def: crate::stations::store_def,
             rows: |app| app.stations.rows(),
@@ -268,6 +310,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.recipe_runs.load_versions(conn),
         },
         Component {
+            name: "releases",
+            def: crate::releases::entity::def,
+            rows: |app| app.releases.rows(),
+            load: |app, conn| app.releases.load(conn),
+        },
+        Component {
             name: "budgets",
             def: crate::budgets::def,
             rows: |app| app.budgets.rows(),
@@ -331,6 +379,12 @@ pub fn all() -> Vec<Component> {
             def: crate::usage_providers::def,
             rows: |app| app.usage_providers.rows(),
             load: |app, conn| app.usage_providers.load(conn),
+        },
+        Component {
+            name: "login_bridges",
+            def: crate::login_bridge::def,
+            rows: |app| app.login_bridges.rows(),
+            load: |app, conn| app.login_bridges.load(conn),
         },
         Component {
             name: "hub_config",
@@ -418,6 +472,10 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ),
         ("station sync files", crate::stations::sync::def),
         ("eval runs", crate::evals::def),
+        ("eval findings", crate::evals::finding_def),
+        ("eval archive", crate::evals::archive_def),
+        ("eval bench", crate::evals::bench_def),
+        ("eval qualifications", crate::evals::qualification_def),
         ("unfurl cache", crate::unfurl::def),
         ("prompt", crate::prompts::store::def),
         ("prompt version", crate::prompts::store::version_def),

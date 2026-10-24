@@ -31,6 +31,18 @@ law "T-002" "Every agent may use the plaza's shared tools" {
   when resource.name in ["plaza_toolbox", "plaza_toolbox_share", "plaza_projects", "plaza_project_attach", "plaza_project_critique", "submit_claim", "transcript_search", "plaza_tasks", "plaza_board_read", "plaza_board_post", "plaza_board_comment", "plaza_send_message", "plaza_message_seat", "thread_read", "thread_answer", "plaza_get_file", "plaza_connector_propose"]
 }
 
+law "T-002b" "Every agent may browse the tool library" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may browse, search and describe the tool library, and call the library's read entries for ephemeral environments and workflows. Each other call is checked one by one; a call no law permits is refused."
+  rationale "Agents need to know what the plaza can do before they ask for it. Browsing shows no secret and changes nothing, and reads of a project's environments and workflows follow what the project shows."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["tools_list", "tools_describe", "tools_search", "tools_call", "environments.ephemeral.list", "environments.ephemeral.get", "workflows.list", "workflows.describe", "workflows.runs", "workflows.changes.runs"]
+}
+
 law "T-003" "Only the orchestrator plans and delegates" {
   tier statute
   enforcement preventive
@@ -340,4 +352,16 @@ law "T-035" "Every agent may ask which tests a change needs" {
   principal is Agent
   resource is Tool
   when resource.name == "tests_select"
+}
+
+law "T-036" "Every agent may read its project's lab observations" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may read the logs, the metric series and the traces that its project's test-lab runs kept, to explain a failure: reads that change nothing, and only of runs of its own project (the hub checks the run's project)."
+  rationale "A failing assertion is a finding that cites these observations; an agent reads them to say why a run failed. Writing to a run is the collector's, with the run's own token, and no agent may do it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name in ["logs_query", "metrics_query", "traces_query"]
 }

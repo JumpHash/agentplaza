@@ -184,3 +184,14 @@ pub const DATA_MMIO_START: u64 = WORKSPACE_MMIO_START + 2 * MMIO_LEN;
 
 /// The first data volume's GSI; volume `i` has `DATA_GSI_START + i`.
 pub const DATA_GSI_START: u32 = GSI_LEGACY_START + 8;
+
+/// The lab topology's network device (`devices::virtio::net`): the slot after the data volumes, with
+/// interrupt line `DATA_GSI_START` plus the data volumes. Only a lab topology's VM has it.
+pub const NET_MMIO_START: u64 =
+    DATA_MMIO_START + crate::spawner::MAX_DATA_VOLUMES as u64 * MMIO_LEN;
+
+/// The network device's interrupt line: `DATA_GSI_START` plus the data volumes.
+pub const NET_GSI: u32 = DATA_GSI_START + crate::spawner::MAX_DATA_VOLUMES as u32;
+
+// The net device's SPI is past the data volumes' and inside the controller's SPI range.
+const _: () = assert!(NET_GSI > DATA_GSI_START && NET_GSI <= GSI_LEGACY_END);

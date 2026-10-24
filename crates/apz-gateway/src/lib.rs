@@ -30,6 +30,7 @@ mod mock;
 mod openai;
 mod responses;
 mod sigv4;
+pub use sigv4::{signed_headers, signed_headers_s3};
 #[cfg(test)]
 mod testutil;
 
@@ -339,6 +340,12 @@ impl Gateway {
             caller,
             listing: false,
         };
+        if req.has_images() && !p.kind.takes_images() {
+            return Err(GatewayError::Unsupported(format!(
+                "{provider_id} ({}) takes no images: its wire format has no image block, so the call is refused",
+                p.kind.as_str()
+            )));
+        }
         let mut resp = match p.kind {
             ProviderKind::Anthropic | ProviderKind::VertexAnthropic => {
                 anthropic::complete(&ctx, req, model, sink)
@@ -1173,5 +1180,56 @@ mod tests {
             &json!({"a": {"y": 3}, "stream_options": null, "z": true}),
         );
         assert_eq!(body, json!({"a": {"x": 1, "y": 3}, "k": 1, "z": true}));
+    }
+
+    /// A conversation whose user turn is text and an image.
+    fn with_image(model: &str) -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message {
+                role: apz_proto::chat::Role::User,
+                content: vec![
+                    Block::Text {
+                        text: "look".into(),
+                    },
+                    Block::Image {
+                        media_type: "image/png".into(),
+                        data: "iVBORw0KGgo=".into(),
+                    },
+                ],
+            }],
+            model: model.into(),
+            ..crate::testutil::request("unused")
+        }
+    }
+
+    #[test]
+    fn an_image_is_refused_by_a_wire_format_with_no_image_block_before_any_request_is_sent() {
+        let server =
+            crate::testutil::FakeServer::start(vec![crate::testutil::Reply::json(400, &json!({}))]);
+        let p = crate::testutil::provider(
+            "g",
+            ProviderKind::Gemini,
+            &server,
+            crate::config::Auth::Env("GEMINI_API_KEY".into()),
+        );
+        let err = crate::testutil::gateway(vec![p])
+            .complete(&with_image("g/gemini-test"), &mut |_| {})
+            .unwrap_err();
+        assert!(
+            matches!(&err, GatewayError::Unsupported(why) if why.contains("takes no images")),
+            "{err}"
+        );
+        assert!(
+            server.requests().is_empty(),
+            "the refused call sends no request"
+        );
+    }
+
+    #[test]
+    fn the_mock_takes_an_image() {
+        let gw = Gateway::builder()
+            .providers(vec![ProviderConfig::new("m", ProviderKind::Mock)])
+            .build();
+        assert!(gw.complete(&with_image("m/echo"), &mut |_| {}).is_ok());
     }
 }

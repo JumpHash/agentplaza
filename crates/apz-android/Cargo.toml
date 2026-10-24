@@ -1,0 +1,17 @@
+[package]
+name = "apz-android"
+description = "Android over adb (PLAN 19.3): the command lines of an emulator or a phone (uiautomator dumps, input, screencap, screenrecord, installs, am), the Runner that runs them, and the uiautomator XML read as a list of nodes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The sandbox the adb runner runs its lines under (the same confinement as noded's sessions).
+apz-sandbox = { path = "../apz-sandbox" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

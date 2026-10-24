@@ -5,6 +5,8 @@
 # release.yml packages main without testing again (`tests: false`: the queue tested that commit),
 # nightly.yml tests. It also runs by hand.
 #
+# The VM node (vmm, vsockd, noded) is tested on Apple Silicon by two more jobs at the end: a hosted arm64 Mac, where the
+# hypervisor tests skip, and the self-hosted Apple Silicon runner MACOS_ARM_RUNNER names, where they run.
 # The runner's labels come from the repository variable MACOS_RUNNER (a JSON list; default
 # ["self-hosted","macOS","X64"]); APZ_MACOS=off skips macOS, and a release then ships without it.
 # Speed: cargo's build directory persists on the runner (only changed crates compile), one release
@@ -234,3 +236,49 @@ jobs:
           [ -f .github/ci/build-cache.py ] || exit 0  # the job ended before its checkout
           py=python3; $py -c '' 2>/dev/null || py=python
           $py .github/ci/build-cache.py prune "$CARGO_TARGET_DIR"
+
+  # The VM node on Apple Silicon: the vmm (Hypervisor.framework), vsockd and noded tests. The hosted
+  # arm64 Mac runs all of them, and the hypervisor tests skip there with the reason: GitHub's hosted
+  # macOS runners have no nested virtualization, so no VM starts on them. The self-hosted Apple
+  # Silicon runner (the repository variable MACOS_ARM_RUNNER, a JSON label list) runs the same tests
+  # under the hypervisor runner: scripts/hvf-run.sh signs each test binary ad hoc with the hypervisor
+  # entitlement, and the guest (target/guest/aarch64, cached by guest.yml) boots in them. Without that
+  # variable the self-hosted job is not queued.
+  node-hosted:
+    name: "VM node (Apple Silicon, hosted: the hypervisor tests skip)"
+    if: vars.APZ_MACOS != 'off' && inputs.tests
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with: { toolchain: "1.99.0" }
+      - name: "Test the VM node (no runner: the hypervisor tests say why and pass)"
+        run: cargo test -p vmm -p vsockd -p noded --locked
+
+  node-self-hosted:
+    name: "VM node (Apple Silicon, self-hosted: the hypervisor tests run)"
+    if: vars.APZ_MACOS != 'off' && inputs.tests && vars.MACOS_ARM_RUNNER != ''
+    runs-on: ${{ fromJSON(vars.MACOS_ARM_RUNNER) }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - name: The runner's build directory
+        run: echo "CARGO_TARGET_DIR=$HOME/.cache/agentplaza-ci-arm/target" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with: { toolchain: "1.99.0" }
+      - name: The aarch64 guest's cache key
+        id: guest-key
+        run: echo "key=$(sh .github/ci/guest-key.sh aarch64)" >> "$GITHUB_OUTPUT"
+      - name: "The aarch64 guest (cached by guest.yml; the guest tests skip without it)"
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target/guest/aarch64
+          key: ${{ steps.guest-key.outputs.key }}
+          enableCrossOsArchive: true
+      - name: Test the VM node under the hypervisor runner
+        env:
+          CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: ${{ github.workspace }}/scripts/hvf-run.sh
+        run: cargo test -p vmm -p vsockd -p noded --locked

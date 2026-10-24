@@ -21,6 +21,7 @@
 pub mod recipe;
 pub mod routes;
 pub mod tools;
+pub mod user;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -34,7 +35,9 @@ use serde_json::{Value, json};
 use crate::scheduler::Origin;
 use crate::state::App;
 use apz_proto::wire::WorkKind;
-use recipe::{Condition, NodeDef, Recipe};
+/// A node's definition (its id, kind and role), as a recipe and a run keep it.
+pub use recipe::NodeDef;
+use recipe::{Condition, Recipe};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
@@ -666,6 +669,62 @@ impl Reviews {
             .collect();
         v.sort_by_key(|r| std::cmp::Reverse(r.created_ms));
         v
+    }
+
+    /// The review runs of a change (a lane), oldest round first: a backport's review is the change's.
+    pub fn runs_of_change(&self, change: &str) -> Vec<Run> {
+        let book = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        let mut v: Vec<Run> = book
+            .runs
+            .values()
+            .filter(|r| r.change == change)
+            .cloned()
+            .collect();
+        v.sort_by_key(|r| r.round);
+        v
+    }
+
+    /// Attaches a finding to a change's latest review run, on its first agent node: a failing step of a lab run (PLAN
+    /// 22.7) is a confirmed finding with its evidence as the proof. Returns the run's id and the finding's `f<n>` id;
+    /// None when the change has no review run yet, so nothing says where the finding goes.
+    pub fn attach_finding(&self, change: &str, mut finding: Finding) -> Option<(String, String)> {
+        self.with(|book| {
+            let run = book
+                .runs
+                .values_mut()
+                .filter(|r| r.change == change)
+                .max_by_key(|r| (r.round, r.created_ms))?;
+            let at = run
+                .nodes
+                .iter()
+                .position(|n| n.def.kind == "agent")
+                .or((!run.nodes.is_empty()).then_some(0))?;
+            let id = format!("f{}", run.findings().count() + 1);
+            finding.id = id.clone();
+            finding.round = run.round;
+            finding.node = run.nodes[at].def.id.clone();
+            let node = &mut run.nodes[at];
+            node.findings.push(finding);
+            Some((run.id.clone(), id))
+        })
+    }
+
+    /// Stores a run as the review chain stores one (the flows that wait for a review are tested with a run of theirs).
+    /// Stores a review run (a seat's, a backport's, or a release's own review graph, `qualify`).
+    pub fn put_run(&self, run: Run) {
+        self.with(|b| {
+            b.runs.insert(run.id.clone(), run);
+        });
+    }
+
+    /// Moves a stored run to `state` (the review's outcome, in the flows' tests).
+    #[cfg(test)]
+    pub fn settle_run(&self, id: &str, state: RunState) {
+        self.with(|b| {
+            if let Some(run) = b.runs.get_mut(id) {
+                run.state = state;
+            }
+        });
     }
 
     /// How many confirmed findings of kind `kind` the project's runs hold (a pitfall is a kind confirmed twice).
@@ -1776,6 +1835,28 @@ pub fn verify(
         .find(|f| f.id == finding)
         .cloned()
         .ok_or("no such finding")?;
+    // The ruling is an eval record (25.2): who raised the finding, who ruled on it, and how.
+    let ruling = crate::evals::FindingRecord {
+        id: 0,
+        project: run.project.clone(),
+        task: (!run.task.is_empty()).then(|| run.task.clone()),
+        review: run_id.clone(),
+        finding: f.id.clone(),
+        reviewer: f.by.as_ref().map(|b| b.model.clone()).unwrap_or_default(),
+        reviewer_seat: f.by.as_ref().map(|b| b.seat.clone()).unwrap_or_default(),
+        verifier: by.model.clone(),
+        verdict: if verdict == Verdict::Confirmed {
+            "confirmed"
+        } else {
+            "dropped"
+        }
+        .into(),
+        severity: f.severity.clone(),
+        ruled_ms: apz_plaza::now_ms(),
+    };
+    if let Err(err) = app.evals.finding(&ruling) {
+        eprintln!("apid: evals: the ruling on {finding} was not recorded: {err}");
+    }
     if verdict == Verdict::Confirmed {
         if f.contest.is_empty() {
             // The second confirmation of one kind in the project is a pitfall the curator may land (8.6).
@@ -3285,10 +3366,20 @@ fn settle_check(app: &App, run: &Run, outcome: Outcome) {
                 &format!("/changes/{}/revert", run.change),
                 &json!({ "reason": reason }),
             ) {
-                Ok(v) => app.bus.publish(
-                    "weft_revert",
-                    &json!({ "change": run.change, "revert": v["change"], "reason": reason }),
-                ),
+                Ok(v) => {
+                    if !run.task.is_empty()
+                        && let Err(err) = app.evals.reverted(&run.task)
+                    {
+                        eprintln!(
+                            "apid: evals: the revert of {} was not recorded: {err}",
+                            run.task
+                        );
+                    }
+                    app.bus.publish(
+                        "weft_revert",
+                        &json!({ "change": run.change, "revert": v["change"], "reason": reason }),
+                    )
+                }
                 Err(e) => eprintln!("apid: reverting {}: {e}", run.change),
             }
             let goal = format!("Fix what {} broke: {reason}", run.change);
@@ -4022,11 +4113,9 @@ mod carried_tests {
         .unwrap();
         let expected = src.state().repos["app"].head("main");
         src.hub_append("land", json!({ "repo": "app", "ref": "main", "change": change, "n": 1, "expected": expected, "deltas": deltas })).unwrap();
-        let derived = weft::derived::Derived::new(root.join("derived"));
         let exported = weft::export::Exporter::default()
             .export(
                 &src,
-                &derived,
                 "app",
                 "origin",
                 weft::export::Keys {

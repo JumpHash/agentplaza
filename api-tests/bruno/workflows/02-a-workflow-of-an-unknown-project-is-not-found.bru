@@ -1,0 +1,15 @@
+meta {
+  name: A workflow of an unknown project is not found
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/workflows/ship
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

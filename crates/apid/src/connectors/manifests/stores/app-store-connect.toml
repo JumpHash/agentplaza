@@ -1,0 +1,11 @@
+id = "app-store-connect"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["api.appstoreconnect.apple.com"]
+secrets = ["APP_STORE_CONNECT_KEY_ID", "APP_STORE_CONNECT_ISSUER_ID", "APP_STORE_CONNECT_PRIVATE_KEY", "APP_STORE_CONNECT_APP_ID"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

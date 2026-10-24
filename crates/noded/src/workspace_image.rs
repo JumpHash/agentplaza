@@ -2,14 +2,23 @@
 //! `noded` runs without `--workspace`. `noded` makes it once, in its persist directory, with the
 //! flags `scripts/mk-workspace-image.sh` uses (a sparse 4 GiB file, the pinned label and UUID, lazy
 //! inode tables and journal), so the image is the same whichever way it was made.
+//!
+//! A host with no `mkfs.ext4` (a Mac) makes it from the guest build's template instead
+//! (`scripts/mk-guest.sh` writes [`TEMPLATE_NAME`] beside the initrd): a clone of the template, grown to
+//! [`SIZE_BYTES`] by truncation. The guest grows the filesystem to fill its disk when it mounts it.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use vmm::clonefile::clone_file;
+
 /// The image's file name inside the persist directory.
 pub const FILE_NAME: &str = "workspace.ext4";
+
+/// The workspace template's file name beside the guest's initrd.
+pub const TEMPLATE_NAME: &str = "workspace-template.ext4";
 
 /// The image's size: 4 GiB, sparse, as the script's default `APZ_WORKSPACE_MIB` is.
 const SIZE_BYTES: u64 = 4096 << 20;
@@ -23,10 +32,12 @@ pub fn default_path(persist_dir: &Path) -> PathBuf {
     persist_dir.join(FILE_NAME)
 }
 
-/// Makes `image` (an ext4 filesystem) when it does not exist; an existing file is left alone. The
-/// image is built under a temporary name and renamed into place, so an interrupted build never leaves
-/// a half-made image behind. Fails with the reason when `mkfs.ext4` is missing or fails.
-pub fn ensure(image: &Path) -> Result<(), String> {
+/// Makes `image` (an ext4 filesystem) when it does not exist; an existing file is left alone. On macOS,
+/// with a `template`, the image is a clone of it grown to [`SIZE_BYTES`]; everywhere else, and on a Mac
+/// without one, it is formatted with `mkfs.ext4`. The image is built under a temporary name and renamed
+/// into place, so an interrupted build never leaves a half-made image behind. Fails with the reason when
+/// the image cannot be made.
+pub fn ensure(image: &Path, template: Option<&Path>) -> Result<(), String> {
     if image.is_file() {
         return Ok(());
     }
@@ -37,7 +48,11 @@ pub fn ensure(image: &Path) -> Result<(), String> {
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let _ = fs::remove_file(&tmp);
-    if let Err(err) = make(&tmp) {
+    let made = match template {
+        Some(template) if cfg!(target_os = "macos") => from_template(template, &tmp),
+        _ => make(&tmp),
+    };
+    if let Err(err) = made {
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
@@ -45,6 +60,19 @@ pub fn ensure(image: &Path) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         format!("cannot move the image to {}: {err}", image.display())
     })
+}
+
+/// Makes `path` a clone of `template` (sharing its blocks where the filesystem can: APFS clonefile, else a
+/// sparse copy), grown to [`SIZE_BYTES`]. The filesystem keeps the template's size until the guest grows it.
+pub fn from_template(template: &Path, path: &Path) -> Result<(), String> {
+    clone_file(template, path)
+        .map_err(|err| format!("cannot clone {}: {err}", template.display()))?;
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|err| format!("cannot open {}: {err}", path.display()))?;
+    file.set_len(SIZE_BYTES)
+        .map_err(|err| format!("cannot size {}: {err}", path.display()))
 }
 
 /// Writes a sparse file of the image's size at `path` and formats it.
@@ -114,8 +142,35 @@ mod tests {
         let dir = scratch("existing");
         let image = default_path(&dir);
         fs::write(&image, b"kept").expect("a file to stand in for the image");
-        ensure(&image).expect("an existing file is accepted");
+        ensure(&image, None).expect("an existing file is accepted");
         assert_eq!(fs::read(&image).expect("the file"), b"kept");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_template_clone_is_grown_to_the_image_size_and_keeps_its_bytes() {
+        let dir = scratch("template");
+        let template = dir.join(TEMPLATE_NAME);
+        let mut bytes = vec![0u8; 64 << 10];
+        bytes[1024..1030].copy_from_slice(b"ext4!!");
+        fs::write(&template, &bytes).expect("a template");
+        let image = dir.join("clone.ext4");
+        from_template(&template, &image).expect("the clone is made");
+        let meta = fs::metadata(&image).expect("the clone");
+        assert_eq!(
+            meta.len(),
+            SIZE_BYTES,
+            "the clone is grown to the image's size"
+        );
+        let mut head = vec![0u8; 1030];
+        File::open(&image)
+            .and_then(|mut file| file.read_exact(&mut head))
+            .expect("the clone's first bytes");
+        assert_eq!(
+            &head[1024..1030],
+            b"ext4!!",
+            "the clone keeps the template's filesystem"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -127,7 +182,7 @@ mod tests {
         }
         let dir = scratch("default");
         let image = default_path(&dir);
-        ensure(&image).expect("the default image is made");
+        ensure(&image, None).expect("the default image is made");
         let meta = fs::metadata(&image).expect("the image");
         assert_eq!(meta.len(), SIZE_BYTES);
         #[cfg(unix)]

@@ -1,0 +1,17 @@
+meta {
+  name: A project's test topologies: typed, one per file under .plaza/topologies
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/topologies
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.topologies: isArray
+}

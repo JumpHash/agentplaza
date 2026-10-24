@@ -1,0 +1,16 @@
+meta {
+  name: Refuse an instance that is not there
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/ephemeral/eph-probe-missing
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

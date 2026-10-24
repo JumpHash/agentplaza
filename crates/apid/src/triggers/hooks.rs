@@ -185,6 +185,15 @@ fn hook_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if !stored.is_some_and(|s| same(&s, token)) {
         return Response::error(404, "no such webhook");
     }
+    // An alert source's delivery: its signature (or secret), its alerts (24.1).
+    if crate::incidents::alert::is_source(connector) {
+        return crate::incidents::delivery(
+            app,
+            connector,
+            &|name| req.header(name).map(str::to_string),
+            &req.body,
+        );
+    }
     if matches!(connector, "github" | "linear") {
         let Some(secret) = app
             .vault
@@ -209,6 +218,16 @@ fn hook_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(parsed) => parsed,
         Err(why) => return Response::error(400, &why),
     };
+    // A push to a `ci` repo's GitHub: its main is imported now (the signature was checked above).
+    let imported = if connector == "github" && req.header("x-github-event") == Some("push") {
+        serde_json::from_slice::<Value>(&req.body)
+            .ok()
+            .and_then(|v| v["repository"]["full_name"].as_str().map(str::to_string))
+            .map(|full| crate::github_modes::on_push(app, &full))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     // An intake source's delivery also keeps its item (intake's own routes went into this one).
     let now = apz_plaza::now_ms();
     let intake = match crate::intake::delivery(
@@ -226,12 +245,12 @@ fn hook_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             let matched = app.triggers.deliver(&event, now);
             Response::json(
                 202,
-                &json!({"event": event.event, "item": event.item, "triggers": matched, "intake": intake}),
+                &json!({"event": event.event, "item": event.item, "triggers": matched, "intake": intake, "imported": imported}),
             )
         }
         Parsed::Ignored(why) => Response::json(
             202,
-            &json!({"ignored": why, "triggers": 0, "intake": intake}),
+            &json!({"ignored": why, "triggers": 0, "intake": intake, "imported": imported}),
         ),
     }
 }

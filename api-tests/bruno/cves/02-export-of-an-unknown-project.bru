@@ -1,0 +1,16 @@
+meta {
+  name: CVE export of an unknown project
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/cves/export?format=csv
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

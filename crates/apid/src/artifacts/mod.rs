@@ -88,8 +88,7 @@ pub struct Budget {
 }
 
 impl Budget {
-    /// A budget that refuses nothing, for the owner's writes and for tests.
-    #[cfg(test)]
+    /// A budget that refuses nothing: the owner's writes, a run's own recordings, and tests.
     pub fn unlimited() -> Budget {
         Budget {
             since_ms: 0,
@@ -98,7 +97,6 @@ impl Budget {
     }
 }
 
-#[cfg(test)]
 fn no_limit(_: u32, _: u64) -> Option<String> {
     None
 }

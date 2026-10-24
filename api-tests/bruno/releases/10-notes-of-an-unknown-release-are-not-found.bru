@@ -1,0 +1,21 @@
+meta {
+  name: Edited notes of an unknown release are not found
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/notes
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "notes": "Edited by the owner."
+  }
+}
+
+assert {
+  res.status: eq 404
+}

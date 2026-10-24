@@ -901,7 +901,8 @@ fn prepare_persistent_workspace(
     let image = persistent_workspace_path(persist_dir, cid);
     if !image.exists() {
         let partial = dir.join(format!("cid-{cid}.ext4.partial"));
-        vmm::spawner::copy_sparse(base, &partial)?;
+        // A clone where the filesystem shares blocks (APFS clonefile), else a sparse copy.
+        vmm::clonefile::clone_file(base, &partial)?;
         std::fs::rename(&partial, &image)?;
     }
     Ok(image)
@@ -1816,6 +1817,7 @@ impl Registry {
                     balloon,
                     restore: None,
                     volumes: meta.volumes.clone(),
+                    ..Default::default()
                 }
             })
             .collect();
@@ -2752,6 +2754,7 @@ impl Registry {
             balloon: vm.balloon_usable_mib,
             restore: None,
             volumes: volumes.clone(),
+            ..Default::default()
         };
         let run = self.insert(
             id,
@@ -3024,6 +3027,7 @@ impl Registry {
             balloon: meta.balloon_usable_mib,
             restore: None,
             volumes: meta.volumes.clone(),
+            ..Default::default()
         };
         let (handle, base) = boot_from(store, cid, &spec, snapshot).map_err(VmOpError::Failed)?;
         Ok((handle, spec, base))

@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 use crate::agents::Status;
 use crate::base_recipe::BaseKind;
 use crate::fleet::{self, LOCAL};
-use crate::nodes::{Node, OFFLINE_AFTER_MS, Pool};
+use crate::nodes::{MachineMac, Node, OFFLINE_AFTER_MS, Pool};
 use crate::project_stack;
 use crate::sleep;
 use crate::state::App;
@@ -54,6 +54,8 @@ const TEMPLATES_FRESH: Duration = Duration::from_secs(30);
 
 /// Recent placements: the node each new agent went to, and when.
 static RESERVED: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
+/// The local node's pool as it last answered (`pool_of`): a session's end reads it without asking noded again.
+static LOCAL_POOL: Mutex<Option<Pool>> = Mutex::new(None);
 /// Each node's template list, and when it was fetched.
 static TEMPLATES: Mutex<BTreeMap<String, (Instant, Value)>> = Mutex::new(BTreeMap::new());
 
@@ -301,8 +303,9 @@ fn run_volumes(app: &App, node: &str, run: &str) -> Result<Vec<String>, String> 
 }
 
 /// The nodes that report and are in service, each as a candidate for an agent of `role` that needs the
-/// `needs` volumes: a node that does not hold them all, or that did not say which it holds, is left out.
-/// With a `project`, each candidate says whether it holds the project's base.
+/// `needs` volumes: a node that does not hold them all, or that did not say which it holds, is left out. A test-only
+/// node (its test-lab share is the whole of it, see `Node::test_share`) takes no agent. On a node that does both, only
+/// its work share of the memory counts. With a `project`, each candidate says whether it holds the project's base.
 fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) -> Vec<Candidate> {
     let stopped = app.nodes.stopped_ids();
     let now = Instant::now();
@@ -310,15 +313,17 @@ fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) ->
     fleet::reports(app)
         .into_iter()
         .filter(|(node, _, _)| !stopped.contains(node))
+        .filter(|(node, _, _)| app.nodes.test_share(node) < 100)
         .filter(|(node, _, _)| {
             needs.is_empty()
                 || volumes_on(app, node).is_ok_and(|held| lacking_volumes(&held, needs).is_empty())
         })
         .filter_map(|(node, _status, runs)| {
             let (total, used) = memory_of(app, &node)?;
+            let work = work_share_of(total, app.nodes.test_share(&node));
             let facts = facts_of(app, &node);
             Some(Candidate {
-                free_mib: total
+                free_mib: work
                     .saturating_sub(used)
                     .saturating_sub(reserved_mib(&node, now)),
                 running_vms: running_vms(&runs),
@@ -331,6 +336,19 @@ fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) ->
             })
         })
         .collect()
+}
+
+/// The memory of a node's `total_mib` that agents may use, given its test-lab share in percent (pure): the rest is the
+/// test lab's (`test_lab`).
+pub fn work_share_of(total_mib: u64, test_share: u32) -> u64 {
+    let work = 100u64.saturating_sub(u64::from(test_share.min(100)));
+    total_mib.saturating_mul(work) / 100
+}
+
+/// The nodes that could build a project's targets (targets.rs): every candidate in service, with its pool and whether it
+/// holds the project's base (the Android SDK lives there).
+pub(crate) fn build_candidates(app: &App, project: &str) -> Vec<Candidate> {
+    candidates(app, "", &[], Some(project))
 }
 
 /// The pools a project declares in its `.plaza/project.toml` (17.2): none when it declares none, or when its
@@ -408,11 +426,25 @@ pub(crate) fn pool_of(app: &App, node: &str) -> Option<Pool> {
         let Ok((200, machine)) = fleet::noded(app, LOCAL, "GET", "/v1/machine", None) else {
             return None;
         };
-        return Pool::of(
+        let pool = Pool::of(
             machine["arch"].as_str(),
             machine["backend"].as_str(),
             machine["cpu_baseline"].as_str(),
         );
+        *LOCAL_POOL.lock().unwrap_or_else(PoisonError::into_inner) = pool.clone();
+        return pool;
+    }
+    app.nodes.get(node)?.machine.pool()
+}
+
+/// The pool of node `node` as last known, asking no node: a joined node's from its heartbeat, the local node's from the
+/// last answer `pool_of` had. A session's end records its node's pool this way.
+pub(crate) fn known_pool(app: &App, node: &str) -> Option<Pool> {
+    if node == LOCAL {
+        return LOCAL_POOL
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
     }
     app.nodes.get(node)?.machine.pool()
 }
@@ -1024,6 +1056,63 @@ fn move_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
+/// A unit of Mac work placement starts: a build or a simulator. A Mac node reports a cap for each (`mac`).
+// Mac build work places through these (engine 7.5); the tests place fake nodes through them until then.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacWork {
+    Build,
+    Simulator,
+}
+
+/// Why a Mac node cannot start `want` (pure): its cap for that kind of work is full. None when it has room, or
+/// when it reports no caps (it is not a Mac with the node's sandbox).
+#[allow(dead_code)]
+pub fn mac_refusal(mac: Option<&MachineMac>, want: MacWork) -> Option<String> {
+    let mac = mac?;
+    let (running, cap, what) = match want {
+        MacWork::Build => (mac.builds_running, mac.builds, "builds"),
+        MacWork::Simulator => (mac.simulators_running, mac.simulators, "simulators"),
+    };
+    (running >= cap).then(|| format!("its cap of {cap} {what} is full ({running} running)"))
+}
+
+/// The Mac node a unit of `want` goes to (pure, over the nodes given with their caps): the one with the most room
+/// for it, a tie going to the earlier. A node at its cap, and a node with no caps, is not chosen. None when every
+/// Mac is full.
+#[allow(dead_code)]
+pub fn mac_pick(nodes: &[(String, Option<MachineMac>)], want: MacWork) -> Option<String> {
+    let mut best: Option<(u32, &String)> = None;
+    for (node, mac) in nodes {
+        if mac_refusal(mac.as_ref(), want).is_some() {
+            continue;
+        }
+        let Some(mac) = mac else { continue };
+        let free = match want {
+            MacWork::Build => mac.builds - mac.builds_running,
+            MacWork::Simulator => mac.simulators - mac.simulators_running,
+        };
+        if best.is_none_or(|(most, _)| free > most) {
+            best = Some((free, node));
+        }
+    }
+    best.map(|(_, node)| node.clone())
+}
+
+/// The Mac node a unit of `want` goes to, among the nodes in service (see [`mac_pick`]).
+#[allow(dead_code)]
+pub fn choose_mac(app: &App, want: MacWork) -> Option<String> {
+    let stopped = app.nodes.stopped_ids();
+    let nodes: Vec<(String, Option<MachineMac>)> = app
+        .nodes
+        .list()
+        .into_iter()
+        .filter(|node| !stopped.contains(&node.id))
+        .map(|node| (node.id, node.machine.mac))
+        .collect();
+    mac_pick(&nodes, want)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::fleet::node_for;
@@ -1068,6 +1157,8 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            label: String::new(),
+            test_share: 0,
             path: crate::nodes::TUNNEL.to_string(),
             mesh_address: String::new(),
             mesh_token: String::new(),
@@ -1295,6 +1386,8 @@ mod tests {
                 draining: false,
                 revoked: false,
                 address: String::new(),
+                label: String::new(),
+                test_share: 0,
                 path: crate::nodes::TUNNEL.to_string(),
                 mesh_address: String::new(),
                 mesh_token: String::new(),
@@ -1343,6 +1436,20 @@ mod tests {
         drop(first);
         assert!(!is_moving(4242));
         assert!(Claim::take(4242).is_some());
+    }
+
+    fn mac(
+        builds: u32,
+        builds_running: u32,
+        simulators: u32,
+        simulators_running: u32,
+    ) -> MachineMac {
+        MachineMac {
+            builds,
+            simulators,
+            builds_running,
+            simulators_running,
+        }
     }
 
     #[test]
@@ -1405,6 +1512,55 @@ mod tests {
                 "{case}: {message}"
             );
         }
+    }
+
+    #[test]
+    fn a_mac_at_its_build_cap_gets_no_build_and_the_room_goes_to_another() {
+        let nodes = vec![
+            ("n1".to_string(), Some(mac(2, 2, 6, 0))),
+            ("n2".to_string(), Some(mac(2, 1, 6, 0))),
+            ("n3".to_string(), None),
+        ];
+        assert_eq!(mac_pick(&nodes, MacWork::Build).as_deref(), Some("n2"));
+        let refused = mac_refusal(nodes[0].1.as_ref(), MacWork::Build).unwrap();
+        assert!(refused.contains("cap of 2 builds"), "{refused}");
+        assert_eq!(
+            mac_refusal(nodes[0].1.as_ref(), MacWork::Simulator),
+            None,
+            "the caps are separate"
+        );
+        assert_eq!(
+            mac_refusal(nodes[2].1.as_ref(), MacWork::Build),
+            None,
+            "a node with no caps is not refused as full"
+        );
+    }
+
+    #[test]
+    fn a_full_mac_gets_neither_a_build_nor_a_simulator() {
+        let nodes = vec![("n1".to_string(), Some(mac(2, 2, 6, 6)))];
+        assert_eq!(mac_pick(&nodes, MacWork::Build), None);
+        assert_eq!(mac_pick(&nodes, MacWork::Simulator), None);
+    }
+
+    #[test]
+    fn the_mac_with_most_simulator_room_takes_the_simulator() {
+        let nodes = vec![
+            ("n1".to_string(), Some(mac(2, 0, 6, 4))),
+            ("n2".to_string(), Some(mac(2, 0, 6, 1))),
+            ("n3".to_string(), None),
+        ];
+        assert_eq!(mac_pick(&nodes, MacWork::Simulator).as_deref(), Some("n2"));
+        assert_eq!(mac_pick(&[], MacWork::Build), None);
+    }
+
+    #[test]
+    fn a_heartbeat_carries_the_mac_caps_into_the_machine() {
+        let machine: crate::nodes::Machine = serde_json::from_value(serde_json::json!({
+            "mac": {"builds": 2, "simulators": 6, "builds_running": 1, "simulators_running": 0}
+        }))
+        .unwrap();
+        assert_eq!(machine.mac, Some(mac(2, 1, 6, 0)));
     }
 
     #[test]
@@ -1558,5 +1714,13 @@ mod tests {
         );
         assert_eq!(idle_cpus(None, Some(10.0)), None);
         assert_eq!(idle_cpus(Some(4), None), None);
+    }
+
+    #[test]
+    fn a_node_that_does_both_gives_agents_its_work_share_of_memory() {
+        assert_eq!(work_share_of(8192, 0), 8192);
+        assert_eq!(work_share_of(8192, 25), 6144);
+        assert_eq!(work_share_of(8192, 100), 0);
+        assert_eq!(work_share_of(8192, 250), 0);
     }
 }

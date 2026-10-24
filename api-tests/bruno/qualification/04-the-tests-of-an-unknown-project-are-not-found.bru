@@ -1,0 +1,15 @@
+meta {
+  name: The tests of an unknown project are not found
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/pr-0/tests
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

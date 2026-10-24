@@ -8,7 +8,8 @@
 // Derived from Firecracker src/vmm/src/devices/mod.rs (trimmed: the pci,
 // pseudo and acpi device modules are dropped; `legacy` and `virtio` are the
 // only device families in this port — and the virtio family is one device, the
-// userspace virtio-vsock one, because there is no network device by design).
+// userspace virtio-vsock one; the virtio-net device of a lab topology's private segment is the other, see
+// `virtio::net`).
 
 //! Emulates virtual and hardware devices.
 

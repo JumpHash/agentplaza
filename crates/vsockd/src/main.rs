@@ -7,124 +7,111 @@
 //! loop's v3 lines and hellos go to `apid` ([`apid`]) when `--internal-token-file`
 //! names its token. Runs until `SIGTERM`/`SIGINT`.
 //!
-//! The muxer backend runs on Linux (AF_VSOCK) and Windows (AF_UNIX via `apz-uds`);
-//! macOS refuses to run.
+//! The muxer backend runs on Linux, macOS and Windows: every platform serves the guest CIDs on AF_UNIX
+//! sockets (through `apz-uds`), so one daemon serves the same protocol on each.
 
 // Safe Rust except `sys`, the `poll(2)`/`sigaction(2)` boundary.
 #![deny(unsafe_code)]
 
-#[cfg(any(target_os = "linux", windows))]
-mod apid;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod e2b;
-#[cfg(any(target_os = "linux", windows))]
-mod egress;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod http;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod hub;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod inbound;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod metrics;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod serve;
-#[cfg(any(target_os = "linux", windows))]
-mod sys;
-#[cfg(any(target_os = "linux", windows))]
-mod waker;
+
+// The modules the library shares with the node daemon (the egress proxy and its apid client).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
+use vsockd::read_until_closed;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+use vsockd::shutdown_waker;
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+use vsockd::{apid, egress, sys, waker};
 
 use std::process::ExitCode;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use apz_uds::{UnixListener, UnixStream};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::collections::BTreeMap;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::net::TcpListener;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::path::{Path, PathBuf};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::sync::{
     Arc, Mutex, MutexGuard, PoisonError,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::thread::{self, JoinHandle};
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use apz_http::auth::InternalToken;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use apz_proto::line::Lines;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use hub::Hub;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use serve::{HostError, SessionLimits, StdoutLog, SystemClock, handle_session};
 
 /// The guest protocol's vsock port.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const DEFAULT_PORT: u32 = 5000;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const DEFAULT_HTTP_PORT: u16 = 19080;
 /// noded's loopback port, and vsockd's inbound listener's (`apz-link`'s defaults).
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const DEFAULT_NODED_PORT: u16 = 8899;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const DEFAULT_INBOUND_PORT: u16 = 19095;
 /// How often the daemon's main thread checks for a stop request.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const ACCEPT_POLL_MS: i32 = 200;
 
-/// The shutdown waker, created by `shutdown_waker`.
-#[cfg(any(target_os = "linux", windows))]
-static SHUTDOWN_WAKER: std::sync::OnceLock<crate::waker::Waker> = std::sync::OnceLock::new();
-
-/// Woken once when the daemon is asked to stop, so every accept thread returns at once. Never drained.
-#[cfg(any(target_os = "linux", windows))]
-fn shutdown_waker() -> &'static crate::waker::Waker {
-    SHUTDOWN_WAKER.get_or_init(|| {
-        let waker = crate::waker::Waker::new().expect("vsockd: cannot create the shutdown waker");
-        sys::set_shutdown_wake(waker.wake_handle());
-        waker
-    })
-}
 /// Guest sessions served at once by default; `--max-sessions` changes it.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const DEFAULT_MAX_SESSIONS: usize = 4096;
 /// Probe/remove/bind rounds before `bind_listener` gives up on a racing path.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_BIND_ATTEMPTS: u32 = 8;
 /// A v1 session's read timeout (`SO_RCVTIMEO`), so a silent guest cannot pin
 /// its thread.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 /// A v1 session's whole life.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
 /// A keepalive session without a heartbeat for this long is reaped.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const KEEPALIVE_IDLE_SECS: u64 = 300;
 /// The read timeout on a keepalive session's guest socket, a safety net only: a keepalive session sleeps in
 /// `wait_ready` until its guest, a hub command or an apid answer wakes it.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const KEEPALIVE_READ_SLICE: Duration = Duration::from_millis(20);
 /// The longest a keepalive session sleeps before it rechecks its deadlines.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const KEEPALIVE_MAX_WAIT: Duration = Duration::from_secs(1);
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const MAX_TOOL_CALLS: u64 = 1024;
 
 /// Caps concurrent guest sessions: a slot is reserved before a worker is
 /// spawned and released when its guard drops.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 struct SessionLimiter {
     active: AtomicUsize,
     max: usize,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl SessionLimiter {
     fn new(max: usize) -> Self {
         Self {
@@ -147,17 +134,17 @@ impl SessionLimiter {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 struct SessionGuard(Arc<SessionLimiter>);
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Drop for SessionGuard {
     fn drop(&mut self) {
         self.0.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const USAGE: &str = "\
 usage: vsockd [--uds-dir DIR] [--cids LIST] [--port P] [--http-port P] [--apid URL]
               [--internal-token-file PATH] [--egress on|off] [--egress-ports LIST]
@@ -193,7 +180,7 @@ Guest CID c is served at {DIR}/vm{c}_{port}; its hello must name c. A hello with
 after 300 s without one); otherwise the one-shot v1 session. SIGTERM or SIGINT
 stops the daemon.";
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn main() -> ExitCode {
     if std::env::args()
         .skip(1)
@@ -202,14 +189,16 @@ fn main() -> ExitCode {
         println!("vsockd {}", apz_os::version());
         return ExitCode::SUCCESS;
     }
-    eprintln!("vsockd: the UDS muxer backend is Linux-only; this host cannot accept guests");
+    eprintln!(
+        "vsockd: the UDS muxer backend runs on Linux, macOS and Windows; this host cannot accept guests"
+    );
     ExitCode::FAILURE
 }
 
 /// The start-up refusal: a daemon with no token would serve an open HTTP API, so it refuses to start
 /// unless `--insecure-no-token` says it may. `None` when it may start; a command line that
 /// `parse_args` rejects is left to `run` to report.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn token_refusal(args: &[String]) -> Option<&'static str> {
     match parse_args(args.to_vec()) {
         Ok(config) if config.internal_token_file.is_none() => Some(
@@ -219,7 +208,7 @@ fn token_refusal(args: &[String]) -> Option<&'static str> {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // `--insecure-no-token` is read here and removed, so `parse_args` never sees it.
@@ -253,7 +242,7 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     uds_dir: PathBuf,
@@ -272,7 +261,7 @@ struct Config {
     inbound_port: u16,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -292,7 +281,7 @@ impl Default for Config {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn parse_args(args: Vec<String>) -> Result<Config, String> {
     let mut config = Config::default();
     let mut args = args.into_iter();
@@ -369,7 +358,7 @@ fn parse_args(args: Vec<String>) -> Result<Config, String> {
 }
 
 /// Raises the descriptor limit so `max_sessions` guest sessions fit, and reports what it is now.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn raise_fd_limit(max_sessions: usize) {
     match sys::raise_fd_limit() {
         Ok(limit) => {
@@ -389,7 +378,7 @@ fn raise_fd_limit(max_sessions: usize) {
 /// Creates the socket directory `0700` (and tightens an existing one): the
 /// listener names are predictable, so another local user must not be able to
 /// squat or impersonate them. Mirrors `vmm::spawner::create_uds_dir`.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn create_uds_dir(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()
@@ -407,9 +396,9 @@ fn create_uds_dir(path: &Path) -> std::io::Result<()> {
 }
 
 /// Serves until a signal asks the daemon to stop.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run(config: Config) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     raise_fd_limit(config.max_sessions);
     // Checked before anything is bound: a daemon with an unusable apid address does not serve.
     let apid = apid::Apid::new(&config.apid, config.internal_token_file.clone())
@@ -537,7 +526,7 @@ fn run(config: Config) -> Result<(), String> {
 /// The guest CIDs this daemon serves. Built at start from `--cids`, then changed at run time by
 /// `POST`/`DELETE /v1/cids/{cid}`. A served CID has the same listeners however it was added: its
 /// session socket and, with egress on, its egress socket.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) struct Registry {
     uds_dir: PathBuf,
     port: u32,
@@ -549,7 +538,7 @@ pub(crate) struct Registry {
 }
 
 /// One served CID and the threads that accept for it.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 struct Served {
     /// Stops the session accept loop; checked on every poll.
     stop: Arc<AtomicBool>,
@@ -562,7 +551,7 @@ struct Served {
 }
 
 /// Listeners bound for one CID and not yet accepting.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) struct Bound {
     cid: u32,
     session: (PathBuf, UnixListener),
@@ -570,14 +559,14 @@ pub(crate) struct Bound {
 }
 
 /// Why a CID cannot be removed at run time.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RemoveError {
     /// No listener serves the CID.
     NotServed,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Registry {
     pub(crate) fn new(
         uds_dir: PathBuf,
@@ -723,7 +712,7 @@ impl Registry {
     }
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Served {
     /// Stops the accept loops and joins them: the stop flag is set and the stop waker woken, so both
     /// return at once. Then removes the socket files.
@@ -739,7 +728,7 @@ impl Served {
 }
 
 /// Binds `path` for `cid` and makes it non-blocking, as the accept loops poll it.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn bind_nonblocking(path: PathBuf, cid: u32) -> Result<(PathBuf, UnixListener), String> {
     let listener = bind_listener(&path, cid)?;
     listener
@@ -749,7 +738,7 @@ fn bind_nonblocking(path: PathBuf, cid: u32) -> Result<(PathBuf, UnixListener), 
 }
 
 /// The socket files outlive their listeners; a stale one would fail the next start's bind.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn remove_socket_files(paths: &[PathBuf]) {
     for path in paths {
         if let Err(err) = std::fs::remove_file(path)
@@ -763,8 +752,13 @@ fn remove_socket_files(paths: &[PathBuf]) {
 /// Whether a failed probe of an existing socket path means nobody listens:
 /// refused (a dead socket) or not found (a leftover file). Anything else — a
 /// full backlog (`EAGAIN`), a permission problem — is treated as live.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn probe_is_stale(err: &std::io::Error) -> bool {
+    // macOS answers a connect to a leftover regular file with ENOTSOCK, where Linux answers ECONNREFUSED.
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(libc::ENOTSOCK) {
+        return true;
+    }
     matches!(
         err.kind(),
         std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
@@ -775,7 +769,7 @@ fn probe_is_stale(err: &std::io::Error) -> bool {
 /// listener. Two restarts racing one stale path settle within
 /// [`MAX_BIND_ATTEMPTS`] rounds: the loser's bind fails and its next probe
 /// sees the winner.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
     for _ in 0..MAX_BIND_ATTEMPTS {
         if path.exists() {
@@ -822,7 +816,7 @@ fn bind_listener(path: &Path, cid: u32) -> Result<UnixListener, String> {
 
 /// Accepts sessions for one CID, each on its own thread, until its stop flag or the daemon's stop
 /// request. Sessions already running are not touched by the stop flag.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn accept_loop(
     cid: u32,
     listener: UnixListener,
@@ -880,10 +874,10 @@ fn accept_loop(
 }
 
 /// Counts a guest session in the open-sessions gauge until it ends, however it ends.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 struct OpenSession;
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl Drop for OpenSession {
     fn drop(&mut self) {
         crate::metrics::SESSIONS.add(-1);
@@ -891,7 +885,7 @@ impl Drop for OpenSession {
 }
 
 /// Serves one guest session and logs how it ended.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
     crate::metrics::SESSIONS.add(1);
     let _open = OpenSession;
@@ -928,36 +922,7 @@ fn serve_guest(stream: UnixStream, cid: u32, hub: &Hub) {
     }
 }
 
-/// Test helper: everything `stream` sends until it closes, read with short polled timeouts up to
-/// `deadline`. On Windows a read already blocked on an AF_UNIX socket is not reliably woken when
-/// the peer closes, but a fresh one sees the close; so no read here waits longer than a poll.
-#[cfg(all(any(target_os = "linux", windows), test))]
-pub(crate) fn read_until_closed(stream: &UnixStream, deadline: Duration) -> Vec<u8> {
-    use std::io::{ErrorKind, Read};
-    stream
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
-    let end = Instant::now() + deadline;
-    let mut reader = stream;
-    let mut bytes = Vec::new();
-    let mut buf = [0u8; 4096];
-    while Instant::now() < end {
-        match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => bytes.extend_from_slice(&buf[..n]),
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                ) => {}
-            // A reset after the peer closed counts as the close.
-            Err(_) => break,
-        }
-    }
-    bytes
-}
-
-#[cfg(all(any(target_os = "linux", windows), test))]
+#[cfg(all(any(target_os = "linux", target_os = "macos", windows), test))]
 mod tests {
     use super::*;
 
