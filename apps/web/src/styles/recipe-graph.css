@@ -54,3 +54,11 @@
 @media (max-width: 900px) {
   .rg-main { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* A run's checks (the run page's Checks block): each step's verdict, its commands and its log. */
+.rr-checks { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.rr-check { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); }
+.rr-check-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; min-width: 0; }
+.rr-check-h .mono { overflow-wrap: anywhere; }
+.rr-check-cmd { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rr-log { margin: 0; max-width: 100%; max-height: 240px; overflow: auto; padding: 8px 10px; border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }

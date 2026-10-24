@@ -15,6 +15,7 @@ import {
   type EngineRecipeSummary,
   type EngineStep,
   type RecipeRun,
+  type RecipeRunCheck,
   type RecipeRunGraph,
   type RecipeRunNode,
 } from '../api-review';
@@ -208,6 +209,23 @@ export function recipeRunsOf(scope: { task?: string; project?: string }): HTMLEl
   return h('div.rr', null, h('a.rr-link', { href: hrefIn(null, 'recipe-graph') }, 'Recipe graphs'), list);
 }
 
+/** The checks a run's steps made: each with its verdict, the commands it ran and its log. */
+function checksList(checks: RecipeRunCheck[]): HTMLElement {
+  return h(
+    'div.rr-checks',
+    null,
+    checks.map((c) =>
+      h(
+        'div.rr-check',
+        null,
+        h('div.rr-check-h', null, h('span.mono', null, c.step), badge(c.passed ? 'Passed' : 'Failed', c.passed ? 'ok' : 'danger')),
+        c.commands ? h('code.rr-check-cmd', null, c.commands) : null,
+        c.summary ? h('pre.rr-log', null, c.summary) : null,
+      ),
+    ),
+  );
+}
+
 /** A run's page: its recipe, version, trigger, state and outcome; its graph read-only, each step and link in its state; its steps. */
 function mountRun(root: HTMLElement, runId: string): Cleanup {
   const view = h('div.rg.rg-run');
@@ -262,6 +280,7 @@ function mountRun(root: HTMLElement, runId: string): Cleanup {
       head,
       h('section.rg-block', null, h('h2', null, 'Steps and edges'), graphOf(model)),
       h('section.rg-block', null, h('h2', null, 'Steps'), graph.nodes.length ? nodesTable(graph.nodes) : h('p.rg-note', null, 'No steps.')),
+      run.checks?.length ? h('section.rg-block', null, h('h2', null, 'Checks'), checksList(run.checks)) : null,
     );
   };
 

@@ -1,0 +1,15 @@
+meta {
+  name: The GitHub Actions import preview of an unknown project is not found
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/workflows/import
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

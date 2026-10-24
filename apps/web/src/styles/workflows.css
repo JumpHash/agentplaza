@@ -1,0 +1,38 @@
+/* The Workflows tab: the list of workflows, one workflow's jobs and runs, and the GitHub Actions conversions. The tab sits
+   in the project page (projects.css); its runs are the recipe run rows (recipe-graph.css). It wraps on a phone. */
+.wf { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.wf-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; }
+.wf-intro p { margin: 0; flex: 1 1 280px; min-width: 0; color: var(--ink-2); }
+.wf-chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.wf-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.wf-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.wf-row:hover { background: var(--hover); }
+.wf-row[aria-pressed="true"] { border-color: var(--ink-2); background: var(--hover); }
+.wf-row-name { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.wf-warn { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--warn); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.wf-warn svg { flex: none; margin-top: 2px; }
+.wf-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.wf-head > div { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.wf-head p { margin: 0; overflow-wrap: anywhere; }
+.wf-cron { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: var(--fs-sm); }
+.wf-cron code { overflow-wrap: anywhere; }
+.wf-started { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 12px 0 0; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.wf h4 { margin: 16px 0 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--ink-2); }
+.wf-job { padding: 6px 0; min-width: 0; }
+.wf-job + .wf-job { border-top: 1px solid var(--rule); padding-top: 12px; }
+.wf-job-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.wf-meta { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--ink-2); overflow-wrap: anywhere; }
+.wf-steps { margin: 8px 0 0; padding-left: 22px; font-family: var(--font-mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.wf-imp { min-width: 0; }
+.wf-imp + .wf-imp { border-top: 1px solid var(--rule); padding-top: 12px; }
+.wf-imp > summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; cursor: pointer; }
+.wf-imp > summary .pj-faint { overflow-wrap: anywhere; }
+.wf-imp-b { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding-top: 12px; }
+.wf-imp-b p { margin: 0; overflow-wrap: anywhere; }
+.wf-unsup { padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.wf-unsup b { color: var(--warn); }
+.wf-unsup ul, .wf-notes ul { margin: 6px 0 0; padding-left: 18px; }
+.wf-notes { font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.wf-pre { margin: 0; max-width: 100%; overflow-x: auto; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre; }
+.wf-save { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.wf-saved { color: var(--ok); font-size: var(--fs-sm); overflow-wrap: anywhere; }

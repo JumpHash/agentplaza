@@ -2012,6 +2012,7 @@ import './inbox-chats-tests';
 import './budget-tests';
 import './recipe-graph-tests';
 import './cves-tests';
+import './workflows-tests';
 
 // The web console's code highlighter (src/view/highlight.ts) against the golden vectors the Rust twin also checks.
 import { spans as highlightSpans } from '../src/view/highlight';
