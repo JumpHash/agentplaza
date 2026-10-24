@@ -223,18 +223,23 @@ pub fn import(
     // The commits Weft already has: what it imported, and what a landed change exported (a `ci` landing's merge commit).
     let imported: HashMap<String, RevId> = {
         let st = store.state();
-        st.changes
+        let mut pairs: Vec<(bool, String, RevId)> = st
+            .changes
             .values()
             .filter(|c| c.repo == repo)
             .flat_map(|c| {
-                let imported = c.import.as_ref().map(|i| i.git.clone());
-                let exported = c.exported.values().flatten().map(|e| e.git.clone());
+                let imported = c.import.as_ref().map(|i| (false, i.git.clone()));
+                let exported = c.exported.values().flatten().map(|e| (true, e.git.clone()));
                 imported
                     .into_iter()
                     .chain(exported)
-                    .filter_map(|git| Some((git, c.landed.clone()?)))
+                    .filter_map(|(lane, git)| Some((lane, git, c.landed.clone()?)))
             })
-            .collect()
+            .collect();
+        // A commit both imported and landed as a lane (GitHub's merge of a lane Weft had imported it for) maps to the
+        // landing, the rev the ref is at: the lanes sort last and win the collection.
+        pairs.sort_by_key(|(lane, _, _)| *lane);
+        pairs.into_iter().map(|(_, git, rev)| (git, rev)).collect()
     };
     let mut report = ImportReport {
         repo: repo.into(),

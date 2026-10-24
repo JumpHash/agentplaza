@@ -163,6 +163,14 @@ fn ended_deploy(envs: &Value, env: &str, version: &str) -> Option<Value> {
         .cloned()
 }
 
+/// Whether `env` has a rollback deploy recorded (the health watch records one after it settles a breached deploy).
+fn rollback_recorded(envs: &Value, env: &str) -> bool {
+    envs.as_array()
+        .and_then(|e| e.iter().find(|e| e["name"] == json!(env)))
+        .and_then(|e| e["deploys"].as_array())
+        .is_some_and(|deploys| deploys.iter().any(|d| d["by"] == json!("rollback")))
+}
+
 fn environment_version(envs: &Value, env: &str) -> Value {
     envs.as_array()
         .and_then(|e| e.iter().find(|e| e["name"] == json!(env)).cloned())
@@ -322,8 +330,10 @@ fn a_published_release_deploys_through_staging_to_production_and_a_breach_rolls_
         Some(json!({ "version": second })),
     );
     assert!(status < 300, "{deploy}\n{}", hub.log());
+    // The breached deploy ends before the rollback is recorded (the hub settles it, then records the rollback as its
+    // own deploy), so the wait is for both.
     let envs = hub.wait_for(&format!("/v1/projects/{pid}/environments"), WAIT, |e| {
-        ended_deploy(e, "production", &second).is_some()
+        ended_deploy(e, "production", &second).is_some() && rollback_recorded(e, "production")
     });
     let breached = ended_deploy(&envs, "production", &second)
         .unwrap_or_else(|| panic!("production ends {second}: {envs}\n{}", hub.log()));

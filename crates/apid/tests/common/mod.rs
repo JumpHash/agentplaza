@@ -185,6 +185,17 @@ impl Hub {
         assert_eq!(code, 200, "{body}");
     }
 
+    /// The hub's `plaza.db`, opened beside it for a test to seed rows into (WAL: the hub's own connection sees what this
+    /// one commits). The hub's writer holds the write lock through each commit, and a loaded runner can hold it for
+    /// seconds, so the seed waits as long as a call does rather than failing as "database is locked".
+    pub fn seed_connection(&self) -> apz_store::rusqlite::Connection {
+        let conn = apz_store::rusqlite::Connection::open(self.state_dir().join("plaza.db"))
+            .expect("the hub's plaza.db");
+        conn.busy_timeout(CALL_TIMEOUT.mul_f64(slack()))
+            .expect("a busy timeout");
+        conn
+    }
+
     /// Waits up to `timeout` (times [`slack`]) for `ready` to hold of the owner's `GET path`; the last answer
     /// either way.
     pub fn wait_for(&self, path: &str, timeout: Duration, ready: impl Fn(&Value) -> bool) -> Value {

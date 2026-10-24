@@ -13,7 +13,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use apz_store::rusqlite::{Connection, params};
+use apz_store::rusqlite::params;
 use serde_json::{Value, json};
 
 use common::{FakeDaemon, Hub, Scratch, text};
@@ -1299,8 +1299,7 @@ fn a_helpers_model_call_is_held_on_its_sessions_budget_and_recorded_on_a_helper_
 /// One eval record of a builder step (`build`) that ran on `model`, and succeeded or not. Its id is far past the sessions
 /// the test starts, so the hub's own records never replace it.
 fn eval_record(hub: &Hub, id: i64, model: &str, ok: bool) {
-    let conn = Connection::open(hub.state_dir().join("plaza.db")).expect("the hub's plaza.db");
-    conn.busy_timeout(Duration::from_secs(5)).unwrap();
+    let conn = hub.seed_connection();
     conn.execute(
         r#"INSERT INTO "eval_run" ("id","pos","session","project","task","recipe","step","seat","round","engine","engine_version","model","provider","harness","node","pool","tokens_in","tokens_out","tokens_cached","cost_micros","model_calls","tool_calls","tool_ms","wall_ms","verdict","outcome","ok","landed","reverted","ended_ms","recipe_version","harness_version","gate","later_findings","incidents","memory_cites","qual_stages","lab_minutes","choice","choice_reason")
            VALUES (?1,?1,'s'||?1,'pr0','t0','change','build','builder',1,'harness','0.1.0',?2,'mock','acp',NULL,NULL,10,5,0,100,1,2,30,1000,NULL,'the step ended',?3,NULL,NULL,?1,2,'','none',0,0,0,0,0,'','')"#,
