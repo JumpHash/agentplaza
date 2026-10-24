@@ -26,7 +26,7 @@ pub struct Item {
 }
 
 /// The topology an import made, with its report.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Conversion {
     pub topology: Topology,
     pub report: Vec<Item>,

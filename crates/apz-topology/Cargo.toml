@@ -30,6 +30,12 @@ name = "apz-load"
 path = "src/bin/apz-load.rs"
 
 [[bin]]
+# The lab VM's fault injector (PLAN 22.8): the fault proxies in front of the dependencies, and the topology's resilience
+# scenarios run against them, with their measurements posted at the run.
+name = "apz-fault"
+path = "src/bin/apz-fault.rs"
+
+[[bin]]
 # A stand-in service for the topology tests: echoes, or relays to another service by name.
 name = "apz-topo-echo"
 path = "src/bin/apz-topo-echo.rs"
