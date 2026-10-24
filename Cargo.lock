@@ -859,9 +859,11 @@ dependencies = [
 name = "apz-topology"
 version = "1.0.0"
 dependencies = [
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "ureq",

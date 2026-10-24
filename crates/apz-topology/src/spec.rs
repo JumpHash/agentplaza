@@ -33,7 +33,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::cache::CacheStage;
+use crate::data::DataStage;
 use crate::fault::Fault;
+use crate::messaging::MessagingStage;
 
 /// The directory of a project's topology files in its repo at main.
 pub const DIR: &str = ".plaza/topologies";
@@ -67,6 +70,15 @@ pub struct Topology {
     pub resilience: Vec<Scenario>,
     #[serde(default)]
     pub egress: Egress,
+    /// The data stage (PLAN 22.8): migrations, backup and restore, writers and invariants (`[data]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataStage>,
+    /// The cache stage (PLAN 22.8): hit rate, invalidation and stampede (`[cache]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CacheStage>,
+    /// The messaging stage (PLAN 22.8): delivery, ordering, retries, dead letters and duplicates (`[messaging]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messaging: Option<MessagingStage>,
 }
 
 /// What a topology runs: its services as containers on the lab VM's bridge, or a Kubernetes cluster (k3s) in the VM.
@@ -638,6 +650,27 @@ impl Topology {
         if !is_label(&self.name) {
             return Err(format!("topology name {:?} is not a DNS label", self.name));
         }
+        if let Some(stage) = &self.data {
+            stage
+                .check()
+                .map_err(|why| format!("topology {}: {why}", self.name))?;
+        }
+        if let Some(stage) = &self.cache {
+            stage
+                .check()
+                .map_err(|why| format!("topology {}: {why}", self.name))?;
+            if !self.services.iter().any(|s| s.name == stage.service) {
+                return Err(format!(
+                    "topology {}: the cache stage names service {}, which the topology does not declare",
+                    self.name, stage.service
+                ));
+            }
+        }
+        if let Some(stage) = &self.messaging {
+            stage
+                .check()
+                .map_err(|why| format!("topology {}: {why}", self.name))?;
+        }
         match (self.kind, &self.k3s) {
             (Kind::Services, Some(_)) => {
                 return Err(format!(
@@ -959,7 +992,7 @@ fn is_k3s_version(text: &str) -> bool {
 }
 
 /// A path inside the repository: relative, `/`-separated, no `..`, no leading or trailing separator.
-fn is_repo_path(text: &str) -> bool {
+pub(crate) fn is_repo_path(text: &str) -> bool {
     !text.is_empty()
         && !text.starts_with('/')
         && !text.ends_with('/')

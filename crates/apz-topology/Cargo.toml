@@ -13,6 +13,9 @@ toml = "1"
 serde_yaml_ng = "0.10"
 # The collector's relay to the hub's receiver (collector.rs): the workspace's HTTP client.
 ureq.workspace = true
+# The data stage (PLAN 22.8) runs over SQLite standing in for the project's database (the workspace's bundled build).
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "cache", "fallible_uint"] }
+sha2.workspace = true
 
 [[bin]]
 # The guest's topology runner: builds the bridge (--net) and runs the containers' artifacts on it.
@@ -34,6 +37,12 @@ path = "src/bin/apz-load.rs"
 # scenarios run against them, with their measurements posted at the run.
 name = "apz-fault"
 path = "src/bin/apz-fault.rs"
+
+[[bin]]
+# The lab VM's stage runner (PLAN 22.8): the data, cache and messaging stages a topology declares, their numbers posted at
+# the run.
+name = "apz-stage"
+path = "src/bin/apz-stage.rs"
 
 [[bin]]
 # A stand-in service for the topology tests: echoes, or relays to another service by name.

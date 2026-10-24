@@ -14,19 +14,26 @@
 //! - [`fault`], [`resilience`], [`netem`], [`steps`] and [`scenarios`]: the fault proxy in front of a dependency, the
 //!   resilience scenarios that set its faults and kill or skew the guest's services (PLAN 22.8), the traffic shaping and
 //!   the guest's actions where the node can, and the run of a topology's scenarios in the lab VM.
+//! - [`data`], [`cache`] and [`messaging`], with [`stage`] for what they share: the data stage's migrations, backup and
+//!   restore, concurrent writers and invariants; the cache's hit rate, invalidation and stampede; and the messaging
+//!   stage's delivery, ordering, retries, dead letters and duplicates (PLAN 22.8). Each runs where the guest is and
+//!   records numbers, which the hub judges.
 //! - [`load`], [`bench`] and [`compare`]: traffic profiles and their generator, benchmark output parsed, and the
 //!   comparison of a candidate's metrics with a baseline's (PLAN 22.8); [`slowserve`] is the stand-in service the load
 //!   tests aim at.
 
 pub mod assert;
 pub mod bench;
+pub mod cache;
 pub mod collector;
 pub mod compare;
 pub mod compose;
+pub mod data;
 pub mod fault;
 pub mod k3s;
 pub mod load;
 pub mod manifests;
+pub mod messaging;
 pub mod netem;
 pub mod observe;
 pub mod pii;
@@ -38,4 +45,5 @@ pub mod run;
 pub mod scenarios;
 pub mod slowserve;
 pub mod spec;
+pub mod stage;
 pub mod steps;

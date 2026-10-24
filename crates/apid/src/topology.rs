@@ -125,6 +125,9 @@ fn convert_source(
                 assertions: Vec::new(),
                 resilience: Vec::new(),
                 egress: Default::default(),
+                data: None,
+                cache: None,
+                messaging: None,
             };
             topology.check().map_err(bad)?;
             let mut report = Vec::new();
