@@ -34,8 +34,8 @@ fn run(
     later: i64,
 ) {
     conn.execute(
-        r#"INSERT INTO "eval_run" ("id","pos","session","project","task","recipe","step","seat","round","engine","engine_version","model","provider","harness","node","pool","tokens_in","tokens_out","tokens_cached","cost_micros","model_calls","tool_calls","tool_ms","wall_ms","verdict","outcome","ok","landed","reverted","ended_ms","recipe_version","harness_version","gate","later_findings","incidents","memory_cites","qual_stages","lab_minutes")
-           VALUES (?1,?1,'s'||?1,'pr1',?2,'change',?3,?4,1,'harness','0.1.0',?5,'mock','acp',NULL,NULL,10,5,0,?6,1,2,30,?7,?8,'the step ended',?9,NULL,NULL,?10,2,'','none',?11,0,0,0,0)"#,
+        r#"INSERT INTO "eval_run" ("id","pos","session","project","task","recipe","step","seat","round","engine","engine_version","model","provider","harness","node","pool","tokens_in","tokens_out","tokens_cached","cost_micros","model_calls","tool_calls","tool_ms","wall_ms","verdict","outcome","ok","landed","reverted","ended_ms","recipe_version","harness_version","gate","later_findings","incidents","memory_cites","qual_stages","lab_minutes","choice","choice_reason")
+           VALUES (?1,?1,'s'||?1,'pr1',?2,'change',?3,?4,1,'harness','0.1.0',?5,'mock','acp',NULL,NULL,10,5,0,?6,1,2,30,?7,?8,'the step ended',?9,NULL,NULL,?10,2,'','none',?11,0,0,0,0,'','')"#,
         params![id, task, step, seat, model, cost, wall, verdict, ok, ended, later],
     )
     .expect("a run row");

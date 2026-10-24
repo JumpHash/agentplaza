@@ -158,7 +158,20 @@ pub struct Settings {
     pub health_interval_s: u32,
     /// The owner's favourite models, `<provider>/<model>`: the model pickers list them first.
     pub favourite_models: Vec<String>,
+    /// The runs a candidate needs before a step with `model: eval` or `engine: any` trusts its eval score (13.2).
+    pub eval_min_samples: u32,
+    /// The share of a step's runs (in percent) that explore a candidate short of `eval_min_samples` (13.2).
+    pub eval_explore_pct: u32,
 }
+
+/// The default for `eval_min_samples`: five runs before a score is trusted.
+pub const DEFAULT_EVAL_MIN_SAMPLES: u32 = 5;
+/// The default for `eval_explore_pct`: one run in ten explores.
+pub const DEFAULT_EVAL_EXPLORE_PCT: u32 = 10;
+/// The most `eval_min_samples` may be.
+pub const MAX_EVAL_MIN_SAMPLES: u32 = 1000;
+/// The most `eval_explore_pct` may be: exploration is a small share, never most of the runs.
+pub const MAX_EVAL_EXPLORE_PCT: u32 = 50;
 
 /// The default for `health_interval_s`: five minutes.
 pub const DEFAULT_HEALTH_INTERVAL_S: u32 = 300;
@@ -304,6 +317,8 @@ impl Default for Settings {
             role_volumes: BTreeMap::new(),
             health_interval_s: DEFAULT_HEALTH_INTERVAL_S,
             favourite_models: Vec::new(),
+            eval_min_samples: DEFAULT_EVAL_MIN_SAMPLES,
+            eval_explore_pct: DEFAULT_EVAL_EXPLORE_PCT,
         }
     }
 }
@@ -421,6 +436,8 @@ struct SettingsRow {
     health_interval_s: u32,
     #[table(list)]
     favourite_models: Vec<String>,
+    eval_min_samples: u32,
+    eval_explore_pct: u32,
 }
 
 impl From<&Settings> for SettingsRow {
@@ -466,6 +483,8 @@ impl From<&Settings> for SettingsRow {
                 .collect(),
             health_interval_s: s.health_interval_s,
             favourite_models: s.favourite_models.clone(),
+            eval_min_samples: s.eval_min_samples,
+            eval_explore_pct: s.eval_explore_pct,
         }
     }
 }
@@ -507,6 +526,8 @@ impl From<SettingsRow> for Settings {
                 .collect(),
             health_interval_s: r.health_interval_s,
             favourite_models: r.favourite_models,
+            eval_min_samples: r.eval_min_samples,
+            eval_explore_pct: r.eval_explore_pct,
         }
     }
 }
@@ -797,6 +818,18 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
         ));
     }
     check_favourites(&new.favourite_models)?;
+    if !(1..=MAX_EVAL_MIN_SAMPLES).contains(&new.eval_min_samples) {
+        return Err(format!(
+            "eval_min_samples is 1 to {MAX_EVAL_MIN_SAMPLES} runs, got {}",
+            new.eval_min_samples
+        ));
+    }
+    if new.eval_explore_pct > MAX_EVAL_EXPLORE_PCT {
+        return Err(format!(
+            "eval_explore_pct is at most {MAX_EVAL_EXPLORE_PCT} (percent of runs), got {}",
+            new.eval_explore_pct
+        ));
+    }
     if !new.allow_training_models {
         // A contributor model trains Meta's future models on what it is sent: never a default, a role
         // model or a policy entry until the owner says so (`allow_training_models`).
@@ -1246,6 +1279,29 @@ mod tests {
         assert!(check_settings(&s, false).is_err());
         s.health_interval_s = 0;
         assert!(check_settings(&s, false).is_ok());
+    }
+
+    #[test]
+    fn the_eval_choice_settings_default_and_are_checked() {
+        let mut s = Settings::default();
+        assert_eq!(
+            (s.eval_min_samples, s.eval_explore_pct),
+            (DEFAULT_EVAL_MIN_SAMPLES, DEFAULT_EVAL_EXPLORE_PCT)
+        );
+        assert!(check_settings(&s, false).is_ok());
+        s.eval_min_samples = 0;
+        assert!(check_settings(&s, false).is_err(), "a score needs a sample");
+        s.eval_min_samples = 1;
+        s.eval_explore_pct = MAX_EVAL_EXPLORE_PCT + 1;
+        assert!(
+            check_settings(&s, false).is_err(),
+            "exploration is a small share"
+        );
+        s.eval_explore_pct = 0;
+        assert!(
+            check_settings(&s, false).is_ok(),
+            "zero turns exploration off"
+        );
     }
 
     #[test]
