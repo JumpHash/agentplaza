@@ -2,7 +2,7 @@
 // NAME=value lines of their variables, the names they and their secrets may take, the defaults a new one starts with,
 // and the line that says what is deployed there now. No DOM here; project-environments.ts draws them.
 
-import type { Deploy, DeployStatus, EnvKind, Environment, EnvTrack } from '../api-projects';
+import type { Deploy, DeployStatus, EnvKind, Environment, EnvTrack, EphemeralInstance, InstanceState } from '../api-projects';
 import { ago } from '../ui/components';
 
 const KIND_ORDER: EnvKind[] = ['production', 'staging', 'preview', 'development', 'other'];
@@ -58,6 +58,48 @@ const STATUS_TEXT: Record<DeployStatus, string> = {
 
 export function deployStatusText(status: DeployStatus): string {
   return STATUS_TEXT[status] ?? status;
+}
+
+/** Whether an environment is ephemeral: its `EPHEMERAL` variable is true. */
+export function isEphemeral(env: Environment): boolean {
+  return (env.variables?.EPHEMERAL ?? '').trim().toLowerCase() === 'true';
+}
+
+const INSTANCE_STATE_TEXT: Record<InstanceState, string> = {
+  creating: 'Creating',
+  ready: 'Ready',
+  failed: 'Failed',
+  torn_down: 'Torn down',
+};
+
+export function instanceStateText(state: InstanceState): string {
+  return INSTANCE_STATE_TEXT[state] ?? state;
+}
+
+/** The badge tone of an instance: ready is ok, creating is warn, failed is danger, torn down is muted. */
+export function instanceTone(state: InstanceState): 'ok' | 'warn' | 'danger' | 'muted' {
+  switch (state) {
+    case 'ready':
+      return 'ok';
+    case 'failed':
+      return 'danger';
+    case 'torn_down':
+      return 'muted';
+    default:
+      return 'warn';
+  }
+}
+
+/** What an instance is an instance of: "Lane ch-1" or "Release rel-7". */
+export function instanceSubject(instance: EphemeralInstance): string {
+  if (instance.subject.lane) return `Lane ${instance.subject.lane}`;
+  if (instance.subject.release) return `Release ${instance.subject.release}`;
+  return 'Unknown subject';
+}
+
+/** An instance can be torn down while it is not already torn down. */
+export function canTearDown(state: InstanceState): boolean {
+  return state !== 'torn_down';
 }
 
 /** The badge tone of a deploy: done is ok, still going or waiting is warn, failed or refused is danger. */

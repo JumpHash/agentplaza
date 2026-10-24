@@ -973,6 +973,33 @@ impl Client {
         })
     }
 
+    /// Creates or updates a stack from `template` in one change set, and waits until it is complete (an ephemeral
+    /// environment's stack, 23). Its outputs are read with [`Client::stack_output`].
+    pub fn stack_apply(&self, name: &str, template: &[u8]) -> Result<(), String> {
+        let change_set = self.stack_change_set(name, template)?;
+        self.stack_execute(name, &change_set)
+    }
+
+    /// The value of a stack's output `key`, once the stack is complete. None when the stack names no such output.
+    pub fn stack_output(&self, name: &str, key: &str) -> Result<Option<String>, String> {
+        let reply = self.cfn("DescribeStacks", &[("StackName", name)])?;
+        let body = ok(self, "cloudformation", reply, "reading the stack")?;
+        let doc = body.as_str().unwrap_or_default();
+        Ok(xml_output(doc, key))
+    }
+
+    /// Deletes a stack and waits until it is gone; a stack already gone is not an error.
+    pub fn stack_delete(&self, name: &str) -> Result<(), String> {
+        if self.stack_status(name)?.is_none() {
+            return Ok(());
+        }
+        let reply = self.cfn("DeleteStack", &[("StackName", name)])?;
+        ok(self, "cloudformation", reply, "deleting the stack")?;
+        self.poll("the stack's deletion", || {
+            Ok(self.stack_status(name)?.is_none().then_some(()))
+        })
+    }
+
     // ---- Waiting -------------------------------------------------------------------------------------------------------
 
     /// Asks `check` until it is done (`Some`), fails (`Err`), or the attempts run out. Waits between the attempts.
@@ -992,6 +1019,13 @@ impl Client {
         }
         Err(format!("{what} did not settle after {attempts} checks"))
     }
+}
+
+/// The value of the output `key` in a DescribeStacks answer: the `OutputValue` that follows its `OutputKey`.
+fn xml_output(doc: &str, key: &str) -> Option<String> {
+    let marker = format!("<OutputKey>{key}</OutputKey>");
+    let at = doc.find(&marker)? + marker.len();
+    xml_tag(&doc[at..], "OutputValue")
 }
 
 /// The answer of a 2xx call, or the service's own words for a refusal (never a credential).

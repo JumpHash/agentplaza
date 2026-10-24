@@ -217,6 +217,70 @@ impl Client {
     }
 }
 
+/// The ephemeral environments' calls (`ephemeral`): a Pages deployment on a branch of its own (a preview URL), a
+/// Worker script of its own, and their removal.
+impl Client {
+    /// Uploads `bytes` as a Pages deployment on `branch` (a preview, not the production branch). Its id and its preview
+    /// URL, when Pages names one.
+    pub fn pages_preview(
+        &self,
+        project: &str,
+        branch: &str,
+        bytes: &[u8],
+    ) -> Result<(String, Option<String>), String> {
+        let manifest = json!({ PAGES_FILE: sha256_hex(bytes) }).to_string();
+        let (ct, body) = multipart(&[
+            Part::text("manifest", &manifest),
+            Part::text("branch", branch),
+            Part::file(PAGES_FILE, "text/html", bytes),
+        ]);
+        let v = self.send(
+            "POST",
+            &format!("/pages/projects/{project}/deployments"),
+            Some(Body::Bytes(ct, body)),
+        )?;
+        let id = v["result"]["id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("pages:{project}: the upload answered no id"))?;
+        let url = v["result"]["url"].as_str().map(str::to_string);
+        Ok((id, url))
+    }
+
+    /// Removes a Pages deployment, forced: a preview with its files.
+    pub fn pages_remove(&self, project: &str, deployment: &str) -> Result<(), String> {
+        self.send(
+            "DELETE",
+            &format!("/pages/projects/{project}/deployments/{deployment}?force=true"),
+            None,
+        )
+        .map(|_| ())
+    }
+
+    /// Uploads a Worker script of its own under `name` (a preview's script, apart from the production one).
+    pub fn script_put(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
+        let metadata = json!({ "main_module": WORKER_MODULE }).to_string();
+        let (ct, body) = multipart(&[
+            Part::text("metadata", &metadata),
+            Part::file(WORKER_MODULE, "application/javascript+module", bytes),
+        ]);
+        self.send(
+            "PUT",
+            &format!("/workers/scripts/{name}"),
+            Some(Body::Bytes(ct, body)),
+        )
+        .map(|_| ())
+    }
+
+    /// Removes a Worker script; one already gone is not an error.
+    pub fn script_delete(&self, name: &str) -> Result<(), String> {
+        match self.send("DELETE", &format!("/workers/scripts/{name}"), None) {
+            Err(e) if e.contains("answered 404") => Ok(()),
+            other => other.map(|_| ()),
+        }
+    }
+}
+
 /// One part of a multipart body.
 pub struct Part<'a> {
     name: &'a str,

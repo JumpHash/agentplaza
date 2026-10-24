@@ -109,6 +109,7 @@ pub fn router() -> Router<App> {
     let router = crate::project_memory::routes(router);
     let router = crate::maintenance::routes(router);
     let router = crate::environments::routes(router);
+    let router = crate::ephemeral::routes(router);
     let router = crate::incidents::routes(router);
     let router = crate::project_files::routes(router);
     let router = crate::drafts::routes(router);

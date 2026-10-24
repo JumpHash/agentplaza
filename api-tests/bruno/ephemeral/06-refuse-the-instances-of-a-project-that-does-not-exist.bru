@@ -1,0 +1,16 @@
+meta {
+  name: Refuse the instances of a project that does not exist
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/ephemeral
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
