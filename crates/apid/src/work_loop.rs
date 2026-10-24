@@ -492,10 +492,10 @@ fn eval_policy(app: &App) -> choose::Policy {
     }
 }
 
-/// What a step may still spend, in micro-dollars: its share of its task's dollar cap (the project's, when the task has
-/// none), less what the step already spent on the task, and not more than the owner has left. None when the owner has no
-/// dollar cap: a token budget is not checked against the candidates' dollars.
-fn step_budget_left(app: &App, project: &str, seat: &Seat, share: f64) -> Option<u64> {
+/// What a step may still spend, in the unit of its owner's budget: its share of its task's cap (the project's, when the
+/// task has none), less what the step already spent on the task, and not more than the owner has left. None when the
+/// owner has no cap.
+fn step_budget_left(app: &App, project: &str, seat: &Seat, share: f64) -> Option<choose::Limit> {
     let owner = [
         app.budgets.get(OwnerKind::Task, &seat.task),
         app.budgets.get(OwnerKind::Project, project),
@@ -503,17 +503,13 @@ fn step_budget_left(app: &App, project: &str, seat: &Seat, share: f64) -> Option
     .into_iter()
     .flatten()
     .find(|b| b.cap.is_some())?;
-    if owner.unit != Unit::Usd {
-        return None;
-    }
     let share_of_cap = (owner.cap? as f64 * share) as u64;
     let spent = app.evals.step_spend(project, &seat.task, &seat.step);
-    Some(
-        owner
-            .left()
-            .unwrap_or(u64::MAX)
-            .min(share_of_cap.saturating_sub(spent)),
-    )
+    let left = owner.left().unwrap_or(u64::MAX);
+    Some(match owner.unit {
+        Unit::Usd => choose::Limit::Usd(left.min(share_of_cap.saturating_sub(spent.micros))),
+        Unit::Tokens => choose::Limit::Tokens(left.min(share_of_cap.saturating_sub(spent.tokens))),
+    })
 }
 
 /// The model for `seat`'s session, as its step's recipe says it: a named model as it is, a model list's first model the

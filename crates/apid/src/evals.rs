@@ -32,6 +32,7 @@ use apz_store::{RowSet, StoreError, Table, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::budgets::Amount;
 use crate::sessions::{Kind, Session};
 use crate::state::App;
 use crate::store::sql;
@@ -162,6 +163,9 @@ pub struct Score {
     /// Milliseconds from start to end over all the runs (the sum the time per success divides).
     #[serde(default)]
     pub wall_ms: u64,
+    /// Tokens (in and out) over all the runs (the sum the tokens per success divides).
+    #[serde(default)]
+    pub tokens: u64,
 }
 
 /// One finding a review ruled on (a row of `eval_finding`): who raised it, who ruled on it, and how it was ruled.
@@ -477,6 +481,7 @@ impl Evals {
                     let clean: u64 = r.get(8)?;
                     let cost_micros: u64 = r.get(6)?;
                     let wall_ms: u64 = r.get(7)?;
+                    let tokens: u64 = r.get(9)?;
                     Ok(Score {
                         step: r.get(0)?,
                         seat: r.get(1)?,
@@ -490,6 +495,7 @@ impl Evals {
                         quality: clean as f64 / runs.max(1) as f64,
                         cost_micros,
                         wall_ms,
+                        tokens,
                     })
                 })?
                 .collect::<Result<Vec<Score>, _>>()?;
@@ -518,8 +524,8 @@ impl Evals {
         scores
     }
 
-    /// What the runs of `step` on `task` cost so far, in micro-dollars (the step's spend against its budget share).
-    pub fn step_spend(&self, project: &str, task: &str, step: &str) -> u64 {
+    /// What the runs of `step` on `task` spent so far, in micro-dollars and tokens (the step's spend against its share).
+    pub fn step_spend(&self, project: &str, task: &str, step: &str) -> Amount {
         let filter = RunFilter {
             project: Some(project.to_string()),
             ..RunFilter::default()
@@ -527,8 +533,12 @@ impl Evals {
         self.runs_all(&filter)
             .iter()
             .filter(|r| r.task.as_deref() == Some(task) && r.step == step)
-            .map(|r| r.cost_micros)
-            .sum()
+            .fold(Amount::default(), |spent, r| {
+                Amount::of(
+                    spent.micros + r.cost_micros,
+                    spent.tokens + r.tokens_in + r.tokens_out,
+                )
+            })
     }
 
     /// The cost report: the runs `filter` selects, grouped by `by`.
@@ -1485,7 +1495,7 @@ mod tests {
         assert_eq!(second.key, "mock/b");
         assert_eq!(second.rule, choose::EXPLOITED);
         // What the step spent on its task is the sum of its runs' cost.
-        assert_eq!(evals.step_spend("pr1", "t2", "build"), 3000);
+        assert_eq!(evals.step_spend("pr1", "t2", "build").micros, 3000);
     }
 
     #[test]

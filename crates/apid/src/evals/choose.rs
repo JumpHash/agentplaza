@@ -31,6 +31,8 @@ pub struct Tally {
     pub cost_micros: u64,
     /// Milliseconds from start to end over all the runs.
     pub wall_ms: u64,
+    /// Tokens (in and out) over all the runs.
+    pub tokens: u64,
 }
 
 impl Tally {
@@ -48,16 +50,25 @@ impl Tally {
         (self.successes > 0).then(|| self.wall_ms as f64 / self.successes as f64)
     }
 
+    /// Tokens per success; None without a success.
+    fn tokens_per_success(&self) -> Option<f64> {
+        (self.successes > 0).then(|| self.tokens as f64 / self.successes as f64)
+    }
+
     /// Micro-dollars per run: the expected cost of the candidate's next run; None without a run.
     fn cost_per_run(&self) -> Option<f64> {
         (self.runs > 0).then(|| self.cost_micros as f64 / self.runs as f64)
     }
 
-    /// Whether the candidate's expected cost fits in `budget_left` (micro-dollars). Uncapped, or unscored: it fits.
-    fn fits(&self, budget_left: Option<u64>) -> bool {
-        match (budget_left, self.cost_per_run()) {
-            (Some(left), Some(cost)) => cost <= left as f64,
-            _ => true,
+    /// Whether the candidate's expected spend fits in `limit`: micro-dollars per run against a dollar limit, tokens per
+    /// success against a token limit. Uncapped, or nothing to expect yet: it fits.
+    fn fits(&self, limit: Option<Limit>) -> bool {
+        match limit {
+            None => true,
+            Some(Limit::Usd(left)) => self.cost_per_run().is_none_or(|cost| cost <= left as f64),
+            Some(Limit::Tokens(left)) => self
+                .tokens_per_success()
+                .is_none_or(|tokens| tokens <= left as f64),
         }
     }
 
@@ -78,6 +89,13 @@ impl Tally {
             self.runs
         )
     }
+}
+
+/// What the step may still spend: micro-dollars, or tokens, matching the unit of its budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Limit {
+    Usd(u64),
+    Tokens(u64),
 }
 
 /// The policy a choice follows: the runs a candidate needs before its score is trusted, and the share of runs (in
@@ -111,6 +129,7 @@ pub fn tally(scores: &[Score], candidates: &[String], key: impl Fn(&Score) -> &s
                 tally.successes += score.successes;
                 tally.cost_micros += score.cost_micros;
                 tally.wall_ms += score.wall_ms;
+                tally.tokens += score.tokens;
             }
             tally
         })
@@ -118,19 +137,14 @@ pub fn tally(scores: &[Score], candidates: &[String], key: impl Fn(&Score) -> &s
 }
 
 /// The choice among `tallies` for run `run`: None when no candidate fits the budget.
-pub fn choose(
-    tallies: &[Tally],
-    budget_left: Option<u64>,
-    policy: Policy,
-    run: u64,
-) -> Option<Pick> {
-    let affordable: Vec<&Tally> = tallies.iter().filter(|t| t.fits(budget_left)).collect();
+pub fn choose(tallies: &[Tally], budget: Option<Limit>, policy: Policy, run: u64) -> Option<Pick> {
+    let affordable: Vec<&Tally> = tallies.iter().filter(|t| t.fits(budget)).collect();
     if affordable.is_empty() {
         return None;
     }
     let skipped: Vec<&str> = tallies
         .iter()
-        .filter(|t| !t.fits(budget_left))
+        .filter(|t| !t.fits(budget))
         .map(|t| t.key.as_str())
         .collect();
     let note = if skipped.is_empty() {
@@ -194,7 +208,7 @@ pub fn engine(
     scores: &[Score],
     step: &str,
     engines: &[String],
-    budget_left: Option<u64>,
+    budget: Option<Limit>,
     policy: Policy,
     run: u64,
 ) -> Option<Pick> {
@@ -208,7 +222,7 @@ pub fn engine(
     let of_step: Vec<Score> = scores.iter().filter(|s| s.step == step).cloned().collect();
     choose(
         &tally(&of_step, engines, |s| s.engine.as_str()),
-        budget_left,
+        budget,
         policy,
         run,
     )
@@ -221,7 +235,7 @@ pub fn model(
     step: &str,
     engine: &str,
     models: &[String],
-    budget_left: Option<u64>,
+    budget: Option<Limit>,
     policy: Policy,
     run: u64,
 ) -> Option<Pick> {
@@ -232,7 +246,7 @@ pub fn model(
         .collect();
     choose(
         &tally(&of_step, models, |s| s.model.as_deref().unwrap_or("")),
-        budget_left,
+        budget,
         policy,
         run,
     )
@@ -313,6 +327,7 @@ mod tests {
             quality: 0.0,
             cost_micros: cost,
             wall_ms: 1000 * runs,
+            tokens: 100 * runs,
         }
     }
 
@@ -442,7 +457,16 @@ mod tests {
             // 100 micro-dollars per run.
             score("build", "harness", "b/cheap", 10, 8, 1000),
         ];
-        let pick = model(&scores, "build", "harness", &models, Some(300), POLICY, 1).unwrap();
+        let pick = model(
+            &scores,
+            "build",
+            "harness",
+            &models,
+            Some(Limit::Usd(300)),
+            POLICY,
+            1,
+        )
+        .unwrap();
         assert_eq!(
             pick.key, "b/cheap",
             "a/dear costs more than the step has left"
@@ -454,21 +478,92 @@ mod tests {
             pick.reason
         );
         // A budget that fits the dear one again takes it: it is the better score.
-        let pick = model(&scores, "build", "harness", &models, Some(600), POLICY, 1).unwrap();
+        let pick = model(
+            &scores,
+            "build",
+            "harness",
+            &models,
+            Some(Limit::Usd(600)),
+            POLICY,
+            1,
+        )
+        .unwrap();
         assert_eq!(pick.key, "a/dear");
         // Nothing fits: no choice.
-        assert!(model(&scores, "build", "harness", &models, Some(50), POLICY, 1).is_none());
+        assert!(
+            model(
+                &scores,
+                "build",
+                "harness",
+                &models,
+                Some(Limit::Usd(50)),
+                POLICY,
+                1
+            )
+            .is_none()
+        );
         // A candidate with no runs has no expected cost, so it is not skipped by one.
         let fresh = model(
             &scores[..1],
             "build",
             "harness",
             &names(&["a/dear", "n/new"]),
-            Some(300),
+            Some(Limit::Usd(300)),
             NO_EXPLORE,
             1,
         );
         assert!(fresh.is_some_and(|p| p.key == "n/new"));
+    }
+
+    #[test]
+    fn a_candidate_whose_tokens_per_success_exceed_the_token_budget_is_skipped() {
+        let models = names(&["a/lean", "b/heavy"]);
+        // Tokens per success: 1000 over 10 successes for a/lean (100), 1000 over 8 for b/heavy (125).
+        let scores = [
+            score("build", "harness", "a/lean", 10, 10, 5000),
+            score("build", "harness", "b/heavy", 10, 8, 1000),
+        ];
+        let pick = model(
+            &scores,
+            "build",
+            "harness",
+            &models,
+            Some(Limit::Tokens(110)),
+            POLICY,
+            1,
+        )
+        .unwrap();
+        assert_eq!(pick.key, "a/lean");
+        assert!(
+            pick.reason
+                .contains("skipped over the step's budget: b/heavy"),
+            "{}",
+            pick.reason
+        );
+        assert!(
+            model(
+                &scores,
+                "build",
+                "harness",
+                &models,
+                Some(Limit::Tokens(90)),
+                POLICY,
+                1
+            )
+            .is_none()
+        );
+        // A dollar limit ignores tokens: both fit, and the better score wins.
+        let usd = model(
+            &scores,
+            "build",
+            "harness",
+            &models,
+            Some(Limit::Usd(10_000)),
+            POLICY,
+            1,
+        )
+        .unwrap();
+        assert_eq!(usd.key, "a/lean");
     }
 
     #[test]
