@@ -237,7 +237,7 @@ fn a_scheduled_run_makes_a_task_per_batch_with_the_commands_that_apply_it() {
         .iter()
         .find(|b| b.kind == "major")
         .expect("a major batch");
-    assert_eq!(major.state, "task");
+    assert_eq!(major.state, "task", "{major:?}");
     assert!(major.hold, "a major always waits for the owner");
     assert_eq!(major.tests, "full");
     let (goal, acceptance) = &tasks[1];

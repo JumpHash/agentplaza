@@ -640,6 +640,12 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         text(&task["goal"]) == "ENG-12: intake from linear",
         "{task}"
     );
+    eventually_written(
+        &hub,
+        "linear",
+        ENG_ISSUE,
+        &["started:status", "started:comment"],
+    );
     let moved = linear_ops(&linear, "PlazaState");
     assert!(
         moved.iter().any(|op| op["variables"]["state"] == "st-prog"),
@@ -664,6 +670,12 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         "The export fails on empty reports: fixed.",
     );
     eventually_item(&hub, "linear", ENG_ISSUE, "done");
+    eventually_written(
+        &hub,
+        "linear",
+        ENG_ISSUE,
+        &["landed:status", "landed:comment"],
+    );
     let eng = item_of(&hub, "linear", ENG_ISSUE);
     assert_eq!(eng["change"], change.as_str(), "{eng}");
     let closed = linear_ops(&linear, "PlazaState");
@@ -800,6 +812,12 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         "Dark theme added.",
     );
     eventually_item(&hub, "github", "acme/widgets#7", "done");
+    eventually_written(
+        &hub,
+        "github",
+        "acme/widgets#7",
+        &["landed:close", "landed:comment"],
+    );
     let closes = calls(&github, "PATCH", "/api/v3/repos/acme/widgets/issues/7");
     assert!(
         closes.iter().any(|b| b.contains("closed")),
@@ -843,6 +861,30 @@ fn outside_items_become_tasks_and_are_written_back_when_their_work_lands() {
         "{listing}"
     );
     assert!(!listing.to_string().contains(GITHUB_SECRET), "{listing}");
+}
+
+/// Waits until the item of `source` and `external` has each of `kinds` recorded among its write-backs (made or failed:
+/// the assertions after it say which). An item's status moves before its write-backs are made, so a check of what the
+/// source received waits for those writes as well.
+fn eventually_written(hub: &Hub, source: &str, external: &str, kinds: &[&str]) {
+    let deadline = Instant::now() + WAIT.mul_f64(common::slack());
+    loop {
+        let recorded = item_of_or_none(hub, source, external).is_some_and(|item| {
+            let writes = item["writes"].as_array().cloned().unwrap_or_default();
+            kinds
+                .iter()
+                .all(|kind| writes.iter().any(|w| w["kind"] == *kind))
+        });
+        if recorded {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the write-backs {kinds:?} of {external} were never recorded\n{}",
+            hub.log()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Polls the item of `source` and `external` until it has `status`, or the wait is over.

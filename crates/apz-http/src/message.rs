@@ -204,8 +204,8 @@ fn is_token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
-/// Whether a `Host` header names this machine: `localhost`, `127.0.0.1`, `::1` or `*.localhost` with a
-/// non-empty label (case-insensitive), with an optional `:port`. An IPv6 address is bracketed when a port
+/// Whether a `Host` header names this machine: `localhost`, a loopback address (`127.0.0.0/8`, `::1`) or `*.localhost`
+/// with a non-empty label (case-insensitive), with an optional `:port`. An IPv6 address is bracketed when a port
 /// follows it (`[::1]:7700`). This is the one definition of the local part; the hub's owner trust uses it.
 pub fn host_is_loopback(host: &str) -> bool {
     let name = if let Some(rest) = host.strip_prefix('[') {
@@ -221,7 +221,12 @@ pub fn host_is_loopback(host: &str) -> bool {
         host.split(':').next().unwrap_or_default()
     };
     let name = name.to_ascii_lowercase();
-    matches!(name.as_str(), "localhost" | "127.0.0.1" | "::1")
+    // A loopback address literal: all of 127/8 is loopback (Linux routes it; a node's mesh listens on 127.0.0.2 there), not
+    // only 127.0.0.1. An address literal is no domain a page can rebind, so it is trusted as 127.0.0.1 is.
+    if name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
+        return true;
+    }
+    matches!(name.as_str(), "localhost")
         || name
             .strip_suffix(".localhost")
             .is_some_and(|label| !label.is_empty())
@@ -598,6 +603,8 @@ mod tests {
         for host in [
             "127.0.0.1",
             "127.0.0.1:8899",
+            "127.0.0.2:43763",
+            "127.1.2.3",
             "localhost",
             "LOCALHOST:19080",
             "::1",
@@ -612,6 +619,7 @@ mod tests {
             "evil.example",
             "127.0.0.1.evil.example",
             "10.0.0.1:8899",
+            "128.0.0.1",
             "",
             ".localhost",
             "localhost.evil.example",

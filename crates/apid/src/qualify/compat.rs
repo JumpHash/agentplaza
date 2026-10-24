@@ -287,7 +287,7 @@ mod tests {
         "tool() {\n  if [ \"${1,,}\" = \"--version\" ]; then echo \"tool 1.2.0\"; fi\n}\n";
     const CLI: &str =
         "[cli]\ncommand = [\"tool\", \"--version\"]\nload = \"tool.sh\"\nexpect = \"tool 1.2.0\"\n";
-    const LOCAL: &str = "this-mac";
+    const LOCAL: &str = "this-machine";
 
     /// A candidate of a Weft whose main carries `files` (the release's commit holds them).
     fn candidate_with(name: &str, files: &[(&str, &str)]) -> (World, Release, apz_http::Handle) {
@@ -318,6 +318,7 @@ mod tests {
         assert_eq!(part.state, State::Passed, "{part:?}");
         // The shells on this machine ran for real: at least bash, sh and zsh are among the evidence.
         let ran: Vec<&str> = part.evidence.iter().map(|e| e.label.as_str()).collect();
+        let system = compat::local_system();
         for shell in ["bash", "sh", "zsh"] {
             if compat::local_pool(LOCAL)
                 .capabilities
@@ -325,7 +326,7 @@ mod tests {
             {
                 assert!(
                     ran.iter()
-                        .any(|l| l.starts_with(&format!("cli:{shell}:macos"))),
+                        .any(|l| l.starts_with(&format!("cli:{shell}:{system}"))),
                     "{shell} ran: {ran:?}"
                 );
             }
@@ -338,22 +339,32 @@ mod tests {
         let (world, release, _handle) =
             candidate_with("compat-fail", &[(FILE, CLI), ("tool.sh", BASHISM)]);
         let part = adapter(&world, &release);
+        // `sh` is on every Unix this runs on, and it is bash on a Mac but dash on Linux: each of sh and dash that is here
+        // refuses the bashism and names its own cell.
+        let system = compat::local_system();
         let local = compat::local_pool(LOCAL);
-        if !local.capabilities.contains("shell:sh") {
-            return;
-        }
+        let refusing: Vec<&str> = ["sh", "dash"]
+            .into_iter()
+            .filter(|shell| local.capabilities.contains(&format!("shell:{shell}")))
+            .collect();
+        assert!(
+            refusing.contains(&"sh"),
+            "sh is here: {:?}",
+            local.capabilities
+        );
         assert_eq!(part.state, State::Failed, "{part:?}");
-        assert!(
-            part.findings.iter().any(|f| f.id == "compat:cli:sh:macos"),
-            "{part:?}"
-        );
-        assert!(
-            part.findings
+        for shell in refusing {
+            let id = format!("compat:cli:{shell}:{system}");
+            let finding = part
+                .findings
                 .iter()
-                .find(|f| f.id == "compat:cli:sh:macos")
-                .is_some_and(|f| f.text.to_lowercase().contains("bad substitution")),
-            "the shell's own complaint is the evidence: {part:?}"
-        );
+                .find(|f| f.id == id)
+                .unwrap_or_else(|| panic!("{id} is named: {part:?}"));
+            assert!(
+                finding.text.to_lowercase().contains("bad substitution"),
+                "the shell's own complaint is the evidence: {part:?}"
+            );
+        }
     }
 
     #[test]

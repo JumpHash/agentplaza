@@ -1,10 +1,14 @@
 //! The CLI matrix run for real on this machine (PLAN 22.9, 10.10): the shells on the PATH run the declared command, and
 //! the seeded shell incompatibilities fail where the shell cannot run them. Shells and tools that are not here are not
-//! run, with the reason; nothing is installed.
+//! run, with the reason; nothing is installed. What is expected follows the machine: its system (macOS, Linux), which
+//! shells it has, and what `sh` is on it (bash on a Mac, dash on Debian and Ubuntu).
 
 use std::path::Path;
 
-use apz_topology::compat::{self, Cell, Kind, Matrix, Outcome, Placement};
+use apz_topology::compat::{self, Cell, Kind, Matrix, Outcome, Placement, SYSTEMS};
+
+/// The pool this machine is, under the name the tests give it.
+const LOCAL: &str = "this-machine";
 
 /// A POSIX CLI: one function, `tool --version` prints the version. Runs in bash, zsh, sh and dash.
 const GOOD: &str = "tool() {\n  case \"$1\" in\n    --version) echo \"tool 1.2.0\" ;;\n    *) echo \"usage: tool --version\" >&2; return 2 ;;\n  esac\n}\n";
@@ -22,9 +26,34 @@ fn matrix() -> Matrix {
     .unwrap()
 }
 
+/// This machine's system, as the matrix names it (`macos`, `linux`, `windows`).
+fn system() -> &'static str {
+    compat::local_system()
+}
+
+/// A system other than this machine's: its cells have no pool here.
+fn other_system() -> &'static str {
+    SYSTEMS
+        .iter()
+        .copied()
+        .find(|name| *name != system())
+        .expect("the matrix names more than one system")
+}
+
+/// The reason a shell cell of `system` is not placed on this machine, as the placement names it: the capabilities no
+/// pool has.
+fn unplaced_reason(shell: &str, system: &str) -> String {
+    let mut unheld = Vec::new();
+    if !on_this_machine(shell) {
+        unheld.push(format!("shell:{shell}"));
+    }
+    unheld.push(format!("os:{system}"));
+    format!("no pool has {}", unheld.join(", "))
+}
+
 fn run_all(dir: &Path, script: &str) -> Vec<(Cell, Placement, Option<Outcome>)> {
     std::fs::write(dir.join("tool.sh"), script).unwrap();
-    let pools = [compat::local_pool("this-mac")];
+    let pools = [compat::local_pool(LOCAL)];
     compat::expand(&matrix())
         .into_iter()
         .map(|cell| {
@@ -45,20 +74,20 @@ fn find<'a>(
         .expect("the cell is in the matrix")
 }
 
-fn on_this_mac(shell: &str) -> bool {
+fn on_this_machine(shell: &str) -> bool {
     compat::local_pool("probe")
         .capabilities
         .contains(&format!("shell:{shell}"))
 }
 
 #[test]
-fn a_posix_cli_passes_in_every_shell_on_this_mac_and_the_rest_is_not_run() {
+fn a_posix_cli_passes_in_every_shell_on_this_machine_and_the_rest_is_not_run() {
     let dir = tempfile::tempdir().unwrap();
     let rows = run_all(dir.path(), GOOD);
     for shell in ["bash", "zsh", "sh", "dash"] {
-        let (_, placement, outcome) = find(&rows, &format!("cli:{shell}:macos"));
-        if on_this_mac(shell) {
-            assert_eq!(placement, &Placement::On("this-mac".into()));
+        let (_, placement, outcome) = find(&rows, &format!("cli:{shell}:{}", system()));
+        if on_this_machine(shell) {
+            assert_eq!(placement, &Placement::On(LOCAL.into()));
             let outcome = outcome.as_ref().unwrap();
             assert!(
                 outcome.ran && outcome.passed,
@@ -69,45 +98,47 @@ fn a_posix_cli_passes_in_every_shell_on_this_mac_and_the_rest_is_not_run() {
             println!("{shell} is not on this Mac: its cell is not run");
         }
     }
-    if !on_this_mac("fish") {
-        let (_, placement, outcome) = find(&rows, "cli:fish:macos");
+    if !on_this_machine("fish") {
+        let (_, placement, outcome) = find(&rows, &format!("cli:fish:{}", system()));
         assert_eq!(
             placement,
             &Placement::NotRun("no pool has shell:fish".into())
         );
         assert!(outcome.is_none(), "a cell no pool can run is never run");
     }
-    if !on_this_mac("pwsh") {
-        let (_, placement, _) = find(&rows, "cli:pwsh:macos");
+    if !on_this_machine("pwsh") {
+        let (_, placement, _) = find(&rows, &format!("cli:pwsh:{}", system()));
         assert_eq!(
             placement,
             &Placement::NotRun("no pool has shell:pwsh".into())
         );
     }
-    // This Mac is not a Linux or Windows pool: those cells say so.
-    let (_, placement, _) = find(&rows, "cli:bash:linux");
-    assert_eq!(placement, &Placement::NotRun("no pool has os:linux".into()));
-    let (_, placement, _) = find(&rows, "cli:sh:windows");
-    assert_eq!(
-        placement,
-        &Placement::NotRun("no pool has os:windows".into())
-    );
+    // This machine is not a pool of any other system: those cells say so.
+    for shell in ["bash", "sh"] {
+        let (_, placement, outcome) = find(&rows, &format!("cli:{shell}:{}", other_system()));
+        assert_eq!(
+            placement,
+            &Placement::NotRun(unplaced_reason(shell, other_system())),
+            "{shell}"
+        );
+        assert!(outcome.is_none(), "a cell no pool can run is never run");
+    }
 }
 
 #[test]
 fn a_bashism_fails_in_sh_and_dash_and_passes_in_bash() {
     let dir = tempfile::tempdir().unwrap();
     let rows = run_all(dir.path(), BASHISM);
-    if on_this_mac("bash") {
-        let (_, _, bash) = find(&rows, "cli:bash:macos");
+    if on_this_machine("bash") {
+        let (_, _, bash) = find(&rows, &format!("cli:bash:{}", system()));
         let bash = bash.as_ref().unwrap();
-        assert!(bash.passed, "bash runs [[: {}", bash.evidence);
+        assert!(bash.passed, "bash runs the bashism: {}", bash.evidence);
     }
     for shell in ["sh", "dash"] {
-        if !on_this_mac(shell) {
+        if !on_this_machine(shell) {
             continue;
         }
-        let (_, _, outcome) = find(&rows, &format!("cli:{shell}:macos"));
+        let (_, _, outcome) = find(&rows, &format!("cli:{shell}:{}", system()));
         let outcome = outcome.as_ref().unwrap();
         assert!(
             outcome.ran && !outcome.passed,
@@ -132,7 +163,7 @@ fn a_missing_load_file_fails_the_cell_with_the_shells_error() {
     let dir = tempfile::tempdir().unwrap();
     let rows = run_all(dir.path(), GOOD);
     std::fs::remove_file(dir.path().join("tool.sh")).unwrap();
-    let (cell, _, _) = find(&rows, "cli:bash:macos");
+    let (cell, _, _) = find(&rows, &format!("cli:bash:{}", system()));
     let outcome = compat::run_shell(cell, dir.path());
     assert!(outcome.ran && !outcome.passed, "{}", outcome.evidence);
 }
@@ -140,7 +171,7 @@ fn a_missing_load_file_fails_the_cell_with_the_shells_error() {
 #[test]
 fn the_library_check_is_not_run_here_without_cargo_semver_checks() {
     let cells = compat::expand(&compat::parse("[library]\n").unwrap());
-    let pools = [compat::local_pool("this-mac")];
+    let pools = [compat::local_pool(LOCAL)];
     let check = &cells[0];
     if compat::local_pool("probe")
         .capabilities

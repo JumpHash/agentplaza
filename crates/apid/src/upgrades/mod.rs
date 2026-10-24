@@ -99,6 +99,10 @@ impl Exec for Local {
         let out = std::process::Command::new(program)
             .args(args)
             .current_dir(dir)
+            // A project builds in its own `target/`, as it does on any machine: a CARGO_TARGET_DIR the hub's environment
+            // names (one build directory shared by everything the hub builds) would mix this project's build with every
+            // other project's, so it is not passed on.
+            .env_remove("CARGO_TARGET_DIR")
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .output()
             .map_err(|e| format!("{program}: {e}"))?;
