@@ -386,6 +386,25 @@ CREATE TABLE "deploy" (
     FOREIGN KEY ("project_environment_project", "environments_pos") REFERENCES "environment" ("project_environment_project", "environments_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component ephemeral
+CREATE TABLE "ephemeral_instance" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "environment" TEXT NOT NULL,
+    "subject" TEXT NOT NULL,
+    "target" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "url" TEXT,
+    "created_ms" INTEGER NOT NULL CHECK ("created_ms" >= 0),
+    "expires_ms" INTEGER NOT NULL CHECK ("expires_ms" >= 0),
+    "run" TEXT,
+    "keep" INTEGER NOT NULL CHECK ("keep" IN (0, 1)),
+    "built" TEXT NOT NULL,
+    PRIMARY KEY ("id")
+) STRICT;
+
 -- component incidents
 CREATE TABLE "incident" (
     "id" TEXT NOT NULL,
