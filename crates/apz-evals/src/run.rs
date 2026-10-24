@@ -63,6 +63,9 @@ fn one(
     let stack = Stack::start(options, bins, scratch, &script, roles)?;
     let port = stack.apid_port;
     let timeout = Duration::from_secs(options.timeout_s);
+    if mock {
+        use_mock_models(port)?;
+    }
 
     let project = created(
         port,
@@ -114,6 +117,30 @@ fn one(
     let tools = tool_latency(port);
     drop(stack);
     Ok(summarise(task, outcome, state, check_exit, &runs, tools))
+}
+
+/// Makes the scripted models the only ones the hub picks for a seat that names none. The recipe's sceptics are on
+/// models other than the builder's, so the second one falls through the hub's worker list to a provider the suite has
+/// no key for; the hub's default model and its worker policy are its settings, so they are set here, on this stack.
+fn use_mock_models(port: u16) -> Result<(), String> {
+    let (status, mut settings) = call(port, "GET", "/v1/settings", None)?;
+    if status != 200 {
+        return Err(format!("GET /v1/settings: {status} {settings}"));
+    }
+    let object = settings
+        .as_object_mut()
+        .ok_or("GET /v1/settings: not an object")?;
+    object.remove("dev_models");
+    object.insert("default_model".into(), json!("mock/script-review"));
+    let policy = object
+        .get_mut("model_policy")
+        .and_then(Value::as_object_mut)
+        .ok_or("GET /v1/settings: no model_policy")?;
+    policy.insert(
+        "worker".into(),
+        json!(["mock/script", "mock/script-review"]),
+    );
+    expect_ok(port, "PUT", "/v1/settings", settings)
 }
 
 /// The task's report from its runs (the eval records of its project's step sessions) and its tools' latencies.
