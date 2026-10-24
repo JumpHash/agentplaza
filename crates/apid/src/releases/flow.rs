@@ -372,6 +372,7 @@ pub fn draft(d: &Deps, project: &str, repo: &str, cut: &Cut) -> Result<Release, 
         promotions: Vec::new(),
         sync: Vec::new(),
         store_steps: Vec::new(),
+        compatibility: Vec::new(),
         created_ms: stamp,
         updated_ms: stamp,
     };

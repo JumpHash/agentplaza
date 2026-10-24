@@ -51,6 +51,7 @@ fn release(state: ReleaseState, channel: &str, notes: &str) -> Release {
         promotions: vec![],
         sync: vec![],
         store_steps: vec![],
+        compatibility: vec![],
         created_ms: 0,
         updated_ms: 0,
     }

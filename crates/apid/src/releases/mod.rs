@@ -18,6 +18,7 @@
 pub mod attest;
 pub mod builder;
 pub mod channels;
+pub mod compat;
 pub mod entity;
 pub mod flow;
 pub mod lanes;

@@ -642,6 +642,7 @@ fn release_by_hand(
         promotions: vec![],
         sync: vec![],
         store_steps: vec![],
+        compatibility: vec![],
         created_ms: 1,
         updated_ms: 1,
     };

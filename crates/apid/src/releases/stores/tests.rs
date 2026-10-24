@@ -100,6 +100,7 @@ fn published(version: &str, number: Option<u32>, targets: &[&str]) -> Release {
         promotions: vec![],
         sync: vec![],
         store_steps: vec![],
+        compatibility: vec![],
         created_ms: 1,
         updated_ms: 1,
     }

@@ -84,6 +84,11 @@ pub struct Release {
     #[serde(default)]
     #[table(child = "release_store_step")]
     pub store_steps: Vec<ReleaseStoreStep>,
+    /// The compatibility and install-and-upgrade matrices, cell by cell: passed, failed or not run, with the pool and the
+    /// reason (22.9; `compat.rs`).
+    #[serde(default)]
+    #[table(child = "release_compat")]
+    pub compatibility: Vec<super::compat::CompatCell>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }

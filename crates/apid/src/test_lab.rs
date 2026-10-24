@@ -228,6 +228,12 @@ pub fn capabilities_of(machine: &Machine) -> BTreeSet<String> {
     if machine.traffic_shaping == Some(true) {
         caps.insert("traffic-shaping".to_string());
     }
+    for shell in &machine.shells {
+        caps.insert(format!("shell:{shell}"));
+    }
+    for tool in &machine.tools {
+        caps.insert(format!("tool:{tool}"));
+    }
     caps
 }
 
@@ -784,6 +790,8 @@ mod tests {
             browsers: vec!["chromium".into()],
             phones: vec!["R58N1".into()],
             traffic_shaping: Some(true),
+            shells: vec!["bash".into()],
+            tools: vec!["codesign".into()],
             ..Machine::default()
         };
         assert_eq!(
@@ -793,7 +801,9 @@ mod tests {
                 "os:linux",
                 "browser:chromium",
                 "phone",
-                "traffic-shaping"
+                "traffic-shaping",
+                "shell:bash",
+                "tool:codesign"
             ])
         );
         assert_eq!(share_of(8192, 25), 2048);

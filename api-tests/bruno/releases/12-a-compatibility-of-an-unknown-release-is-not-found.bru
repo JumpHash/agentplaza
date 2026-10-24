@@ -1,0 +1,21 @@
+meta {
+  name: A compatibility matrix of an unknown release is not found
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/compatibility
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "matrix": "[library]\n"
+  }
+}
+
+assert {
+  res.status: eq 404
+}
