@@ -18,8 +18,18 @@ use crate::gitwire::{self, Remote, Update};
 use crate::hash::Hash;
 use crate::keys::KeyPair;
 use crate::model::*;
+use crate::record::LogRecord;
 use crate::state::{ChangeState, State};
 use crate::store::{Store, apply_deltas};
+
+/// The git ref that carries the hub's review records beside the exported branch. A note is keyed by the commit a
+/// change was exported as (its last), and holds a JSON array of that change's reviews: each one the hub's signed
+/// `review.outcome`, the certificates that prove its key and the owner's key. Import and adoption read it back
+/// (`import::carry_notes`), so the review travels with the history it reviewed.
+///
+/// This takes PLAN 8.4's proposal (review records as Weft statements, the hub's tables as the working copy). PLAN
+/// 28.1 point 5 is still open: the hub's tables do not need these statements to work, so the choice can be reverted.
+pub const REVIEW_NOTES: &str = "refs/notes/weft-reviews";
 
 #[derive(Debug, Serialize)]
 pub struct ExportedChange {
@@ -222,9 +232,9 @@ impl Exporter {
         let remote =
             Remote::for_platform(&conn.conn.remote, &conn.conn.platform, keys.token.clone());
         let branch_ref = format!("refs/heads/{}", conn.conn.branch);
-        let remote_head = gitwire::list_refs(&remote, "git-receive-pack")?
-            .get(&branch_ref)
-            .copied();
+        let remote_refs = gitwire::list_refs(&remote, "git-receive-pack")?;
+        let remote_head = remote_refs.get(&branch_ref).copied();
+        let remote_notes = remote_refs.get(REVIEW_NOTES).copied();
         let mut report = ExportReport {
             repo: repo.into(),
             connection: connection.into(),
@@ -412,7 +422,34 @@ impl Exporter {
             report.state = "dry-run".into();
             return Ok(report);
         }
+        // The review records of the exported changes, as notes on the branch's new commits.
+        let notes = if per_change.is_empty() {
+            None
+        } else {
+            let who = Person {
+                name: conn.conn.author_name.clone(),
+                email: conn.conn.author_email.clone(),
+                time: (crate::record::now_ms() / 1000) as i64,
+                tz: "+0000".into(),
+            };
+            let fresh: Vec<(String, String)> = per_change
+                .iter()
+                .filter_map(|(name, commits)| Some((name.clone(), commits.last()?.git.clone())))
+                .collect();
+            self.review_notes(
+                store,
+                repo,
+                connection,
+                &fresh,
+                remote_notes,
+                &who,
+                keys.signing,
+            )?
+        };
         // The hub's own copy of what it exported.
+        if let Some((_, note_objects)) = &notes {
+            objects.extend(note_objects.iter().cloned());
+        }
         let mirror = git::Repo::init_bare(&store.dir.join("export").join(format!("{repo}.git")))?;
         for (_, k, d) in &objects {
             mirror.write(*k, d)?;
@@ -432,16 +469,20 @@ impl Exporter {
             return Ok(report);
         }
         let new = parent.unwrap();
+        let mut updates = vec![Update {
+            name: branch_ref.clone(),
+            old: remote_head,
+            new,
+        }];
+        if let Some((notes_head, _)) = &notes {
+            updates.push(Update {
+                name: REVIEW_NOTES.into(),
+                old: remote_notes,
+                new: *notes_head,
+            });
+        }
         let send: Vec<(Kind, Vec<u8>)> = objects.into_iter().map(|(_, k, d)| (k, d)).collect();
-        if let Err(e) = gitwire::push(
-            &remote,
-            &[Update {
-                name: branch_ref.clone(),
-                old: remote_head,
-                new,
-            }],
-            &send,
-        ) {
+        if let Err(e) = gitwire::push(&remote, &updates, &send) {
             store.hub_append(
                 "connection.state",
                 json!({ "repo": repo, "id": connection, "state": "error", "detail": e }),
@@ -449,12 +490,106 @@ impl Exporter {
             return Err(e);
         }
         let _ = mirror.update_ref(&branch_ref, mirror.refs()?.get(&branch_ref).copied(), new);
+        if let Some((notes_head, _)) = &notes {
+            let _ = mirror.update_ref(
+                REVIEW_NOTES,
+                mirror.refs()?.get(REVIEW_NOTES).copied(),
+                *notes_head,
+            );
+        }
         for (change, commits) in per_change {
             let head = commits.last().map(|c| c.git.clone()).unwrap_or_default();
             store.hub_append("export", json!({ "repo": repo, "connection": connection, "change": change, "commits": commits, "head": head }))?;
         }
         report.state = "pushed".into();
         Ok(report)
+    }
+
+    /// The notes that carry the reviews of the changes exported on `connection`: one commit on top of the remote's
+    /// notes (a fast-forward), its tree of notes, and their objects. None when no exported change has a review.
+    fn review_notes(
+        &self,
+        store: &Store,
+        repo: &str,
+        connection: &str,
+        fresh: &[(String, String)],
+        parent: Option<Oid>,
+        who: &Person,
+        signing: Option<&KeyPair>,
+    ) -> Result<Option<(Oid, Vec<(Oid, Kind, Vec<u8>)>)>, String> {
+        let records: HashMap<u64, LogRecord> =
+            store.records()?.into_iter().map(|r| (r.seq, r)).collect();
+        let st = store.state();
+        let owner = st.owner.ok_or("the log has no genesis")?;
+        let mut entries: Vec<TreeEntry> = Vec::new();
+        let mut objects: Vec<(Oid, Kind, Vec<u8>)> = Vec::new();
+        for c in st.changes.values().filter(|c| c.repo == repo) {
+            if c.reviews.is_empty() {
+                continue;
+            }
+            // The commit a change was exported as: this push's, or the one an earlier export recorded.
+            let last = fresh
+                .iter()
+                .find(|(name, _)| *name == c.name)
+                .map(|(_, git)| git.clone())
+                .or_else(|| {
+                    c.exported
+                        .get(connection)
+                        .and_then(|v| v.last())
+                        .map(|e| e.git.clone())
+                });
+            let Some(last) = last else {
+                continue;
+            };
+            let mut envelopes = Vec::new();
+            for r in &c.reviews {
+                let signed = &records
+                    .get(&r.seq)
+                    .ok_or_else(|| format!("review at record {} is not in the log", r.seq))?
+                    .signed;
+                let certs = cert_chain(&st, &r.key)?
+                    .into_iter()
+                    .map(|seq| {
+                        records
+                            .get(&seq)
+                            .map(|rec| rec.signed.to_json())
+                            .ok_or_else(|| format!("certificate at record {seq} is not in the log"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                envelopes.push(json!({ "change": c.name, "owner": owner, "certs": certs, "signed": signed.to_json() }));
+            }
+            let bytes = serde_json::to_vec(&envelopes).map_err(|e| e.to_string())?;
+            let blob = git::oid(Kind::Blob, &bytes);
+            objects.push((blob, Kind::Blob, bytes));
+            entries.push(TreeEntry {
+                mode: 0o100644,
+                name: last,
+                id: blob,
+            });
+        }
+        drop(st);
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let tree_bytes = git::write_tree(&entries);
+        let tree = git::oid(Kind::Tree, &tree_bytes);
+        objects.push((tree, Kind::Tree, tree_bytes));
+        let commit = Commit {
+            tree,
+            parents: parent.into_iter().collect(),
+            author: who.clone(),
+            committer: who.clone(),
+            extra: vec![],
+            message: "Review records\n".into(),
+        };
+        let unsigned = git::write_commit(&commit, None);
+        let bytes = match signing {
+            Some(k) => git::write_commit(&commit, Some(&crate::sshsig::sign(k, "git", &unsigned))),
+            None => unsigned,
+        };
+        let id = git::oid(Kind::Commit, &bytes);
+        objects.push((id, Kind::Commit, bytes));
+        Ok(Some((id, objects)))
     }
 
     /// Pushes an open lane to `refs/heads/<branch>` on the connection's remote, for a platform to review (a pull request;
@@ -706,4 +841,25 @@ pub fn commit_of(st: &State, repo: &str, connection: &str, rev: &str) -> Option<
         }
     }
     None
+}
+
+/// The sequence numbers of the certificates that prove `key`, root first: the owner's certificate of the first key
+/// below the owner, down to `key`'s own. The owner's key itself has none.
+fn cert_chain(st: &State, key: &str) -> Result<Vec<u64>, String> {
+    let owner = st.owner.ok_or("the log has no genesis")?;
+    let mut seqs = Vec::new();
+    let mut at = key.to_string();
+    loop {
+        let info = st
+            .keys
+            .get(&at)
+            .ok_or_else(|| format!("unknown key {at}"))?;
+        if info.key == owner {
+            break;
+        }
+        seqs.push(info.issued_seq);
+        at = info.issuer.clone();
+    }
+    seqs.reverse();
+    Ok(seqs)
 }

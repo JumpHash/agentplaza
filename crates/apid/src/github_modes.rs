@@ -341,6 +341,7 @@ fn sync_main(app: &App, repo: &str, t: &Target) -> Result<(), String> {
         &format!("/repos/{repo}/import"),
         &json!({ "source": t.remote, "branch": t.main, "token": t.token, "platform": "github" }),
     )?;
+    crate::review_graph::restore_carried(app, repo);
     let head = report["head"]
         .as_str()
         .ok_or("the import gave no head")?
