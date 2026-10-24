@@ -1,0 +1,24 @@
+meta {
+  name: The leaderboard of the build step
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/evals/leaderboard?step=build
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the scores are ranked: the best success rate first", function () {
+    const b = res.getBody();
+    expect(b).to.be.an("array");
+    for (let i = 1; i < b.length; i++) expect(b[i - 1].success_rate).to.be.at.least(b[i].success_rate);
+  });
+}

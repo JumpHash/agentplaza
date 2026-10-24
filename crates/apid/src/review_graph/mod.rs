@@ -1826,6 +1826,28 @@ pub fn verify(
         .find(|f| f.id == finding)
         .cloned()
         .ok_or("no such finding")?;
+    // The ruling is an eval record (25.2): who raised the finding, who ruled on it, and how.
+    let ruling = crate::evals::FindingRecord {
+        id: 0,
+        project: run.project.clone(),
+        task: (!run.task.is_empty()).then(|| run.task.clone()),
+        review: run_id.clone(),
+        finding: f.id.clone(),
+        reviewer: f.by.as_ref().map(|b| b.model.clone()).unwrap_or_default(),
+        reviewer_seat: f.by.as_ref().map(|b| b.seat.clone()).unwrap_or_default(),
+        verifier: by.model.clone(),
+        verdict: if verdict == Verdict::Confirmed {
+            "confirmed"
+        } else {
+            "dropped"
+        }
+        .into(),
+        severity: f.severity.clone(),
+        ruled_ms: apz_plaza::now_ms(),
+    };
+    if let Err(err) = app.evals.finding(&ruling) {
+        eprintln!("apid: evals: the ruling on {finding} was not recorded: {err}");
+    }
     if verdict == Verdict::Confirmed {
         if f.contest.is_empty() {
             // The second confirmation of one kind in the project is a pitfall the curator may land (8.6).
@@ -3138,10 +3160,20 @@ fn settle_check(app: &App, run: &Run, outcome: Outcome) {
                 &format!("/changes/{}/revert", run.change),
                 &json!({ "reason": reason }),
             ) {
-                Ok(v) => app.bus.publish(
-                    "weft_revert",
-                    &json!({ "change": run.change, "revert": v["change"], "reason": reason }),
-                ),
+                Ok(v) => {
+                    if !run.task.is_empty()
+                        && let Err(err) = app.evals.reverted(&run.task)
+                    {
+                        eprintln!(
+                            "apid: evals: the revert of {} was not recorded: {err}",
+                            run.task
+                        );
+                    }
+                    app.bus.publish(
+                        "weft_revert",
+                        &json!({ "change": run.change, "revert": v["change"], "reason": reason }),
+                    )
+                }
                 Err(e) => eprintln!("apid: reverting {}: {e}", run.change),
             }
             let goal = format!("Fix what {} broke: {reason}", run.change);

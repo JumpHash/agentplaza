@@ -1,0 +1,28 @@
+meta {
+  name: Each reviewer model's precision and misses
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/evals/reviewers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("each reviewer has its findings, its confirmed count and its misses", function () {
+    const b = res.getBody();
+    expect(b).to.be.an("array");
+    b.forEach((r) => {
+      expect(r.model).to.be.a("string");
+      expect(r.confirmed + r.dropped).to.be.at.most(r.findings);
+      expect(r.misses).to.equal(r.missed_findings + r.late_failures);
+    });
+  });
+}

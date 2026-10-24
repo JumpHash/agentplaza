@@ -1,0 +1,29 @@
+meta {
+  name: The cost and success report by step
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/evals/costs?by=step
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the cost report is a list of groups, each with its runs, successes, cost and quality", function () {
+    const b = res.getBody();
+    expect(b).to.be.an("array");
+    b.forEach((g) => {
+      expect(g.key).to.be.a("string");
+      expect(g.runs).to.be.a("number");
+      expect(g.success_rate).to.be.within(0, 1);
+      expect(g.quality).to.be.within(0, 1);
+    });
+  });
+}

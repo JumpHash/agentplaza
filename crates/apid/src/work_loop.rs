@@ -531,8 +531,17 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
         .fill(&seat.task, &seat.name, &session.id, Some(&model), now);
     app.recipe_runs
         .task_step_started(&seat.task, &seat.step, now);
-    app.evals
-        .begin(&session.id, &seat.recipe, &seat.step, seat.round);
+    let recipe_version = app
+        .recipe_runs
+        .recipe(&seat.recipe, None)
+        .map_or(1, |recipe| recipe.version);
+    app.evals.begin(
+        &session.id,
+        &seat.recipe,
+        recipe_version,
+        &seat.step,
+        seat.round,
+    );
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, &seat.role, 1, Some(&model), None, Some(&project)) {
         Ok(started) => {
@@ -2649,6 +2658,7 @@ mod tests {
         assert_eq!(first_listed(&["c/none".to_string()], &allowed), None);
 
         let score = |model: &str, runs: u64, successes: u64, cost: Option<f64>| Score {
+            step: "build".into(),
             seat: "build".into(),
             model: Some(model.into()),
             engine: "harness".into(),
@@ -2657,6 +2667,7 @@ mod tests {
             success_rate: successes as f64 / runs.max(1) as f64,
             cost_per_success_micros: cost,
             time_per_success_ms: None,
+            quality: successes as f64 / runs.max(1) as f64,
         };
         let scores = vec![
             score("a/fast", 4, 2, Some(10.0)),

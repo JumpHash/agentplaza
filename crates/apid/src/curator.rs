@@ -204,7 +204,7 @@ fn start(app: &App, project: &str, now: u64) {
         },
         now,
     );
-    app.evals.begin(&session.id, "distill", "curate", 1);
+    app.evals.begin(&session.id, "distill", 1, "curate", 1);
     // The curator's run is a run of the engine's `distill` recipe (recipes/runs.rs); its session ends it.
     app.recipe_runs.start_engine(
         "distill",

@@ -130,7 +130,7 @@ fn start(app: &App, project: &str, now: u64) {
         },
         now,
     );
-    app.evals.begin(&session.id, "distill", "verify", 1);
+    app.evals.begin(&session.id, "distill", 1, "verify", 1);
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, SEAT, 1, model.as_deref(), None, Some(project)) {
         Ok(started) => match started["cids"].get(0).and_then(Value::as_u64) {

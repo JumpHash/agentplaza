@@ -25,6 +25,19 @@ pub const USAGE_WORKS_PRUNE: &str = include_str!("../../sql/queries/usage_works_
 pub const EVAL_RUNS_PAGE: &str = include_str!("../../sql/queries/eval_runs_page.sql");
 pub const EVAL_SCORES: &str = include_str!("../../sql/queries/eval_scores.sql");
 pub const EVAL_RUNS_LANDED: &str = include_str!("../../sql/queries/eval_runs_landed.sql");
+pub const EVAL_RUNS_ALL: &str = include_str!("../../sql/queries/eval_runs_all.sql");
+pub const EVAL_RUNS_REVERTED: &str = include_str!("../../sql/queries/eval_runs_reverted.sql");
+pub const EVAL_RUNS_INCIDENT: &str = include_str!("../../sql/queries/eval_runs_incident.sql");
+pub const EVAL_RUNS_QUALIFIED: &str = include_str!("../../sql/queries/eval_runs_qualified.sql");
+pub const EVAL_RUNS_LATER_FINDING: &str =
+    include_str!("../../sql/queries/eval_runs_later_finding.sql");
+pub const EVAL_FINDING_NEXT: &str = include_str!("../../sql/queries/eval_finding_next.sql");
+pub const EVAL_FINDINGS_ALL: &str = include_str!("../../sql/queries/eval_findings_all.sql");
+pub const EVAL_PASSES: &str = include_str!("../../sql/queries/eval_passes.sql");
+pub const EVAL_LATE_TASKS: &str = include_str!("../../sql/queries/eval_late_tasks.sql");
+pub const EVAL_ARCHIVE_NEXT: &str = include_str!("../../sql/queries/eval_archive_next.sql");
+pub const EVAL_ARCHIVES_ALL: &str = include_str!("../../sql/queries/eval_archives_all.sql");
+pub const EVAL_BENCH_ALL: &str = include_str!("../../sql/queries/eval_bench_all.sql");
 
 // A page of the vault's audit log (vault/audit.rs).
 pub const VAULT_AUDIT_PAGE: &str = include_str!("../../sql/queries/vault_audit_page.sql");
@@ -270,6 +283,18 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "eval_runs_page", EVAL_RUNS_PAGE),
     ("plaza", "eval_scores", EVAL_SCORES),
     ("plaza", "eval_runs_landed", EVAL_RUNS_LANDED),
+    ("plaza", "eval_runs_all", EVAL_RUNS_ALL),
+    ("plaza", "eval_runs_reverted", EVAL_RUNS_REVERTED),
+    ("plaza", "eval_runs_incident", EVAL_RUNS_INCIDENT),
+    ("plaza", "eval_runs_qualified", EVAL_RUNS_QUALIFIED),
+    ("plaza", "eval_runs_later_finding", EVAL_RUNS_LATER_FINDING),
+    ("plaza", "eval_finding_next", EVAL_FINDING_NEXT),
+    ("plaza", "eval_findings_all", EVAL_FINDINGS_ALL),
+    ("plaza", "eval_passes", EVAL_PASSES),
+    ("plaza", "eval_late_tasks", EVAL_LATE_TASKS),
+    ("plaza", "eval_archive_next", EVAL_ARCHIVE_NEXT),
+    ("plaza", "eval_archives_all", EVAL_ARCHIVES_ALL),
+    ("plaza", "eval_bench_all", EVAL_BENCH_ALL),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
     ("plaza", "hub_mcp_call_last_seq", HUB_MCP_CALL_LAST_SEQ),
     ("plaza", "hub_mcp_call_page", HUB_MCP_CALL_PAGE),
