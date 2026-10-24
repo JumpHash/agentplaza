@@ -610,8 +610,12 @@ pub fn assess(
     }
     // Each stage the topology declares (PLAN 22.8) is judged by the numbers its run recorded. A stage with none did not run
     // here: its verdict fails with that reason and files nothing.
-    let stage_values = lab_performance::values(metrics, &run.id, &stage::names(topology));
-    for judgment in stage::judge(topology, &stage_values) {
+    let stage_values = lab_performance::values(
+        metrics,
+        &run.id,
+        &stage::names(&stage::Stages::of(topology)),
+    );
+    for judgment in stage::judge(&stage::Stages::of(topology), &stage_values) {
         let check = Check {
             id: format!("{}:{}", judgment.stage, judgment.id),
             kind: judgment.stage.into(),

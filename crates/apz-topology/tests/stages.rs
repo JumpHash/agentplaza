@@ -592,10 +592,10 @@ fn a_topology_declares_its_stages_and_checks_them() {
     let topology = spec::parse(STAGED).expect("the topology parses");
     assert!(topology.data.is_some() && topology.cache.is_some() && topology.messaging.is_some());
     assert_eq!(
-        stage::declared(&topology),
+        stage::declared(&stage::Stages::of(&topology)),
         vec!["data", "cache", "messaging"]
     );
-    let names = stage::names(&topology);
+    let names = stage::names(&stage::Stages::of(&topology));
     assert!(
         names.contains(&"data.read.list.rows".to_string()),
         "{names:?}"

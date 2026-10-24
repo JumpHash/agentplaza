@@ -6,10 +6,13 @@
 //! A stage that the run recorded no numbers for did not run here: its judgment fails with that reason and measures
 //! nothing, so nothing is filed for it (the resilience rule).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::cache::CacheStage;
 use crate::compare::Metric;
+use crate::data::DataStage;
+use crate::messaging::MessagingStage;
 use crate::spec::Topology;
 use crate::{cache, data, messaging};
 
@@ -25,28 +28,55 @@ pub struct Judgment {
     pub measured: bool,
 }
 
-/// The stages a topology declares, in the order a run takes them.
-pub fn declared(topology: &Topology) -> Vec<&'static str> {
+/// The stages a topology declares, as a guest plan carries them to the lab VM's stage runner.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Stages {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CacheStage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messaging: Option<MessagingStage>,
+}
+
+impl Stages {
+    /// The stages a topology declares.
+    pub fn of(topology: &Topology) -> Stages {
+        Stages {
+            data: topology.data.clone(),
+            cache: topology.cache.clone(),
+            messaging: topology.messaging.clone(),
+        }
+    }
+
+    /// Whether no stage is declared.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_none() && self.cache.is_none() && self.messaging.is_none()
+    }
+}
+
+/// The stages declared, in the order a run takes them.
+pub fn declared(stages: &Stages) -> Vec<&'static str> {
     [
-        topology.data.is_some().then_some("data"),
-        topology.cache.is_some().then_some("cache"),
-        topology.messaging.is_some().then_some("messaging"),
+        stages.data.is_some().then_some("data"),
+        stages.cache.is_some().then_some("cache"),
+        stages.messaging.is_some().then_some("messaging"),
     ]
     .into_iter()
     .flatten()
     .collect()
 }
 
-/// Every metric name the topology's stages record at a run.
-pub fn names(topology: &Topology) -> Vec<String> {
+/// Every metric name the declared stages record at a run.
+pub fn names(stages: &Stages) -> Vec<String> {
     let mut names = Vec::new();
-    if let Some(stage) = &topology.data {
+    if let Some(stage) = &stages.data {
         names.extend(data::names(stage));
     }
-    if topology.cache.is_some() {
+    if stages.cache.is_some() {
         names.extend(cache::names());
     }
-    if topology.messaging.is_some() {
+    if stages.messaging.is_some() {
         names.extend(messaging::names());
     }
     names
@@ -54,15 +84,15 @@ pub fn names(topology: &Topology) -> Vec<String> {
 
 /// The judgments of every declared stage over the values the run recorded (`values` are the names of [`names`]). A
 /// stage with no value at all is one unmeasured judgment: it did not run here.
-pub fn judge(topology: &Topology, values: &[Metric]) -> Vec<Judgment> {
+pub fn judge(stages: &Stages, values: &[Metric]) -> Vec<Judgment> {
     let mut out = Vec::new();
-    if let Some(stage) = &topology.data {
+    if let Some(stage) = &stages.data {
         out.extend(stamp("data", data::judge(stage, values)));
     }
-    if let Some(stage) = &topology.cache {
+    if let Some(stage) = &stages.cache {
         out.extend(stamp("cache", cache::judge(stage, values)));
     }
-    if let Some(stage) = &topology.messaging {
+    if let Some(stage) = &stages.messaging {
         out.extend(stamp("messaging", messaging::judge(stage, values)));
     }
     out

@@ -45,6 +45,11 @@ name = "apz-stage"
 path = "src/bin/apz-stage.rs"
 
 [[bin]]
+# A stand-in cache service for the stage tests (PLAN 22.8): a read-through cache with its origin's counter.
+name = "apz-topo-cache"
+path = "src/bin/apz-topo-cache.rs"
+
+[[bin]]
 # A stand-in service for the topology tests: echoes, or relays to another service by name.
 name = "apz-topo-echo"
 path = "src/bin/apz-topo-echo.rs"

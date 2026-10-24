@@ -1,16 +1,20 @@
-//! apz-stage: the lab VM's stage runner (PLAN 22.8). Runs the data, cache and messaging stages the topology declares and
+//! apz-stage: the lab VM's stage runner (PLAN 22.8). Runs the data, cache and messaging stages a topology declares and
 //! records their numbers at the run, where the hub judges them as findings.
 //!
-//! Usage: `apz-stage <topology.toml> <repo-root> <work-dir> [--service NAME=URL]... [--upstream URL --token TOKEN]`
+//! Usage: `apz-stage <plan.json> <repo-root> <work-dir> [--service NAME=URL]... [--upstream URL --token TOKEN]`
+//!
+//! `<plan.json>` is the guest plan the runner was given: its `stages` are the stages the topology declares. The runner
+//! (`apz-topo-run --stages`) runs this once the services are up.
 //!
 //! - The data stage runs over the repo at `<repo-root>` (its SQL files) in `<work-dir>/data`.
-//! - The cache stage needs the URL of its service (`--service`): the service's declared paths are read over HTTP.
+//! - The cache stage needs the URL of its service (`--service`, one for each service the run started): the service's
+//!   declared paths are read over HTTP.
 //! - The messaging stage runs its producer and the idempotent consumer in process; its deliveries are written to
 //!   `<work-dir>/messages.jsonl`.
 //!
 //! The numbers are posted as OTLP gauges to the run's collector (`--upstream`, with `--token`) when given, and printed as
-//! JSON otherwise. The notes (a failed query, a refused restore) go to stderr. Exit 0 when every stage ran, 1 when one
-//! could not start, 2 on a usage error.
+//! a JSON object of metric names to values otherwise. The notes (a failed query, a refused restore) go to stderr. Exit 0
+//! when every stage ran, 1 when one could not start, 2 on a usage error.
 
 use std::io::Write;
 use std::path::Path;
@@ -21,9 +25,9 @@ use apz_topology::collector::{Relay, now_ms};
 use apz_topology::compare::Metric;
 use apz_topology::data;
 use apz_topology::messaging;
-use apz_topology::spec;
+use apz_topology::plan::GuestPlan;
 use apz_topology::stage;
-use serde_json::json;
+use serde_json::{Map, Value};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -32,7 +36,7 @@ fn main() -> ExitCode {
         Err(Failure::Usage(why)) => {
             eprintln!("apz-stage: {why}");
             eprintln!(
-                "usage: apz-stage <topology.toml> <repo-root> <work-dir> [--service NAME=URL]... [--upstream URL --token TOKEN]"
+                "usage: apz-stage <plan.json> <repo-root> <work-dir> [--service NAME=URL]... [--upstream URL --token TOKEN]"
             );
             ExitCode::from(2)
         }
@@ -48,15 +52,19 @@ enum Failure {
     Stage(String),
 }
 
+/// The options after the three paths: the services' URLs, and the collector's upstream and token.
+type Options = (Vec<(String, String)>, Option<String>, Option<String>);
+
 fn run(args: &[String]) -> Result<(), Failure> {
-    let [topology_path, root, work, rest @ ..] = args else {
+    let [plan_path, root, work, rest @ ..] = args else {
         return Err(Failure::Usage("three paths are needed".into()));
     };
     let (services, upstream, token) = options(rest).map_err(Failure::Usage)?;
-    let text = std::fs::read_to_string(topology_path)
-        .map_err(|why| Failure::Stage(format!("{topology_path}: {why}")))?;
-    let topology =
-        spec::parse(&text).map_err(|why| Failure::Stage(format!("{topology_path}: {why}")))?;
+    let text = std::fs::read_to_string(plan_path)
+        .map_err(|why| Failure::Stage(format!("{plan_path}: {why}")))?;
+    let plan: GuestPlan =
+        serde_json::from_str(&text).map_err(|why| Failure::Stage(format!("{plan_path}: {why}")))?;
+    let stages = &plan.stages;
     let root = Path::new(root);
     let work = Path::new(work);
     std::fs::create_dir_all(work)
@@ -64,14 +72,14 @@ fn run(args: &[String]) -> Result<(), Failure> {
     let mut metrics: Vec<Metric> = Vec::new();
     let mut failed = Vec::new();
 
-    if let Some(stage) = &topology.data {
+    if let Some(stage) = &stages.data {
         let run = data::run(stage, root, &work.join("data"));
         for note in &run.notes {
             eprintln!("data: {note}");
         }
         metrics.extend(run.metrics);
     }
-    if let Some(stage) = &topology.cache {
+    if let Some(stage) = &stages.cache {
         match services.iter().find(|(name, _)| *name == stage.service) {
             Some((_, url)) => {
                 let subject = cache::Http::new(url, stage);
@@ -83,7 +91,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
             )),
         }
     }
-    if let Some(stage) = &topology.messaging {
+    if let Some(stage) = &stages.messaging {
         let mut consumer = messaging::idempotent();
         let run = messaging::run(stage, &mut consumer);
         write_records(&work.join("messages.jsonl"), &run.records)
@@ -104,8 +112,11 @@ fn run(args: &[String]) -> Result<(), Failure> {
                 })?;
         }
         _ => {
-            let summary = json!({"metrics": metrics.iter().map(|m| (m.name.clone(), m.value)).collect::<Vec<_>>()});
-            println!("{summary}");
+            let summary: Map<String, Value> = metrics
+                .iter()
+                .map(|m| (m.name.clone(), Value::from(m.value)))
+                .collect();
+            println!("{}", Value::Object(summary));
         }
     }
     if failed.is_empty() {
@@ -118,10 +129,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
     }
 }
 
-/// The options after the three paths: the services' URLs, and the collector's upstream and token.
-fn options(
-    rest: &[String],
-) -> Result<(Vec<(String, String)>, Option<String>, Option<String>), String> {
+fn options(rest: &[String]) -> Result<Options, String> {
     let mut services = Vec::new();
     let mut upstream = None;
     let mut token = None;
