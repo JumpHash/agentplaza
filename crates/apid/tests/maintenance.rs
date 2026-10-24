@@ -14,7 +14,6 @@
 mod common;
 
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -86,10 +85,8 @@ fn next_work(gateway: &FakeDaemon, cid: u64, thread: &str, seen: usize) -> (u64,
 
 /// noded and the agent gateway, sharing the VMs noded runs: a run's VM gets its role's CID (the planner's, the builder
 /// seat's, a reviewer's), and any other the next CID from [`SPARE`].
-/// While `hold` is set, noded refuses to start a planner's VM.
-fn daemons(vms: &Vms, hold: &Arc<AtomicBool>) -> (FakeDaemon, FakeDaemon) {
+fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
     let started = Arc::clone(vms);
-    let hold = Arc::clone(hold);
     let noded = FakeDaemon::serve(move |method, path, body| {
         let mut vms = started.lock().unwrap_or_else(|p| p.into_inner());
         if method == "GET" && path.starts_with("/v1/runs") {
@@ -107,9 +104,6 @@ fn daemons(vms: &Vms, hold: &Arc<AtomicBool>) -> (FakeDaemon, FakeDaemon) {
                 .ok()
                 .and_then(|b| b["role"].as_str().map(str::to_string))
                 .unwrap_or_default();
-            if role == "planner" && hold.load(Ordering::SeqCst) {
-                return (503, r#"{"error":"held by the test"}"#.into());
-            }
             let cid = match role.as_str() {
                 "planner" => PLANNER,
                 "builder" => SEAT_BUILDER,
@@ -197,9 +191,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         (ORCHESTRATOR, "orchestrator".to_string()),
         (BUILDER, "builder".to_string()),
     ]));
-    // No planner VM starts until the test has seen the project refuse a sweep for want of a watcher.
-    let hold_planner = Arc::new(AtomicBool::new(true));
-    let (noded, gateway) = daemons(&vms, &hold_planner);
+    let (noded, gateway) = daemons(&vms);
     // The deploy hooks of the shop's environments (a CI's deploy URL, say).
     let hook = FakeDaemon::serve(|_, _, _| (200, r#"{"queued":true}"#.into()));
     let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
@@ -267,19 +259,6 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         (json!("main"), json!(false))
     );
 
-    // No agent watches it yet: a sweep cannot start, and says why.
-    let (status, refused) = hub.call(
-        "POST",
-        &format!("/v1/projects/{pid}/maintenance/sweep"),
-        None,
-    );
-    assert_eq!(status, 409, "{refused}");
-    assert!(
-        text(&refused["error"]).contains("no agents to watch it"),
-        "{refused}"
-    );
-    hold_planner.store(false, Ordering::SeqCst);
-
     // The owner adds what support heard.
     let (status, signal) = hub.call(
         "POST",
@@ -302,10 +281,10 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         },
     );
     assert!(
-        planners
-            .as_array()
-            .is_some_and(|s| s.iter().any(|s| s["role"] == "planner")),
-        "a planner session: {planners}\n{}",
+        planners.as_array().is_some_and(|s| s
+            .iter()
+            .any(|s| s["role"] == "planner" && s["cid"] == PLANNER && s["state"] != "failed")),
+        "a live planner session on its VM: {planners}\n{}",
         hub.log()
     );
 
@@ -710,5 +689,53 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
             .any(|n| n.starts_with("plaza_maintenance")),
         "{:?}",
         tool_names(&hello["profile"])
+    );
+}
+
+/// A project in maintenance that no one can watch (the plaza has no planner role, so no planner starts, and no agent is
+/// on the project) refuses a sweep and says why. In the test above the planner starts on a tick after adoption, so it
+/// cannot see this.
+#[test]
+fn a_project_no_one_can_watch_refuses_a_sweep_and_says_why() {
+    let vms: Vms = Arc::new(Mutex::new(vec![
+        (ORCHESTRATOR, "orchestrator".to_string()),
+        (BUILDER, "builder".to_string()),
+    ]));
+    let (noded, gateway) = daemons(&vms);
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+    } });
+    let scratch = Scratch::new("maintenance-unwatched");
+    let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    let source = scratch.0.join("shop");
+    git_repo(&source);
+    let (status, adopted) = hub.call(
+        "POST",
+        "/v1/projects/adopt",
+        Some(json!({
+            "title": "Field shop",
+            "goal": "The shop that sells field notebooks",
+            "source": { "path": source.to_string_lossy(), "branch": "main" },
+        })),
+    );
+    assert_eq!(status, 201, "{adopted}\n{}", hub.log());
+    let pid = text(&adopted["project"]["id"]);
+    assert_eq!(adopted["project"]["mode"], "maintenance");
+
+    let (status, refused) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/maintenance/sweep"),
+        None,
+    );
+    assert_eq!(status, 409, "{refused}\n{}", hub.log());
+    assert!(
+        text(&refused["error"]).contains("no agents to watch it"),
+        "{refused}"
     );
 }
