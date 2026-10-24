@@ -14,6 +14,7 @@
 mod common;
 
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -85,8 +86,10 @@ fn next_work(gateway: &FakeDaemon, cid: u64, thread: &str, seen: usize) -> (u64,
 
 /// noded and the agent gateway, sharing the VMs noded runs: a run's VM gets its role's CID (the planner's, the builder
 /// seat's, a reviewer's), and any other the next CID from [`SPARE`].
-fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
+/// While `hold` is set, noded refuses to start a planner's VM.
+fn daemons(vms: &Vms, hold: &Arc<AtomicBool>) -> (FakeDaemon, FakeDaemon) {
     let started = Arc::clone(vms);
+    let hold = Arc::clone(hold);
     let noded = FakeDaemon::serve(move |method, path, body| {
         let mut vms = started.lock().unwrap_or_else(|p| p.into_inner());
         if method == "GET" && path.starts_with("/v1/runs") {
@@ -104,6 +107,9 @@ fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
                 .ok()
                 .and_then(|b| b["role"].as_str().map(str::to_string))
                 .unwrap_or_default();
+            if role == "planner" && hold.load(Ordering::SeqCst) {
+                return (503, r#"{"error":"held by the test"}"#.into());
+            }
             let cid = match role.as_str() {
                 "planner" => PLANNER,
                 "builder" => SEAT_BUILDER,
@@ -191,7 +197,9 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         (ORCHESTRATOR, "orchestrator".to_string()),
         (BUILDER, "builder".to_string()),
     ]));
-    let (noded, gateway) = daemons(&vms);
+    // No planner VM starts until the test has seen the project refuse a sweep for want of a watcher.
+    let hold_planner = Arc::new(AtomicBool::new(true));
+    let (noded, gateway) = daemons(&vms, &hold_planner);
     // The deploy hooks of the shop's environments (a CI's deploy URL, say).
     let hook = FakeDaemon::serve(|_, _, _| (200, r#"{"queued":true}"#.into()));
     let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
@@ -270,6 +278,7 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         text(&refused["error"]).contains("no agents to watch it"),
         "{refused}"
     );
+    hold_planner.store(false, Ordering::SeqCst);
 
     // The owner adds what support heard.
     let (status, signal) = hub.call(

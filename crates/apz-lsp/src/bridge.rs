@@ -18,9 +18,15 @@ use std::path::{Path, PathBuf};
 /// under `.plaza`, which the model's tools never reach).
 pub const WARM_DIR: &str = "/workspace/.plaza/lsp";
 
-/// The socket a server id listens on in `dir`.
+/// The socket a server id listens on in `dir`, on the host: `dir` is the host's own path.
 pub fn socket_path(dir: &Path, id: &str) -> PathBuf {
     dir.join(format!("{id}.sock"))
+}
+
+/// The socket a server id listens on in the VM, as the guest's command names it. The guest is Linux, so the path is
+/// `/`-separated on every host (a host's `Path::join` would use `\` on Windows).
+pub fn guest_socket(id: &str) -> String {
+    format!("{WARM_DIR}/{id}.sock")
 }
 
 #[cfg(unix)]

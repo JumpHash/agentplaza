@@ -4,7 +4,7 @@
 //! instance was started with.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -16,6 +16,7 @@ use super::client::{Client, Error, ServerInfo, ToolInfo};
 use super::config::{McpServer, Package, Setting, TransportKind};
 use super::egress::Egress;
 use super::http::{HttpTransport, Policy, check_endpoint};
+use super::loopback::{Machine, Need};
 use super::runtimes::{Fetch, Runtimes};
 use super::stdio::{self, Child, Launcher, Layout, StdioTransport, push_capped};
 use super::vm::{self, VmHost};
@@ -72,6 +73,8 @@ struct State {
     server_info: Option<ServerInfo>,
     secrets: Vec<String>,
     logs: VecDeque<LogLine>,
+    /// The container the last start was refused for, until the owner exempts it.
+    loopback: Option<Need>,
 }
 
 /// One instance: its client (held for the length of a call) and its state.
@@ -143,6 +146,8 @@ pub struct Runtime {
     /// Where the servers' directories (`<state>/mcp/<id>/`) and the runtimes (`<state>/runtimes/`) are.
     state_dir: PathBuf,
     runtimes: Runtimes,
+    /// The machine that exempts a sandboxed server's container from loopback (Windows). None elsewhere.
+    loopback: Option<Arc<dyn Machine>>,
 }
 
 /// The backoff before restart number `failures` (1 s, 2 s, 4 s … capped at 60 s).
@@ -302,6 +307,7 @@ impl Runtime {
             vm: None,
             runtimes: Runtimes::new(&state_dir, fetch),
             state_dir,
+            loopback: None,
         }
     }
 
@@ -309,6 +315,45 @@ impl Runtime {
     pub fn with_vm(mut self, vm: Arc<dyn VmHost>) -> Runtime {
         self.vm = Some(vm);
         self
+    }
+
+    /// Checks the containers of sandboxed servers for the loopback exemption with `machine` (Windows only).
+    pub fn with_loopback(mut self, machine: Option<Arc<dyn Machine>>) -> Runtime {
+        self.loopback = machine;
+        self
+    }
+
+    /// The machine that checks and grants the loopback exemption, if this hub has one.
+    pub fn loopback(&self) -> Option<&dyn Machine> {
+        self.loopback.as_deref()
+    }
+
+    /// The directory a server runs in, under its data directory.
+    pub fn workdir(&self, server: &McpServer) -> PathBuf {
+        workdir_of(&Layout::new(&self.state_dir, &server.id), server)
+    }
+
+    /// The container a sandboxed server was refused for, when its last start was refused for want of the loopback
+    /// exemption. None once a start gets past that check, or when it was refused for any other reason.
+    pub fn loopback_need(&self, server_id: &str) -> Option<Need> {
+        self.slots_of(server_id)
+            .iter()
+            .find_map(|slot| lock(&slot.state).loopback.clone())
+    }
+
+    /// Sets the reason `server_id` last failed, on each of its instances.
+    pub fn set_error(&self, server_id: &str, why: &str) {
+        for slot in self.slots_of(server_id) {
+            lock(&slot.state).last_error = Some(why.to_string());
+        }
+    }
+
+    fn slots_of(&self, server_id: &str) -> Vec<Arc<Slot>> {
+        lock(&self.slots)
+            .iter()
+            .filter(|((id, _), _)| id == server_id)
+            .map(|(_, s)| Arc::clone(s))
+            .collect()
     }
 
     /// Removes a stdio server's data directory (its storage) and the storage its microVM keeps. Its installed packages
@@ -451,6 +496,8 @@ impl Runtime {
         guard: &mut Option<Client>,
         ctx: &Ctx,
     ) -> Result<Option<Vec<ToolInfo>>, String> {
+        // Only a refusal of this start asks the owner for the loopback exemption.
+        lock(&slot.state).loopback = None;
         if let Some(client) = guard.as_mut() {
             if client.alive() {
                 return Ok(None);
@@ -570,10 +617,7 @@ impl Runtime {
             .ok_or("the server names no package")?;
         let layout = Layout::new(&self.state_dir, &server.id);
         layout.prepare(server.storage.volume)?;
-        let workdir = match server.transport.workdir.as_deref() {
-            Some(dir) if !dir.is_empty() => layout.data.join(dir),
-            _ => layout.data.clone(),
-        };
+        let workdir = workdir_of(&layout, server);
         std::fs::create_dir_all(&workdir)
             .map_err(|e| format!("cannot make {}: {e}", workdir.display()))?;
         let lease = match &self.egress {
@@ -587,6 +631,9 @@ impl Runtime {
             Some(lease) => Network::LoopbackPort(lease.port()),
             None => Network::None,
         };
+        if let (Network::LoopbackPort(port), Some(machine)) = (network, &self.loopback) {
+            check_loopback(machine.as_ref(), slot, &server.id, &workdir, port)?;
+        }
         let runtimes_root = self.state_dir.join("runtimes");
         let mut read_only = vec![layout.bin.clone(), layout.pkg.clone()];
         let (program, args, path_dirs, extra_env) = match &package {
@@ -791,6 +838,38 @@ impl Runtime {
         lines.sort_by_key(|l| l.ts_ms);
         let skip = lines.len().saturating_sub(limit);
         lines.split_off(skip)
+    }
+}
+
+/// A sandboxed server reaches the proxy only through its container's loopback exemption, which Windows grants once
+/// and only an administrator can grant. Until it is there, the start is refused and the container is kept as the
+/// need, for the owner's approval.
+fn check_loopback(
+    machine: &dyn Machine,
+    slot: &Slot,
+    server: &str,
+    workdir: &Path,
+    port: u16,
+) -> Result<(), String> {
+    let sid = machine.container_sid(workdir)?;
+    let exempt = machine.is_exempt(&sid)?;
+    lock(&slot.state).loopback = (!exempt).then(|| Need {
+        sid: sid.clone(),
+        port,
+    });
+    if exempt {
+        return Ok(());
+    }
+    Err(format!(
+        "{server} cannot reach the egress proxy: its container {sid} is not exempt from loopback, and a Windows administrator must exempt it once"
+    ))
+}
+
+/// The directory a server runs in, under its layout.
+fn workdir_of(layout: &Layout, server: &McpServer) -> PathBuf {
+    match server.transport.workdir.as_deref() {
+        Some(dir) if !dir.is_empty() => layout.data.join(dir),
+        _ => layout.data.clone(),
     }
 }
 
