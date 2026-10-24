@@ -1,5 +1,5 @@
 // Roles: the fixed set of role names an agent can take, and their human labels.
-// An agent's name is its own choice (empty until it picks one); the role is a label.
+// An agent has no name of its own: it is shown by its role and its CID (agentName).
 
 export enum Role {
   Orchestrator = 'orchestrator',
@@ -8,7 +8,6 @@ export enum Role {
   Breeder = 'breeder',
   Builder = 'builder',
   EdgeOperator = 'edge-operator',
-  Finance = 'finance',
   Incident = 'incident',
   LegalAgentsCounsel = 'legal-agents-counsel',
   LegalAgentsDefender = 'legal-agents-defender',
@@ -16,8 +15,6 @@ export enum Role {
   LegalGovJudge = 'legal-gov-judge',
   LegalGovProsecutor = 'legal-gov-prosecutor',
   Librarian = 'librarian',
-  Mayor = 'mayor',
-  MayorOffice = 'mayor-office',
   Planner = 'planner',
   Qa = 'qa',
   Release = 'release',
@@ -33,7 +30,6 @@ const LABELS: Record<string, string> = {
   [Role.Breeder]: 'Breeder',
   [Role.Builder]: 'Builder',
   [Role.EdgeOperator]: 'Edge operator',
-  [Role.Finance]: 'Finance',
   [Role.Incident]: 'Incident',
   [Role.LegalAgentsCounsel]: "Legal · agents' counsel",
   [Role.LegalAgentsDefender]: "Legal · agents' defender",
@@ -41,8 +37,6 @@ const LABELS: Record<string, string> = {
   [Role.LegalGovJudge]: 'Legal · government judge',
   [Role.LegalGovProsecutor]: 'Legal · government prosecutor',
   [Role.Librarian]: 'Librarian',
-  [Role.Mayor]: 'Mayor',
-  [Role.MayorOffice]: 'Mayor · office',
   [Role.Planner]: 'Planner',
   [Role.Qa]: 'QA',
   [Role.Release]: 'Release',
@@ -56,55 +50,18 @@ export function roleLabel(role: string): string {
   return LABELS[role] ?? role;
 }
 
-/** The name an agent chose for itself, or "Unnamed" while it has none. */
-export function agentName(a: { name: string }): string {
-  return a.name.trim() === '' ? 'Unnamed' : a.name;
+/** The label an agent is shown by: its role and its CID, as `Builder #12`. Agents have no names of their own. */
+export function agentName(a: { cid: number; role: string }): string {
+  return `${roleLabel(a.role) || 'Agent'} #${a.cid}`;
 }
 
-/** The name the floor shows: the agent's own name, or "agent <cid>" until it chooses one (as the Tasks screen does). */
-export function floorName(a: { cid: number; name: string }): string {
-  return a.name.trim() === '' ? `agent ${a.cid}` : a.name;
+/** The label of an agent the console knows only by its CID, not from the roster: `Agent #12`. */
+export function agentLabel(cid: number | string): string {
+  return `Agent #${cid}`;
 }
 
-/** The families the Society view groups agents into, in the order it draws them. */
-export type Family = 'command' | 'build' | 'operations' | 'knowledge' | 'money' | 'other';
-export const FAMILIES: readonly Family[] = ['command', 'build', 'operations', 'knowledge', 'money', 'other'];
-
-const FAMILY_LABELS: Record<Family, string> = {
-  command: 'Command',
-  build: 'Build',
-  operations: 'Operations',
-  knowledge: 'Knowledge',
-  money: 'Money',
-  other: 'Other',
-};
-
-/** A Map, not an object: a role named like an Object.prototype key must not look up a family. */
-const FAMILY_OF = new Map<string, Family>([
-  [Role.Orchestrator, 'command'],
-  [Role.Mayor, 'command'],
-  [Role.MayorOffice, 'command'],
-  [Role.Architect, 'build'],
-  [Role.Builder, 'build'],
-  [Role.Qa, 'build'],
-  [Role.Reviewer, 'build'],
-  [Role.Release, 'build'],
-  [Role.EdgeOperator, 'operations'],
-  [Role.Incident, 'operations'],
-  [Role.SecurityReviewer, 'operations'],
-  [Role.Librarian, 'knowledge'],
-  [Role.Researcher, 'knowledge'],
-  [Role.Planner, 'knowledge'],
-  [Role.Finance, 'money'],
-  [Role.Auditor, 'money'],
-]);
-
-export function familyLabel(family: Family): string {
-  return FAMILY_LABELS[family];
-}
-
-/** The family of an agent: the orchestrator tier is always command; an unknown or custom role is other. */
-export function roleFamily(role: string, tier?: string): Family {
-  if (tier === 'orchestrator') return 'command';
-  return FAMILY_OF.get(role) ?? 'other';
+/** The label of the agent with `cid` in a roster; `Agent #12` when the roster does not hold it. */
+export function agentLabelIn(list: readonly { cid: number; role: string }[], cid: number): string {
+  const a = list.find((x) => x.cid === cid);
+  return a ? agentName(a) : agentLabel(cid);
 }

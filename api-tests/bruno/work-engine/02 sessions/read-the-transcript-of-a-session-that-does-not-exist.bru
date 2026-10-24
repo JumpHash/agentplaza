@@ -1,0 +1,17 @@
+meta {
+  name: Answer 404 to the transcript of a session that does not exist
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/sessions/s999999/transcript?after=0&limit=10
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

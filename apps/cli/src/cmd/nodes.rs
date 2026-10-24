@@ -459,11 +459,11 @@ mod tests {
     fn a_stopping_node_lists_the_agents_that_cannot_leave() {
         let n = json!({ "waiting": [
             { "cid": 4, "reason": "no machine has the memory" },
-            { "cid": 9, "reason": "in a payment" }
+            { "cid": 9, "reason": "finishing its turn first" }
         ] });
         assert_eq!(
             waiting_line(&n),
-            "agent 4: no machine has the memory; agent 9: in a payment"
+            "agent 4: no machine has the memory; agent 9: finishing its turn first"
         );
         assert_eq!(waiting_line(&json!({})), "");
     }

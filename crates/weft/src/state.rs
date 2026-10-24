@@ -240,6 +240,7 @@ const HUB_KINDS: &[&str] = &[
     "release.export",
     "abandon",
     "lane.rebase",
+    "lane.author",
 ];
 
 /// The digest of a revision: its base and its deltas.
@@ -948,6 +949,32 @@ impl State {
                     if c.state == ChangeState::Conflict {
                         c.state = ChangeState::Open;
                     }
+                }
+                s
+            }
+            "lane.author" => {
+                let a: LaneAuthor = parse(&stmt.body, kind)?;
+                let c = self.change(&a.change)?;
+                if matches!(c.state, ChangeState::Landed | ChangeState::Abandoned) {
+                    return Err(format!(
+                        "{} is {:?}; it takes no new author",
+                        a.change, c.state
+                    ));
+                }
+                if !matches!(a.author, Actor::Agent { .. }) {
+                    return Err(format!(
+                        "a lane is written by an agent, not {}",
+                        a.author.label()
+                    ));
+                }
+                let s = format!(
+                    "{} is now written by {} ({})",
+                    a.change,
+                    a.author.label(),
+                    a.reason
+                );
+                if !dry {
+                    self.change_mut(&a.change)?.author = a.author;
                 }
                 s
             }

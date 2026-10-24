@@ -36,7 +36,6 @@ use apz_proto::wire::WorkLane;
 use super::store::{RepoLink, Session, Sessions};
 use crate::events::Frame;
 use crate::hub_mcp::auth::Scope;
-use crate::transcript::Entry;
 
 /// What the ACP methods need from the plaza. [`super::app_hub`] gives the hub's; the tests give a
 /// fake.
@@ -62,7 +61,7 @@ pub trait Hub: Sync {
     /// Cancels work item `work` of agent `cid` if it is in progress or queued; false otherwise.
     fn cancel(&self, cid: u64, work: u64) -> bool;
     /// The transcript entries of agent `cid` for the given work items, oldest first.
-    fn entries(&self, cid: u64, works: &[u64]) -> Vec<Entry>;
+    fn entries(&self, cid: u64, works: &[u64]) -> Vec<crate::transcript::StoredEntry>;
     /// The pending approvals of agent `cid` held on `thread` (each as the approvals API shows it).
     fn pending_approvals(&self, cid: u64, thread: &str) -> Vec<Value>;
     /// Decides approval `id` for the owner ("from the editor"), as `POST /v1/approvals/{id}` does.
@@ -1492,7 +1491,7 @@ mod tests {
             true
         }
 
-        fn entries(&self, _cid: u64, _works: &[u64]) -> Vec<Entry> {
+        fn entries(&self, _cid: u64, _works: &[u64]) -> Vec<crate::transcript::StoredEntry> {
             Vec::new()
         }
 
@@ -1701,6 +1700,7 @@ mod tests {
         Frame {
             kind: "transcript".to_string(),
             queued: std::time::Instant::now(),
+            seq: 0,
             data: json!({
                 "cid": 7,
                 "work": 42,
@@ -2518,6 +2518,7 @@ mod tests {
             .send(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
+                seq: 0,
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -2996,6 +2997,7 @@ mod tests {
             .send(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
+                seq: 0,
                 data: json!({
                     "cid": 7,
                     "work": 42,
@@ -3052,6 +3054,7 @@ mod tests {
             .send(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
+                seq: 0,
                 data: json!({
                     "cid": 7,
                     "work": 42,

@@ -263,6 +263,16 @@ pub struct LaneRebase {
     pub reason: String,
 }
 
+/// `lane.author`: the change's next revisions come from `author`, an agent (a new session fills the task's builder
+/// seat; the one that wrote the earlier revisions has ended). Each revision keeps the signature of whoever wrote it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LaneAuthor {
+    pub change: String,
+    pub author: Actor,
+    #[serde(default)]
+    pub reason: String,
+}
+
 /// `undo`: undoes an earlier op, where that makes sense.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Undo {

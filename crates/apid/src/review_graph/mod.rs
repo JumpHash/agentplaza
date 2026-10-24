@@ -14,15 +14,20 @@
 //! 5. **Gate.** When every node is done, the rules decide (R3): a failed node or a rework rule sends the task back
 //!    to its worker (`rework`); an owner rule raises the owner's card; else it passes, and the revision joins its
 //!    project's landing queue. After the recipe's rounds, the owner decides (R11).
+//!
+//! Kept in plaza.db (table `review_graph`; its runs, recipes and proposals are child tables). A run's change tree is
+//! in the object store (apz-blobs), under the hash the run keeps.
 
 pub mod recipe;
 pub mod routes;
 pub mod tools;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use apz_blobs::{Blobs, Hash};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -31,7 +36,7 @@ use crate::state::App;
 use apz_proto::wire::WorkKind;
 use recipe::{Condition, NodeDef, Recipe};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
     Running,
@@ -41,7 +46,7 @@ pub enum RunState {
     Failed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeState {
     Waiting,
@@ -61,7 +66,7 @@ impl NodeState {
 }
 
 /// One score: a definition (or file) on one axis.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Score {
     /// `path::qualified`, or a path.
     pub symbol: String,
@@ -90,7 +95,7 @@ fn estimated() -> String {
     "estimated".into()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Finding {
     pub symbol: String,
     #[serde(default)]
@@ -111,7 +116,7 @@ fn minor() -> String {
 }
 
 /// What a part touches, in a few words (built from Weft's references, worded by the node).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Touch {
     pub from: String,
     pub to: String,
@@ -121,8 +126,9 @@ pub struct Touch {
     pub note: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, apz_store::Table)]
 pub struct NodeRun {
+    #[table(child)]
     pub def: NodeDef,
     #[serde(default)]
     pub parent: Option<String>,
@@ -134,10 +140,13 @@ pub struct NodeRun {
     #[serde(default)]
     pub tries: u32,
     #[serde(default)]
+    #[table(child)]
     pub scores: Vec<Score>,
     #[serde(default)]
+    #[table(child)]
     pub findings: Vec<Finding>,
     #[serde(default)]
+    #[table(child)]
     pub touches: Vec<Touch>,
     #[serde(default)]
     pub notes: String,
@@ -152,19 +161,21 @@ pub struct NodeRun {
     pub spawned: u32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, apz_store::Table)]
 pub struct Outcome {
     /// `pass`, `rework`, `owner`, `fail`.
     pub decision: String,
+    #[table(list)]
     pub reasons: Vec<String>,
     #[serde(default)]
+    #[table(list)]
     pub replan: Vec<String>,
     pub at_ms: u64,
     #[serde(default)]
     pub by: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, apz_store::Table)]
 pub struct Run {
     pub id: String,
     pub task: String,
@@ -177,16 +188,20 @@ pub struct Run {
     pub rounds: u32,
     pub kind: String,
     pub state: RunState,
+    #[table(child)]
     pub nodes: Vec<NodeRun>,
     #[serde(default)]
+    #[table(child = "review_graph_run_rule")]
     pub rules: Vec<recipe::Rule>,
     #[serde(default)]
     pub owner_asked: bool,
     #[serde(default)]
+    #[table(child)]
     pub outcome: Option<Outcome>,
-    /// The change tree the nodes read (from Weft, at the start).
+    /// The hash of the change tree the nodes read (from Weft, at the start) in the object store; read it with
+    /// [`Reviews::tree`].
     #[serde(default)]
-    pub tree: Value,
+    pub tree_blob: Option<String>,
     #[serde(default)]
     pub summary: String,
     /// `review` (a sealed round), `recheck` (a landing candidate, `revision` is its digest) or `post-land` (main
@@ -290,65 +305,106 @@ impl Run {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+/// The review graph's book: one row of `review_graph`, its runs, recipes and proposals as child rows.
+#[derive(Default, apz_store::Table)]
+#[table(name = "review_graph")]
 struct Book {
+    #[table(map = "review_graph_run")]
     runs: BTreeMap<String, Run>,
     next: u64,
     /// The owner's recipes and versions (the built-in ones are always there).
+    #[table(child = "review_graph_recipe")]
     recipes: Vec<Recipe>,
     /// Proposals from the orchestrator, waiting for the owner.
+    #[table(child = "review_graph_proposal")]
     proposals: Vec<Proposal>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// The review graph's table definition: `review_graph`, with its children.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Book)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, apz_store::Table)]
 pub struct Proposal {
     pub id: String,
     pub by: u64,
+    #[table(child)]
     pub recipe: Recipe,
     pub why: String,
     pub state: String,
     pub at_ms: u64,
 }
 
-/// The review graph's runs and recipes, saved at `<state>/review-graph.json`.
+/// The review graph's runs and recipes, kept in plaza.db (component `review_graph`). A run's change tree is in the
+/// object store, under the hash the run keeps.
 pub struct Reviews {
     book: Mutex<Book>,
-    path: Option<PathBuf>,
-}
-
-impl Default for Reviews {
-    fn default() -> Self {
-        Reviews {
-            book: Mutex::new(Book::default()),
-            path: None,
-        }
-    }
+    blobs: Arc<Blobs>,
 }
 
 impl Reviews {
-    pub fn load(state_dir: &std::path::Path) -> Reviews {
-        let path = state_dir.join("review-graph.json");
-        let book = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+    /// An empty review graph over the object store `blobs`; [`Reviews::load`] fills it at start.
+    pub fn new(blobs: Arc<Blobs>) -> Reviews {
         Reviews {
-            book: Mutex::new(book),
-            path: Some(path),
+            book: Mutex::new(Book::default()),
+            blobs,
         }
     }
 
-    fn save(&self, book: &Book) {
-        if let Some(p) = &self.path {
-            let _ = crate::state::write_atomic(p, &serde_json::to_string(book).unwrap_or_default());
-        }
+    /// Replaces the book with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Option<Book> = apz_store::table::load_one(conn, def())?;
+        *self.book.lock().unwrap_or_else(|p| p.into_inner()) = stored.unwrap_or_default();
+        Ok(())
+    }
+
+    /// The book as rows of its tables, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let book = self.book.lock().unwrap_or_else(|p| p.into_inner());
+        RowSet::one(def(), &*book)
+    }
+
+    /// Puts a change tree in the object store and returns its hash in hex.
+    fn put_tree(&self, tree: &Value) -> Result<String, String> {
+        let bytes = serde_json::to_vec(tree).map_err(|e| e.to_string())?;
+        self.blobs.put(&bytes).map(|hash| hash.hex())
+    }
+
+    /// The change tree a run started with, read back from the object store; `Value::Null` when it has none or it
+    /// cannot be read.
+    pub fn tree(&self, run: &Run) -> Value {
+        let Some(hash) = run
+            .tree_blob
+            .as_deref()
+            .and_then(|h| h.parse::<Hash>().ok())
+        else {
+            return Value::Null;
+        };
+        let bytes = match self.blobs.get(&hash) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!(
+                    "apid: the change tree {} of run {} cannot be read: {e}",
+                    hash.short(),
+                    run.id
+                );
+                return Value::Null;
+            }
+        };
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            eprintln!(
+                "apid: the change tree {} of run {} is not JSON: {e}",
+                hash.short(),
+                run.id
+            );
+            Value::Null
+        })
     }
 
     fn with<T>(&self, f: impl FnOnce(&mut Book) -> T) -> T {
         let mut book = self.book.lock().unwrap_or_else(|p| p.into_inner());
-        let out = f(&mut book);
-        self.save(&book);
-        out
+        f(&mut book)
     }
 
     pub fn run(&self, id: &str) -> Option<Run> {
@@ -552,6 +608,13 @@ pub fn start(app: &App, task: &str) -> Option<String> {
         return None;
     }
     let tree = app.weft.get(&format!("/revisions/{revision}/tree")).ok()?;
+    let tree_blob = match app.reviews.put_tree(&tree) {
+        Ok(hash) => hash,
+        Err(e) => {
+            eprintln!("apid: the change tree of {revision} was not stored: {e}");
+            return None;
+        }
+    };
     let project_kind = app
         .projects
         .get(&project)
@@ -591,7 +654,7 @@ pub fn start(app: &App, task: &str) -> Option<String> {
                 rules: recipe.rules.clone(),
                 owner_asked: owner,
                 outcome: None,
-                tree,
+                tree_blob: Some(tree_blob),
                 summary: view.note.unwrap_or_default(),
                 purpose: review_purpose(),
                 repo: String::new(),
@@ -772,9 +835,11 @@ pub fn tick(app: &App) {
     if app.control.paused() || !app.weft.running() {
         return;
     }
-    // Tasks awaiting review with a sealed lane get a run.
+    // Tasks awaiting review with a sealed lane get a run, except the work loop's (their reviewer is a seat).
     for task in app.plaza.tasks.list() {
-        if task.state() == apz_plaza::tasks::TaskState::AwaitingReview.as_str() {
+        if task.state() == apz_plaza::tasks::TaskState::AwaitingReview.as_str()
+            && !crate::work_loop::owns(app, task.id())
+        {
             start(app, task.id());
         }
     }
@@ -824,15 +889,16 @@ fn start_node(app: &App, run: &Run, node: &str) {
     }
     match n.def.kind.as_str() {
         "tool" => {
+            let tree = app.reviews.tree(run);
             let (scores, notes) = match n.def.tool.as_deref() {
-                Some("divergence") => divergence_scores(&run.tree),
+                Some("divergence") => divergence_scores(&tree),
                 _ => (
                     vec![],
                     format!(
                         "{} files, +{} −{}",
-                        run.tree["files"].as_array().map(|f| f.len()).unwrap_or(0),
-                        run.tree["add"],
-                        run.tree["del"]
+                        tree["files"].as_array().map(|f| f.len()).unwrap_or(0),
+                        tree["add"],
+                        tree["del"]
                     ),
                 ),
             };
@@ -902,11 +968,11 @@ fn unclaim(app: &App, run: &str, node: &str) {
 
 /// An agent of `role` working on `project`, not the worker, preferring one not already on this run and idle.
 fn pick_agent(app: &App, project: &str, role: &str, worker: u64, taken: &[u64]) -> Option<u64> {
-    let members = app.members.members(project);
+    let on_project = crate::projects::agents_of(app, project);
     let mut candidates = app.agents.select(|a| {
         (a.role == role
             && a.cid != worker
-            && members.contains(&a.cid)
+            && on_project.contains(&a.cid)
             && a.status != crate::agents::Status::Offline
             && a.kind != "model")
             .then(|| (a.cid, a.status == crate::agents::Status::Idle))
@@ -964,7 +1030,7 @@ fn node_prompt(app: &App, run: &Run, n: &NodeRun) -> String {
     let worker = app
         .agents
         .get(run.worker)
-        .map(|a| a.name)
+        .map(|a| a.label())
         .unwrap_or_else(|| format!("agent {}", run.worker));
     let axes: Vec<String> = n
         .def
@@ -1111,7 +1177,8 @@ pub fn report(
             ));
         }
     }
-    let lineage = |sym: &str| lineage_of(&r.tree, sym);
+    let tree = app.reviews.tree(&r);
+    let lineage = |sym: &str| lineage_of(&tree, sym);
     let n_scores = scores.len();
     app.reviews.update(&run, |r| {
         let round = r.round;
@@ -1460,7 +1527,7 @@ fn gate(app: &App, run_id: &str) {
     }
 }
 
-/// A pass: the revision joins its project's landing queue; the task is done (and the worker paid) when it lands.
+/// A pass: the revision joins its project's landing queue; the task is done when it lands.
 fn passed(app: &App, run: &Run, _notes: &str) {
     let detail = app.weft.get(&format!("/changes/{}", run.change)).ok();
     if let Some(d) = detail {
@@ -1541,7 +1608,7 @@ fn ask_owner(app: &App, run: &Run) {
     let worker = app
         .agents
         .get(run.worker)
-        .map(|a| a.name)
+        .map(|a| a.label())
         .unwrap_or_else(|| format!("agent {}", run.worker));
     let goal = app
         .plaza
@@ -1561,7 +1628,7 @@ fn ask_owner(app: &App, run: &Run) {
         &format!("review of task {}", run.task),
         detail,
     );
-    app.bus.publish("approval", &item);
+    crate::approvals::announce(app, &item);
 }
 
 /// The owner's ruling on a review card: pass, send back, or fail. Signed for the owner from the console.
@@ -1612,6 +1679,7 @@ pub fn owner_ruled(
         "rework" => send_back(app, &run, std::slice::from_ref(&notes)),
         _ => failed(app, &run, &notes),
     }
+    save_owner_decision(app);
     app.bus.publish(
         "review_run",
         &json!({ "run": run.id, "task": run.task, "state": decision, "by": "owner" }),
@@ -1619,9 +1687,20 @@ pub fn owner_ruled(
     Ok(())
 }
 
+/// Saves the book now: an owner's answer (a ruling, a recipe, a proposal) returns once it is committed. A failed save
+/// is retried by the next pass, so it is only logged here.
+pub fn save_owner_decision(app: &App) {
+    if !crate::store::saver::save_now(app, "review_graph") {
+        eprintln!(
+            "apid: the review graph's owner decision is not saved yet (the next pass retries)"
+        );
+    }
+}
+
 /// Findings of earlier rounds on definitions still in this round's tree (they follow the definition's lineage).
 pub fn carried_findings(app: &App, run: &Run) -> Vec<Finding> {
-    let lineages: Vec<String> = run.tree["files"]
+    let tree = app.reviews.tree(run);
+    let lineages: Vec<String> = tree["files"]
         .as_array()
         .into_iter()
         .flatten()
@@ -1710,7 +1789,7 @@ fn check_run(
                 }],
                 owner_asked: false,
                 outcome: None,
-                tree: Value::Null,
+                tree_blob: None,
                 summary: String::new(),
                 purpose: purpose.into(),
                 repo: repo.into(),
@@ -1871,7 +1950,6 @@ fn settle_check(app: &App, run: &Run, outcome: Outcome) {
             let created = app.plaza.tasks.create(&apz_plaza::tasks::CreateTask {
                 goal,
                 acceptance: Some("the post-land suite passes on main".into()),
-                budget: None,
                 role: app.agents.get(run.worker).map(|a| a.role),
                 after: vec![],
                 project: Some(run.project.clone()),
@@ -1886,8 +1964,6 @@ fn settle_check(app: &App, run: &Run, outcome: Outcome) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
 
     fn run_with(state: RunState) -> Run {
@@ -1927,7 +2003,7 @@ mod tests {
             rules: vec![],
             owner_asked: false,
             outcome: None,
-            tree: Value::Null,
+            tree_blob: None,
             summary: String::new(),
             purpose: "review".into(),
             repo: String::new(),
@@ -1936,9 +2012,16 @@ mod tests {
         }
     }
 
+    /// A review graph over an object store in `dir` (which the test keeps alive).
+    fn reviews_in(dir: &tempfile::TempDir) -> Reviews {
+        let blobs = Blobs::open(&dir.path().join("blobs")).expect("the object store opens");
+        Reviews::new(Arc::new(blobs))
+    }
+
     #[test]
     fn of_ticks_that_start_one_node_at_once_only_one_takes_it() {
-        let reviews = Arc::new(Reviews::default());
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = Arc::new(reviews_in(&dir));
         reviews.with(|b| b.runs.insert("rv1".into(), run_with(RunState::Running)));
         let taken: usize = (0..8)
             .map(|_| {
@@ -1959,7 +2042,8 @@ mod tests {
 
     #[test]
     fn a_node_of_a_run_that_ended_is_not_taken() {
-        let reviews = Reviews::default();
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = reviews_in(&dir);
         reviews.with(|b| b.runs.insert("rv1".into(), run_with(RunState::Rework)));
         assert!(!reviews.claim("rv1", "quality"));
         assert!(!reviews.claim("rv2", "quality"));
@@ -1967,5 +2051,32 @@ mod tests {
             reviews.run("rv1").unwrap().node("quality").unwrap().state,
             NodeState::Waiting
         );
+    }
+
+    #[test]
+    fn the_book_is_kept_in_its_tables_with_the_tree_in_the_object_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Arc::new(Blobs::open(&dir.path().join("blobs")).unwrap());
+        let reviews = Reviews::new(Arc::clone(&blobs));
+        let tree = json!({ "files": [{ "path": "src/lib.rs", "symbols": [{ "id": "a", "lineage": "L1" }] }] });
+        let mut run = run_with(RunState::Running);
+        run.tree_blob = Some(reviews.put_tree(&tree).unwrap());
+        reviews.with(|b| {
+            b.next = 7;
+            b.runs.insert("rv1".into(), run);
+        });
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &reviews.rows().unwrap()).unwrap();
+
+        let fresh = Reviews::new(blobs);
+        fresh.load(&conn).unwrap();
+        assert_eq!(fresh.with(|b| b.next), 7);
+        let back = fresh.run("rv1").unwrap();
+        assert_eq!(
+            format!("{back:?}"),
+            format!("{:?}", reviews.run("rv1").unwrap())
+        );
+        assert_eq!(fresh.tree(&back), tree);
     }
 }

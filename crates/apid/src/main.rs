@@ -25,14 +25,16 @@ mod appearance;
 mod approvals;
 mod artifacts;
 mod autoscale;
+mod budgets;
+mod cards;
+mod chats;
 mod connectors;
 mod content;
 mod context_track;
 mod control;
-mod conversations;
-mod db;
 mod decisions;
 mod deliverables;
+mod disk;
 mod drafts;
 mod e2b;
 mod e2b_net;
@@ -56,47 +58,49 @@ mod laws;
 mod library;
 mod lifecycle;
 mod llm_proxy;
-mod looks;
 mod maintenance;
 mod mcp;
-mod membership;
-mod memory;
 mod metrics;
 mod mover;
 mod node_link;
 mod nodes;
 mod openapi;
 mod owner_board;
-mod payments;
 mod placement;
 mod platforms;
 mod plaza;
 mod prices;
+mod probes;
 mod project_files;
 mod project_settings;
 mod projects;
 mod prompts;
 mod provider_health;
+mod provider_listings;
 mod providers;
 mod replan;
 mod review_graph;
 mod role;
 mod roles_custom;
 mod rules;
-mod sanctions;
 mod scheduler;
+mod seats;
+mod sessions;
 mod settings;
 mod shares;
 mod shutdown;
 mod skills;
 mod sleep;
-mod society;
+mod sources;
 mod spawned;
 mod state;
 mod stations;
 mod steps;
+mod storage;
+mod store;
 mod task_graph;
 mod task_plan;
+mod threads;
 mod toolbox;
 mod toolbox_survey;
 mod tools;
@@ -109,6 +113,8 @@ mod vault;
 mod vendor_relay;
 mod vm_snapshots;
 mod weft_hub;
+mod work_loop;
+mod work_routes;
 
 use std::process::ExitCode;
 
@@ -136,6 +142,7 @@ usage: apid [--port PORT] [--state-dir DIR] [--noded-port PORT] [--hub-port PORT
                      apps/web/dist)
   -V, --version      print the version and exit
   openapi            print the hub API's OpenAPI spec (docs/api/openapi.json) and exit
+  schema             print the stored components' tables (sql/plaza/0001_init.sql) and exit
   --env-file FILE    KEY=VALUE lines loaded into the environment at start
                      (default ~/.config/agentplaza/keys.env, if present)
   --vault-key FILE   the vault's key file (default: the config directory's vault.key); created on
@@ -156,6 +163,10 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|a| a == "openapi") {
         openapi::print();
+        return ExitCode::SUCCESS;
+    }
+    if args.first().is_some_and(|a| a == "schema") {
+        store::print_schema();
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "-h" || a == "--help") {

@@ -1,4 +1,4 @@
-//! The IDE's centre for the selected agent: its header (status dot, name, and the Chat | Terminal | Editor |
+//! The IDE's centre for the selected agent: its header (status dot, label, and the Chat | Terminal | Editor |
 //! Diff tabs), then the view the tab picks. Chat is the transcript as a reading column: text as prose, owner
 //! messages as right-aligned bubbles, board nudges as system bubbles, a run of tool calls as one "N steps · tools"
 //! line that opens, a working line while the agent works, and the composer that steers the agent.
@@ -204,13 +204,13 @@ pub fn transcript_texts(entries: &[Value]) -> Vec<&str> {
     texts
 }
 
-/// The header of the centre: the agent's dot and name, and the four views.
+/// The header of the centre: the agent's dot and label, and the four views.
 pub fn header(st: &State) -> Element<'_, Msg> {
     let p = theme::palette();
     let (dot, name) = match ide::selected_agent(st) {
         Some(agent) => (
             Some(ide_model::dot(&agent.status, None)),
-            agent.name.clone(),
+            agent.label.clone(),
         ),
         None => (None, ide::crumbs(st).1),
     };
@@ -575,7 +575,7 @@ fn transcript(st: &State) -> Element<'_, Msg> {
     let entries = &st.panels.entries;
     let rctx = rich_ctx(st);
     let agent = ide::selected_agent(st);
-    let who = agent.map_or_else(|| "the agent".to_string(), |a| a.name.clone());
+    let who = agent.map_or_else(|| "the agent".to_string(), |a| a.label.clone());
     let mut col = column![].spacing(12);
     if let Some(error) = &st.panels.entries_error {
         col = col.push(ui::error_line(error));
@@ -656,7 +656,7 @@ fn pick_style(_: &Theme, status: button::Status) -> button::Style {
 fn composer(st: &State) -> Element<'_, Msg> {
     let p = theme::palette();
     let agent = ide::selected_agent(st);
-    let who = agent.map_or_else(|| "the agent".to_string(), |a| a.name.clone());
+    let who = agent.map_or_else(|| "the agent".to_string(), |a| a.label.clone());
     let on = ide::selected_project(st)
         .map(|p| format!(" on {}", p.title))
         .unwrap_or_else(|| " on no project".to_string());

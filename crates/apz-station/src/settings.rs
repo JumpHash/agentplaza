@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// What happens when the owner takes over a pixel session (plan section 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum Takeover {
     /// The agent waits and resumes when the owner gives the session back.
     #[default]
@@ -18,6 +19,7 @@ pub enum Takeover {
 /// Per-workstation settings. Missing fields take the defaults, so a partial object is valid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct StationSettings {
     pub takeover: Takeover,
     /// Whether screen sessions are recorded.
@@ -32,10 +34,6 @@ pub struct StationSettings {
     pub work_folder: String,
     /// For VMs: restore a clean snapshot after each lease.
     pub snapshot_reset: bool,
-    /// What an hour of a lease on this workstation costs the lease's task, in plaza credits (1 credit is $0.001).
-    /// The hub charges the lease's wall time, from its activation to its release, rounded up to a whole credit, to
-    /// the task's escrow. 0 (the default) makes the workstation free.
-    pub rate_per_hour: u64,
 }
 
 impl Default for StationSettings {
@@ -48,7 +46,6 @@ impl Default for StationSettings {
             record_takeovers: true,
             work_folder: "~/AgentPlaza".into(),
             snapshot_reset: false,
-            rate_per_hour: 0,
         }
     }
 }
@@ -76,7 +73,7 @@ mod tests {
     fn settings_encode_every_field() {
         assert_wire(
             &StationSettings::default(),
-            r#"{"takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false,"rate_per_hour":0}"#,
+            r#"{"takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false}"#,
         );
         assert_wire(
             &StationSettings {
@@ -87,22 +84,13 @@ mod tests {
                 record_takeovers: false,
                 work_folder: "/srv/work".into(),
                 snapshot_reset: true,
-                rate_per_hour: 120,
             },
-            r#"{"takeover":"release_lease","record":false,"retention_days":7,"record_fps":1,"record_takeovers":false,"work_folder":"/srv/work","snapshot_reset":true,"rate_per_hour":120}"#,
+            r#"{"takeover":"release_lease","record":false,"retention_days":7,"record_fps":1,"record_takeovers":false,"work_folder":"/srv/work","snapshot_reset":true}"#,
         );
     }
 
     #[test]
     fn station_settings_decode_missing_fields_as_defaults() {
-        // A station without a rate is free, and an object from before rates decodes (was a_station_without_a_rate_is_free_and_an_object_from_before_rates_decodes).
-        {
-            let old: StationSettings =
-                serde_json::from_str(r#"{"record":true,"snapshot_reset":false}"#)
-                    .expect("an object from before rates");
-            assert_eq!(old.rate_per_hour, 0);
-            assert_eq!(StationSettings::default().rate_per_hour, 0);
-        }
         // A partial object takes the defaults for the rest (was a_partial_object_takes_the_defaults_for_the_rest).
         {
             let decoded: StationSettings =

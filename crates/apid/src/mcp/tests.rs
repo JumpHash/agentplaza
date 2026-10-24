@@ -2,17 +2,28 @@
 //! access and risk, and the laws. The fixture is the `mcp_fixture` binary (src/bin, built with apid).
 
 use std::collections::{BTreeMap, HashMap};
+#[cfg(not(windows))]
+use std::io::Read;
 use std::io::{BufRead, BufReader};
+#[cfg(not(windows))]
+use std::path::PathBuf;
 use std::process::{Child, Stdio};
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::json;
 
 use super::client::ToolInfo;
-use super::config::{Access, Limits, McpServer, Pick, Risk, Setting, ToolPolicy, Transport};
+use super::config::{
+    Access, Limits, McpServer, Package, Pick, Risk, Setting, ToolPolicy, Transport, TransportKind,
+};
+use super::egress::Egress;
 use super::http::check_endpoint;
 use super::runtime::{Ctx, Runtime, Status};
-use super::stdio::PlainLauncher;
+use super::runtimes::{Fetch, sha256_hex};
+use super::stdio::{Child as ServerChild, SandboxLauncher};
+use super::vm::{VmHost, VmRequest};
 use super::{
     McpSecrets, OnBehalf, Secret, allowed, auto_risk, forget_risks, lookup, publish_risks,
     risk_for, wire_names,
@@ -26,6 +37,93 @@ fn fixture() -> String {
     let debug = exe.parent().and_then(|p| p.parent()).expect("target/debug");
     let name = format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX);
     debug.join(name).to_string_lossy().into_owned()
+}
+
+/// The URL the fixture is pinned at in the tests. `FixtureFetch` serves the built binary for it, so no test
+/// touches the network.
+const FIXTURE_URL: &str = "https://fixture.invalid/mcp_fixture";
+
+/// Serves the fixture binary for its URL, and nothing else.
+struct FixtureFetch;
+
+impl Fetch for FixtureFetch {
+    fn get(&self, url: &str, _limit: u64) -> Result<Vec<u8>, String> {
+        if url == FIXTURE_URL {
+            std::fs::read(fixture()).map_err(|e| e.to_string())
+        } else {
+            Err(format!("no fake download for {url}"))
+        }
+    }
+}
+
+/// The fixture as a pinned binary package: its URL, the SHA-256 of the built file, and the file to run.
+fn fixture_package() -> Package {
+    let bytes =
+        std::fs::read(fixture()).expect("build the mcp_fixture binary: cargo build -p apid");
+    Package::Binary {
+        url: FIXTURE_URL.into(),
+        sha256: sha256_hex(&bytes),
+        entry: "mcp_fixture".into(),
+    }
+}
+
+/// A runtime for one test: its own state directory, the fixture served by `FixtureFetch`, the OS sandbox, and no
+/// proxy (the proxy has its own tests).
+fn runtime() -> Runtime {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "apz-mcp-tests-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    Runtime::new(dir, Arc::new(FixtureFetch), Arc::new(SandboxLauncher), None)
+}
+
+/// A microVM host for tests: available or not as given, and every launch is recorded and refused with `refusal`.
+struct FakeVm {
+    available: Result<(), String>,
+    launched: Mutex<Vec<VmRequest>>,
+    refusal: String,
+}
+
+impl VmHost for FakeVm {
+    fn available(&self) -> Result<(), String> {
+        self.available.clone()
+    }
+
+    fn launch(&self, request: &VmRequest) -> Result<Box<dyn ServerChild>, String> {
+        self.launched.lock().unwrap().push(request.clone());
+        Err(self.refusal.clone())
+    }
+
+    fn purge(&self, _server: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// A runtime for one test with `vm` as its microVM host, and the proxy on a free loopback port when `proxied`.
+fn runtime_with_vm(vm: Arc<FakeVm>, proxied: bool) -> Runtime {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "apz-mcp-vm-tests-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let egress = proxied.then(|| Egress::new(port));
+    Runtime::new(
+        dir,
+        Arc::new(FixtureFetch),
+        Arc::new(SandboxLauncher),
+        egress,
+    )
+    .with_vm(vm)
 }
 
 /// A vault for tests: entries by name, each bound to one server, optionally scoped to one node. Agents
@@ -83,10 +181,10 @@ fn stdio_server(id: &str, env: &[(&str, Setting)]) -> McpServer {
         id: id.into(),
         name: format!("{id} fixture"),
         enabled: true,
-        transport: Transport::Stdio {
-            image: fixture(),
-            command: vec!["stdio".into()],
-            workdir: None,
+        transport: Transport {
+            package: Some(fixture_package()),
+            args: vec!["stdio".into()],
+            ..Transport::default()
         },
         env: env
             .iter()
@@ -95,15 +193,16 @@ fn stdio_server(id: &str, env: &[(&str, Setting)]) -> McpServer {
         headers: BTreeMap::new(),
         tools: ToolPolicy::default(),
         access: Access {
-            roles: Pick::All,
-            nodes: Pick::All,
-            projects: Pick::All,
+            roles: Pick::all(),
+            nodes: Pick::all(),
+            projects: Pick::all(),
         },
         limits: Limits::default(),
         allow_private: false,
         storage: Default::default(),
         created_ms: 0,
         updated_ms: 0,
+        offered: Vec::new(),
     }
 }
 
@@ -118,7 +217,7 @@ fn value(text: &str) -> Setting {
 
 #[test]
 fn the_handshake_and_the_paged_listing_find_all_nine_tools() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let server = stdio_server("fixture", &[]);
     let probe = runtime
@@ -148,7 +247,7 @@ fn the_handshake_and_the_paged_listing_find_all_nine_tools() {
 
 #[test]
 fn a_call_returns_its_text_with_escapes_intact() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let server = stdio_server("fixture", &[]);
     let out = runtime
@@ -182,7 +281,7 @@ fn a_call_returns_its_text_with_escapes_intact() {
 
 #[test]
 fn a_tool_error_is_an_error_result_not_a_failed_call() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let server = stdio_server("fixture", &[]);
     let out = runtime
@@ -200,7 +299,7 @@ fn a_tool_error_is_an_error_result_not_a_failed_call() {
 
 #[test]
 fn a_slow_call_times_out_and_the_next_call_starts_again() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let server = with_timeout(stdio_server("fixture", &[]), 1);
     let err = runtime
@@ -227,7 +326,7 @@ fn a_slow_call_times_out_and_the_next_call_starts_again() {
 
 #[test]
 fn a_large_output_is_capped_at_the_server_limit() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let mut server = stdio_server("fixture", &[]);
     server.limits.max_output_kb = 1;
@@ -250,7 +349,7 @@ fn a_large_output_is_capped_at_the_server_limit() {
 
 #[test]
 fn a_secret_echoed_by_the_server_never_comes_back() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let mut vault = Vault::default();
     vault.entries.push((
         "TEST_TOKEN".into(),
@@ -341,7 +440,7 @@ fn vault_scopes_secrets_to_their_server_and_node() {
 
 #[test]
 fn a_server_that_exits_at_start_backs_off_and_gives_up() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let server = stdio_server("crashy", &[("FIXTURE_MODE", value("exit_at_start"))]);
     // Failures at t=0,1s,3s,7s,15s (the backoff gaps are 1, 2, 4, 8 s); the fifth gives up.
@@ -404,7 +503,7 @@ fn a_server_that_exits_at_start_backs_off_and_gives_up() {
 
 #[test]
 fn an_idle_instance_stops_and_the_next_call_starts_it() {
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let mut server = stdio_server("fixture", &[]);
     server.limits.idle_stop_min = 1;
@@ -470,7 +569,11 @@ impl Drop for HttpFixture {
 
 fn http_server(id: &str, url: String) -> McpServer {
     let mut server = stdio_server(id, &[]);
-    server.transport = Transport::Http { url };
+    server.transport = Transport {
+        kind: TransportKind::Http,
+        url: Some(url),
+        ..Transport::default()
+    };
     server.allow_private = true;
     server
 }
@@ -478,7 +581,7 @@ fn http_server(id: &str, url: String) -> McpServer {
 #[test]
 fn the_http_transport_reads_json_and_event_stream_replies_and_keeps_its_session() {
     let fixture = HttpFixture::start();
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     for path in ["mcp", "mcp/sse"] {
         let server = http_server(
@@ -505,7 +608,7 @@ fn the_http_transport_reads_json_and_event_stream_replies_and_keeps_its_session(
 #[test]
 fn an_http_bearer_secret_reaches_the_server_and_is_scrubbed_from_its_reply() {
     let fixture = HttpFixture::start();
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let mut vault = Vault::default();
     vault.entries.push((
         "LINEAR_KEY".into(),
@@ -538,11 +641,13 @@ fn a_private_http_endpoint_is_refused_unless_allowed() {
     assert!(check_endpoint("http://127.0.0.1:9/mcp", false, &[]).is_err());
     assert!(check_endpoint("https://192.168.1.10/mcp", false, &[]).is_err());
     assert!(check_endpoint("http://127.0.0.1:9/mcp", true, &[]).is_ok());
-    let runtime = Runtime::new(Arc::new(PlainLauncher));
+    let runtime = runtime();
     let vault = Vault::default();
     let mut server = stdio_server("remote", &[]);
-    server.transport = Transport::Http {
-        url: "http://127.0.0.1:9/mcp".into(),
+    server.transport = Transport {
+        kind: TransportKind::Http,
+        url: Some("http://127.0.0.1:9/mcp".into()),
+        ..Transport::default()
     };
     let err = runtime
         .call(
@@ -559,9 +664,9 @@ fn a_private_http_endpoint_is_refused_unless_allowed() {
 fn access_admits_the_listed_roles_and_nodes_only() {
     let mut server = stdio_server("fixture", &[]);
     server.access = Access {
-        roles: Pick::Only(vec!["builder".into()]),
-        nodes: Pick::Only(vec!["n1".into()]),
-        projects: Pick::All,
+        roles: Pick::only(vec!["builder".into()]),
+        nodes: Pick::only(vec!["n1".into()]),
+        projects: Pick::all(),
     };
     assert!(allowed(&server, "builder", Some("n1"), Some("pr1")));
     assert!(!allowed(&server, "reviewer", Some("n1"), Some("pr1")));
@@ -576,9 +681,9 @@ fn access_admits_the_listed_roles_and_nodes_only() {
         "an empty access list admits nobody"
     );
     server.access = Access {
-        roles: Pick::All,
-        nodes: Pick::All,
-        projects: Pick::All,
+        roles: Pick::all(),
+        nodes: Pick::all(),
+        projects: Pick::all(),
     };
     server.enabled = false;
     assert!(
@@ -591,9 +696,9 @@ fn access_admits_the_listed_roles_and_nodes_only() {
 fn access_by_project_lets_in_that_projects_agents_only() {
     let mut server = stdio_server("fixture", &[]);
     server.access = Access {
-        roles: Pick::All,
-        nodes: Pick::All,
-        projects: Pick::Only(vec!["pr4".into()]),
+        roles: Pick::all(),
+        nodes: Pick::all(),
+        projects: Pick::only(vec!["pr4".into()]),
     };
     assert!(allowed(&server, "builder", Some("n1"), Some("pr4")));
     assert!(!allowed(&server, "builder", Some("n1"), Some("pr5")));
@@ -604,7 +709,7 @@ fn access_by_project_lets_in_that_projects_agents_only() {
     // A server from before projects names none, and stays open to every project.
     let old: Access =
         serde_json::from_value(serde_json::json!({"roles": "all", "nodes": "all"})).unwrap();
-    assert_eq!(old.projects, Pick::All);
+    assert_eq!(old.projects, Pick::all());
     server.access = old;
     assert!(allowed(&server, "orchestrator", Some("n1"), None));
 }
@@ -614,7 +719,7 @@ fn tool(name: &str, annotations: serde_json::Value) -> ToolInfo {
         name: name.into(),
         description: String::new(),
         input_schema: json!({"type": "object"}),
-        annotations,
+        annotations: serde_json::from_value(annotations).unwrap(),
     }
 }
 
@@ -700,10 +805,7 @@ fn colliding_names_get_distinct_wire_names_that_map_back_to_their_tools() {
 
 #[test]
 fn the_laws_permit_an_enabled_read_tool_and_hold_an_irreversible_one() {
-    let dir = std::env::temp_dir().join(format!("apz-mcp-laws-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let laws = crate::laws::Laws::load(&dir);
+    let laws = crate::laws::Laws::builtin();
     let listed = vec![
         tool("search", json!({"readOnlyHint": true})),
         tool("wipe", json!({"destructiveHint": true})),
@@ -721,7 +823,6 @@ fn the_laws_permit_an_enabled_read_tool_and_hold_an_irreversible_one() {
         !laws.permits("builder", &wires[1]),
         "C-004a holds an irreversible tool without an owner approval"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -764,29 +865,158 @@ fn tool_views_show_the_agent_name_the_annotation_risk_and_the_effective_risk() {
 
 #[test]
 fn a_start_that_fails_before_launch_leaves_its_reason_on_the_server_view() {
-    let docker = super::stdio::tests::MockDocker::new(Default::default(), |_: &[String]| {
-        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
-    });
-    // Loopback binds without docker; the networks, which need docker, are what fails.
-    let bind: super::egress::Bind =
-        Box::new(|_: std::net::Ipv4Addr| std::net::TcpListener::bind("127.0.0.1:0"));
-    let egress = super::egress::Egress::with_setup(super::egress::Setup {
-        docker: Arc::new(docker),
-        bind,
-        port: super::egress::DEFAULT_PORT,
-        state_dir: std::env::temp_dir(),
-        relay_for: super::egress::relay_to(std::path::PathBuf::from("mcp_relay")),
-        handshake: super::egress::Handshake::default(),
-    });
-    let runtime = Runtime::with_egress(Arc::new(PlainLauncher), egress);
+    // The package cannot be downloaded: the start fails before anything runs, and the reason stays on the server.
+    let runtime = runtime();
     let vault = Vault::default();
-    let server = stdio_server("nodocker", &[]);
+    let mut server = stdio_server("nodownload", &[]);
+    server.transport.package = Some(Package::Binary {
+        url: "https://nowhere.invalid/server".into(),
+        sha256: "0".repeat(64),
+        entry: "server".into(),
+    });
     assert!(
         runtime
             .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
             .is_err()
     );
-    let summary = runtime.summary("nodocker");
+    let summary = runtime.summary("nodownload");
     assert_eq!(summary.status, Status::Error);
-    assert_eq!(summary.last_error.as_deref(), Some(super::stdio::NO_DOCKER));
+    assert!(
+        summary
+            .last_error
+            .unwrap_or_default()
+            .contains("nowhere.invalid")
+    );
+}
+
+// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
+#[test]
+#[cfg(not(windows))]
+fn the_sandboxed_fixture_reaches_the_proxy_port_and_nothing_else() {
+    // The proxy's port is the only loopback port a sandboxed server may connect to: another local listener, and an
+    // address beyond the loopback, are refused by the sandbox.
+    let egress = Egress::new(0);
+    let lease = egress.attach("probe", false, &[]).unwrap();
+    let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let scratch = std::env::temp_dir().join(format!("apz-mcp-sandbox-{}", std::process::id()));
+    let reach = |target: String| -> String {
+        let spec = apz_sandbox::Spec {
+            program: PathBuf::from(fixture()),
+            args: vec!["connect".into(), target],
+            env: Vec::new(),
+            workdir: scratch.clone(),
+            read_only: Vec::new(),
+            read_write: Vec::new(),
+            network: apz_sandbox::Network::LoopbackPort(lease.port()),
+            limits: apz_sandbox::Limits::default(),
+        };
+        let mut child =
+            apz_sandbox::spawn(&spec, Stdio::null(), Stdio::piped(), Stdio::piped()).unwrap();
+        let mut out = String::new();
+        child.stdout().unwrap().read_to_string(&mut out).unwrap();
+        let mut err = String::new();
+        child.stderr().unwrap().read_to_string(&mut err).unwrap();
+        child.wait().unwrap();
+        format!("{out}{err}")
+    };
+    let proxy = reach(format!("127.0.0.1:{}", lease.port()));
+    assert!(proxy.starts_with("connected"), "{proxy}");
+    let local = reach(format!("127.0.0.1:{}", other.local_addr().unwrap().port()));
+    assert!(local.starts_with("refused"), "{local}");
+    let beyond = reach("192.0.2.1:443".into());
+    assert!(beyond.starts_with("refused"), "{beyond}");
+}
+
+#[test]
+fn a_server_runs_in_a_microvm_with_its_directories_as_volumes_and_the_proxy_on_the_guest_port() {
+    let vm = Arc::new(FakeVm {
+        available: Ok(()),
+        launched: Mutex::new(Vec::new()),
+        refusal: "the fake node refused the boot".into(),
+    });
+    let runtime = runtime_with_vm(Arc::clone(&vm), true);
+    let vault = Vault::default();
+    let server = stdio_server("fixture", &[]);
+    let refused = runtime
+        .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
+        .unwrap_err();
+    assert!(
+        refused.contains("the fake node refused the boot"),
+        "{refused}"
+    );
+    assert_eq!(runtime.summary("fixture").launcher, "vm");
+    let launched = vm.launched.lock().unwrap();
+    assert_eq!(launched.len(), 1);
+    let request = &launched[0];
+    assert!(
+        request.program.starts_with("/data/ro-"),
+        "{}",
+        request.program
+    );
+    assert!(
+        request.program.ends_with("/mcp_fixture"),
+        "{}",
+        request.program
+    );
+    assert_eq!(request.args, ["stdio"]);
+    assert_eq!(request.cwd, "/workspace");
+    assert_ne!(request.egress_port, 0);
+    assert!(request.env["HTTPS_PROXY"].ends_with("@127.0.0.1:3128"));
+    assert!(request.mounts.iter().all(|m| m.name.starts_with("ro-")));
+}
+
+// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
+#[test]
+#[cfg(not(windows))]
+fn a_node_that_cannot_boot_a_microvm_runs_the_server_in_the_sandbox_and_says_why() {
+    let vm = Arc::new(FakeVm {
+        available: Err("no /dev/kvm on this host".into()),
+        launched: Mutex::new(Vec::new()),
+        refusal: String::new(),
+    });
+    let runtime = runtime_with_vm(Arc::clone(&vm), true);
+    let vault = Vault::default();
+    let server = stdio_server("fixture", &[]);
+    let probe = runtime
+        .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
+        .unwrap();
+    assert_eq!(probe.server_info.name, "fixture");
+    assert_eq!(
+        runtime.summary("fixture").launcher,
+        "sandbox: no /dev/kvm on this host"
+    );
+    assert!(vm.launched.lock().unwrap().is_empty());
+    runtime.stop("fixture");
+}
+
+// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
+#[test]
+#[cfg(not(windows))]
+fn a_server_on_another_node_or_without_a_proxy_is_not_sent_to_a_microvm() {
+    let vm = Arc::new(FakeVm {
+        available: Ok(()),
+        launched: Mutex::new(Vec::new()),
+        refusal: "never".into(),
+    });
+    let vault = Vault::default();
+    let server = stdio_server("fixture", &[]);
+    let other_node = runtime_with_vm(Arc::clone(&vm), true);
+    other_node
+        .probe(&server, &ctx(&vault, owner("n7"), "n7", T0))
+        .unwrap();
+    assert_eq!(
+        other_node.summary("fixture").launcher,
+        "sandbox: node n7 is not this hub's node"
+    );
+    other_node.stop("fixture");
+    let unproxied = runtime_with_vm(Arc::clone(&vm), false);
+    unproxied
+        .probe(&server, &ctx(&vault, owner("n0"), "n0", T0))
+        .unwrap();
+    assert_eq!(
+        unproxied.summary("fixture").launcher,
+        "sandbox: the server has no egress proxy"
+    );
+    unproxied.stop("fixture");
+    assert!(vm.launched.lock().unwrap().is_empty());
 }

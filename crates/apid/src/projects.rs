@@ -7,16 +7,19 @@
 //! for code an OpenSpec change (proposal, design, spec deltas, tasks) in the project's repo,
 //! validated; for anything else the same shape without spec deltas: proposal (directions),
 //! design (the chosen direction in detail), tasks. Agents other than the author critique it and
-//! the planner revises. The mayor approves (the owner can approve or veto at any stage, and a
+//! the planner revises. The orchestrator approves (the owner can approve or veto at any stage, and a
 //! project marked `owner_approval` waits for the owner). Only then does the orchestrator post
 //! tasks, each linked to the project and carrying its acceptance from the plan.
 //!
 //! Documents are files in the plaza's file store (by id) or paths in the project's repo.
 
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, PoisonError};
+
+use apz_cache::Generations;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -57,7 +60,7 @@ pub const DOC_KINDS: &[(&str, &str)] = &[
     ("deliverable", "review"),
 ];
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Doc {
     /// One of DOC_KINDS' names.
     pub kind: String,
@@ -77,7 +80,7 @@ pub struct Doc {
     pub at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Critique {
     pub by_cid: u64,
     pub by: String,
@@ -89,7 +92,7 @@ pub struct Critique {
     pub at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Event {
     pub at_ms: u64,
     /// cid, or 0 for the owner.
@@ -100,9 +103,11 @@ pub struct Event {
     pub note: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "project")]
 pub struct Project {
     /// `pr<seq>`.
+    #[table(key)]
     pub id: String,
     pub title: String,
     /// The operator's goal, verbatim.
@@ -120,36 +125,51 @@ pub struct Project {
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]
+    #[table(child)]
     pub docs: Vec<Doc>,
     #[serde(default)]
+    #[table(child)]
     pub critiques: Vec<Critique>,
     /// Bumped each time a proposal/design/spec/tasks/revision doc is attached at or after `proposal`.
     #[serde(default)]
     pub revision: u32,
-    /// Who approved the plan ("owner" or the mayor's name), once approved.
+    /// Who approved the plan ("owner" or the orchestrator's name), once approved.
     #[serde(default)]
     pub approved_by: Option<String>,
     /// Tasks posted for it (ids in the task ledger).
     #[serde(default)]
+    #[table(list)]
     pub tasks: Vec<String>,
     #[serde(default)]
+    #[table(child)]
     pub history: Vec<Event>,
     pub created_ms: u64,
     pub updated_ms: u64,
-    /// The owner paused it: its agents' work waits until it is resumed (`membership`).
+    /// The owner paused it: its agents' work waits until it is resumed (`held`).
     #[serde(default)]
     pub paused: bool,
-    /// The owner archived it: its agents went back to the bench, and nothing more is done for it.
+    /// The owner archived it: its agents' work ends, and nothing more is done for it.
     #[serde(default)]
     pub archived: bool,
     /// How the project is worked: one of [`MODES`] (`build` unless the owner changed it).
     #[serde(default = "build_mode")]
     pub mode: String,
+    /// How the project meets GitHub: one of [`GITHUB_MODES`] (`none` unless the owner chose one).
+    #[serde(default = "github_none")]
+    pub github: String,
 }
 
 fn build_mode() -> String {
     "build".into()
 }
+
+pub(crate) fn github_none() -> String {
+    "none".into()
+}
+
+/// How a project meets GitHub (PLAN 21.5): `mirror` exports Weft's landings to the repository, `ci` lands through
+/// GitHub, `none` is neither. The modes themselves are built in phase 4.7; a project only records its choice.
+pub const GITHUB_MODES: &[&str] = &["none", "mirror", "ci"];
 
 /// A way of working a project: its id, its name in the consoles, and what it means for the agents.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -204,10 +224,12 @@ impl Actor {
     }
 }
 
-/// The projects, kept in `<state-dir>/projects.json`.
+/// The projects, kept in plaza.db (table `project`).
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     items: Mutex<Vec<Project>>,
+    /// The hub's generations: each project whose record changes bumps its `project:<id>`.
+    gens: Arc<Generations<String>>,
 }
 
 fn now_ms() -> u64 {
@@ -276,30 +298,14 @@ fn plan_author(project: &Project) -> Option<u64> {
 }
 
 impl Store {
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("projects.json");
-        let items: Vec<Project> = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            items: Mutex::new(items),
-        }
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
     }
 
-    fn save(&self, items: &[Project]) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(items).map_err(|e| e.to_string())?;
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
-    }
-
-    /// Runs `change` on a copy of the projects and saves it; only then is the copy kept. A refusal
-    /// or a failed save leaves the store as it was.
+    /// Runs `change` on a copy of the projects and keeps the copy once it succeeds; a refusal leaves the store as it
+    /// was. The saver writes the change to plaza.db. Each project whose record changed bumps its generation.
     fn mutate<T>(
         &self,
         change: impl FnOnce(&mut Vec<Project>) -> Result<T, String>,
@@ -310,7 +316,12 @@ impl Store {
             .map_err(|_| "projects are unavailable".to_string())?;
         let mut next: Vec<Project> = items.clone();
         let out = change(&mut next)?;
-        self.save(&next)?;
+        for changed in next.iter().filter(|p| !items.contains(p)) {
+            crate::sources::bump(&self.gens, &crate::sources::project(&changed.id));
+        }
+        for gone in items.iter().filter(|p| !next.contains(p)) {
+            crate::sources::bump(&self.gens, &crate::sources::project(&gone.id));
+        }
         *items = next;
         Ok(out)
     }
@@ -374,9 +385,70 @@ impl Store {
                 paused: false,
                 archived: false,
                 mode: build_mode(),
+                github: github_none(),
             };
             items.push(project.clone());
             Ok(project)
+        })
+    }
+
+    /// Sets the fields of draft project `id` from its draft's revision: title, goal, kind, GitHub mode and disk quota.
+    /// Only a draft (at "brief", not archived) changes: a started project keeps what it started with.
+    pub fn set_draft(
+        &self,
+        id: &str,
+        title: &str,
+        goal: &str,
+        kind: &str,
+        github: &str,
+    ) -> Result<Project, String> {
+        let title = bounded("title", title, 1, 120)?;
+        let goal = bounded("goal", goal, 1, 8000)?;
+        if kind != "code" && kind != "other" {
+            return Err("kind must be code or other".into());
+        }
+        if !GITHUB_MODES.contains(&github) {
+            return Err(format!("github must be one of {}", GITHUB_MODES.join(", ")));
+        }
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.stage != "brief" {
+                return Err(format!("project {id} is at {}, not a draft", p.stage));
+            }
+            p.title = title.clone();
+            p.goal = goal.clone();
+            p.kind = kind.into();
+            p.github = github.into();
+            p.updated_ms = now_ms();
+            Ok(p.clone())
+        })
+    }
+
+    /// Starts draft project `id` for the owner: its plan is theirs, so it moves to "implementation" (the stage that runs
+    /// tasks), approved by the owner. Only a draft starts, and not an archived one.
+    pub fn start_draft(&self, id: &str) -> Result<Project, String> {
+        self.mutate(|items| {
+            let p = find_mut(items, id)?;
+            if p.archived {
+                return Err(format!("project {id} is archived"));
+            }
+            if p.stage != "brief" {
+                return Err(format!("project {id} is at {}, not a draft", p.stage));
+            }
+            let now = now_ms();
+            p.stage = "implementation".into();
+            p.approved_by = Some("owner".into());
+            p.history.push(event(
+                &Actor::owner(),
+                "approved",
+                "started by the owner from its draft",
+                now,
+            ));
+            p.updated_ms = now;
+            Ok(p.clone())
         })
     }
 
@@ -402,18 +474,7 @@ impl Store {
         })
     }
 
-    /// Makes agent `cid` project `id`'s lead: the orchestrator a conversation started it from, told of its tasks to
-    /// replan.
-    pub fn set_lead(&self, id: &str, cid: u64) -> Result<Project, String> {
-        self.mutate(|items| {
-            let p = find_mut(items, id)?;
-            p.lead_cid = cid;
-            p.updated_ms = now_ms();
-            Ok(p.clone())
-        })
-    }
-
-    /// Pauses or resumes a project: while paused, its agents' work waits (`membership`).
+    /// Pauses or resumes a project: while paused, its agents' work waits (`held`).
     pub fn set_paused(&self, id: &str, paused: bool) -> Result<Project, String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
@@ -474,7 +535,7 @@ impl Store {
         })
     }
 
-    /// Archives a project: nothing more is done for it (its agents are sent back to the bench by the caller).
+    /// Archives a project: nothing more is done for it (its agents' work is ended by the caller).
     pub fn archive(&self, id: &str) -> Result<Project, String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
@@ -608,13 +669,13 @@ impl Store {
         })
     }
 
-    /// Approves the plan (stage "approval" → "implementation"): the mayor or the owner, or only
+    /// Approves the plan (stage "approval" → "implementation"): the orchestrator or the owner, or only
     /// the owner when `owner_approval`. The owner may also approve from "critique".
     pub fn approve(&self, id: &str, by: &Actor, note: &str) -> Result<Project, String> {
         self.mutate(|items| {
             let p = find_mut(items, id)?;
             let owner = by.role == "owner";
-            // The mayor decides once the plan has been critiqued: approval does not wait for every
+            // The orchestrator decides once the plan has been critiqued: approval does not wait for every
             // reviewer to agree. Open "revise" items are recorded with the approval and carried
             // into the tasks' acceptance.
             let awaiting = matches!(p.stage.as_str(), "approval" | "critique");
@@ -624,8 +685,8 @@ impl Store {
             if p.owner_approval && !owner {
                 return Err("this project waits for the owner's approval".into());
             }
-            if !owner && by.role != "mayor" && by.role != "mayor-office" {
-                return Err("only the mayor or the owner can approve a plan".into());
+            if !owner && by.role != "orchestrator" {
+                return Err("only the orchestrator or the owner can approve a plan".into());
             }
             let author = p
                 .docs
@@ -777,7 +838,7 @@ pub fn gate(project: &Project, tasks_done: bool) -> Result<(), String> {
     }
 }
 
-/// The tools' specs, in the same shape as `society::spec`.
+/// The tools' specs, in the same shape as `toolbox::spec`.
 pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     let obj = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
     Some(match name {
@@ -814,7 +875,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             ),
         ),
         "plaza_project_approve" => (
-            "Approve a project's plan so implementation can start (the mayor; the owner can too).",
+            "Approve a project's plan so implementation can start (the orchestrator; the owner can too).",
             obj(
                 json!({"id": {"type": "string"}, "note": {"type": "string"}}),
                 &["id"],
@@ -855,25 +916,18 @@ fn repo_for(app: &App, project: &Project) -> Option<String> {
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     let actor = Actor {
         cid: agent.cid,
-        name: if agent.name.is_empty() {
-            agent.role.clone()
-        } else {
-            agent.name.clone()
-        },
+        name: agent.label(),
         role: agent.role.clone(),
     };
     // A project's agent works on its own project only; the orchestrator runs them all.
     if let Some(id) = opt_str(input, "id")
-        && !crate::membership::plaza_wide(&agent.role)
-        && app.members.project_of(agent.cid).as_deref() != Some(id.as_str())
+        && !crate::settings::plaza_wide(&agent.role)
+        && project_of(app, agent.cid).as_deref() != Some(id.as_str())
     {
         return Err(format!(
             "you work on {}, not on project {id}",
-            app.members
-                .project_of(agent.cid)
-                .map_or("no project (the bench)".to_string(), |own| format!(
-                    "project {own}"
-                ))
+            project_of(app, agent.cid)
+                .map_or("no project".to_string(), |own| format!("project {own}"))
         ));
     }
     match name {
@@ -986,11 +1040,9 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             }
             let note = opt_str(input, "note").unwrap_or_default();
             let project = app.projects.advance(id, &actor, &note)?;
-            // Delivered: the project's agents go back to the bench, and the rest of its budget to the plaza (in
-            // maintenance they stay: the project is still looked after).
+            // Delivered: the project's agents' work ends (in maintenance they stay: the project is still looked after).
             if project.stage == "delivered" && !project.in_maintenance() {
-                crate::membership::release_project(app, &project.id);
-                crate::project_settings::return_rest(app, &project.id);
+                crate::work_loop::end_project(app, &project.id, "the project was delivered");
             }
             answer(app, &project, stage_hint(&project.stage))
         }
@@ -1089,7 +1141,7 @@ fn stage_hint(stage: &str) -> &'static str {
             "the planner writes proposal, design, tasks (and for code an OpenSpec change: openspec/changes/<id>/ with proposal.md, design.md, tasks.md, specs/; validate it with the openspec CLI in your VM). In the tasks list, end a task that needs others' results with (after: 1.1, 1.2); tasks without it run side by side"
         }
         "critique" => "agents other than the author critique with plaza_project_critique",
-        "approval" => "the mayor approves with plaza_project_approve",
+        "approval" => "the orchestrator approves with plaza_project_approve",
         "implementation" => {
             "the orchestrator posts the tasks list whole with plaza_tasks_post (each task's key, goal, acceptance and after): each task goes to a worker as soon as everything it runs after is done"
         }
@@ -1142,9 +1194,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/projects/{id}/archive", |app, _, p| {
             lifecycle(app, p.get("id"), Lifecycle::Archive)
         })
-        .doc(
-            RouteDoc::new("Archive a project: its agents go back to the bench").errors(&[404, 409]),
-        )
+        .doc(RouteDoc::new("Archive a project: its agents' work ends").errors(&[404, 409]))
         .get("/v1/project-modes", |_, _, _| Response::json(200, &MODES))
         .doc(RouteDoc::new("List the modes a project can be in"))
         .post("/v1/projects/{id}/mode", mode_route)
@@ -1206,7 +1256,7 @@ fn mode_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if project.in_maintenance() {
         crate::maintenance::entered(app, id);
     }
-    // A delivered project in maintenance, or one open again for build, has work for its members again.
+    // A delivered project in maintenance, or one open again for build, has work for its agents again.
     app.work.dispatch_idle(app);
     app.bus.publish("project", &project);
     Response::json(200, &project)
@@ -1219,7 +1269,7 @@ enum Lifecycle {
     Archive,
 }
 
-/// Pauses, resumes or archives project `id`; an archive sends its agents back to the bench.
+/// Pauses, resumes or archives project `id`; an archive ends its agents' work.
 fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
     if app.projects.get(id).is_none() {
         return Response::error(404, "no such project");
@@ -1234,11 +1284,10 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
         Err(e) => return Response::error(409, &e),
     };
     if project.archived {
-        // Nothing more is done for it: its agents go back to the bench (the tasks waiting in their queues open
-        // again), then its open tasks are withdrawn (their escrow back in its budget), and the rest of its budget
-        // goes to the plaza. A task an agent was working on is still claimed here, its work only cancelled (it ends
-        // when the agent answers): it is withdrawn too, or its escrow would stay out of both budgets.
-        crate::membership::release_project(app, id);
+        // Nothing more is done for it: its agents' work ends (their sessions end and their VMs stop), then its open
+        // tasks are withdrawn. A task an agent was working on is still claimed here, its work only cancelled (it ends
+        // when the agent answers): it is withdrawn too.
+        crate::work_loop::end_project(app, id, "the project was archived");
         for task in &project.tasks {
             if let Some(task) = app.plaza.tasks.find(task)
                 && (task.is_open() || task.state() == "claimed")
@@ -1246,7 +1295,6 @@ fn lifecycle(app: &App, id: &str, change: Lifecycle) -> Response {
                 let _ = task.withdraw();
             }
         }
-        crate::project_settings::return_rest(app, id);
     } else if !project.paused {
         // Resumed: its agents' waiting work goes out.
         app.work.dispatch_idle(app);
@@ -1303,25 +1351,163 @@ fn reply(app: &App, result: Result<Project, String>) -> Response {
 }
 
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let Ok(items) = self.items.lock() else {
-            return String::new();
-        };
-        serde_json::to_string_pretty(&*items).unwrap_or_default()
+    /// The projects' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let items = self.items.lock().unwrap_or_else(PoisonError::into_inner);
+        RowSet::list(def(), items.iter())
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<Project> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut items = self
-            .items
-            .lock()
-            .map_err(|_| "projects are unavailable".to_string())?;
-        self.save(&next)?;
-        *items = next;
+    /// Replaces the projects with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<Project> = apz_store::table::load_list(conn, def())?;
+        *self.items.lock().unwrap_or_else(PoisonError::into_inner) = stored;
         Ok(())
     }
+}
+
+// ---- Which project an agent works on -------------------------------------------------------------------------------
+//
+// An agent works on the project of its live session: a task's seat fills it on its project, and a project's planner is
+// a long-lived session on it. The orchestrator works on every project and on none (its own session is the plaza's).
+// A project's state holds the work of its agents: paused waits, over (archived or delivered) and missing stop it.
+
+/// Where a project stands for the work of its agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectState {
+    /// Its agents work.
+    Active,
+    /// The owner paused it: its agents' work waits until it is resumed.
+    Paused,
+    /// Archived or delivered: its agents take no more of its work.
+    Over,
+    /// No such project (it was removed): its agents take no more of its work.
+    Missing,
+}
+
+/// The state of project `id` on the hub.
+pub fn state(app: &App, id: &str) -> ProjectState {
+    app.projects
+        .with(id, |p| {
+            // A delivered project in maintenance is still worked: its watchers sweep and the owner's picks run.
+            if p.archived || (p.stage == "delivered" && !p.in_maintenance()) {
+                ProjectState::Over
+            } else if p.paused {
+                ProjectState::Paused
+            } else {
+                ProjectState::Active
+            }
+        })
+        .unwrap_or(ProjectState::Missing)
+}
+
+/// The project agent `cid` works on: its live session's, or `None` when it has no live session or is the
+/// orchestrator's own (the plaza's) session.
+pub fn project_of(app: &App, cid: u64) -> Option<String> {
+    let session = app.sessions.by_cid(cid)?;
+    (session.project != crate::work_loop::PLAZA).then_some(session.project)
+}
+
+/// The agents that work on `project`: those whose live session is on it, by CID.
+pub fn agents_of(app: &App, project: &str) -> Vec<u64> {
+    app.sessions
+        .list(&crate::sessions::Filter {
+            project: Some(project.to_string()),
+            live: true,
+            ..Default::default()
+        })
+        .into_iter()
+        .filter_map(|session| session.cid)
+        .collect()
+}
+
+/// Why `agent` may not work now, or `None` when it may. Only a session whose project is paused, over or gone holds
+/// it: an agent with no live session is not held by this (its calls and tools are then the plaza's rules alone).
+pub fn held(app: &App, agent: &Agent) -> Option<String> {
+    held_as(app, agent.cid, &agent.role)
+}
+
+/// Why agent `cid` of `role` may not work now, or `None` when it may (see [`held`]).
+pub fn held_as(app: &App, cid: u64, role: &str) -> Option<String> {
+    if crate::settings::plaza_wide(role) {
+        return None;
+    }
+    let session = app.sessions.by_cid(cid)?;
+    if session.project == crate::work_loop::PLAZA {
+        return None;
+    }
+    match state(app, &session.project) {
+        ProjectState::Active => None,
+        ProjectState::Paused => Some(format!(
+            "project {} is paused: its agents wait until the owner resumes it",
+            session.project
+        )),
+        ProjectState::Over => Some(format!(
+            "project {} is over (archived or delivered): agent {cid} takes no more of its work",
+            session.project
+        )),
+        ProjectState::Missing => Some(format!(
+            "project {} no longer exists: agent {cid} takes no more of its work",
+            session.project
+        )),
+    }
+}
+
+/// Why agent `cid` may not work now (looked up on the roster), or `None` when it may. An agent the roster does not
+/// know is held.
+pub fn held_cid(app: &App, cid: u64) -> Option<String> {
+    match app.agents.get(cid) {
+        Some(agent) => held(app, &agent),
+        None => Some(format!("no agent {cid}")),
+    }
+}
+
+/// Checks that `agent` may take a task of `project` (`None`: a task outside projects): the task must belong to a
+/// project, and the agent must work on it now. The orchestrator plans; it takes no task.
+pub fn may_take_task(app: &App, agent: &Agent, project: Option<&str>) -> Result<(), String> {
+    let Some(project) = project else {
+        return Err(
+            "the task belongs to no project: tasks run only inside a project (move it into one first)".into(),
+        );
+    };
+    if crate::settings::plaza_wide(&agent.role) {
+        return Err("the orchestrator plans work; give the task to an agent of its project".into());
+    }
+    if let Some(why) = held(app, agent) {
+        return Err(why);
+    }
+    match project_of(app, agent.cid) {
+        Some(own) if own == project => Ok(()),
+        Some(own) => Err(format!(
+            "agent {} works on project {own}, not on {project}",
+            agent.cid
+        )),
+        None => Err(format!(
+            "agent {} has no project: it takes a task only on a seat of the task's project",
+            agent.cid
+        )),
+    }
+}
+
+/// The paragraph an agent's system prompt carries about its project, or that it has none yet.
+pub fn prompt_section(app: &App, cid: u64, role: &str) -> Option<String> {
+    if crate::settings::plaza_wide(role) {
+        return None;
+    }
+    let Some(project) = project_of(app, cid).and_then(|id| app.projects.get(&id)) else {
+        return Some(
+            "You have no project: you do no work until a task gives you a seat on one.".into(),
+        );
+    };
+    let goal: String = project.goal.chars().take(600).collect();
+    Some(format!(
+        "You work on project {} \"{}\". Its goal: {goal}\nWork only on this project: its tasks, its board, and its agents.",
+        project.id, project.title
+    ))
+}
+
+/// The projects' table: `project`, with its documents, critiques, history and task ids as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Project)
 }
 
 #[cfg(test)]
@@ -1329,8 +1515,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_restores_into_a_fresh_store() {
-        let (_dir, a) = fresh("snapshot");
+    fn the_projects_come_back_whole_from_their_table() {
+        let a = fresh();
         a.open(
             &lead(),
             "Ship the thing",
@@ -1339,16 +1525,12 @@ mod tests {
             false,
         )
         .unwrap();
-        let (_dir2, b) = fresh("snapshot-restored");
-        b.restore(&a.snapshot()).unwrap();
-        assert_eq!(b.list(), a.list());
-        assert!(b.restore("not json").is_err());
-        assert_eq!(b.list(), a.list(), "a refused restore changes nothing");
+        assert_eq!(restarted(&a).list(), a.list());
     }
 
     #[test]
     fn with_reads_a_field_of_a_known_project_and_none_for_an_unknown_one() {
-        let (_dir, store) = fresh("with");
+        let store = fresh();
         let project = store
             .open(
                 &lead(),
@@ -1365,15 +1547,52 @@ mod tests {
         assert_eq!(store.with("pr999", |p| p.title.clone()), None);
     }
 
-    fn fresh(tag: &str) -> (PathBuf, Store) {
-        let dir = std::env::temp_dir().join(format!(
-            "apid-projects-{tag}-{}-{}",
-            std::process::id(),
-            now_ms()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(&dir);
-        (dir, store)
+    fn fresh() -> Store {
+        Store::default()
+    }
+
+    #[test]
+    fn a_draft_sets_its_fields_until_it_starts_and_starts_once() {
+        let store = fresh();
+        let p = store
+            .open(&lead(), "Release", "Goal", "code", true)
+            .unwrap();
+        assert_eq!((p.stage.as_str(), p.github.as_str()), ("brief", "none"));
+        let set = store
+            .set_draft(&p.id, "Release 0.9", "Goal, then tag", "code", "mirror")
+            .unwrap();
+        assert_eq!(
+            (set.title.as_str(), set.github.as_str()),
+            ("Release 0.9", "mirror")
+        );
+        let refused = store.set_draft(&p.id, "Title", "Goal", "code", "gitlab");
+        assert!(refused.unwrap_err().contains("github"));
+        let started = store.start_draft(&p.id).unwrap();
+        assert_eq!(
+            (started.stage.as_str(), started.approved_by.as_deref()),
+            ("implementation", Some("owner"))
+        );
+        assert!(
+            store
+                .start_draft(&p.id)
+                .unwrap_err()
+                .contains("not a draft")
+        );
+        let late = store.set_draft(&p.id, "Late", "Goal", "code", "none");
+        assert!(late.unwrap_err().contains("not a draft"));
+        let old = store.open(&lead(), "Old", "Goal", "other", false).unwrap();
+        store.archive(&old.id).unwrap();
+        assert!(store.start_draft(&old.id).unwrap_err().contains("archived"));
+    }
+
+    /// The store's rows written to an in-memory plaza.db and loaded into a fresh store, as a restart does.
+    fn restarted(store: &Store) -> Store {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = fresh();
+        loaded.load(&conn).unwrap();
+        loaded
     }
 
     fn who(cid: u64, name: &str, role: &str) -> Actor {
@@ -1398,10 +1617,6 @@ mod tests {
 
     fn critic() -> Actor {
         who(4, "critic", "critic")
-    }
-
-    fn mayor() -> Actor {
-        who(5, "mayor", "mayor")
     }
 
     fn doc(kind: &str, title: &str) -> Doc {
@@ -1452,7 +1667,7 @@ mod tests {
 
     #[test]
     fn open_attach_and_advance_to_research() {
-        let (_dir, store) = fresh("open");
+        let store = fresh();
         let p = store
             .open(
                 &lead(),
@@ -1476,7 +1691,7 @@ mod tests {
     fn advance_gates_hold_a_project_until_its_documents_are_in() {
         // Advance refused without research.
         {
-            let (_dir, store) = fresh("gate");
+            let store = fresh();
             let p = store.open(&lead(), "Ship", "Goal", "other", false).unwrap();
             store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
             store.advance(&p.id, &lead(), "").unwrap();
@@ -1487,7 +1702,7 @@ mod tests {
 
         // Revise blocks until revision is approved.
         {
-            let (_dir, store) = fresh("revise");
+            let store = fresh();
             let id = to_critique(&store, "other", false);
             store
                 .critique(&id, &critic(), "revise", "The tasks miss the tests.")
@@ -1508,7 +1723,7 @@ mod tests {
 
         // Code needs a spec to leave proposal.
         {
-            let (_dir, store) = fresh("code");
+            let store = fresh();
             let p = store
                 .open(&lead(), "Code thing", "Goal", "code", false)
                 .unwrap();
@@ -1535,7 +1750,7 @@ mod tests {
 
     #[test]
     fn other_project_runs_to_implementation() {
-        let (_dir, store) = fresh("full");
+        let store = fresh();
         let id = to_critique(&store, "other", false);
         store
             .critique(&id, &critic(), "approve", "Good to go.")
@@ -1543,14 +1758,14 @@ mod tests {
         assert_eq!(store.advance(&id, &lead(), "").unwrap().stage, "approval");
         let err = store.advance(&id, &lead(), "").unwrap_err();
         assert!(err.contains("plaza_project_approve"), "{err}");
-        let p = store.approve(&id, &mayor(), "").unwrap();
+        let p = store.approve(&id, &lead(), "").unwrap();
         assert_eq!(p.stage, "implementation");
-        assert_eq!(p.approved_by.as_deref(), Some("mayor"));
+        assert_eq!(p.approved_by.as_deref(), Some("lead"));
     }
 
     #[test]
     fn author_cannot_critique_own_revision() {
-        let (_dir, store) = fresh("author");
+        let store = fresh();
         let id = to_critique(&store, "other", false);
         let err = store
             .critique(&id, &planner(), "approve", "I like it")
@@ -1559,12 +1774,12 @@ mod tests {
     }
 
     #[test]
-    fn owner_approval_refuses_a_mayor() {
-        let (_dir, store) = fresh("owner");
+    fn owner_approval_refuses_the_orchestrator() {
+        let store = fresh();
         let id = to_critique(&store, "other", true);
         store.critique(&id, &critic(), "approve", "Fine.").unwrap();
         store.advance(&id, &lead(), "").unwrap();
-        let err = store.approve(&id, &mayor(), "").unwrap_err();
+        let err = store.approve(&id, &lead(), "").unwrap_err();
         assert!(err.contains("owner's approval"), "{err}");
         assert_eq!(
             store.approve(&id, &Actor::owner(), "").unwrap().stage,
@@ -1573,14 +1788,13 @@ mod tests {
     }
 
     #[test]
-    fn projects_persist_across_load() {
-        let (dir, store) = fresh("persist");
+    fn projects_persist_across_a_restart() {
+        let store = fresh();
         let p = store
             .open(&lead(), "Keep me", "Goal", "other", false)
             .unwrap();
         store.attach(&p.id, &lead(), doc("brief", "Brief")).unwrap();
-        drop(store);
-        let reloaded = Store::load(&dir);
+        let reloaded = restarted(&store);
         let all = reloaded.list();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].title, "Keep me");
@@ -1591,6 +1805,29 @@ mod tests {
                 .unwrap()
                 .id,
             "pr2"
+        );
+    }
+
+    #[test]
+    fn a_change_moves_only_the_changed_projects_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let first = store.open_for_owner("First", "goal", "code").expect("open");
+        let second = store
+            .open_for_owner("Second", "goal", "code")
+            .expect("open");
+        let before = gens.get(&crate::sources::project(&first.id));
+        store.set_paused(&first.id, true).expect("pause");
+        assert!(
+            gens.get(&crate::sources::project(&first.id)) > before,
+            "a pause moves the project"
+        );
+        let untouched = gens.get(&crate::sources::project(&second.id));
+        store.set_paused(&first.id, false).expect("resume");
+        assert_eq!(
+            gens.get(&crate::sources::project(&second.id)),
+            untouched,
+            "another project stays"
         );
     }
 }

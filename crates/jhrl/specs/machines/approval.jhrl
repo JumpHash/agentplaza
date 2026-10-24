@@ -13,7 +13,7 @@ enum ApprovalStatus "Where an approval request is" {
 
 machine Approval "One approval request moving up its chain" {
   const Authorities: Set<String>
-  const Chains: Set<List<String>> = {["mayor", "owner"], ["owner"]}   // a town request; a C-004 request
+  const Chains: Set<List<String>> = {["orchestrator", "owner"], ["owner"]}   // a project request; a C-004 request
 
   var chain: List<String> in Chains
   var pos: Int = 0
@@ -59,12 +59,12 @@ machine Approval "One approval request moving up its chain" {
 }
 
 model "two chains, three authorities" of Approval {
-  const Authorities = {"mayor", "owner", "builder"}
+  const Authorities = {"orchestrator", "owner", "builder"}
   deadlock allowed
 }
 
 mutant "Accept any authority" of Approval {
-  replace "a == chain[pos]" in Decide with "a in {\"mayor\", \"owner\"}"
+  replace "a == chain[pos]" in Decide with "a in {\"orchestrator\", \"owner\"}"
   expect violation "Decided by the chain"
 }
 
@@ -73,10 +73,10 @@ mutant "Silence means yes" of Approval {
   expect violation "Decided by the chain"
 }
 
-witness "A town request escalates to the owner" of Approval in "two chains, three authorities" {
-  reachable chain == ["mayor", "owner"] and pos == 1 and status == "pending"
+witness "A project request escalates to the owner" of Approval in "two chains, three authorities" {
+  reachable chain == ["orchestrator", "owner"] and pos == 1 and status == "pending"
 }
 
 witness "An escalated request is approved by the owner" of Approval in "two chains, three authorities" {
-  reachable chain == ["mayor", "owner"] and status == "approved" and decided_by == "owner"
+  reachable chain == ["orchestrator", "owner"] and status == "approved" and decided_by == "owner"
 }

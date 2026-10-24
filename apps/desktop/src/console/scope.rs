@@ -1,7 +1,7 @@
 //! The console's scope: one project, or All projects (the web's `scope.ts`). The top bar's switcher sets it
 //! ([`super::shell`]), every screen reads it from [`super::Ctx::project`], and it is remembered for the next run,
 //! hub by hub. Under a project the screens show its agents, tasks, board and approvals; All projects is the whole
-//! plaza, with the bench.
+//! plaza, every agent with where it works.
 
 use serde_json::Value;
 
@@ -59,7 +59,7 @@ pub fn live_projects(list: &[Value]) -> Vec<&Value> {
     live
 }
 
-/// A project as a picker lists it (Put on…): its title, carrying its id.
+/// A project as a picker lists it: its title, carrying its id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pick {
     pub id: String,
@@ -100,7 +100,7 @@ pub fn is_orchestrator(agent: &Value) -> bool {
     agent["tier"].as_str() == Some("orchestrator")
 }
 
-/// Whether `agent` shows under `project`: its member, or the orchestrator; under All projects (None), every agent.
+/// Whether `agent` shows under `project`: one working on it, or the orchestrator; All projects (None) shows every agent.
 pub fn in_scope(agent: &Value, project: Option<&str>) -> bool {
     match project {
         None => true,
@@ -108,19 +108,12 @@ pub fn in_scope(agent: &Value, project: Option<&str>) -> bool {
     }
 }
 
-/// Whether `agent` is on the bench: on no project, and neither the orchestrator nor a model-only agent.
-pub fn on_bench(agent: &Value) -> bool {
-    agent["project"].as_str().is_none_or(str::is_empty)
-        && !is_orchestrator(agent)
-        && agent["kind"].as_str() != Some("model")
-}
-
-/// Where an agent works, in words: its project's title, "Every project" for the orchestrator, else "On the bench".
+/// Where an agent works, in words: its project's title, "Every project" for the orchestrator, else "No project".
 pub fn where_word(agent: &Value, projects: &[Value]) -> String {
     match agent["project"].as_str().filter(|p| !p.is_empty()) {
         Some(p) => title_in(projects, p),
         None if is_orchestrator(agent) => "Every project".into(),
-        None => "On the bench".into(),
+        None => "No project".into(),
     }
 }
 
@@ -192,23 +185,19 @@ mod tests {
     }
 
     #[test]
-    fn who_is_in_a_scope_and_who_is_on_the_bench() {
-        let member = json!({ "cid": 300, "project": "pr2", "tier": "worker", "kind": "vm" });
-        let bench = json!({ "cid": 301, "project": null, "tier": "worker", "kind": "vm" });
+    fn who_is_in_a_scope_and_where_each_agent_works() {
+        let working = json!({ "cid": 300, "project": "pr2", "tier": "worker", "kind": "vm" });
+        let idle = json!({ "cid": 301, "project": null, "tier": "worker", "kind": "vm" });
         let orchestrator = json!({ "cid": 109, "tier": "orchestrator", "kind": "vm" });
-        let model = json!({ "cid": 5, "kind": "model" });
-        assert!(in_scope(&member, Some("pr2")) && !in_scope(&member, Some("pr1")));
-        assert!(!in_scope(&bench, Some("pr2")) && in_scope(&bench, None));
+        assert!(in_scope(&working, Some("pr2")) && !in_scope(&working, Some("pr1")));
+        assert!(!in_scope(&idle, Some("pr2")) && in_scope(&idle, None));
         assert!(
             in_scope(&orchestrator, Some("pr1")),
             "the orchestrator works on every project"
         );
-        assert!(
-            on_bench(&bench) && !on_bench(&member) && !on_bench(&orchestrator) && !on_bench(&model)
-        );
         let projects = vec![json!({ "id": "pr2", "title": "Release 0.9" })];
-        assert_eq!(where_word(&member, &projects), "Release 0.9");
+        assert_eq!(where_word(&working, &projects), "Release 0.9");
         assert_eq!(where_word(&orchestrator, &projects), "Every project");
-        assert_eq!(where_word(&bench, &projects), "On the bench");
+        assert_eq!(where_word(&idle, &projects), "No project");
     }
 }

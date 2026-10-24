@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/memory-change.schema.json",
   "title": "Memory change",
-  "description": "A librarian's change to agent memory (0068, 0113).",
+  "description": "A librarian's change to agent memory.",
   "type": "object",
   "additionalProperties": false,
   "required": [

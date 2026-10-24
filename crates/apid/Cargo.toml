@@ -7,23 +7,29 @@ license.workspace = true
 publish = false
 
 [dependencies]
-apz-prompt = { path = "../apz-prompt" }
-apz-skill = { path = "../apz-skill" }
+# The hub's store (SQLite, typed tables) and its caches (PLAN 30.3, 30.4).
+apz-store = { path = "../apz-store", features = ["json"] }
+# The object store (apz-blobs, storage.rs): the bytes of the Library, the artifacts, the skills and the stations.
+apz-blobs = { path = "../apz-blobs" }
+apz-cache = { path = "../apz-cache" }
+apz-prompt = { path = "../apz-prompt", features = ["store"] }
+apz-skill = { path = "../apz-skill", features = ["store"] }
 jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
-apz-proto.workspace = true
+apz-proto = { workspace = true, features = ["store"] }
 apz-http = { path = "../apz-http" }
 weft = { path = "../weft" }
 apz-metrics.workspace = true
+apz-uds = { path = "../apz-uds" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
 apz-ide = { path = "../apz-ide" }
 # The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
-apz-station = { path = "../apz-station" }
+apz-station = { path = "../apz-station", features = ["store"] }
 apz-rich = { path = "../apz-rich" }
 # The metrics core and the Metrics view model (docs/architecture.md, "Metrics").
 apz-metrics-view = { path = "../apz-metrics-view" }
-apz-theme = { path = "../apz-theme" }
+apz-theme = { path = "../apz-theme", features = ["store"] }
 apz-view = { path = "../apz-view", features = ["raster"] }
 apz-artifact = { path = "../apz-artifact" }
 serde.workspace = true
@@ -35,8 +41,8 @@ ureq.workspace = true
 sha2.workspace = true
 blake2.workspace = true
 apz-trust = { path = "../apz-trust" }
-postgres = { version = "0.19.14", features = ["with-serde_json-1"] }
 apz-os = { path = "../apz-os" }
+apz-egress-rules = { path = "../apz-egress-rules" }
 # The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.
 chacha20poly1305.workspace = true
 argon2.workspace = true
@@ -51,6 +57,10 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # The relay's signatures (shares/relay.rs), matching crates/apz-trust.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1.1"
+# The stdio servers' OS sandbox (crates/apz-sandbox) and the archives of the runtimes and binary packages.
+apz-sandbox = { path = "../apz-sandbox" }
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # The egress CA and its leaf certificates (egress_inject.rs). Already in the lock as apz-http's dev-dependency.
 rcgen = "0.13"
 # RS256 for the GitHub App's JWT (already in the tree through rcgen and rustls).
@@ -68,8 +78,8 @@ sysinfo = "0.33"
 # prctl(PR_SET_DUMPABLE) so a crash leaves no core with the vault's keys in it (vault/process.rs).
 libc.workspace = true
 
-[build-dependencies]
-serde_json.workspace = true
-
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = "3"

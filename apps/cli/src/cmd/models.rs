@@ -343,7 +343,7 @@ pub enum PolicyCmd {
         /// One role's model, ROLE=provider/model (an empty model clears it). Repeatable.
         #[arg(long = "role-model", value_name = "ROLE=MODEL")]
         role_models: Vec<String>,
-        /// One model's price in credits per 1M tokens, MODEL=INPUT:OUTPUT. Repeatable.
+        /// One model's price in USD per 1M tokens, MODEL=INPUT:OUTPUT. Repeatable.
         #[arg(long = "price", value_name = "MODEL=IN:OUT")]
         prices: Vec<String>,
         /// Whether contributor models (their vendor trains on the data sent to them) may be defaults, role models and policy entries.

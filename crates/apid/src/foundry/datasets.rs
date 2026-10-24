@@ -9,7 +9,6 @@
 //! - the transcripts (`app.transcripts`): per work item, the task it was charged to (the
 //!   `work_start` origin), its prompt length, and its first model request's tool and message
 //!   counts. Only the in-memory window is read (the newest entries per agent);
-//! - the laws' recorded violations (`app.laws`): by CID and time.
 //!
 //! Kinds: `tasks` (one row per task that finished `done`, labelled by the model that served its
 //! last call), `cascade` (the `tasks` rows whose calls ran on two or more rungs, so the cascade
@@ -22,10 +21,6 @@
 //! - `single_class` (blocking): the training rows carry fewer than two classes.
 //! - `too_few_rows` (not blocking): 1 to 199 training rows.
 //! - `label_skew` (not blocking): one class is more than 95% of the training rows.
-//! - `contains_violation` (blocking): a row's task ran for an agent that a law refused, at a time
-//!   between the task's creation and its last update (an approximation: the claim time is not kept).
-//!   The row is kept so the owner can inspect it; the dataset is blocked.
-//! - `credential_seeking` (blocking): such a refusal whose law name contains "credential".
 //! - `unverified_upload` (blocking): an upload has columns the format does not know.
 //!
 //! Uploads (`kind` "upload") are JSONL files in the same row shape. A line must be a JSON object
@@ -77,7 +72,7 @@ const CATEGORICAL: [&str; 4] = ["task_kind", "domain", "tenant_tier", "requested
 
 /// One dataset: the training file (`file`), its held-out rows (`frozen_file`), and the hygiene
 /// findings. Returned by [`export`] and [`upload`]; the parent stores it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Dataset {
     /// "ds-" + first 16 hex chars of the sha256 of the JSONL file bytes.
     pub id: String,
@@ -93,10 +88,13 @@ pub struct Dataset {
     pub rows: u64,
     pub frozen_rows: u64,
     /// Training rows per class name.
+    #[table(map_value)]
     pub label_balance: BTreeMap<String, u64>,
     /// Hygiene flags, sorted and deduplicated.
+    #[table(list)]
     pub taint: Vec<String>,
-    /// Where the rows came from: sources, counts, filters, the export spec and field notes.
+    /// Where the rows came from: sources, counts, filters, the export spec and field notes (shown verbatim).
+    #[table(content)]
     pub provenance: Value,
     /// Path relative to the foundry data dir, e.g. "datasets/ds-xxxx.jsonl".
     pub file: String,
@@ -156,14 +154,6 @@ pub struct WorkRec {
     pub requests: u64,
 }
 
-/// One recorded law violation: the agent CID, when it happened, and the law's name.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Breach {
-    pub cid: u64,
-    pub at_ms: u64,
-    pub law: String,
-}
-
 /// The features of one row. Categorical values are `MISSING` when unknown.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Features {
@@ -188,10 +178,6 @@ pub struct Item {
     pub row: Value,
     /// The class name.
     pub label: String,
-    /// The row's task or agent has a law violation in its window.
-    pub violation: bool,
-    /// Such a violation is a credential-seeking one.
-    pub credential: bool,
 }
 
 /// The gathered rows, and the counts of what was kept and what was skipped and why.
@@ -261,7 +247,9 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
     let mut entries: Vec<(u64, u64, String, Value)> = Vec::new();
     for cid in &cids {
         for entry in app.transcripts.after(*cid, 0, usize::MAX) {
-            entries.push((entry.cid, entry.work, entry.kind, entry.data));
+            let json = serde_json::to_value(&entry).unwrap_or(serde_json::Value::Null);
+            let kind = json["kind"].as_str().unwrap_or_default().to_string();
+            entries.push((entry.cid, entry.work, kind, json["data"].clone()));
         }
     }
     let refs: Vec<(u64, u64, &str, &Value)> = entries
@@ -269,16 +257,6 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
         .map(|(c, w, k, d)| (*c, *w, k.as_str(), d))
         .collect();
     let works = works_from(&refs);
-    let breaches: Vec<Breach> = app
-        .laws
-        .all_violations()
-        .into_iter()
-        .map(|(cid, v)| Breach {
-            cid,
-            at_ms: v.at_ms,
-            law: v.law,
-        })
-        .collect();
     let manual = app.settings.get().prices;
     let rung =
         |model: &str| rung_for_price(app.prices.lookup(model, &manual).map(|p| p.price.output));
@@ -287,7 +265,6 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
         &tasks,
         &calls,
         &works,
-        &breaches,
         &rung,
         spec.since_ms,
         spec.until_ms,
@@ -305,14 +282,12 @@ pub fn export(app: &App, data_dir: &Path, spec: &ExportSpec) -> Result<Dataset, 
             "usage_calls": calls.len(),
             "transcript_works": works.len(),
             "transcript_agents": cids.len(),
-            "violations": breaches.len(),
         },
         "counts": gathered.counts,
         "fields": {
             "tasks": ["id", "role", "state", "agent_cid", "created_at", "updated_at"],
             "usage": ["id", "at", "cid", "role", "model", "task", "tokens.input", "tokens.cache_read", "tokens.cache_write"],
             "transcript": ["work_start.origin.task", "work_start.prompt (length only)", "model_request.tools (count)", "model_request.messages (count)"],
-            "laws": ["cid", "at_ms", "law"],
         },
         "features": {
             "prompt_chars": "length of the work_start prompt of the task's work; 0 when the transcript window has no such work",
@@ -388,14 +363,7 @@ pub fn upload(data_dir: &Path, name: &str, jsonl: &[u8], now_ms: u64) -> Result<
 
 /// The hygiene flags that stop a job from using a dataset. Anything in this list blocks.
 pub fn blocking(flag: &str) -> bool {
-    matches!(
-        flag,
-        "empty"
-            | "single_class"
-            | "contains_violation"
-            | "credential_seeking"
-            | "unverified_upload"
-    )
+    matches!(flag, "empty" | "single_class" | "unverified_upload")
 }
 
 /// The rung of a model from its catalog output price (USD per million tokens); `None` when no
@@ -473,13 +441,11 @@ pub fn works_from(entries: &[(u64, u64, &str, &Value)]) -> Vec<WorkRec> {
 }
 
 /// Maps the plaza's records to candidate rows (the pure core of [`export`]).
-#[allow(clippy::too_many_arguments)]
 pub fn gather(
     kind: &str,
     tasks: &[TaskRec],
     calls: &[CallRec],
     works: &[WorkRec],
-    breaches: &[Breach],
     rung: &dyn Fn(&str) -> Option<&'static str>,
     since: Option<u64>,
     until: Option<u64>,
@@ -526,12 +492,6 @@ pub fn gather(
             }
         }
         let work = work_by_task.get(task.id.as_str()).copied();
-        let (violation, credential) = breach_flags(
-            breaches,
-            task.agent_cid.or(Some(last.cid)),
-            task.created_ms,
-            task.updated_ms,
-        );
         let base = Features {
             prompt_chars: work.map_or(0, |w| w.prompt_chars),
             tool_count: work.map_or(0, |w| w.tools),
@@ -564,8 +524,6 @@ pub fn gather(
                     call.at_ms,
                     features,
                     label,
-                    violation,
-                    credential,
                     since,
                     until,
                 );
@@ -587,8 +545,6 @@ pub fn gather(
                 task.created_ms,
                 features,
                 label,
-                violation,
-                credential,
                 since,
                 until,
             );
@@ -657,8 +613,6 @@ pub fn parse_upload_line(line: &str) -> Result<(Item, bool), String> {
             ts,
             row,
             label,
-            violation: false,
-            credential: false,
         },
         unknown,
     ))
@@ -673,9 +627,9 @@ pub fn label_balance(training: &[&Item]) -> BTreeMap<String, u64> {
     balance
 }
 
-/// The hygiene flags. `training` are the rows a job would read; `held` are the frozen rows, which
-/// are checked for violations too. `unknown_columns` is set for an upload with unknown columns.
-pub fn taint_flags(training: &[&Item], held: &[&Item], unknown_columns: bool) -> Vec<String> {
+/// The hygiene flags. `training` are the rows a job would read. `unknown_columns` is set for an upload
+/// with unknown columns.
+pub fn taint_flags(training: &[&Item], unknown_columns: bool) -> Vec<String> {
     let mut flags: BTreeSet<&str> = BTreeSet::new();
     let n = training.len() as u64;
     if n == 0 {
@@ -691,13 +645,6 @@ pub fn taint_flags(training: &[&Item], held: &[&Item], unknown_columns: bool) ->
         if balance.values().any(|&c| c as f64 > SKEW_SHARE * n as f64) {
             flags.insert("label_skew");
         }
-    }
-    let all = || training.iter().chain(held.iter());
-    if all().any(|i| i.violation) {
-        flags.insert("contains_violation");
-    }
-    if all().any(|i| i.credential) {
-        flags.insert("credential_seeking");
     }
     if unknown_columns {
         flags.insert("unverified_upload");
@@ -747,7 +694,7 @@ pub fn assemble(
         .filter(|(_, held)| **held)
         .map(|(i, _)| i)
         .collect();
-    let flags = taint_flags(&training, &held, unknown_columns);
+    let flags = taint_flags(&training, unknown_columns);
     let training_bytes = lines_of(&training);
     let frozen_bytes = lines_of(&held);
     let id = dataset_id(&training_bytes);
@@ -846,32 +793,12 @@ fn prior_failures(tasks: &[TaskRec], task: &TaskRec) -> u64 {
         .count() as u64
 }
 
-/// (violation, credential) for a CID's breaches between `from` and `to`.
-fn breach_flags(breaches: &[Breach], cid: Option<u64>, from: u64, to: u64) -> (bool, bool) {
-    let Some(cid) = cid else {
-        return (false, false);
-    };
-    let mut violation = false;
-    let mut credential = false;
-    for b in breaches
-        .iter()
-        .filter(|b| b.cid == cid && b.at_ms >= from && b.at_ms <= to)
-    {
-        violation = true;
-        credential |= b.law.to_lowercase().contains("credential");
-    }
-    (violation, credential)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn push(
     out: &mut Gathered,
     task_id: Option<&String>,
     ts: u64,
     features: Features,
     label: &str,
-    violation: bool,
-    credential: bool,
     since: Option<u64>,
     until: Option<u64>,
 ) {
@@ -886,8 +813,6 @@ fn push(
         ts,
         row,
         label: label.to_string(),
-        violation,
-        credential,
     });
     bump(&mut out.counts, "rows");
 }
@@ -913,8 +838,6 @@ mod tests {
             ts,
             row,
             label: label.into(),
-            violation: false,
-            credential: false,
         }
     }
 
@@ -962,7 +885,7 @@ mod tests {
             messages: 2,
             requests: 1,
         }];
-        let g = gather("tasks", &tasks, &calls, &works, &[], &rung_map, None, None);
+        let g = gather("tasks", &tasks, &calls, &works, &rung_map, None, None);
         assert_eq!(g.items.len(), 1);
         assert_eq!(
             g.items[0].row,
@@ -978,7 +901,7 @@ mod tests {
     fn failed_tasks_give_no_rows_and_are_counted() {
         let tasks = vec![task("t1", "failed", 1_000)];
         let calls = vec![call(1, 1_100, "cheap-model", "t1")];
-        let g = gather("tasks", &tasks, &calls, &[], &[], &rung_map, None, None);
+        let g = gather("tasks", &tasks, &calls, &[], &rung_map, None, None);
         assert!(g.items.is_empty());
         assert_eq!(g.counts.get("state.failed"), Some(&1));
     }
@@ -991,7 +914,7 @@ mod tests {
             call(2, 1_200, "frontier-model", "t1"),
             call(3, 2_100, "cheap-model", "t2"),
         ];
-        let g = gather("cascade", &tasks, &calls, &[], &[], &rung_map, None, None);
+        let g = gather("cascade", &tasks, &calls, &[], &rung_map, None, None);
         assert_eq!(g.items.len(), 1);
         assert_eq!(g.items[0].task_id.as_deref(), Some("t1"));
         assert_eq!(g.items[0].label, "frontier");
@@ -999,29 +922,14 @@ mod tests {
     }
 
     #[test]
-    fn usage_rows_are_per_call_and_a_breach_marks_its_task() {
+    fn usage_rows_are_per_call() {
         let tasks = vec![task("t1", "done", 1_000)];
         let calls = vec![
             call(1, 1_100, "cheap-model", "t1"),
             call(2, 1_200, "frontier-model", "t1"),
         ];
-        let breaches = vec![Breach {
-            cid: 3,
-            at_ms: 1_500,
-            law: "credential_seeking".into(),
-        }];
-        let g = gather(
-            "usage",
-            &tasks,
-            &calls,
-            &[],
-            &breaches,
-            &rung_map,
-            None,
-            None,
-        );
+        let g = gather("usage", &tasks, &calls, &[], &rung_map, None, None);
         assert_eq!(g.items.len(), 2);
-        assert!(g.items.iter().all(|i| i.violation && i.credential));
         assert_eq!(g.items[1].label, "frontier");
     }
 
@@ -1069,11 +977,11 @@ mod tests {
 
     #[test]
     fn empty_single_class_and_skew_are_flagged() {
-        assert_eq!(taint_flags(&[], &[], false), vec!["empty".to_string()]);
+        assert_eq!(taint_flags(&[], false), vec!["empty".to_string()]);
 
         let a = item("a", 1, "cheap");
         let b = item("b", 2, "cheap");
-        let flags = taint_flags(&[&a, &b], &[], false);
+        let flags = taint_flags(&[&a, &b], false);
         assert!(flags.contains(&"single_class".to_string()));
         assert!(flags.contains(&"too_few_rows".to_string()));
 
@@ -1081,26 +989,11 @@ mod tests {
             .map(|i| item(&format!("x{i}"), i, if i < 96 { "cheap" } else { "mid" }))
             .collect();
         let refs: Vec<&Item> = items.iter().collect();
-        let flags = taint_flags(&refs, &[], false);
+        let flags = taint_flags(&refs, false);
         assert!(flags.contains(&"label_skew".to_string()));
         assert!(!flags.contains(&"single_class".to_string()));
         assert!(!blocking("label_skew"));
         assert!(!blocking("too_few_rows"));
-    }
-
-    #[test]
-    fn a_violation_taints_and_blocks() {
-        let mut a = item("a", 1, "cheap");
-        a.violation = true;
-        let flags = taint_flags(&[&a], &[], false);
-        assert!(flags.contains(&"contains_violation".to_string()));
-        assert!(blocking("contains_violation"));
-        assert!(
-            blocking("empty")
-                && blocking("single_class")
-                && blocking("credential_seeking")
-                && blocking("unverified_upload")
-        );
     }
 
     #[test]

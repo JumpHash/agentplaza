@@ -1,4 +1,4 @@
-/* The chart classes of ui/chart.ts (the chart-* colours are theme tokens, themes.gen.css), which draws the console's charts (Metrics, Treasury, the
+/* The chart classes of ui/chart.ts (the chart-* colours are theme tokens, themes.gen.css), which draws the console's charts (Metrics, the
    Lab). The Metrics view's own charts use the same palette. */
 .chart { position: relative; font: 11px var(--font); }
 .chart .chart-svg { display: block; width: 100%; overflow: visible; }

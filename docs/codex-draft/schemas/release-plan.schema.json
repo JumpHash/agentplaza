@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/release-plan.schema.json",
   "title": "Release plan",
-  "description": "A release agent's plan and record for a deployment (0069, 0113). Production steps are irreversible (C-004).",
+  "description": "A release agent's plan and record for a deployment. Production steps are irreversible.",
   "type": "object",
   "additionalProperties": false,
   "required": [

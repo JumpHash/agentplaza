@@ -145,7 +145,7 @@ pub fn glyph(status: &str, outcome: Option<&str>) -> Glyph {
     }
 }
 
-/// One group of the agents list: a project (or none), and the agents in it, by name.
+/// One group of the agents list: a project (or none), and the agents in it, by label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
     pub project: Option<String>,
@@ -153,34 +153,35 @@ pub struct Group {
     pub cids: Vec<u64>,
 }
 
-/// Whether an agent matches the filter: its name, its role or its cid contains it (case-insensitive). An empty filter
-/// matches every agent.
+/// Whether an agent matches the filter: its role or its cid contains it (case-insensitive). An empty filter matches
+/// every agent.
 pub fn matches(agent: &Value, filter: &str) -> bool {
     let needle = filter.trim().to_lowercase();
     if needle.is_empty() {
         return true;
     }
-    let by_text = ["name", "role_label", "role"]
+    let by_text = ["role_label", "role"]
         .iter()
         .any(|key| str_of(agent, key).is_some_and(|text| text.to_lowercase().contains(&needle)));
     by_text || cid_of(agent).is_some_and(|cid| cid.to_string().contains(&needle))
 }
 
-fn by_name(agents: &[Value], mut cids: Vec<u64>) -> Vec<u64> {
+/// The cids sorted by their label: the role, then the cid (agents have no names).
+fn by_label(agents: &[Value], mut cids: Vec<u64>) -> Vec<u64> {
     let key = |cid: u64| {
-        let name = agent_of(agents, cid)
-            .and_then(|agent| str_of(agent, "name"))
+        let role = agent_of(agents, cid)
+            .and_then(|agent| str_of(agent, "role"))
             .unwrap_or("");
-        (name.to_lowercase(), cid)
+        (role.to_lowercase(), cid)
     };
     cids.sort_by_key(|&cid| key(cid));
     cids
 }
 
-/// The agents grouped by project, as the IDE groups them (`apps/web/src/ide/groups.ts`): an agent that works on a project
-/// sits under it, and only it; one on no project (the orchestrator, or an agent from before membership) sits under every
-/// project it leads and every project holding a task it is assigned to (claimed, or working on now). Projects come most
-/// recently active first; the agents in none go to `NO_PROJECT`, last. Groups with no agent are left out.
+/// The agents grouped by project, as the IDE groups them (`apps/web/src/ide/groups.ts`): an agent whose live session is
+/// on a project sits under it, and only it; one with no project (the orchestrator, or an agent with no live session)
+/// sits under every project it leads and every project holding a task it is assigned to (claimed, or working on now).
+/// Projects come most recently active first; the agents in none go to `NO_PROJECT`, last; empty groups are left out.
 pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &str) -> Vec<Group> {
     let mut sorted: Vec<&Value> = projects
         .iter()
@@ -201,7 +202,7 @@ pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &st
             continue;
         }
         let origin = agent.pointer("/work/origin/task").and_then(Value::as_str);
-        let member_of = str_of(agent, "project").filter(|p| !p.is_empty());
+        let on_project = str_of(agent, "project").filter(|p| !p.is_empty());
         let mut placed = false;
         for (list, project) in lists.iter_mut().zip(&sorted) {
             let leads = project.get("lead_cid").and_then(Value::as_u64) == Some(cid);
@@ -213,7 +214,7 @@ pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &st
                         .filter_map(Value::as_str)
                         .any(|id| origin == Some(id) || assignees.get(id) == Some(&cid))
                 });
-            let in_it = match member_of {
+            let in_it = match on_project {
                 Some(id) => str_of(project, "id") == Some(id),
                 None => leads || holds,
             };
@@ -239,14 +240,14 @@ pub fn groups(agents: &[Value], projects: &[Value], tasks: &[Value], filter: &st
         out.push(Group {
             project: Some(id),
             title,
-            cids: by_name(agents, list),
+            cids: by_label(agents, list),
         });
     }
     if !loose.is_empty() {
         out.push(Group {
             project: None,
             title: NO_PROJECT.to_string(),
-            cids: by_name(agents, loose),
+            cids: by_label(agents, loose),
         });
     }
     out
@@ -273,20 +274,6 @@ pub fn rows(groups: &[Group]) -> Vec<Row> {
         }));
     }
     out
-}
-
-/// The cids of the agents whose name another agent shares (case-insensitive). Their rows show the cid.
-pub fn shared_names(agents: &[Value]) -> HashSet<u64> {
-    let key = |agent: &Value| str_of(agent, "name").unwrap_or("").trim().to_lowercase();
-    let mut count: HashMap<String, usize> = HashMap::new();
-    for agent in agents {
-        *count.entry(key(agent)).or_insert(0) += 1;
-    }
-    agents
-        .iter()
-        .filter(|agent| count.get(&key(agent)).is_some_and(|n| *n > 1))
-        .filter_map(cid_of)
-        .collect()
 }
 
 /// One block of the chat: a transcript entry, or a run of tool steps that folds into one line.
@@ -731,7 +718,7 @@ pub struct Workspace {
     /// The filter while it is typed (it applies as it is typed).
     pub filtering: Option<String>,
     pub composer: Option<Composer>,
-    /// Each chat's context as the hub last answered it, by its owner (the agent's, or the conversation's).
+    /// Each agent's chat context as the hub last answered it, by its owner.
     pub contexts: HashMap<Owner, Context>,
     /// Seconds since each chat's context was asked for, for the chat on screen (absent: never asked).
     pub context_since: HashMap<Owner, f32>,
@@ -1060,9 +1047,8 @@ impl Workspace {
                 let owners: Vec<Owner> = self
                     .contexts
                     .iter()
-                    .filter(|(owner, context)| match owner {
+                    .filter(|(owner, _)| match owner {
                         Owner::Agent(own) => *own == cid,
-                        Owner::Conversation(_) => context.cid == cid,
                     })
                     .map(|(owner, _)| owner.clone())
                     .collect();
@@ -1275,14 +1261,14 @@ mod tests {
 
     use super::*;
 
-    fn agent(cid: u64, name: &str, status: &str, task: Option<(&str, Option<&str>)>) -> Value {
+    fn agent(cid: u64, status: &str, task: Option<(&str, Option<&str>)>) -> Value {
         let work = match task {
             Some((prompt, origin)) => {
                 json!({"kind": "chat", "prompt": prompt, "origin": {"task": origin}})
             }
             None => Value::Null,
         };
-        json!({"cid": cid, "name": name, "role": "dev", "role_label": "Developer", "status": status, "work": work})
+        json!({"cid": cid, "role": "dev", "role_label": "Developer", "status": status, "work": work})
     }
 
     fn entry(seq: u64, kind: &str, data: Value) -> Value {
@@ -1312,10 +1298,10 @@ mod tests {
     }
 
     #[test]
-    fn a_member_is_under_its_project_only_and_the_others_under_what_they_lead_or_hold() {
-        let mut ada = agent(1, "Ada", "idle", None);
+    fn an_agent_on_a_project_sits_under_it_alone_and_the_rest_under_what_they_lead_or_hold() {
+        let mut ada = agent(1, "idle", None);
         ada["project"] = json!("pr2");
-        let lead = agent(9, "Atlas", "idle", None);
+        let lead = agent(9, "idle", None);
         let projects = vec![
             json!({"id": "pr1", "title": "Docs", "lead_cid": 1, "tasks": ["t1"], "updated_ms": 2}),
             json!({"id": "pr2", "title": "Release", "lead_cid": 9, "tasks": [], "updated_ms": 1}),
@@ -1349,7 +1335,7 @@ mod tests {
     #[test]
     fn selecting_an_agent_asks_for_its_transcript_once_and_its_projects_board() {
         let mut ws = Workspace {
-            agents: vec![agent(1, "Ada", "idle", None), agent(2, "Ben", "idle", None)],
+            agents: vec![agent(1, "idle", None), agent(2, "idle", None)],
             ..Workspace::default()
         };
         let first = ws.sync();
@@ -1385,7 +1371,7 @@ mod tests {
     #[test]
     fn a_transcript_event_past_a_gap_asks_for_what_was_missed() {
         let mut ws = Workspace {
-            agents: vec![agent(1, "Ada", "idle", None)],
+            agents: vec![agent(1, "idle", None)],
             ..Workspace::default()
         };
         ws.sync();
@@ -1438,7 +1424,7 @@ mod tests {
     #[test]
     fn i_opens_the_breakdown_and_t_writes_the_steer_note() {
         let mut ws = Workspace {
-            agents: vec![agent(1, "Ada", "idle", None)],
+            agents: vec![agent(1, "idle", None)],
             ..Workspace::default()
         };
         ws.sync();
@@ -1456,7 +1442,7 @@ mod tests {
     #[test]
     fn m_opens_the_picker_asks_for_the_models_and_a_save_closes_it() {
         let mut ws = Workspace {
-            agents: vec![agent(1, "Ada", "idle", None)],
+            agents: vec![agent(1, "idle", None)],
             ..Workspace::default()
         };
         ws.sync();
@@ -1491,7 +1477,7 @@ mod tests {
     #[test]
     fn a_refused_model_keeps_the_picker_open_with_the_hubs_message() {
         let mut ws = Workspace {
-            agents: vec![agent(1, "Ada", "idle", None)],
+            agents: vec![agent(1, "idle", None)],
             ..Workspace::default()
         };
         ws.sync();
@@ -1511,7 +1497,7 @@ mod tests {
     #[test]
     fn a_failed_model_list_offers_the_default_and_says_why() {
         let mut ws = Workspace {
-            agents: vec![agent(1, "Ada", "idle", None)],
+            agents: vec![agent(1, "idle", None)],
             ..Workspace::default()
         };
         ws.sync();

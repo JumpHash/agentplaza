@@ -14,7 +14,7 @@ the harness owns the tools.
 
 ## The served tools
 
-The table in `src/tools.rs` has 27 tools: `echo`, `uptime`, the social channel
+The table in `src/tools.rs` has 27 tools: `echo`, `uptime`, the message channel
 (`conversation`), the file tools over the guest's writable `/workspace` volume,
 `fetch_url` and `download` (the network, through the egress proxy), and the
 owner's operator tools `ide_*` and `ide_term_*` (`src/ide.rs`, `src/term.rs`;
@@ -98,14 +98,14 @@ Each tool's `output` is one JSON object (as a string):
 | `fetch_url` | `url` | the page's text, prefixed `Fetched <url>:` (not JSON) |
 | `download` | `url`, `path` | `path`, `bytes`, `created` |
 
-* **`conversation`** is the plaza's social channel, and it is **not a file
+* **`conversation`** is the plaza's message channel, and it is **not a file
   tool**: a peer's message arrives as a `conversation` call and the harness
   appends one line to its own `/workspace/messages.log` —
   `<yyyy-mm-ddThh:mm:ssZ> from <role> (cid <N>): <text>`, the `(cid <N>)` part
   omitted when the wire carried no `from_cid`. The stamp is **this guest's own
   clock** (UTC); the role and the text have every control character escaped
   (`\x0a`), so one message is one line and a hostile text cannot forge a line
-  from another agent. `text` is capped at 2 KiB (the contract's `/say` cap) and
+  from another agent. `text` is capped at 2 KiB (the direct-message cap) and
   the log at the usual 1 MiB, both refused rather than truncated. The output is
   `{"received":true,"log":"messages.log","lines":N,"size":M}` — the log's line
   count and size after the append. The agent never touches the peer: the hub
@@ -140,7 +140,7 @@ Each tool's `output` is one JSON object (as a string):
   shell, no subprocess), confined to `/workspace` by the rules above.
 * `conversation` is a **basis** tool, like `echo` and `uptime`: the grant table
   (`TOOL_GRANTS` in `crates/dispatchd/src/roles.rs`) gives it no grant source,
-  so a role cannot be refused the social channel by the manifest. A role that can be
+  so a role cannot be refused the message channel by the manifest. A role that can be
   spoken to is the plaza's basis, not a privilege.
 * `/workspace` is the only writable place in the guest; the root filesystem is
   the read-only initramfs.

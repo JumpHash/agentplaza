@@ -20,6 +20,7 @@ use iced::{Alignment, Border, Color, ContentFit, Element, Font, Length, Theme};
 use serde_json::{Value, json};
 
 use super::client::Client;
+use super::roles;
 use super::screens::Id;
 use super::ui::{self, Inline, Kind};
 use crate::theme::{self, MONO, SANS, SANS_MEDIUM, SANS_SEMIBOLD};
@@ -131,7 +132,7 @@ pub struct Cards {
     answers: HashMap<String, (Value, u64)>,
     /// References a load is fetching now.
     pending: HashSet<String>,
-    /// The agents `@Name` can name, as the hub last listed them.
+    /// The agents as the hub last listed them, each by its label, for `@` mentions and chips.
     roster: Vec<AgentName>,
     roster_at: Option<u64>,
     roster_pending: bool,
@@ -427,7 +428,7 @@ impl Job {
     }
 }
 
-/// The agents the hub lists, as `@Name` can name them. None when the read fails.
+/// The agents the hub lists, each by its label (`<role> #<cid>`). None when the read fails.
 fn read_roster(client: &Client) -> Option<Vec<AgentName>> {
     let value = client.call("GET", "/v1/agents", None).ok()?;
     let list = value
@@ -436,10 +437,9 @@ fn read_roster(client: &Client) -> Option<Vec<AgentName>> {
     Some(
         list.iter()
             .filter_map(|a| {
-                let name = a.get("name").and_then(Value::as_str)?.trim();
                 let cid = a.get("cid").and_then(Value::as_u64)?;
-                (!name.is_empty()).then(|| AgentName {
-                    name: name.to_string(),
+                Some(AgentName {
+                    name: roles::agent_label_of(a),
                     cid,
                 })
             })
@@ -789,7 +789,7 @@ fn glyph<'a, M: 'a>(r: &Ref, accent: Color) -> Element<'a, M> {
     }
 }
 
-/// The short label a chip shows: `o/r #12`, `#528`, `@Name` (an agent named by its id shows the roster's name).
+/// The short label a chip shows: `o/r #12`, `#528`, or an agent by its label (`Builder #528`) when the roster lists it.
 fn chip_label(r: &Ref, ctx: &RichCtx) -> String {
     match r {
         Ref::Agent {
@@ -799,7 +799,7 @@ fn chip_label(r: &Ref, ctx: &RichCtx) -> String {
             .agents
             .iter()
             .find(|a| a.cid == *cid)
-            .map_or_else(|| apz_rich::label(r), |a| format!("@{}", a.name)),
+            .map_or_else(|| apz_rich::label(r), |a| a.name.clone()),
         _ => apz_rich::label(r),
     }
 }

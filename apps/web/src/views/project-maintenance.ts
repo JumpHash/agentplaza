@@ -7,6 +7,7 @@
 // what the watchers read and the settings sit below. Expert shows every field and the decided proposals. The markup is
 // the prototype's Maintenance tab (styles/proto/projects.css); the rules are in maintenance-model.ts.
 
+import { agentLabel, agentName } from '../roles';
 import { api, type Agent, type Project } from '../api';
 import { projectsApi, SIGNAL_KINDS, type Area, type Maintenance, type Proposal, type Signal, type SignalKind } from '../api-projects';
 import { on } from '../store';
@@ -86,7 +87,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
   let names = new Map<number, string>();
   let timer = 0;
 
-  const nameOf = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
+  const nameOf = (cid: number): string => names.get(cid) ?? agentLabel(cid);
 
   const load = async (): Promise<void> => {
     const [m, agents] = await Promise.all([
@@ -95,7 +96,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
     ]);
     if (shown && !root.isConnected) return;
     if (m) data = m;
-    names = new Map(agents.map((a) => [a.cid, a.name || `agent ${a.cid}`]));
+    names = new Map(agents.map((a) => [a.cid, agentName(a)]));
     draw();
   };
   const schedule = (): void => {
@@ -131,15 +132,13 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
   // ---- The owner's answers ---------------------------------------------------------------------------------------
 
   const doIt = (pr: Proposal): void => {
-    const note = textarea({ rows: 2, placeholder: 'Anything the team should know (optional)' });
-    const budget = input({ type: 'number', min: 200, step: 100, placeholder: pr.effort.budget ? String(pr.effort.budget) : 'The project’s default' });
+    const note = textarea({ rows: 2, placeholder: 'Anything the agents should know (optional)' });
     const knownTool = pr.instrument?.catalog;
     dialog(
       'Do it',
       [
         h('p', null, h('strong', null, pr.title)),
         h('p.pj-faint', null, knownTool ? `${pr.instrument!.name} is something you set up: it is picked, and you add it in Connectors or MCP.` : `It becomes a task of this project for a ${pr.role}. ${weighLine(pr)}.`),
-        knownTool ? null : field('Budget (credits)', budget),
         field('Note', note, undefined),
       ],
       (close) => [
@@ -147,9 +146,8 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
         lbtn(
           'Do it',
           () => {
-            const credits = Number(budget.value);
             void attempt(
-              () => projectsApi.approveProposal(p.id, pr.id, { note: note.value.trim() || undefined, budget: credits >= 200 ? credits : undefined }),
+              () => projectsApi.approveProposal(p.id, pr.id, { note: note.value.trim() || undefined }),
               knownTool ? `${pr.instrument!.name}: set it up in Connectors or MCP` : 'Picked: it is a task now',
             ).then((done) => {
               if (!done) return;
@@ -423,7 +421,7 @@ export function maintenanceTab(p: Project, onModeChange: () => void): HTMLElemen
       'Sweeps',
       [
         field('Sweep', every, 'A sweep is one watcher reading what came in, updating the map and proposing.'),
-        h('p.pj-faint', null, m.watchers.length ? `Watchers, in turn: ${m.watchers.map(nameOf).join(', ')}.` : 'No agent watches it yet: add a planner or a researcher on the Team tab.'),
+        h('p.pj-faint', null, m.watchers.length ? `Watchers, in turn: ${m.watchers.map(nameOf).join(', ')}.` : 'No agent watches it yet.'),
       ],
       (close) => [
         lbtn('Cancel', () => close(), { kind: 'ghost' }),

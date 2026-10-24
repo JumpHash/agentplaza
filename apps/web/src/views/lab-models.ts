@@ -109,7 +109,7 @@ function confirmPromote(model: ModelView, changed: (next: ModelView) => void, fa
     h(
       'p.lab2-note',
       null,
-      'Promotion gives the model its own agent on the roster: a CID, no VM, no wallet, no tools and no chat. Other agents can invoke it with invoke_model where its card allows their role. Nobody can assign it tasks or message it.',
+      'Promotion gives the model its own agent on the roster: a CID, no VM, no tools and no chat. Other agents can invoke it with invoke_model where its card allows their role. Nobody can assign it tasks or message it.',
     ),
     problem,
     h('div.lab-actions', null, labButton('Cancel', () => close(), { kind: 'ghost' }), confirm),

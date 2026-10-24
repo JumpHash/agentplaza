@@ -211,7 +211,7 @@ pub enum AppsOp {
     },
 }
 
-/// Work-folder sync. Files are content-addressed: `hash` is the SHA-256 of the content, in hex.
+/// Work-folder sync. Files are content-addressed: `hash` is the BLAKE3 hash of the content, in hex.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum SyncOp {
@@ -585,7 +585,7 @@ mod tests {
             ),
             (
                 Op::Settings(settings_example()),
-                r#"{"op":"settings","takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false,"rate_per_hour":0}"#,
+                r#"{"op":"settings","takeover":"agent_waits","record":true,"retention_days":30,"record_fps":2,"record_takeovers":true,"work_folder":"~/AgentPlaza","snapshot_reset":false}"#,
             ),
         ]
     }

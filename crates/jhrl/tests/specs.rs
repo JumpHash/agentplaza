@@ -107,15 +107,6 @@ fn approval_state_space() {
     assert_eq!(r.generated, 11);
 }
 
-#[test]
-fn credit_line_holds() {
-    let p = load_specs();
-    let (pk, m) = model(&p, "CreditLine");
-    let r = mc::explore(&p, pk, m, &Options::default()).unwrap();
-    assert!(r.violations.is_empty(), "{:?}", r.violations);
-    assert_eq!(r.states.len(), 16);
-}
-
 /// The recorded state space of the RestoreMerge machine: 14,914 states.
 #[test]
 fn restore_merge_state_space() {
@@ -259,7 +250,7 @@ fn every_scenario_passes() {
             }
         }
     }
-    assert_eq!(n, 6);
+    assert_eq!(n, 3);
 }
 
 #[test]

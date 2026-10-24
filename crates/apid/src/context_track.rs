@@ -1,11 +1,10 @@
 //! What each chat holds: per agent and work item, the latest model call's context (used against the model's
 //! window, split into the six context parts) and the tool calls of that work (calls, errors, result sizes), for
 //! the consoles' context bar and its breakdown (`GET /v1/agents/{cid}/context`,
-//! `GET /v1/owner/conversations/{id}/context`). Kept in memory: a restart starts the bars at the next call.
+//! `GET /v1/chats/{id}/context`). Kept in memory: a restart starts the bars at the next call.
 //!
 //! It also holds a chat's model choice for one message (`POST /v1/agents/{cid}/chat {model}`), which
-//! [`chat_model`] gives the work item that message queued; an owner conversation's own `model` applies to every
-//! work item it queued.
+//! [`chat_model`] gives the work item that message queued; a chat's own `model` applies to every work item it queued.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
@@ -49,7 +48,7 @@ pub struct Snapshot {
     pub parts: BTreeMap<String, u64>,
     /// Model calls in this work item.
     pub calls: u64,
-    /// Compactions of the conversation during this work item.
+    /// Compactions of the agent's conversation during this work item.
     pub compactions: u64,
     /// The work item's tool calls, by tool name.
     pub tools: BTreeMap<String, ToolTally>,
@@ -135,7 +134,7 @@ impl Tracker {
         })
     }
 
-    /// The conversation was compacted during `work`.
+    /// The agent's conversation was compacted during `work`.
     pub fn on_compaction(&self, cid: u64, work: u64) {
         self.with(cid, work, |s| s.compactions += 1);
     }
@@ -149,7 +148,7 @@ impl Tracker {
         lock(&self.snapshots).get(&(cid, work)).cloned()
     }
 
-    /// The latest snapshot among `works` (an owner conversation's work items, oldest first).
+    /// The latest snapshot among `works` (a chat's work items, oldest first).
     pub fn latest_of(&self, cid: u64, works: &[u64]) -> Option<Snapshot> {
         let snapshots = lock(&self.snapshots);
         works
@@ -191,17 +190,15 @@ pub fn publish(app: &App, snap: &Snapshot) {
     }
 }
 
-/// The model a chat chose for `work`: a one-message choice, else the owner conversation's own model. None: the
+/// The model a chat chose for `work`: a one-message choice, else the model of the chat `work` answers. None: the
 /// agent's model applies.
 pub fn chat_model(app: &App, cid: u64, work: u64) -> Option<String> {
     if let Some(m) = app.context.override_of(work) {
         return Some(m);
     }
-    app.conversations
-        .list()
-        .into_iter()
-        .find(|c| c.cid == cid && c.works.contains(&work))
-        .and_then(|c| c.model)
+    let item = app.work.current(cid).filter(|item| item.id == work)?;
+    let chat = item.thread.strip_prefix("chat:")?;
+    app.chats.get(chat)?.model
 }
 
 /// A snapshot as the consoles read it: the parts in their fixed order, and the share of the window used.
@@ -246,8 +243,17 @@ pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/agents/{cid}/context", agent_route)
         .doc(RouteDoc::new("An agent's chat context: used against the window, by part, and its tool calls (?work=)").errors(&[400, 404]))
-        .get("/v1/owner/conversations/{id}/context", conversation_route)
-        .doc(RouteDoc::new("An owner conversation's context: the orchestrator's, for that conversation").errors(&[404]))
+        .get("/v1/chats/{id}/context", chat_route)
+        .doc(RouteDoc::new("A chat's context: the orchestrator's (or its planner's) turns on it").errors(&[404]))
+}
+
+/// The context of VM `cid` (its last call's, or of the work item `work`), as the consoles read it.
+pub fn of_cid(app: &App, cid: u64, work: Option<u64>) -> Value {
+    view(
+        &app.context
+            .get(cid, work)
+            .unwrap_or_else(|| empty(app, cid)),
+    )
 }
 
 fn agent_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -269,15 +275,16 @@ fn agent_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     Response::json(200, &view(&snap))
 }
 
-fn conversation_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
-    let Some(c) = app.conversations.get(p.get("id")) else {
-        return Response::error(404, "no such conversation");
+fn chat_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    let Some(chat) = app.chats.get(p.get("id")) else {
+        return Response::error(404, "no such chat");
     };
+    let cid = crate::work_loop::chat_cid(app, &chat).unwrap_or(0);
     let mut snap = app
         .context
-        .latest_of(c.cid, &c.works)
-        .unwrap_or_else(|| empty(app, c.cid));
-    if let Some(model) = &c.model
+        .latest_of(cid, &chat.works)
+        .unwrap_or_else(|| empty(app, cid));
+    if let Some(model) = &chat.model
         && snap.calls == 0
     {
         snap.window = crate::providers::context_window(app, model);

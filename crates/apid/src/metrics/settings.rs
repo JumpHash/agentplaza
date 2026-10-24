@@ -1,6 +1,6 @@
 //! The owner's metrics choices (`GET`/`PUT /v1/metrics/settings`, edited from the Metrics view's settings dialog):
 //! collection level, retention, spend budgets, the forecast basis and the opt-in outside endpoints. Saved in the
-//! store's saved values under `settings`.
+//! metrics file as one row (`metric_settings`).
 
 use std::sync::Mutex;
 
@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::store::Store;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct Retention {
-    /// 10 s chunks, hours.
+    /// 10-second points, hours.
     pub chunks_hours: u32,
     /// 1-minute aggregates, days.
     pub minute_days: u32,
@@ -42,7 +42,7 @@ impl Default for Retention {
 }
 
 /// A daily spend cap to report against (laws enforce caps; this only shows them).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct BudgetCap {
     /// A scope id: `global`, `role:builder`, `agent:4417`.
     pub scope: String,
@@ -50,7 +50,7 @@ pub struct BudgetCap {
 }
 
 /// The opt-in outside endpoints, both off by default.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct Outside {
     /// Serve `/metrics` (OpenMetrics) to holders of `openmetrics_token`.
@@ -65,16 +65,20 @@ pub struct Outside {
     pub otlp_confirmed: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
+#[table(name = "metric_settings")]
 pub struct MetricsSettings {
     pub level: Level,
+    #[table(flatten)]
     pub retention: Retention,
+    #[table(child)]
     pub budgets: Vec<BudgetCap>,
     /// Monthly model-spend budget in USD.
     pub monthly_budget_usd: Option<f64>,
     /// Days the spend forecast is based on: 14 or 30.
     pub basis_days: u32,
+    #[table(flatten)]
     pub outside: Outside,
 }
 
@@ -134,10 +138,7 @@ pub struct Holder {
 
 impl Holder {
     pub fn load(store: &dyn Store) -> Holder {
-        let mut s: MetricsSettings = store
-            .kv_get("settings")
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let mut s = store.settings().unwrap_or_default();
         s.repair();
         Holder {
             current: Mutex::new(s),
@@ -163,22 +164,8 @@ impl Holder {
             new.outside.openmetrics_token.clear();
         }
         *cur = new.clone();
-        store.kv_put(
-            "settings",
-            &serde_json::to_string(&SavedForm(&new)).unwrap_or_default(),
-        );
+        store.put_settings(&new);
         new
-    }
-}
-
-/// The saved form keeps the token (the API form skips it).
-struct SavedForm<'a>(&'a MetricsSettings);
-
-impl Serialize for SavedForm<'_> {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let mut v = serde_json::to_value(self.0).map_err(serde::ser::Error::custom)?;
-        v["outside"]["openmetrics_token"] = self.0.outside.openmetrics_token.clone().into();
-        v.serialize(s)
     }
 }
 

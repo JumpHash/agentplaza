@@ -1,6 +1,7 @@
 // The IDE's panels: the right panel's controllers (board, tasks, approvals, run, activity), and the Files tab's actions
 // (expand a folder, search, quick open, restore a checkpoint). Each controller is made on first use for the selection, and
 // disposed when the selection moves on.
+import { agentLabelIn } from '../roles';
 import { ideApi, type IdeCheckpoint, type Project } from '../api';
 import { projectOf } from '../ide/groups';
 import { button, modal, toast } from '../ui/components';
@@ -64,7 +65,7 @@ export function tasksFor(c: IdeCtx, project: Project | null) {
 
 /** The activity of the selected agent (made on first use). */
 export function activityFor(c: IdeCtx, cid: number) {
-  if (!c.activity) c.activity = activityPanel({ cid, agentName: c.agentList.find((a) => a.cid === cid)?.name ?? `agent ${cid}` });
+  if (!c.activity) c.activity = activityPanel({ cid, agentName: agentLabelIn(c.agentList, cid) });
   return c.activity;
 }
 

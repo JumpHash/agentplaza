@@ -40,8 +40,8 @@
 //!   Links stay inside a project (the schema keeps them inside a task tree),
 //!   number at most [`MAX_AFTER`] per task, and never close a cycle. A link that
 //!   fails or is withdrawn does not cascade: the task stays `open`, names the
-//!   link in `blocked_by`, and waits to be relinked or withdrawn. No bids,
-//!   rework, change sets or tree: the schema's `parent_id`/`root_id`/
+//!   link in `blocked_by`, and waits to be relinked or withdrawn. No rework,
+//!   change sets or tree: the schema's `parent_id`/`root_id`/
 //!   `change_sets` are a later slice, and v0's tasks are roots.
 //! * **Who may finish is recorded, not enforced.** The claim binds the task to
 //!   the claiming agent's CID and role; the finish body carries no CID and the
@@ -49,35 +49,14 @@
 //!   accepts the finish from anyone who can reach the loopback API. The
 //!   identity slice (device keys, agent certificates) is what turns that into
 //!   an enforced check.
-//! * **Persistence is apid's job.** The ledger is held in memory and apid
-//!   snapshots it (`snapshot` / `restore`) into Postgres when it has one
-//!   (without, the ledger lasts as long as the process); a task's links and
-//!   project are in its record, and a record from before them loads with none. The schema's tables (`task_deps` among them), its
-//!   `updated_at` trigger and its append-only `task_events` are a later slice.
+//! * **Persistence is apid's job.** The ledger is held in memory; apid keeps it
+//!   in `plaza.db` through [`TaskLedger::rows`] and [`TaskLedger::load`]: one
+//!   `task_ledger` row (the id counter) and a `ledger_task` row per task, with
+//!   each task's links in `ledger_task_after`. The schema's tables (`task_deps`
+//!   among them), its `updated_at` trigger and its append-only `task_events` are
+//!   a later slice.
 //!   Every transition does publish to the event bus, so the console sees the
 //!   ledger live, and [`MAX_TASKS`] bounds what the process holds.
-//!
-//! # The task's escrow
-//!
-//! A task's budget is real money in the treasury's journal (see
-//! [`crate::treasury`]): a task created with a budget mints it into the task's
-//! escrow (a `mint` entry, the mint debited and the escrow credited), and a
-//! task that reaches a terminal state (`done`, `failed` or `withdrawn`)
-//! refunds what its escrow still holds (a `refund` entry). Model calls are
-//! metered as real spend (see [`crate::treasury`]), so what a task ends with is
-//! its budget less that spend, and the treasury view's `spent` totals it. A task in
-//! `awaiting_review` is not terminal: its escrow stays held until a verdict
-//! finishes it, so the reviewed worker is paid out of that escrow first.
-//!
-//! The two effects are ordered so the ledger is never left inconsistent:
-//! `create` mints **before** the task exists (a mint the treasury refuses
-//! means no task is created and no id handed out), and `finish`/`withdraw`
-//! refund **before** the state is committed (a refund the treasury refuses
-//! leaves the task exactly as it was, in the state it had). This adds an
-//! effect to four existing transitions but changes no state machine: the
-//! states and the allowed pairs are exactly as they were, and the refund a
-//! terminal task performs is `crates/jhrl/specs/machines/economy.jhrl`'s `Close` and
-//! `crates/jhrl/specs/machines/task_lifecycle.jhrl`'s release, not a transition either model lacks.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
@@ -85,13 +64,12 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use serde::{Deserialize, Serialize};
 
 use crate::events::{Event, EventBus};
-use crate::treasury::{PLAZA_OWNER, PostError, Treasury};
 use crate::{ConnectedAgent, now_ms};
 
 /// The most tasks the ledger holds. A finished task (`done`, `failed` or
 /// `withdrawn`) stays readable until the ledger needs its place: then the
-/// oldest finished ones with nothing left in their escrow and no kept task
-/// linked to them move out to the daemon's archive ([`TaskLedger::take_archived`]).
+/// oldest finished ones that no kept task is linked to move out to the daemon's
+/// archive ([`TaskLedger::take_archived`]).
 /// Past that, when every task still lives or is linked, the ledger refuses
 /// with an honest error.
 pub const MAX_TASKS: usize = 1024;
@@ -112,16 +90,17 @@ pub const MAX_PROJECT: usize = 64;
 pub const MAX_AFTER: usize = 32;
 
 /// The states noded v0 gives a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
+#[column(rename_all = "snake_case")]
 pub enum TaskState {
     /// Created and claimable.
     Open,
     /// Bound to a live agent.
     Claimed,
     /// The claiming agent reports the work done; it waits for a reviewer's
-    /// verdict, and its escrow stays held until the verdict ends the task.
+    /// verdict, which ends the task.
     AwaitingReview,
-    /// A review sent the work back to its worker: the claim, the escrow and the worker's lane stay, and the
+    /// A review sent the work back to its worker: the claim and the worker's lane stay, and the
     /// worker's next done brings it back to `awaiting_review` for the next round.
     Rework,
     /// Ended: the work is accepted.
@@ -417,21 +396,16 @@ pub enum CreateError {
         /// How many tasks the ledger holds.
         max: usize,
     },
-    /// The task's budget could not be minted into its escrow, so no task was
-    /// created. The journal is full or the accounts cap is reached — the only
-    /// ways a well-formed mint is refused.
-    Treasury(PostError),
 }
 
 impl CreateError {
     /// The HTTP status this error is reported as: a request the ledger cannot
-    /// read is a bad request, a ledger at its cap is a conflict with its
-    /// state, and a treasury that cannot hold the escrow is one too.
+    /// read is a bad request, and a ledger at its cap is a conflict with its
+    /// state.
     pub fn status(&self) -> u16 {
         match self {
             CreateError::Invalid(_) => 400,
             CreateError::Full { .. } => 409,
-            CreateError::Treasury(error) => error.status(),
         }
     }
 }
@@ -441,68 +415,11 @@ impl std::fmt::Display for CreateError {
         match self {
             CreateError::Invalid(reason) => write!(formatter, "{reason}"),
             CreateError::Full { max } => write!(formatter, "the task ledger is full ({max} tasks)"),
-            CreateError::Treasury(error) => write!(formatter, "{error}"),
         }
     }
 }
 
 impl std::error::Error for CreateError {}
-
-/// Why a task could not be ended or withdrawn.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EndError {
-    /// The state machine refused the transition.
-    Refused(RefusedTransition),
-    /// The escrow could not be refunded, so the transition was not made: a
-    /// terminal task's escrow is always released, or the task does not end.
-    Treasury(PostError),
-}
-
-impl EndError {
-    /// The HTTP status this error is reported as: a refused transition is a
-    /// conflict with the task's state, and a treasury refusal is its own.
-    pub fn status(&self) -> u16 {
-        match self {
-            EndError::Refused(_) => 409,
-            EndError::Treasury(error) => error.status(),
-        }
-    }
-}
-
-impl std::fmt::Display for EndError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EndError::Refused(refused) => write!(formatter, "{refused}"),
-            EndError::Treasury(error) => write!(formatter, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for EndError {}
-
-/// The escrow a task gets when its poster names no budget. Every caller that
-/// creates a task on a poster's behalf (the HTTP route, the agents' tools and
-/// the CLI, which omits the field) gets this default through [`resolve_budget`].
-pub const DEFAULT_TASK_BUDGET: i64 = 2000;
-
-/// The smallest budget a poster may name, in credits: a budget is the escrow
-/// that pays the worker's model calls and tool steps, and a few credits stop
-/// the work at its first call.
-pub const MIN_TASK_BUDGET: i64 = 200;
-
-/// The budget a poster's request gets: the default when none is named, the
-/// named budget when it is at least [`MIN_TASK_BUDGET`], and otherwise a refusal
-/// that names the minimum (0 is below it, so it is refused too).
-pub fn resolve_budget(requested: Option<u64>) -> Result<u64, String> {
-    let minimum = MIN_TASK_BUDGET as u64;
-    match requested {
-        None => Ok(DEFAULT_TASK_BUDGET as u64),
-        Some(budget) if budget < minimum => Err(format!(
-            "a budget of {budget} credits is below the minimum of {MIN_TASK_BUDGET}: a task's budget is the escrow that pays the worker's model calls and tool steps (not a fee), so use at least {MIN_TASK_BUDGET} (the default is {DEFAULT_TASK_BUDGET}; typical work needs 1000-5000)"
-        )),
-        Some(budget) => Ok(budget),
-    }
-}
 
 /// The `POST /v1/tasks` body.
 #[derive(Debug, Clone, Deserialize)]
@@ -512,11 +429,6 @@ pub struct CreateTask {
     /// How the work will be judged complete (the schema's `spec_ref`).
     #[serde(default)]
     pub acceptance: Option<String>,
-    /// The task's budget, in credits. Absent is 0 at the ledger, which posts no
-    /// escrow for it; the HTTP route and the agents' tools first apply
-    /// [`resolve_budget`], so a poster's task is never unfunded by accident.
-    #[serde(default)]
-    pub budget: Option<u64>,
     /// The role the task is for, when it names one. v0 records it; it does not
     /// gate a claim on it (the assignment engine that would is a later slice).
     #[serde(default)]
@@ -538,7 +450,6 @@ pub struct CreateTask {
 struct Checked {
     goal: String,
     acceptance: Option<String>,
-    budget: u64,
     role: Option<String>,
     after: Vec<String>,
     project: Option<String>,
@@ -549,15 +460,9 @@ impl CreateTask {
     /// request is outside the ledger's contract. Whether the tasks `after`
     /// names exist, and in which project, is the ledger's check ([`resolve`]).
     fn checked(&self) -> Result<Checked, String> {
-        let budget = self.budget.unwrap_or(0);
-        // The schema's `budget_credits` is a bigint.
-        if budget > i64::MAX as u64 {
-            return Err(format!("budget must be at most {}", i64::MAX));
-        }
         Ok(Checked {
             goal: required_text("goal", &self.goal, MAX_TEXT)?,
             acceptance: optional_text("acceptance", &self.acceptance, MAX_TEXT)?,
-            budget,
             role: optional_text("role", &self.role, MAX_ROLE)?,
             after: checked_after(&self.after)?,
             project: optional_text("project", &self.project, MAX_PROJECT)?,
@@ -771,24 +676,15 @@ pub struct Task {
     goal: String,
     /// The schema's `spec_ref`.
     acceptance: Option<String>,
-    /// The schema's `budget_credits`.
-    budget: u64,
     /// The role the task was created for, when it named one.
     role: Option<String>,
     /// The project the task is for, when it is one's: named when it was created, or set once when a task
     /// outside projects moves into one ([`TaskLedger::adopt`]). A task never leaves its project.
     project: OnceLock<String>,
-    /// The treasury entry that minted this task's budget into its escrow, when
-    /// it had one: set once, when the task was created, and never changed. The
-    /// agora reads it as a call's `escrow_entry`.
-    escrow_entry: Option<u64>,
     /// When the task was created, in milliseconds since the Unix epoch.
     created_at: u64,
     /// Where this task's transitions are published.
     events: Arc<EventBus>,
-    /// The treasury this task's escrow lives in: its budget was minted there,
-    /// and its terminal state refunds what is left.
-    treasury: Arc<Treasury>,
     inner: Mutex<TaskInner>,
 }
 
@@ -806,8 +702,6 @@ pub struct TaskView<'a> {
     pub goal: &'a str,
     /// How it will be judged complete (the schema's `spec_ref`), or `null`.
     pub acceptance: Option<&'a str>,
-    /// The task's budget, in credits (the schema's `budget_credits`).
-    pub budget: u64,
     /// The role the task was created for, or `null`.
     pub role: Option<&'a str>,
     /// The project the task is for, or `null`.
@@ -860,12 +754,6 @@ impl Task {
         self.role.as_deref()
     }
 
-    /// The task's budget, in credits — what a call's `max_price` is derived
-    /// from.
-    pub fn budget(&self) -> u64 {
-        self.budget
-    }
-
     /// How the work will be judged complete (the schema's `spec_ref`), when
     /// the task named one — what a call's `spec_ref` is derived from.
     pub fn acceptance(&self) -> Option<&str> {
@@ -913,14 +801,6 @@ impl Task {
         inner.state == TaskState::Open && LinkStates::of(&inner.after).all_done()
     }
 
-    /// The treasury entry that minted this task's budget into its escrow, when
-    /// it had a budget. The agora records it as a call's `escrow_entry`: at v0
-    /// a task's escrow is funded by its own mint, not by a parent task's
-    /// subcontract.
-    pub fn escrow_entry(&self) -> Option<u64> {
-        self.escrow_entry
-    }
-
     /// The task as the API reports it.
     pub fn view(&self) -> TaskView<'_> {
         let inner = self.lock();
@@ -937,7 +817,6 @@ impl Task {
             id: &self.id,
             goal: &self.goal,
             acceptance: self.acceptance.as_deref(),
-            budget: self.budget,
             role: self.role.as_deref(),
             project: self.project(),
             after: link_ids(&inner.after),
@@ -992,8 +871,7 @@ impl Task {
     /// Puts a claimed task back in the queue: the owner took the workstation its
     /// worker was using, so the claim is released and the task is `open` to be
     /// claimed again. The assignee and the claiming CID are cleared, and `note`
-    /// (why it was requeued) is kept as the task's note. Nothing is refunded:
-    /// the escrow stays with the task, which is still going to be done.
+    /// (why it was requeued) is kept as the task's note.
     pub fn requeue(&self, note: &str) -> Result<(), RefusedTransition> {
         let to = TaskState::Open;
         let mut inner = self.lock();
@@ -1013,10 +891,6 @@ impl Task {
     /// Moves a claimed task to `awaiting_review`: the claiming agent reports the
     /// work done, and it waits for a reviewer's verdict. `note` is the agent's
     /// report; the reviewer reads it from the task.
-    ///
-    /// Nothing is refunded. The escrow stays held while the task waits, so a
-    /// done claim that no reviewer rules on pays nothing back to the budget until
-    /// a verdict (or the owner's ruling) finishes it.
     pub fn await_review(&self, note: Option<String>) -> Result<(), RefusedTransition> {
         let to = TaskState::AwaitingReview;
         let mut inner = self.lock();
@@ -1032,7 +906,7 @@ impl Task {
     }
 
     /// Sends a task awaiting review back to its worker (`rework`), with the review's findings as its note. The
-    /// claim and the escrow stay.
+    /// claim stays.
     pub fn rework(&self, note: Option<String>) -> Result<(), RefusedTransition> {
         let to = TaskState::Rework;
         let mut inner = self.lock();
@@ -1053,19 +927,17 @@ impl Task {
     /// recorded at claim time; nothing in a finish request identifies the
     /// caller, so v0 records who claimed the task rather than proving who
     /// finished it (see the module note on the identity slice).
-    ///
-    /// Ending a task releases its escrow: what the task's escrow still holds
-    /// goes back to the mint (a `refund` entry). The refund is posted **before**
-    /// the state is committed, so a treasury that refuses it leaves the task in
-    /// the state it had — a terminal task is never left holding its budget.
-    pub fn finish(&self, outcome: FinishOutcome, note: Option<String>) -> Result<(), EndError> {
+    pub fn finish(
+        &self,
+        outcome: FinishOutcome,
+        note: Option<String>,
+    ) -> Result<(), RefusedTransition> {
         let to = outcome.state();
         let mut inner = self.lock();
         let from = inner.state;
         if !from.can_transition_to(to) {
-            return Err(EndError::Refused(RefusedTransition { from, to }));
+            return Err(RefusedTransition { from, to });
         }
-        self.release_escrow()?;
         inner.state = to;
         inner.outcome = to.outcome();
         inner.note = note;
@@ -1080,16 +952,13 @@ impl Task {
     /// Ends the task as `withdrawn`, from `open` or `claimed`.
     ///
     /// A task that has already ended is final, so withdrawing one is refused.
-    /// Like a finish, a withdrawal releases the escrow (a `refund` entry) and
-    /// only commits the state if the treasury accepts it.
-    pub fn withdraw(&self) -> Result<(), EndError> {
+    pub fn withdraw(&self) -> Result<(), RefusedTransition> {
         let to = TaskState::Withdrawn;
         let mut inner = self.lock();
         let from = inner.state;
         if !from.can_transition_to(to) {
-            return Err(EndError::Refused(RefusedTransition { from, to }));
+            return Err(RefusedTransition { from, to });
         }
-        self.release_escrow()?;
         inner.state = to;
         inner.outcome = to.outcome();
         inner.updated_at = now_ms();
@@ -1124,15 +993,6 @@ impl Task {
         }
     }
 
-    /// Refunds whatever this task's escrow holds, if anything. A task with no
-    /// budget, or one whose escrow is already empty, posts nothing.
-    fn release_escrow(&self) -> Result<(), EndError> {
-        self.treasury
-            .refund_task_to_budget(&self.id)
-            .map(|_| ())
-            .map_err(EndError::Treasury)
-    }
-
     fn lock(&self) -> MutexGuard<'_, TaskInner> {
         self.inner
             .lock()
@@ -1140,11 +1000,10 @@ impl Task {
     }
 }
 
-/// The node's tasks, in creation order, the bus their transitions are
-/// published to, and the treasury their budgets are escrowed in.
+/// The node's tasks, in creation order, and the bus their transitions are
+/// published to.
 pub struct TaskLedger {
     events: Arc<EventBus>,
-    treasury: Arc<Treasury>,
     inner: Mutex<LedgerInner>,
 }
 
@@ -1152,23 +1011,14 @@ struct LedgerInner {
     next_seq: u64,
     tasks: Vec<Arc<Task>>,
     /// Finished tasks moved out of the ledger that the daemon has not archived yet, one JSON line each:
-    /// the task's record, its money, and when it moved out. Not state.
+    /// the task's record and when it moved out. Not state.
     archive: Vec<String>,
 }
 
 impl TaskLedger {
-    /// A ledger with no tasks that publishes every transition to `events`, and
-    /// whose tasks' budgets are escrowed in a treasury that publishes to the
-    /// same bus.
+    /// A ledger with no tasks that publishes every transition to `events`.
     pub fn new(events: Arc<EventBus>) -> Self {
-        let treasury = Arc::new(Treasury::new(Arc::clone(&events)));
-        Self::with_treasury(events, treasury)
-    }
-
-    /// A ledger over `treasury`, which may be one restored from a snapshot.
-    pub fn with_treasury(events: Arc<EventBus>, treasury: Arc<Treasury>) -> Self {
         Self {
-            treasury,
             events,
             inner: Mutex::new(LedgerInner {
                 next_seq: 0,
@@ -1178,22 +1028,15 @@ impl TaskLedger {
         }
     }
 
-    /// The treasury the ledger's tasks are escrowed in (the daemon's treasury
-    /// view and journal read it).
-    pub fn treasury(&self) -> &Arc<Treasury> {
-        &self.treasury
-    }
-
     /// The finished tasks moved out of the ledger since the last call, oldest first, one JSON line each
-    /// (`{"task": <record>, "money": {...}, "archived_at": <ms>}`): the daemon appends them to its archive.
+    /// (`{"task": <record>, "archived_at": <ms>}`): the daemon appends them to its archive.
     pub fn take_archived(&self) -> Vec<String> {
         std::mem::take(&mut self.lock().archive)
     }
 
     /// Makes room for `needed` more tasks when the ledger would pass [`MAX_TASKS`]: the oldest finished
-    /// tasks with nothing left in their escrow, and that no kept task runs after, move out to the archive
-    /// queue. Their escrow accounts close in the treasury ([`Treasury::forget_task`]). Fewer may move out
-    /// than asked (every other task lives, or is linked); the caller then refuses.
+    /// tasks that no kept task runs after move out to the archive queue. Fewer may move out than asked
+    /// (every other task lives, or is linked); the caller then refuses.
     fn make_room(&self, inner: &mut LedgerInner, needed: usize) {
         let over = (inner.tasks.len() + needed).saturating_sub(MAX_TASKS);
         if over == 0 {
@@ -1215,11 +1058,7 @@ impl TaskLedger {
             .tasks
             .iter()
             .enumerate()
-            .filter(|(_, task)| {
-                task.lock().state.is_finished()
-                    && !linked.contains(&task.id)
-                    && self.treasury.escrow_balance(&task.id) == 0
-            })
+            .filter(|(_, task)| task.lock().state.is_finished() && !linked.contains(&task.id))
             .map(|(index, _)| index)
             .take(over)
             .collect();
@@ -1228,15 +1067,8 @@ impl TaskLedger {
         let mut lines = Vec::with_capacity(movable.len());
         for index in movable.into_iter().rev() {
             let task = inner.tasks.remove(index);
-            let money = self.treasury.forget_task(&task.id);
             let line = serde_json::json!({
                 "task": task.record(),
-                "money": {
-                    "minted": money.minted,
-                    "spent": money.spent,
-                    "paid": money.paid,
-                    "refunded": money.refunded,
-                },
                 "archived_at": now,
             });
             lines.push(line.to_string());
@@ -1247,11 +1079,7 @@ impl TaskLedger {
     /// Creates the next task in `open`, where a v0 task begins.
     ///
     /// The request is checked and the cap applied before an id is handed out,
-    /// so a refused create leaves the ledger exactly as it was. A positive
-    /// budget is funded from the plaza's budget into the task's escrow before the task
-    /// is registered:
-    /// a funding the treasury refuses (a short plaza budget) fails the create and
-    /// creates no task, so a task never exists without its escrow.
+    /// so a refused create leaves the ledger exactly as it was.
     pub fn create(&self, request: &CreateTask) -> Result<Arc<Task>, CreateError> {
         let checked = request.checked().map_err(CreateError::Invalid)?;
         let mut inner = self.lock();
@@ -1264,23 +1092,9 @@ impl TaskLedger {
         if inner.tasks.len() >= MAX_TASKS {
             return Err(CreateError::Full { max: MAX_TASKS });
         }
-        // The id is reserved here but `next_seq` only advances once the budget
-        // is minted, so a refused mint hands out no id.
         let id = format!("t{}", inner.next_seq + 1);
-        // The entry the budget was minted by, when there was one: the task
-        // keeps it, and the agora records it as a call's `escrow_entry`.
-        let mut entry = None;
-        if checked.budget > 0 {
-            // `checked` bounds the budget to `i64::MAX`.
-            let amount = i64::try_from(checked.budget).unwrap_or(i64::MAX);
-            entry = Some(
-                self.treasury
-                    .fund_task_from(&id, amount, &self.budget_for(checked.project.as_deref()))
-                    .map_err(CreateError::Treasury)?,
-            );
-        }
         inner.next_seq += 1;
-        let task = self.open_task(id, checked, entry, after, now_ms());
+        let task = self.open_task(id, checked, after, now_ms());
         inner.tasks.push(Arc::clone(&task));
         // Each task it runs after learns of it, so it is announced when that
         // one ends.
@@ -1299,10 +1113,6 @@ impl TaskLedger {
     /// `after_batch` names earlier tasks of the same batch, in its own project, that it runs after.
     /// It all happens under the ledger's lock, so no claim and no subscriber sees part of a batch.
     ///
-    /// Every budget is minted into its task's escrow before any task is registered. If the
-    /// treasury refuses one, what the batch had minted goes back to the plaza's budget, the ids
-    /// whose escrows were funded are not handed out again (the escrows keep the mint and the
-    /// refund as their history), and no task is created.
     pub fn create_all(&self, batch: &[BatchTask]) -> Result<Vec<Arc<Task>>, CreateError> {
         let mut checked: Vec<Checked> = Vec::with_capacity(batch.len());
         for (at, item) in batch.iter().enumerate() {
@@ -1358,45 +1168,11 @@ impl TaskLedger {
         let ids: Vec<String> = (0..batch.len() as u64)
             .map(|at| format!("t{}", first + at))
             .collect();
-        let mut entries: Vec<Option<u64>> = Vec::with_capacity(batch.len());
-        for (task, id) in checked.iter().zip(&ids) {
-            if task.budget == 0 {
-                entries.push(None);
-                continue;
-            }
-            // `checked` bounds the budget to `i64::MAX`.
-            let amount = i64::try_from(task.budget).unwrap_or(i64::MAX);
-            match self.treasury.fund_task_from(
-                id,
-                amount,
-                &self.budget_for(task.project.as_deref()),
-            ) {
-                Ok(entry) => entries.push(Some(entry)),
-                Err(refused) => {
-                    for (funded, entry) in ids.iter().zip(&entries) {
-                        if entry.is_some() {
-                            // Best effort: a refund refused too leaves that escrow held.
-                            let _ = self.treasury.refund_task_to_budget(funded);
-                        }
-                    }
-                    let burned = entries
-                        .iter()
-                        .rposition(Option::is_some)
-                        .map_or(0, |at| at + 1);
-                    inner.next_seq += burned as u64;
-                    return Err(CreateError::Treasury(refused));
-                }
-            }
-        }
         inner.next_seq += batch.len() as u64;
         let now = now_ms();
         let mut created: Vec<Arc<Task>> = Vec::with_capacity(batch.len());
-        let parts = batch
-            .iter()
-            .zip(checked)
-            .zip(existing)
-            .zip(ids.into_iter().zip(entries));
-        for (((item, task), mut links), (id, entry)) in parts {
+        let parts = batch.iter().zip(checked).zip(existing).zip(ids);
+        for (((item, task), mut links), id) in parts {
             links.extend(
                 item.after_batch
                     .iter()
@@ -1406,7 +1182,7 @@ impl TaskLedger {
                 .iter()
                 .map(|Link(linked)| Arc::clone(linked))
                 .collect();
-            let new = self.open_task(id, task, entry, links, now);
+            let new = self.open_task(id, task, links, now);
             inner.tasks.push(Arc::clone(&new));
             for upstream in &upstreams {
                 upstream.lock().dependents.push(Arc::downgrade(&new));
@@ -1422,25 +1198,15 @@ impl TaskLedger {
     }
 
     /// A new task in `open`, as a create registers it.
-    fn open_task(
-        &self,
-        id: String,
-        checked: Checked,
-        entry: Option<u64>,
-        after: Vec<Link>,
-        now: u64,
-    ) -> Arc<Task> {
+    fn open_task(&self, id: String, checked: Checked, after: Vec<Link>, now: u64) -> Arc<Task> {
         Arc::new(Task {
             id,
             goal: checked.goal,
             acceptance: checked.acceptance,
-            budget: checked.budget,
             role: checked.role,
             project: checked.project.map(OnceLock::from).unwrap_or_default(),
-            escrow_entry: entry,
             created_at: now,
             events: Arc::clone(&self.events),
-            treasury: Arc::clone(&self.treasury),
             inner: Mutex::new(TaskInner {
                 state: TaskState::Open,
                 outcome: None,
@@ -1453,15 +1219,6 @@ impl TaskLedger {
                 dependents: Vec::new(),
             }),
         })
-    }
-
-    /// The town budget a task of `project` is funded from: the project's own once its budget is set aside, else
-    /// the plaza's.
-    fn budget_for(&self, project: Option<&str>) -> String {
-        match project {
-            Some(project) if self.treasury.has_town_budget(project) => project.to_string(),
-            _ => PLAZA_OWNER.to_string(),
-        }
     }
 
     /// The task with that id, if there is one.
@@ -1697,26 +1454,27 @@ fn cycle_through(task: &Task, after: &[Link]) -> Option<Vec<String>> {
     None
 }
 
-/// The ledger's state as a snapshot holds it: the id counter and every task's
-/// record, oldest first. The `Arc`s a live task holds (the bus and the treasury)
-/// are not state, so they are not in it; restore hands them back.
-#[derive(Debug, Serialize, Deserialize)]
+/// The ledger as the store holds it (table `task_ledger`): the id counter, and
+/// every task's record (table `ledger_task`), oldest first. The `Arc`s a live
+/// task holds (the bus) is not state, so it is not in it;
+/// [`TaskLedger::load`] hands them back.
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "task_ledger")]
 struct LedgerSnapshot {
     next_seq: u64,
+    #[table(child = "ledger_task")]
     tasks: Vec<TaskRecord>,
 }
 
-/// One task as a snapshot holds it. The outcome is not stored: it is the
+/// One task as the store holds it. The outcome is not stored: it is the
 /// state's own (see [`TaskState::outcome`]), so a record cannot disagree with
 /// its state.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
 struct TaskRecord {
     id: String,
     goal: String,
     acceptance: Option<String>,
-    budget: u64,
     role: Option<String>,
-    escrow_entry: Option<u64>,
     created_at: u64,
     state: TaskState,
     assignee_id: Option<String>,
@@ -1724,25 +1482,29 @@ struct TaskRecord {
     agent_cid: Option<u64>,
     note: Option<String>,
     updated_at: u64,
-    /// The task's project; none in a record from before tasks had one.
+    /// The task's project.
     #[serde(default)]
     project: Option<String>,
-    /// The ids of the tasks it runs after; none in a record from before links.
+    /// The ids of the tasks it runs after.
     #[serde(default)]
+    #[table(list)]
     after: Vec<String>,
 }
 
+/// The table of the task ledger: `task_ledger`, with each task as a `ledger_task` row.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(LedgerSnapshot)
+}
+
 impl Task {
-    /// The task's state as a snapshot record.
+    /// The task's state as a stored record.
     fn record(&self) -> TaskRecord {
         let inner = self.lock();
         TaskRecord {
             id: self.id.clone(),
             goal: self.goal.clone(),
             acceptance: self.acceptance.clone(),
-            budget: self.budget,
             role: self.role.clone(),
-            escrow_entry: self.escrow_entry,
             created_at: self.created_at,
             state: inner.state,
             assignee_id: inner.assignee_id.clone(),
@@ -1755,21 +1517,18 @@ impl Task {
         }
     }
 
-    /// Rebuilds a live task from its record, over the given bus and treasury,
+    /// Rebuilds a live task from its record, over the given bus,
     /// without its links: a link holds the task it names, so the ledger links
     /// the tasks once they are all rebuilt.
-    fn from_record(record: TaskRecord, events: &Arc<EventBus>, treasury: &Arc<Treasury>) -> Self {
+    fn from_record(record: TaskRecord, events: &Arc<EventBus>) -> Self {
         Self {
             id: record.id,
             goal: record.goal,
             acceptance: record.acceptance,
-            budget: record.budget,
             role: record.role,
             project: record.project.map(OnceLock::from).unwrap_or_default(),
-            escrow_entry: record.escrow_entry,
             created_at: record.created_at,
             events: Arc::clone(events),
-            treasury: Arc::clone(treasury),
             inner: Mutex::new(TaskInner {
                 state: record.state,
                 outcome: record.state.outcome(),
@@ -1894,23 +1653,37 @@ fn never_ready(records: &[TaskRecord]) -> Option<&str> {
 }
 
 impl TaskLedger {
-    /// The whole state as JSON: the id counter and every task's record. Restore
-    /// reads it back with [`TaskLedger::restore`].
-    pub fn snapshot(&self) -> String {
+    /// The ledger's state as the store holds it: the id counter and every task's record, oldest first.
+    fn state(&self) -> LedgerSnapshot {
         let inner = self.lock();
-        let snapshot = LedgerSnapshot {
+        LedgerSnapshot {
             next_seq: inner.next_seq,
             tasks: inner.tasks.iter().map(|task| task.record()).collect(),
-        };
-        serde_json::to_string(&snapshot).expect("the ledger state serializes")
+        }
     }
 
-    /// Replaces the state with a [`TaskLedger::snapshot`]; a refusal changes
-    /// nothing. The tasks are rebuilt over this ledger's own bus and treasury,
-    /// and neither is touched: a restore posts nothing and publishes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let snapshot: LedgerSnapshot = serde_json::from_str(json)
-            .map_err(|err| format!("the snapshot does not parse: {err}"))?;
+    /// The ledger's rows, as its state is now (apid's saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        apz_store::RowSet::one(def(), &self.state())
+    }
+
+    /// Replaces the ledger with what the store holds (at start). A stored ledger that breaks the ledger's rules is
+    /// refused, and the ledger stays as it was.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored =
+            apz_store::table::load_one::<LedgerSnapshot>(conn, def())?.unwrap_or(LedgerSnapshot {
+                next_seq: 0,
+                tasks: Vec::new(),
+            });
+        self.install(stored).map_err(apz_store::StoreError::invalid)
+    }
+
+    /// Replaces the state with `snapshot`; a refusal changes nothing. The tasks are rebuilt over this ledger's own bus
+    /// and neither is touched: a load publishes nothing.
+    fn install(&self, snapshot: LedgerSnapshot) -> Result<(), String> {
         check_ledger_snapshot(&snapshot)?;
         // The tasks first, then their links: a record names its links by id,
         // and a link holds the task it names.
@@ -1920,7 +1693,7 @@ impl TaskLedger {
             .into_iter()
             .map(|mut record| {
                 after.push(std::mem::take(&mut record.after));
-                Arc::new(Task::from_record(record, &self.events, &self.treasury))
+                Arc::new(Task::from_record(record, &self.events))
             })
             .collect();
         let by_id: HashMap<&str, &Arc<Task>> =
@@ -1965,26 +1738,11 @@ mod tests {
             .create(&CreateTask {
                 goal: goal.to_string(),
                 acceptance: None,
-                budget: None,
                 role: None,
                 after: Vec::new(),
                 project: None,
             })
             .expect("a task inside the contract")
-    }
-
-    /// A task created with a budget, which the ledger mints into its escrow.
-    fn budgeted(ledger: &TaskLedger, goal: &str, budget: u64) -> Arc<Task> {
-        ledger
-            .create(&CreateTask {
-                goal: goal.to_string(),
-                acceptance: None,
-                budget: Some(budget),
-                role: None,
-                after: Vec::new(),
-                project: None,
-            })
-            .expect("a budgeted task inside the contract")
     }
 
     /// `core.task_transitions`, restricted to the states noded v0 implements
@@ -2227,7 +1985,6 @@ mod tests {
             .create(&CreateTask {
                 goal: "one too many".to_string(),
                 acceptance: None,
-                budget: None,
                 role: None,
                 after: Vec::new(),
                 project: None,
@@ -2253,7 +2010,6 @@ mod tests {
             .create(&CreateTask {
                 goal: "in the freed place".to_string(),
                 acceptance: None,
-                budget: None,
                 role: None,
                 after: Vec::new(),
                 project: None,
@@ -2280,7 +2036,6 @@ mod tests {
             .create(&CreateTask {
                 goal: "still too many".to_string(),
                 acceptance: None,
-                budget: None,
                 role: None,
                 after: Vec::new(),
                 project: None,
@@ -2293,27 +2048,22 @@ mod tests {
     #[test]
     fn a_request_outside_the_contract_creates_nothing() {
         let ledger = TaskLedger::new(EventBus::new());
-        let request =
-            |goal: &str, acceptance: Option<&str>, budget: Option<u64>, role: Option<&str>| {
-                CreateTask {
-                    goal: goal.to_string(),
-                    acceptance: acceptance.map(String::from),
-                    budget,
-                    role: role.map(String::from),
-                    after: Vec::new(),
-                    project: None,
-                }
-            };
+        let request = |goal: &str, acceptance: Option<&str>, role: Option<&str>| CreateTask {
+            goal: goal.to_string(),
+            acceptance: acceptance.map(String::from),
+            role: role.map(String::from),
+            after: Vec::new(),
+            project: None,
+        };
 
         for bad in [
-            request("", None, None, None),
-            request("   ", None, None, None),
-            request(&"g".repeat(MAX_TEXT + 1), None, None, None),
-            request("g", Some(""), None, None),
-            request("g", Some(&"a".repeat(MAX_TEXT + 1)), None, None),
-            request("g", None, None, Some("")),
-            request("g", None, None, Some(&"r".repeat(MAX_ROLE + 1))),
-            request("g", None, Some(u64::MAX), None),
+            request("", None, None),
+            request("   ", None, None),
+            request(&"g".repeat(MAX_TEXT + 1), None, None),
+            request("g", Some(""), None),
+            request("g", Some(&"a".repeat(MAX_TEXT + 1)), None),
+            request("g", None, Some("")),
+            request("g", None, Some(&"r".repeat(MAX_ROLE + 1))),
         ] {
             let refused = ledger.create(&bad).expect_err("outside the contract");
             assert_eq!(refused.status(), 400, "{bad:?}");
@@ -2324,18 +2074,13 @@ mod tests {
         }
         assert!(ledger.list().is_empty(), "no refused request created one");
 
-        ledger
-            .treasury()
-            .mint_plaza_budget(i64::MAX)
-            .expect("the plaza covers the largest budget");
         // The edges are inside the contract.
         let edges = [
-            request("g", None, None, None),
-            request("g", Some("a"), Some(i64::MAX as u64), Some("builder")),
+            request("g", None, None),
+            request("g", Some("a"), Some("builder")),
             request(
                 &"g".repeat(MAX_TEXT),
                 Some(&"a".repeat(MAX_TEXT)),
-                Some(0),
                 Some(&"r".repeat(MAX_ROLE)),
             ),
         ];
@@ -2354,12 +2099,11 @@ mod tests {
 
         // The optional fields default to the schema's.
         let defaulted = ledger
-            .create(&request("just a goal", None, None, None))
+            .create(&request("just a goal", None, None))
             .expect("a task");
         let view = defaulted.view();
         assert_eq!(view.goal, "just a goal");
         assert_eq!(view.acceptance, None);
-        assert_eq!(view.budget, 0);
         assert_eq!(view.role, None);
         assert_eq!(view.verifier_id, None);
         assert_eq!(view.note, None);
@@ -2373,7 +2117,6 @@ mod tests {
             .create(&CreateTask {
                 goal: "ship the ledger".to_string(),
                 acceptance: Some("the suite is green".to_string()),
-                budget: Some(5),
                 role: Some("builder".to_string()),
                 after: Vec::new(),
                 project: None,
@@ -2389,7 +2132,6 @@ mod tests {
         assert_eq!(view["id"], "t1");
         assert_eq!(view["goal"], "ship the ledger");
         assert_eq!(view["acceptance"], "the suite is green");
-        assert_eq!(view["budget"], 5);
         assert_eq!(view["role"], "builder");
         assert_eq!(view["state"], "done");
         assert_eq!(view["outcome"], "accepted");
@@ -2429,7 +2171,6 @@ mod tests {
         assert_eq!(
             frames,
             vec![
-                "event: treasury\ndata: {\"entry\":1,\"kind\":\"mint\",\"amount\":100000,\"task\":null}\n\n",
                 "event: task\ndata: {\"id\":\"t1\",\"state\":\"open\",\"assignee\":null,\"agent_cid\":null,\"project\":null,\"ready\":true}\n\n",
                 "event: task\ndata: {\"id\":\"t1\",\"state\":\"claimed\",\"assignee\":\"builder\",\"agent_cid\":100,\"project\":null,\"ready\":false}\n\n",
                 "event: task\ndata: {\"id\":\"t1\",\"state\":\"done\",\"assignee\":\"builder\",\"agent_cid\":100,\"project\":null,\"ready\":false}\n\n",
@@ -2456,69 +2197,9 @@ mod tests {
     }
 
     #[test]
-    fn a_budgeted_task_mints_its_escrow_and_a_finish_refunds_it() {
-        let ledger = TaskLedger::new(EventBus::new());
-        let task = budgeted(&ledger, "paid work", 500);
-
-        // Creating it funded the budget from the plaza into its escrow, and only that.
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 500);
-        assert_eq!(
-            ledger.treasury().plaza_budget_balance(),
-            i128::from(crate::treasury::PLAZA_BUDGET) - 500
-        );
-        assert_eq!(ledger.treasury().view().totals.entries, 2);
-        assert_eq!(ledger.treasury().view().spent, 0);
-
-        task.claim(&agent(100, "builder")).expect("claim");
-        task.finish(FinishOutcome::Done, Some("done".to_string()))
-            .expect("finish");
-
-        // v0 meters no real spend, so finishing refunded the whole escrow to the plaza.
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
-        assert_eq!(ledger.treasury().view().totals.entries, 3);
-        assert_eq!(
-            ledger.treasury().plaza_budget_balance(),
-            i128::from(crate::treasury::PLAZA_BUDGET)
-        );
-        // The journal balances as a whole.
-        assert_eq!(ledger.treasury().view().totals.balance, 0);
-        assert!(ledger.treasury().verify_journal().is_ok());
-    }
-    #[test]
-    fn a_done_claim_waits_for_review_and_keeps_its_escrow_held() {
-        let ledger = TaskLedger::new(EventBus::new());
-        let task = budgeted(&ledger, "reviewed work", 80);
-        task.claim(&agent(100, "builder")).expect("claim");
-
-        // The worker reports done: the task waits, and nothing is refunded.
-        task.await_review(Some("built it".to_string()))
-            .expect("claimed -> awaiting_review");
-        assert_eq!(task.state(), "awaiting_review");
-        assert_eq!(task.view().note.as_deref(), Some("built it"));
-        assert!(!task.is_open());
-        assert_eq!(
-            ledger.treasury().escrow_balance("t1"),
-            80,
-            "the escrow is still held"
-        );
-        assert_eq!(
-            ledger.treasury().view().totals.entries,
-            2,
-            "no refund was posted"
-        );
-
-        // Only a verdict ends it, and the refund is what the escrow still holds.
-        task.finish(FinishOutcome::Done, Some("pass".to_string()))
-            .expect("awaiting_review -> done");
-        assert_eq!(task.state(), "done");
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
-        assert_eq!(ledger.treasury().view().totals.entries, 3);
-    }
-
-    #[test]
     fn a_waiting_task_cannot_be_claimed_again_and_only_a_claim_can_wait() {
         let ledger = TaskLedger::new(EventBus::new());
-        let task = budgeted(&ledger, "reviewed work", 10);
+        let task = create(&ledger, "reviewed work");
         let refused = task
             .await_review(None)
             .expect_err("open -> awaiting_review is refused");
@@ -2534,152 +2215,38 @@ mod tests {
             "waiting is not open"
         );
         assert_eq!(task.state(), "awaiting_review");
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 10);
     }
 
     #[test]
-    fn withdrawn_and_terminal_tasks_refund_the_whole_escrow() {
-        // Was a_waiting_task_can_be_withdrawn_and_then_refunds.
+    fn withdrawn_and_terminal_tasks_end_and_stay_ended() {
         {
             let ledger = TaskLedger::new(EventBus::new());
-            let task = budgeted(&ledger, "given up", 25);
+            let task = create(&ledger, "given up");
             task.claim(&agent(100, "builder")).expect("claim");
             task.await_review(None).expect("claimed -> awaiting_review");
             task.withdraw().expect("awaiting_review -> withdrawn");
             assert_eq!(task.state(), "withdrawn");
-            assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
         }
-        // Was every_terminal_state_refunds_the_whole_escrow.
         {
             let ledger = TaskLedger::new(EventBus::new());
 
-            let failed = budgeted(&ledger, "failed", 7);
+            let failed = create(&ledger, "failed");
             failed.claim(&agent(100, "builder")).expect("claim");
             failed
                 .finish(FinishOutcome::Failed, None)
                 .expect("claimed -> failed");
-            assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
+            assert_eq!(failed.state(), "failed");
 
-            let withdrawn = budgeted(&ledger, "withdrawn", 9);
-            assert_eq!(ledger.treasury().escrow_balance("t2"), 9);
+            let withdrawn = create(&ledger, "withdrawn");
             withdrawn.withdraw().expect("open -> withdrawn");
-            assert_eq!(ledger.treasury().escrow_balance("t2"), 0);
+            assert_eq!(withdrawn.state(), "withdrawn");
+            assert!(withdrawn.withdraw().is_err(), "a withdrawn task is final");
 
-            let claimed = budgeted(&ledger, "withdrawn mid-flight", 3);
+            let claimed = create(&ledger, "withdrawn mid-flight");
             claimed.claim(&agent(100, "builder")).expect("claim");
             claimed.withdraw().expect("claimed -> withdrawn");
-            assert_eq!(ledger.treasury().escrow_balance("t3"), 0);
-
-            // The plaza's mint, three fundings and three refunds, and nothing left in any escrow.
-            assert_eq!(ledger.treasury().view().totals.entries, 7);
-            assert_eq!(
-                ledger.treasury().plaza_budget_balance(),
-                i128::from(crate::treasury::PLAZA_BUDGET)
-            );
-            for task in ledger.list() {
-                assert_eq!(ledger.treasury().escrow_balance(task.id()), 0);
-            }
+            assert_eq!(claimed.state(), "withdrawn");
         }
-    }
-
-    #[test]
-    fn a_poster_budget_defaults_and_refuses_below_the_minimum() {
-        assert_eq!(resolve_budget(None), Ok(2000));
-        assert_eq!(resolve_budget(Some(200)), Ok(200));
-        assert_eq!(resolve_budget(Some(5000)), Ok(5000));
-        for low in [0, 1, 199] {
-            let refusal = resolve_budget(Some(low)).expect_err("below the minimum");
-            assert!(
-                refusal.contains("minimum of 200"),
-                "names the minimum: {refusal}"
-            );
-            assert!(
-                refusal.contains(&format!("{low} credits")),
-                "names the budget: {refusal}"
-            );
-        }
-        assert_eq!(DEFAULT_TASK_BUDGET, 2000);
-        assert_eq!(MIN_TASK_BUDGET, 200);
-    }
-
-    #[test]
-    fn an_unbudgeted_task_posts_nothing() {
-        let ledger = TaskLedger::new(EventBus::new());
-        let task = create(&ledger, "free work");
-        // No budget, no escrow: the treasury holds only the plaza's mint.
-        assert_eq!(ledger.treasury().view().totals.entries, 1);
-        assert_eq!(ledger.treasury().accounts().len(), 2);
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 0);
-
-        task.claim(&agent(100, "builder")).expect("claim");
-        task.finish(FinishOutcome::Done, None).expect("finish");
-        // Ending it refunds nothing, because there is nothing to refund.
-        assert_eq!(ledger.treasury().view().totals.entries, 1);
-        assert_eq!(ledger.treasury().accounts().len(), 2);
-    }
-
-    #[test]
-    fn a_refused_transition_refunds_nothing() {
-        let ledger = TaskLedger::new(EventBus::new());
-        let task = budgeted(&ledger, "not started", 50);
-
-        let refused = task
-            .finish(FinishOutcome::Done, None)
-            .expect_err("open -> done is refused");
-        assert_eq!(refused.to_string(), "a task may not go from open to done");
-        assert_eq!(refused.status(), 409);
-        // The refused transition left the escrow exactly where it was.
-        assert_eq!(ledger.treasury().escrow_balance("t1"), 50);
-        assert_eq!(ledger.treasury().view().totals.entries, 2);
-
-        // A second withdraw is refused, and refunds nothing a second time.
-        task.withdraw().expect("open -> withdrawn");
-        assert_eq!(ledger.treasury().view().totals.entries, 3);
-        let refused = task.withdraw().expect_err("withdrawn is final");
-        assert_eq!(
-            refused.to_string(),
-            "a task may not go from withdrawn to withdrawn"
-        );
-        assert_eq!(ledger.treasury().view().totals.entries, 3);
-    }
-
-    #[test]
-    fn a_task_the_treasury_cannot_fund_is_not_created() {
-        let ledger = TaskLedger::new(EventBus::new());
-        // Fill the accounts: any fresh escrow needs one more than the cap.
-        for index in 0..crate::treasury::MAX_ACCOUNTS - 2 {
-            ledger
-                .treasury()
-                .open_account(
-                    crate::treasury::AccountKind::TownBudget,
-                    &format!("town{index}"),
-                    0,
-                )
-                .expect("an account under the cap");
-        }
-        let refused = ledger
-            .create(&CreateTask {
-                goal: "cannot be funded".to_string(),
-                acceptance: None,
-                budget: Some(5),
-                role: None,
-                after: Vec::new(),
-                project: None,
-            })
-            .expect_err("the treasury cannot open the escrow");
-        assert!(
-            matches!(
-                refused,
-                CreateError::Treasury(PostError::AccountsFull { .. })
-            ),
-            "{refused:?}"
-        );
-        assert_eq!(refused.status(), 409);
-        // No task was created, no entry posted, and the id was not consumed:
-        // an unbudgeted task (which needs no escrow) still gets `t1`.
-        assert!(ledger.list().is_empty());
-        assert_eq!(ledger.treasury().view().totals.entries, 1);
-        assert_eq!(create(&ledger, "free").id(), "t1");
     }
 
     /// The task views a ledger lists, as JSON: the API's own shape, compared whole.
@@ -2691,17 +2258,28 @@ mod tests {
             .collect()
     }
 
+    /// A ledger as the store keeps it: its rows written to the table set `def()` defines, then loaded into a ledger
+    /// over the same bus.
+    fn stored_and_loaded(ledger: &TaskLedger, events: &Arc<EventBus>) -> TaskLedger {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &ledger.rows().unwrap()).unwrap();
+        let loaded = TaskLedger::new(Arc::clone(events));
+        loaded.load(&conn).expect("a stored ledger loads");
+        loaded
+    }
+
     #[test]
-    fn a_snapshot_restores_the_same_task_views_over_the_same_treasury() {
+    fn a_stored_ledger_loads_the_same_task_views() {
         let events = EventBus::new();
         let ledger = TaskLedger::new(Arc::clone(&events));
-        let open = budgeted(&ledger, "still open", 10);
+        let open = create(&ledger, "still open");
         assert_eq!(open.id(), "t1");
-        let claimed = budgeted(&ledger, "claimed", 20);
+        let claimed = create(&ledger, "claimed");
         claimed
             .claim(&agent(100, "builder"))
             .expect("open -> claimed");
-        let done = budgeted(&ledger, "done", 30);
+        let done = create(&ledger, "done");
         done.claim(&agent(101, "builder")).expect("open -> claimed");
         done.finish(FinishOutcome::Done, Some("shipped".to_string()))
             .expect("claimed -> done");
@@ -2717,53 +2295,29 @@ mod tests {
 
         let before = views(&ledger);
         assert_eq!(before.len(), 5);
-        let json = ledger.snapshot();
 
-        // Restored over the same treasury, as the daemon does: the treasury is
-        // restored first and the ledger keeps its link to it.
-        let treasury = Arc::clone(ledger.treasury());
-        let version = treasury.version();
-        let restored = TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(&treasury));
-        restored
-            .restore(&json)
-            .expect("a snapshot of a ledger restores");
+        let restored = stored_and_loaded(&ledger, &events);
         assert_eq!(views(&restored), before);
-        assert_eq!(
-            treasury.version(),
-            version,
-            "a restore posts nothing to the treasury"
-        );
-        assert!(Arc::ptr_eq(restored.treasury(), &treasury));
         // The id counter came back too: the next task is t6, never a reused id.
         assert_eq!(create(&restored, "next").id(), "t6");
     }
 
     #[test]
-    fn a_garbage_snapshot_is_refused_and_changes_nothing() {
+    fn a_stored_ledger_that_breaks_the_rules_is_refused_and_changes_nothing() {
         let ledger = TaskLedger::new(EventBus::new());
         let kept = create(&ledger, "keep me");
         kept.claim(&agent(100, "builder")).expect("open -> claimed");
         let before = views(&ledger);
-        let value: serde_json::Value =
-            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
 
-        let mut duplicated = value.clone();
-        let first = duplicated["tasks"][0].clone();
-        duplicated["tasks"]
-            .as_array_mut()
-            .expect("a task list")
-            .push(first);
-        let mut behind = value.clone();
-        behind["next_seq"] = serde_json::json!(0);
+        let mut duplicated = ledger.state();
+        let first = duplicated.tasks[0].clone();
+        duplicated.tasks.push(first);
+        let mut behind = ledger.state();
+        behind.next_seq = 0;
 
-        for garbage in [
-            "not json".to_string(),
-            "{\"tasks\": 3}".to_string(),
-            duplicated.to_string(),
-            behind.to_string(),
-        ] {
-            assert!(ledger.restore(&garbage).is_err(), "{garbage}");
-            assert_eq!(views(&ledger), before, "a refused restore changes nothing");
+        for garbage in [duplicated, behind] {
+            ledger.install(garbage).expect_err("refused");
+            assert_eq!(views(&ledger), before, "a refused load changes nothing");
         }
     }
 
@@ -2777,7 +2331,6 @@ mod tests {
         ledger.create(&CreateTask {
             goal: goal.to_string(),
             acceptance: None,
-            budget: None,
             role: None,
             after: after.iter().map(|id| id.to_string()).collect(),
             project: project.map(str::to_string),
@@ -2869,7 +2422,7 @@ mod tests {
         let flaky = create(&ledger, "flaky upstream");
         let dropped = create(&ledger, "dropped upstream");
         let pending = create(&ledger, "still to do");
-        let after_flaky = budgeted(&ledger, "after the flaky one", 40);
+        let after_flaky = create(&ledger, "after the flaky one");
         ledger
             .relink("t4", &["t1".to_string()])
             .expect("an open task relinks");
@@ -2884,11 +2437,6 @@ mod tests {
         assert!(!view.ready);
         assert!(view.waiting_on.is_empty());
         assert_eq!(view.blocked_by, vec!["t1"]);
-        assert_eq!(
-            ledger.treasury().escrow_balance("t4"),
-            40,
-            "the blocked task keeps its escrow"
-        );
         let refused = after_flaky
             .claim(&agent(101, "builder"))
             .expect_err("blocked");
@@ -3018,9 +2566,12 @@ mod tests {
         );
         assert_eq!(ledger.adopt("t4", " ").expect_err("blank").status(), 400);
 
-        // The move is in the snapshot.
+        // The move is in the stored ledger.
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &ledger.rows().unwrap()).unwrap();
         let restored = TaskLedger::new(EventBus::new());
-        restored.restore(&ledger.snapshot()).expect("restores");
+        restored.load(&conn).expect("loads");
         assert_eq!(restored.find("t2").expect("t2").project(), Some("pr2"));
         assert_eq!(restored.find("t4").expect("t4").project(), None);
     }
@@ -3172,7 +2723,7 @@ mod tests {
     }
 
     #[test]
-    fn links_survive_a_snapshot_and_link_the_restored_tasks() {
+    fn links_survive_a_store_round_trip_and_link_the_loaded_tasks() {
         let events = EventBus::new();
         let ledger = TaskLedger::new(Arc::clone(&events));
         linked(&ledger, "plan", &[], Some("pr1")).expect("a project's task");
@@ -3184,12 +2735,10 @@ mod tests {
         assert_eq!(before[1]["project"], "pr1");
         assert_eq!(before[1]["waiting_on"], serde_json::json!(["t1"]));
 
-        let restored =
-            TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(ledger.treasury()));
-        restored.restore(&ledger.snapshot()).expect("restores");
+        let restored = stored_and_loaded(&ledger, &events);
         assert_eq!(views(&restored), before);
 
-        // The restored link holds the restored task, not the old ledger's.
+        // The loaded link holds the loaded task, not the old ledger's.
         run(&restored.find("t1").expect("t1"), FinishOutcome::Done);
         assert!(restored.find("t2").expect("t2").is_ready());
         assert!(
@@ -3199,60 +2748,28 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_from_before_links_loads_with_none() {
-        let ledger = TaskLedger::new(EventBus::new());
-        create(&ledger, "old work");
-        let mut value: serde_json::Value =
-            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
-        let record = value["tasks"][0].as_object_mut().expect("a record");
-        record.remove("after");
-        record.remove("project");
-
-        let restored = TaskLedger::new(EventBus::new());
-        restored
-            .restore(&value.to_string())
-            .expect("an old record restores");
-        let task = restored.find("t1").expect("t1");
-        let view = task.view();
-        assert!(view.after.is_empty());
-        assert_eq!(view.project, None);
-        assert!(view.ready);
-    }
-
-    #[test]
-    fn a_snapshot_whose_links_break_the_rules_is_refused() {
+    fn a_stored_ledger_whose_links_break_the_rules_is_refused() {
         let ledger = TaskLedger::new(EventBus::new());
         create(&ledger, "first");
         linked(&ledger, "second", &["t1"], None).expect("linked");
         linked(&ledger, "third", &[], Some("pr1")).expect("a project's task");
         let before = views(&ledger);
-        let value: serde_json::Value =
-            serde_json::from_str(&ledger.snapshot()).expect("the snapshot is JSON");
-        let with = |task: usize, after: serde_json::Value| {
-            let mut changed = value.clone();
-            changed["tasks"][task]["after"] = after;
-            changed.to_string()
+        let with = |task: usize, after: &[&str]| {
+            let mut changed = ledger.state();
+            changed.tasks[task].after = after.iter().map(|id| id.to_string()).collect();
+            changed
         };
 
         for (garbage, refusal) in [
-            (
-                with(1, serde_json::json!(["t9"])),
-                "which the snapshot does not hold",
-            ),
-            (
-                with(1, serde_json::json!(["t3"])),
-                "which is in another project",
-            ),
-            (
-                with(1, serde_json::json!(["t1", "t1"])),
-                "after names t1 twice",
-            ),
-            (with(0, serde_json::json!(["t2"])), "close a cycle"),
-            (with(1, serde_json::json!(["t2"])), "close a cycle"),
+            (with(1, &["t9"]), "which the snapshot does not hold"),
+            (with(1, &["t3"]), "which is in another project"),
+            (with(1, &["t1", "t1"]), "after names t1 twice"),
+            (with(0, &["t2"]), "close a cycle"),
+            (with(1, &["t2"]), "close a cycle"),
         ] {
-            let refused = ledger.restore(&garbage).expect_err("refused");
+            let refused = ledger.install(garbage).expect_err("refused");
             assert!(refused.contains(refusal), "{refused}");
-            assert_eq!(views(&ledger), before, "a refused restore changes nothing");
+            assert_eq!(views(&ledger), before, "a refused load changes nothing");
         }
     }
 
@@ -3346,14 +2863,12 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_task_announces_the_tasks_that_run_after_it() {
+    fn a_loaded_task_announces_the_tasks_that_run_after_it() {
         let events = EventBus::new();
         let ledger = TaskLedger::new(Arc::clone(&events));
         create(&ledger, "first");
         linked(&ledger, "second", &["t1"], None).expect("linked");
-        let restored =
-            TaskLedger::with_treasury(Arc::clone(&events), Arc::clone(ledger.treasury()));
-        restored.restore(&ledger.snapshot()).expect("restores");
+        let restored = stored_and_loaded(&ledger, &events);
         let receiver = events.subscribe();
 
         run(&restored.find("t1").expect("t1"), FinishOutcome::Done);
@@ -3365,12 +2880,11 @@ mod tests {
 
     /// One task of a batch in project `project`, running after `after` (existing ids) and
     /// `after_batch` (earlier tasks of the batch).
-    fn item(goal: &str, budget: Option<u64>, after: &[&str], after_batch: &[usize]) -> BatchTask {
+    fn item(goal: &str, after: &[&str], after_batch: &[usize]) -> BatchTask {
         BatchTask {
             request: CreateTask {
                 goal: goal.to_string(),
                 acceptance: None,
-                budget,
                 role: None,
                 after: after.iter().map(|id| id.to_string()).collect(),
                 project: Some("pr1".to_string()),
@@ -3388,9 +2902,9 @@ mod tests {
 
         let created = ledger
             .create_all(&[
-                item("design", Some(300), &[], &[]),
-                item("build", Some(300), &[], &[0]),
-                item("ship", None, &["t1"], &[0, 1]),
+                item("design", &[], &[]),
+                item("build", &[], &[0]),
+                item("ship", &["t1"], &[0, 1]),
             ])
             .expect("a batch inside the contract");
         let ids: Vec<&str> = created.iter().map(|task| task.id()).collect();
@@ -3399,7 +2913,6 @@ mod tests {
         assert_eq!(created[2].after(), vec!["t1", "t2", "t3"]);
         assert!(created[0].is_ready());
         assert!(!created[1].is_ready() && !created[2].is_ready());
-        assert_eq!(ledger.treasury().escrow_balance("t2"), 300);
         assert_eq!(
             announced(&receiver),
             vec![
@@ -3425,67 +2938,28 @@ mod tests {
             error.to_string()
         };
         assert_eq!(
-            refused(&[item("a", None, &[], &[1]), item("b", None, &[], &[])]),
+            refused(&[item("a", &[], &[1]), item("b", &[], &[])]),
             "task 1 of the batch: it may run after an earlier task of the batch only, not task 2"
         );
         assert_eq!(
-            refused(&[item("a", None, &[], &[]), item("b", None, &[], &[0, 0])]),
+            refused(&[item("a", &[], &[]), item("b", &[], &[0, 0])]),
             "task 2 of the batch: it names task 1 of the batch twice"
         );
-        let mut other = item("b", None, &[], &[0]);
+        let mut other = item("b", &[], &[0]);
         other.request.project = Some("pr3".to_string());
         assert_eq!(
-            refused(&[item("a", None, &[], &[]), other]),
+            refused(&[item("a", &[], &[]), other]),
             "task 2 of the batch: task 1 of the batch is in project pr1, and this task is in project pr3: a task runs after tasks of its own project only"
         );
         assert_eq!(
-            refused(&[item("a", None, &["t1"], &[])]),
+            refused(&[item("a", &["t1"], &[])]),
             "task 1 of the batch: t1 is in project pr2, and this task is in project pr1: a task runs after tasks of its own project only"
         );
         assert_eq!(
-            refused(&[item("", None, &[], &[])]),
+            refused(&[item("", &[], &[])]),
             "task 1 of the batch: goal must not be empty"
         );
         assert_eq!(ledger.list().len(), 1, "no refused batch created a task");
         assert_eq!(create(&ledger, "next").id(), "t2", "and none took an id");
-    }
-
-    #[test]
-    fn a_batch_the_treasury_cannot_fund_is_given_back_whole() {
-        let ledger = TaskLedger::new(EventBus::new());
-        // Leave room for one more account: the first escrow takes it, the second is refused.
-        for index in 0..crate::treasury::MAX_ACCOUNTS - 3 {
-            ledger
-                .treasury()
-                .open_account(
-                    crate::treasury::AccountKind::TownBudget,
-                    &format!("town{index}"),
-                    0,
-                )
-                .expect("an account under the cap");
-        }
-        let budget_before = ledger.treasury().plaza_budget_balance();
-        let refused = ledger
-            .create_all(&[
-                item("first", Some(300), &[], &[]),
-                item("second", Some(300), &[], &[0]),
-            ])
-            .expect_err("the second escrow cannot be opened");
-        assert!(
-            matches!(
-                refused,
-                CreateError::Treasury(PostError::AccountsFull { .. })
-            ),
-            "{refused:?}"
-        );
-        assert!(ledger.list().is_empty(), "no task of the batch was created");
-        assert_eq!(
-            ledger.treasury().escrow_balance("t1"),
-            0,
-            "the first mint went back"
-        );
-        assert_eq!(ledger.treasury().plaza_budget_balance(), budget_before);
-        // t1's escrow keeps its mint and its refund, so its id is not handed out again.
-        assert_eq!(create(&ledger, "free").id(), "t2");
     }
 }

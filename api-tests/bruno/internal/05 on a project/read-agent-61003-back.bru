@@ -19,7 +19,7 @@ tests {
   test("the agent reads back as idle", function () {
     expect(res.getBody().status).to.equal("idle");
   });
-  test("the agent is on its project", function () {
-    expect(res.getBody().project).to.equal(bru.getVar("int_proj_main"));
+  test("no session, so no project", function () {
+    expect(res.getBody().project).to.be.null;
   });
 }

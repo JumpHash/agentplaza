@@ -1,22 +1,25 @@
-// The IDE's navigator (the threads column): the head (the mark, the brand, New conversation and Hide), the actions (search,
+// The IDE's navigator (the threads column): the head (the mark, the brand, New chat and Hide), the actions (search,
 // Needs you, Console), the project's links in project mode, the list (projects with their agents and repo workspaces, the
-// workstations, the conversations, a hover card, keyboard movement) and the foot (the hub's status and New agent). The agents
+// workstations, the chats, a hover card, keyboard movement) and the foot (the hub's status). The agents
 // are grouped by project (an agent is listed under every project it leads or holds a task of); the agents in no project sit
 // last in "No project", collapsed while any project exists. The workstations form their own group, after the projects and
 // before No project. A terminal row shows under its agent only when a terminal exists for that workspace. It loads its own
-// data: the agents from the store, projects, tasks, IDE workspaces, the workstations, the conversations and the pending
+// data: the agents from the store, projects, tasks, IDE workspaces, the workstations, the chats and the pending
 // approvals, polled every 20 s. Nothing here is shared with the shell.
 
-import { api, ideApi, type Agent, type IdeWorkspaceInfo, type OwnerConversationSummary, type Project, type StationView, type Task } from '../api';
-import { openConversation } from '../ide/open';
+import { agentName } from '../roles';
+import { api, ideApi, type Agent, type IdeWorkspaceInfo, type Project, type StationView, type Task } from '../api';
+import { workApi, type Chat } from '../api-work';
+import { openTalk } from '../ide/open';
 import { hrefIn } from '../router';
+import { draftPending } from './chat-model';
 import { projectTitle, scope } from '../scope';
 import { agents, on } from '../store';
 import { openNewProject } from '../ui/new-project';
 import { brandMark } from '../ui/brand';
 import { ago } from '../ui/components';
 import { h, lu } from '../ui/dom';
-import { matchingRows, NONE_GID, sharedNames, sidebarGroups, type SidebarGroup } from '../ide/groups';
+import { matchingRows, NONE_GID, sidebarGroups, type SidebarGroup } from '../ide/groups';
 import { osLabel } from '../ide/model';
 import { currentTask, rowStatus, type RowStatus } from '../ide/view';
 import { stationBadge } from './station-machine';
@@ -25,7 +28,6 @@ import { iconBtn } from './ide-frame';
 
 export interface SidebarOpts {
   onOpen(key: string): void;
-  onNewAgent(): void;
   /** The head's Hide button and Ctrl/Cmd+Alt+B: the navigator shows or hides. */
   onHide(): void;
   /** The Console action and Escape: back to the screen the IDE was opened from. */
@@ -87,7 +89,7 @@ function cardLine(label: string, value: string): HTMLElement {
 
 function fillCard(el: HTMLElement, a: Agent): void {
   el.replaceChildren(
-    h('div.ide-card-n', null, a.name || `Agent ${a.cid}`),
+    h('div.ide-card-n', null, agentName(a)),
     h('dl.ide-card-l', null,
       cardLine('Role', a.role_label || a.role || '—'),
       cardLine('Model', a.model || '—'),
@@ -103,8 +105,8 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   let workspaces: IdeWorkspaceInfo[] = [];
   /** The workstations' own records: the account each one's agents act as, which the workspace list does not carry. */
   let stationViews: StationView[] = [];
-  /** The owner's conversations with the orchestrator, newest first: where a project is set up. */
-  let conversations: OwnerConversationSummary[] = [];
+  /** The owner's chats (the orchestrator's, and each project's planner's), newest first: where a project is set up. */
+  let chats: Chat[] = [];
   /** The agents that wait for the owner: a pending approval. Failed agents are added when the list is drawn. */
   let waiting = new Set<number>();
   /** In project mode (the IDE opened under a project), the sidebar is that project's. */
@@ -130,7 +132,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   const search = h('input.ide-search', {
     type: 'search',
     placeholder: 'Search',
-    'aria-label': 'Search tasks, conversations, agents, repos and workstations',
+    'aria-label': 'Search tasks, chats, agents, repos and workstations',
     autocomplete: 'off',
     spellcheck: false,
     oninput: () => {
@@ -147,12 +149,12 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     onkeydown: (e) => onListKey(e as KeyboardEvent),
   });
 
-  // The head: the mark (back to the console), the brand (the project in project mode), New conversation and Hide.
+  // The head: the mark (back to the console), the brand (the project in project mode), New chat and Hide.
   const brand = h('span.inav-brand', null, inProject ? projectTitle(inProject) : 'AgentPlaza');
   const head = h('div.inav-top', null,
     h('a.mark.inav-mark', { href: '#/overview', title: 'AgentPlaza: back to the console', 'aria-label': 'AgentPlaza, back to the console' }, brandMark(22)),
     brand,
-    iconBtn('square-pen', 'New conversation with the orchestrator', () => openNewProject()),
+    iconBtn('square-pen', 'New chat with the orchestrator', () => openNewProject()),
     iconBtn('panel-left', 'Hide the task list (Ctrl/Cmd+Alt+B)', () => opts.onHide()));
 
   const needsRow = h('button.inav-r', {
@@ -182,10 +184,10 @@ export function sidebar(opts: SidebarOpts): Sidebar {
   const listHeadText = h('span', null, '');
   const listHead = h('div.inav-lh', null, listHeadText);
 
-  // The foot: the hub's status (the agents working) and New agent.
+  // The foot: the hub's status (the agents working).
   const hubText = h('span', null, '');
   const hub = h('a.inav-hub', { href: '#/machines', title: 'The hub and its agents' }, h('span.dotlive'), hubText);
-  const foot = h('div.inav-foot', null, hub, h('span.sp'), iconBtn('user-plus', 'New agent', () => opts.onNewAgent()));
+  const foot = h('div.inav-foot', null, hub);
 
   const el = h('div.ide-side', null, head, acts, ...(projectHead ? [projectHead] : []), listHead, list, foot);
 
@@ -358,12 +360,12 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       h('span.ide-grp-n', null, String(g.count)));
   }
 
-  /** An agent's row: its status dot, its name (the cid when another agent in the group has the same name), its task. */
-  function agentRow(a: Agent, shared: Set<number>): HTMLElement {
+  /** An agent's row: its status dot, its label (role and CID), its task. */
+  function agentRow(a: Agent): HTMLElement {
     const key = `agent:${a.cid}`;
     const st = rowStatus(a, null);
     const task = currentTask(a);
-    const name = a.name || `Agent ${a.cid}`;
+    const name = agentName(a);
     return h('button.ide-row.ide-agent', {
       type: 'button',
       'data-key': key,
@@ -379,14 +381,14 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     },
       h('span.ide-dot', { 'data-status': st, 'aria-label': STATUS_WORD[st], title: STATUS_WORD[st] }),
       h('span.ide-row-txt', null,
-        h('span.ide-row-name', null, name, shared.has(a.cid) ? h('span.ide-cid', { title: `Agent ${a.cid}` }, `#${a.cid}`) : null),
+        h('span.ide-row-name', null, name),
         task ? h('span.ide-row-task', { title: task }, task) : null));
   }
 
   /** The agent's terminal row, under the agent: shown only while a terminal exists for its workspace. */
   function termRow(a: Agent, count: number): HTMLElement {
     const key = `term:${a.cid}`;
-    const name = a.name || `Agent ${a.cid}`;
+    const name = agentName(a);
     return h('button.ide-row.ide-term', {
       type: 'button',
       'data-key': key,
@@ -438,28 +440,28 @@ export function sidebar(opts: SidebarOpts): Sidebar {
         warn ? h('span.ide-warn', { title: 'The agents work in the owner’s own account on this machine' }, warn) : null));
   }
 
-  /** The conversations: the newest few, and the one this project was started from in project mode. */
-  function conversationRows(q: string): HTMLElement[] {
-    const shown = conversations
+  /** The chats: the newest few, and the project's own chat in project mode. */
+  function chatRows(q: string): HTMLElement[] {
+    const shown = chats
       .filter((c) => !inProject || c.project === inProject)
       .filter((c) => !q || c.title.toLowerCase().includes(q))
       .slice(0, 6);
     if (!shown.length) return [];
     return [
-      h('div.ide-subhead', null, 'Conversations'),
+      h('div.ide-subhead', null, 'Chats'),
       ...shown.map((c) =>
         h('button.ide-row.ide-conv', {
           type: 'button',
-          'data-key': `conv:${c.id}`,
-          'data-status': c.pending ? 'working' : 'idle',
-          title: c.last ? c.last.text : c.title,
-          onclick: () => openConversation(c.id),
+          'data-key': `chat:${c.id}`,
+          'data-status': 'idle',
+          title: c.title,
+          onclick: () => openTalk(c.id),
         },
-          h('span.ide-dot', { 'data-status': c.pending ? 'working' : 'idle' }),
+          h('span.ide-dot', { 'data-status': 'idle' }),
           h('span.ide-row-txt', null,
             h('span.ide-row-name', null, c.title),
             h('span.ide-row-meta', null,
-              c.pending ? 'answering…' : c.project ? projectTitle(c.project) : c.draft ? `draft · revision ${c.draft.revision}` : ago(c.updated_ms))))),
+              draftPending(c) && c.draft ? `draft · revision ${c.draft.revision}` : c.kind === 'project' && c.project ? projectTitle(c.project) : ago(c.updated_ms))))),
     ];
   }
 
@@ -489,7 +491,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     needsRow.querySelector('.count')?.remove();
     if (needs.size > 0) needsRow.append(h('span.count', { class: needsOnly ? '' : 'hot' }, String(needs.size)));
     listHeadText.textContent = needsOnly ? 'Needs you' : inProject ? 'Project' : 'By project';
-    const nodes: HTMLElement[] = needsOnly ? [] : [...conversationRows(q)];
+    const nodes: HTMLElement[] = needsOnly ? [] : [...chatRows(q)];
     for (const g of sidebarGroups(roster, projects, tasks, workspaces)) {
       // In project mode, only the project's own group (its agents and its repositories).
       if (inProject && g.gid !== `p:${inProject}`) continue;
@@ -502,9 +504,8 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       const open = needsOnly || isOpen(g, q, hasProjects);
       nodes.push(groupHead(g, open));
       if (!open) continue;
-      const shared = sharedNames(g.agents);
       for (const a of agentsShown) {
-        nodes.push(agentRow(a, shared));
+        nodes.push(agentRow(a));
         const terminals = needsOnly ? 0 : storedTerminalCount(browserSession(), `agent:${a.cid}`);
         if (terminals > 0) nodes.push(termRow(a, terminals));
       }
@@ -513,7 +514,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     }
     if (!nodes.length) {
       nodes.push(h('p.ide-empty-list', null,
-        needsOnly ? 'Nothing waits for you.' : q ? 'No matches.' : inProject ? 'Nobody works on this project yet: add agents from the bench in its Team tab.' : 'Nothing yet. Start with a conversation: New conversation, above.'));
+        needsOnly ? 'Nothing waits for you.' : q ? 'No matches.' : inProject ? 'Nobody works on this project yet.' : 'Nothing yet. Start with a chat: New chat, above.'));
     }
     els.clear();
     for (const n of nodes) if (n.dataset.key) els.set(n.dataset.key, n);
@@ -528,7 +529,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
       ideApi.workspaces().catch(() => null),
       api.tasks().catch(() => null),
       api.stations().catch(() => null),
-      api.ownerConversations().catch(() => null),
+      workApi.chats().catch(() => null),
       api.approvals().catch(() => null),
     ]);
     if (disposed) return;
@@ -536,15 +537,15 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     if (w) workspaces = w;
     if (t) tasks = t;
     if (s) stationViews = s;
-    if (c) conversations = c;
+    if (c) chats = c;
     if (ap) waiting = new Set(ap.filter((a) => a.kind === 'tool' && a.state === 'pending').map((a) => a.cid));
     schedule();
   }
 
   const unwatch = agents.watch(() => schedule());
-  const offConversation = on('owner_conversation', () => void api.ownerConversations().then((c) => {
+  const offChat = on('chat', () => void workApi.chats().then((c) => {
     if (disposed) return;
-    conversations = c;
+    chats = c;
     schedule();
   }).catch(() => undefined));
   document.addEventListener('keydown', onDocKey);
@@ -566,7 +567,7 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     dispose() {
       disposed = true;
       unwatch();
-      offConversation();
+      offChat();
       window.clearInterval(poll);
       hideCard();
       document.removeEventListener('keydown', onDocKey);

@@ -1,8 +1,9 @@
-//! The `SkillStore` contract, run against both stores (`MemorySkills` always, `DbSkills` with APZ_TEST_DATABASE_URL),
-//! and the `Skills` rules on top (preparing versions into blobs, publishing with errors refused).
+//! The `SkillStore` contract, run against the SQLite store (`DbSkills`), and the `Skills` rules on top (preparing
+//! versions into blobs, publishing with errors refused).
 
 use std::sync::Arc;
 
+use super::blobs::StoreBlobs;
 use super::*;
 
 const T0: u64 = 1_800_000_000_000;
@@ -15,22 +16,22 @@ pub(crate) struct MemBlobs(std::sync::Mutex<std::collections::HashMap<String, Ve
 
 impl Blobs for MemBlobs {
     fn put(&self, bytes: &[u8]) -> Result<String, String> {
-        let sha = sha256_hex(bytes);
-        self.0.lock().unwrap().insert(sha.clone(), bytes.to_vec());
-        Ok(sha)
+        let hash = apz_blobs::Hash::of(bytes).to_string();
+        self.0.lock().unwrap().insert(hash.clone(), bytes.to_vec());
+        Ok(hash)
     }
-    fn get(&self, sha256: &str) -> Result<Vec<u8>, String> {
+    fn get(&self, hash: &str) -> Result<Vec<u8>, String> {
         self.0
             .lock()
             .unwrap()
-            .get(sha256)
+            .get(hash)
             .cloned()
-            .ok_or_else(|| format!("no blob {sha256}"))
+            .ok_or_else(|| format!("no blob {hash}"))
     }
 }
 
 fn skills_on(store: Arc<dyn SkillStore>) -> Skills {
-    Skills::new(store, Arc::new(MemBlobs::default()))
+    Skills::with_generations(store, Arc::new(MemBlobs::default()), Arc::default())
 }
 
 fn version(skills: &Skills, skill_md: &str, note: &str) -> NewVersion {
@@ -179,7 +180,7 @@ pub(crate) fn conformance(store: Arc<dyn SkillStore>) {
 
 #[test]
 fn builtin_skills_are_seeded_once() {
-    let skills = skills_on(Arc::new(store_mem::MemorySkills::in_memory()));
+    let skills = skills_on(Arc::new(store_db::DbSkills::for_tests()));
     assert_eq!(seed_builtins(&skills, "owner", T0), Ok(1));
     assert_eq!(seed_builtins(&skills, "owner", T0 + 1), Ok(0));
     let held: Vec<Skill> = skills
@@ -208,24 +209,106 @@ fn builtin_skills_are_seeded_once() {
 }
 
 #[test]
-fn memory_store_keeps_the_contract() {
-    conformance(Arc::new(store_mem::MemorySkills::in_memory()));
+fn store_keeps_the_contract() {
+    conformance(Arc::new(store_db::DbSkills::for_tests()));
 }
 
 #[test]
-fn db_store_keeps_the_contract() {
-    let Some(url) = crate::db::test_database("skills_contract") else {
-        return;
-    };
-    let env = std::collections::BTreeMap::from([("APZ_DATABASE_URL".to_string(), url)]);
-    let db = Arc::new(crate::db::Db::connect(&env));
-    assert!(db.enabled());
-    conformance(Arc::new(store_db::DbSkills::new(db)));
+fn skills_survive_a_reopen() {
+    let dir = tempfile::Builder::new()
+        .prefix("apid-skills-reopen")
+        .tempdir()
+        .expect("a temporary folder");
+    let blobs: Arc<dyn Blobs> = Arc::new(MemBlobs::default());
+    {
+        let store = crate::store::open(dir.path()).expect("the store opens");
+        let skills = Skills::with_generations(
+            Arc::new(store_db::DbSkills::new(Arc::clone(
+                store.db(crate::store::PLAZA),
+            ))),
+            Arc::clone(&blobs),
+            Arc::default(),
+        );
+        skills
+            .store()
+            .create(
+                &new_skill("pdf", &["role:builder"]),
+                &version(&skills, GOOD, "first"),
+                "owner",
+                T0,
+            )
+            .expect("creates");
+        skills
+            .store()
+            .add_version(
+                "pdf",
+                1,
+                &version(&skills, &format!("{GOOD}\nMore.\n"), "two"),
+                "owner",
+                T0 + 1,
+            )
+            .expect("adds a version");
+        skills
+            .store()
+            .set_active("pdf", Some(2), "owner", T0 + 2)
+            .expect("publishes");
+        skills
+            .store()
+            .set_meta("pdf", "Kept title", &["docs".into()], "owner", T0 + 3)
+            .expect("edits");
+    }
+
+    let store = crate::store::open(dir.path()).expect("the store opens again");
+    let skills = Skills::with_generations(
+        Arc::new(store_db::DbSkills::new(Arc::clone(
+            store.db(crate::store::PLAZA),
+        ))),
+        blobs,
+        Arc::default(),
+    );
+    let back = skills
+        .store()
+        .get("pdf")
+        .expect("reads")
+        .expect("the skill is there");
+    assert_eq!(back.title, "Kept title");
+    assert_eq!(back.tags, vec!["docs".to_string()]);
+    assert_eq!(back.bindings, vec!["role:builder".to_string()]);
+    assert_eq!((back.latest_version, back.active_version), (2, Some(2)));
+    let v1 = skills
+        .store()
+        .version("pdf", 1)
+        .expect("reads")
+        .expect("version 1 is there");
+    assert_eq!(v1.skill_md, GOOD);
+    assert_eq!((v1.files.len(), v1.meta.file_count), (1, 1));
+    assert_eq!(skills.store().versions("pdf").expect("lists").len(), 2);
+    assert_eq!(
+        skills.store().bound("role:builder").expect("binds").len(),
+        1
+    );
+    let actions: Vec<Action> = skills
+        .store()
+        .events("pdf", 50)
+        .expect("reads the history")
+        .iter()
+        .map(|e| e.action)
+        .collect();
+    assert_eq!(
+        actions,
+        vec![
+            Action::Edit,
+            Action::Publish,
+            Action::Version,
+            Action::Version,
+            Action::Create
+        ]
+    );
 }
 
 #[test]
 fn prepare_refuses_unsafe_paths_and_publish_refuses_errors() {
-    let skills = skills_on(Arc::new(store_mem::MemorySkills::in_memory()));
+    let skills = skills_on(Arc::new(store_db::DbSkills::for_tests()));
     let bad_path = vec![FileIn {
         path: "../x".into(),
         body: FileBody::Bytes(vec![1]),
@@ -264,4 +347,184 @@ fn paths_and_bindings() {
             && !valid_binding("role:")
             && !valid_binding("everyone")
     );
+}
+
+/// A scratch folder for one test's object store: under the temp dir, named with this process's id and the test's
+/// `name`, and emptied first. The tests never touch the real state dir.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("apid-skills-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+fn file_in(path: &str, bytes: &[u8]) -> FileIn {
+    FileIn {
+        path: path.into(),
+        body: FileBody::Bytes(bytes.to_vec()),
+        executable: false,
+    }
+}
+
+#[test]
+fn a_version_file_is_kept_in_the_object_store_under_its_hash() {
+    let dir = scratch("version-file");
+    let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
+    let skills = Skills::with_generations(
+        Arc::new(store_db::DbSkills::for_tests()),
+        Arc::new(StoreBlobs::new(Arc::clone(&objects))),
+        Arc::default(),
+    );
+    let reference = b"# Reference\n";
+    let first = skills
+        .prepare(
+            GOOD.into(),
+            vec![file_in("reference.md", reference)],
+            String::new(),
+            None,
+        )
+        .expect("prepares");
+    let hash = apz_blobs::Hash::of(reference).to_string();
+    assert_eq!(first.files[0].hash, hash);
+    assert_eq!(first.hash, apz_blobs::Hash::of(GOOD.as_bytes()).to_string());
+    skills
+        .store()
+        .create(&new_skill("pdf", &[]), &first, "owner", T0)
+        .expect("creates");
+    let stored = skills.store().version("pdf", 1).unwrap().unwrap();
+    assert_eq!(stored.files[0].hash, hash);
+    assert_eq!(stored.meta.hash, first.hash);
+    assert_eq!(skills.blobs().get(&hash).unwrap(), reference.to_vec());
+    assert!(objects.has(&apz_blobs::Hash::of(reference)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn store_blobs_read_only_lower_case_hashes_the_store_holds() {
+    let dir = scratch("store-blobs");
+    let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
+    let blobs = StoreBlobs::new(objects);
+    let hash = blobs.put(b"reference").expect("puts");
+    assert_eq!(hash, apz_blobs::Hash::of(b"reference").to_string());
+    assert_eq!(
+        blobs.put(b"reference").expect("puts again"),
+        hash,
+        "put is idempotent"
+    );
+    assert_eq!(blobs.get(&hash).expect("reads"), b"reference".to_vec());
+    assert!(
+        blobs.get(&hash.to_uppercase()).is_err(),
+        "upper-case hex is not the stored text"
+    );
+    assert!(blobs.get("abc").is_err(), "a short text is not a hash");
+    assert!(
+        blobs.get(&"0".repeat(64)).is_err(),
+        "a hash the store does not hold"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hashes_are_every_file_of_every_version_archived_or_not() {
+    let skills = skills_on(Arc::new(store_db::DbSkills::for_tests()));
+    assert_eq!(skills.hashes(), Ok(Vec::new()));
+    let first = skills
+        .prepare(
+            GOOD.into(),
+            vec![file_in("reference.md", b"one")],
+            String::new(),
+            None,
+        )
+        .expect("prepares");
+    skills
+        .store()
+        .create(&new_skill("pdf", &[]), &first, "owner", T0)
+        .expect("creates");
+    let second = skills
+        .prepare(
+            format!("{GOOD}\nMore.\n"),
+            vec![file_in("reference.md", b"two")],
+            "two".into(),
+            None,
+        )
+        .expect("prepares");
+    skills
+        .store()
+        .add_version("pdf", 1, &second, "owner", T0 + 1)
+        .expect("adds a version");
+    skills
+        .store()
+        .set_archived("pdf", true, "owner", T0 + 2)
+        .expect("archives");
+    // A live skill that holds the same bytes as the archived skill's first version: listed once.
+    let live = skills
+        .prepare(
+            GOOD.into(),
+            vec![file_in("reference.md", b"one")],
+            String::new(),
+            None,
+        )
+        .expect("prepares");
+    skills
+        .store()
+        .create(&new_skill("pdf2", &[]), &live, "owner", T0 + 3)
+        .expect("creates");
+    let mut want = vec![apz_blobs::Hash::of(b"one"), apz_blobs::Hash::of(b"two")];
+    want.sort();
+    assert_eq!(skills.hashes(), Ok(want));
+}
+
+#[test]
+fn a_known_hash_reads_its_bytes_back_from_the_store() {
+    let dir = scratch("known-hash");
+    let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
+    let skills = Skills::with_generations(
+        Arc::new(store_db::DbSkills::for_tests()),
+        Arc::new(StoreBlobs::new(objects)),
+        Arc::default(),
+    );
+    let reference = b"# Reference\n";
+    let first = skills
+        .prepare(
+            GOOD.into(),
+            vec![file_in("reference.md", reference)],
+            String::new(),
+            None,
+        )
+        .expect("prepares");
+    skills
+        .store()
+        .create(&new_skill("pdf", &[]), &first, "owner", T0)
+        .expect("creates");
+    // A new version keeps the file by its hash alone: prepare reads the bytes back from the store.
+    let hash = first.files[0].hash.clone();
+    let kept = FileIn {
+        path: "reference.md".into(),
+        body: FileBody::Known(hash.clone()),
+        executable: false,
+    };
+    let next = skills
+        .prepare(format!("{GOOD}\nMore.\n"), vec![kept], "kept".into(), None)
+        .expect("prepares the kept file");
+    assert_eq!(
+        next.files,
+        vec![SkillFile {
+            path: "reference.md".into(),
+            hash,
+            size: reference.len() as u64,
+            executable: false,
+        }]
+    );
+    // A hash the store does not hold, or text that is not a hash, is refused.
+    for unknown in ["0".repeat(64), "not-a-hash".to_string()] {
+        let refused = FileIn {
+            path: "reference.md".into(),
+            body: FileBody::Known(unknown),
+            executable: false,
+        };
+        assert!(matches!(
+            skills.prepare(GOOD.into(), vec![refused], String::new(), None),
+            Err(StoreError::Invalid(_))
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

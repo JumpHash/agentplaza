@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/plan.schema.json",
   "title": "Plan",
-  "description": "A planner's task graph for a spec or spec change (0053).",
+  "description": "A planner's task graph for a spec or spec change. Budgets are in dollars.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "spec_ref",
     "summary",
     "tasks",
-    "total_budget_credits"
+    "total_budget_usd"
   ],
   "properties": {
     "spec_ref": {
@@ -31,7 +31,7 @@
           "acceptance",
           "role",
           "rung",
-          "budget_credits"
+          "budget_usd"
         ],
         "properties": {
           "id": {
@@ -79,9 +79,10 @@
               "frontier"
             ]
           },
-          "budget_credits": {
-            "type": "integer",
-            "minimum": 1
+          "budget_usd": {
+            "type": "number",
+            "minimum": 0.01,
+            "description": "Task budget in US dollars"
           }
         }
       },
@@ -109,9 +110,10 @@
         }
       }
     },
-    "total_budget_credits": {
-      "type": "integer",
-      "minimum": 1
+    "total_budget_usd": {
+      "type": "number",
+      "minimum": 0.01,
+      "description": "Sum of the task budgets, in US dollars"
     },
     "risks": {
       "type": "array",
@@ -124,7 +126,7 @@
     {
       "spec_ref": "blake3:9f2c",
       "summary": "Two tasks: implement the CLI, then document it.",
-      "total_budget_credits": 2600,
+      "total_budget_usd": 2.6,
       "tasks": [
         {
           "id": "t1",
@@ -135,7 +137,7 @@
           ],
           "role": "builder",
           "rung": "cheap",
-          "budget_credits": 2000
+          "budget_usd": 2.0
         },
         {
           "id": "t2",
@@ -148,7 +150,7 @@
           ],
           "role": "builder",
           "rung": "cheap",
-          "budget_credits": 600
+          "budget_usd": 0.6
         }
       ],
       "needs_clarification": [

@@ -1,0 +1,25 @@
+meta {
+  name: Refuse a disk quota of zero bytes
+  type: http
+  seq: 5
+}
+
+put {
+  url: {{baseUrl}}/v1/projects/{{we_pid}}/budget
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"unit": "usd", "disk_quota_bytes": 0}
+}
+
+assert {
+  res.status: eq 400
+  res.body.error: isString
+  res.responseTime: lt {{budgetMs}}
+}

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Which API a provider speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, apz_store::Column)]
 pub enum ProviderKind {
     #[serde(rename = "anthropic")]
     Anthropic,
@@ -94,7 +94,7 @@ impl ProviderKind {
 ///
 /// JSON: `"none"`, `{"env": "NAME"}`, `{"secret": "NAME"}` or
 /// `{"command": "gcloud auth print-access-token"}`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(rename_all = "lowercase")]
 pub enum Auth {
     #[default]
@@ -109,9 +109,11 @@ pub enum Auth {
 
 /// One configured provider: an instance of a kind. Several instances of one kind may exist (`openai`,
 /// `openai_2`), each with its own key, label and accent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "provider")]
 pub struct ProviderConfig {
     /// The instance id: letters, digits, `-` and `_`. It names the instance in model names (`<id>/<model>`).
+    #[table(key)]
     pub id: String,
     pub kind: ProviderKind,
     /// The name the consoles show; the preset's label (or the id) when unset.
@@ -129,29 +131,80 @@ pub struct ProviderConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default)]
+    #[table(flatten)]
     pub auth: Auth,
     /// Added to every request (replacing a header of the same name).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[table(map_value)]
     pub extra_headers: BTreeMap<String, String>,
     /// An object deep-merged into every request body; a `null` member removes
     /// that member from the body.
     #[serde(default, skip_serializing_if = "Value::is_null")]
+    #[table(content)]
     pub extra_body: Value,
     /// Models to offer even when the API has no listing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list)]
     pub models: Vec<String>,
-    /// Kind-specific settings: `region` (bedrock), `project` and `location`
+    /// Kind-specific settings (see [`ProviderOptions`]): `region` (bedrock), `project` and `location`
     /// (vertex), `max_tokens_field` and `reasoning_effort: true` (Chat
     /// Completions kinds), `refusal_fallbacks: true` and `first_party`
     /// (anthropic; the latter for a pass-through proxy).
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub options: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child)]
+    pub options: Option<ProviderOptions>,
+}
+
+/// A provider's kind-specific settings (`options` in its JSON): each key the gateway reads, typed. A key that is not
+/// set is absent from the JSON.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[serde(default)]
+pub struct ProviderOptions {
+    /// The AWS region (`bedrock`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// The Google Cloud project (`vertex-anthropic`, `vertex-gemini`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// The Google Cloud location (`vertex-anthropic`, `vertex-gemini`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// The request path of a System One API (`systemone`, `microsoft-decisions`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The Chat Completions field that carries the output cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens_field: Option<String>,
+    /// Seconds a model listing is kept before it is listed again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_cache_secs: Option<u64>,
+    /// Whether calls use the WebSocket mode (`openai-responses`; on unless set off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<bool>,
+    /// Whether the assistant's reasoning is sent back with tool calls (DeepSeek).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replay_reasoning: Option<bool>,
+    /// Whether the provider is Mistral's (its tool-call ids, and `max_tokens`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mistral_compat: Option<bool>,
+    /// Whether effort goes out as `reasoning_effort` on Chat Completions requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<bool>,
+    /// Whether the Anthropic endpoint is first-party (on for the first-party host; a pass-through proxy sets it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_party: Option<bool>,
+    /// Whether refusals fall back to another model (`anthropic`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal_fallbacks: Option<bool>,
+    /// The contributor models: models that train their provider's future models on what they are sent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[table(list)]
+    pub trains_on_data: Vec<String>,
 }
 
 fn enabled_default() -> bool {
     true
 }
-
 fn is_enabled(enabled: &bool) -> bool {
     *enabled
 }
@@ -170,16 +223,8 @@ impl ProviderConfig {
             extra_headers: BTreeMap::new(),
             extra_body: Value::Null,
             models: Vec::new(),
-            options: Value::Null,
+            options: None,
         }
-    }
-
-    /// A string option (`options.<name>`), if set and non-empty.
-    pub(crate) fn option(&self, name: &str) -> Option<&str> {
-        self.options
-            .get(name)
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
     }
 
     /// The base URL without a trailing slash.
@@ -206,8 +251,8 @@ pub struct Preset {
     /// Models to list statically (the plaza's supported models for this API).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<&'static str>,
-    #[serde(skip_serializing_if = "Value::is_null")]
-    pub options: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<ProviderOptions>,
     /// Headers sent on every request (see `ProviderConfig::extra_headers`).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub extra_headers: BTreeMap<&'static str, &'static str>,
@@ -230,7 +275,7 @@ impl Preset {
         }
     }
 
-    fn with(mut self, models: &[&'static str], options: Value) -> Self {
+    fn with(mut self, models: &[&'static str], options: Option<ProviderOptions>) -> Self {
         self.models = models.to_vec();
         self.options = options;
         self
@@ -256,7 +301,7 @@ pub fn presets() -> Vec<Preset> {
         auth,
         notes,
         models: Vec::new(),
-        options: Value::Null,
+        options: None,
         extra_headers: BTreeMap::new(),
     };
     const OPENAI_MODELS: &[&str] = &["gpt-6-astra", "gpt-6-luna", "gpt-5.6-terra"];
@@ -276,12 +321,12 @@ pub fn presets() -> Vec<Preset> {
         p("anthropic", Anthropic, "Anthropic", "anthropic", Some("https://api.anthropic.com"), env("ANTHROPIC_API_KEY"),
           "Claude via the Messages API. Use {\"env\": \"ANTHROPIC_AUTH_TOKEN\"} or a command for a bearer token. \
            options.refusal_fallbacks: true enables server-side refusal fallbacks.")
-            .with(&["claude-opus-5-5", "claude-fable-5-1", "claude-haiku-5-5"], Value::Null),
+            .with(&["claude-opus-5-5", "claude-fable-5-1", "claude-haiku-5-5"], None),
         p("openai", OpenAiResponses, "OpenAI", "openai", Some("https://api.openai.com/v1"), env("OPENAI_API_KEY"), "Responses API (current models need it for tools with reasoning).")
-            .with(OPENAI_MODELS, Value::Null),
+            .with(OPENAI_MODELS, None),
         p("openai-responses", OpenAiResponses, "OpenAI (Responses API)", "openai", Some("https://api.openai.com/v1"),
           env("OPENAI_API_KEY"), "Responses API, stateless (store: false) with encrypted reasoning replay.")
-            .with(OPENAI_MODELS, Value::Null),
+            .with(OPENAI_MODELS, None),
         p("azure-openai", AzureOpenAi, "Azure OpenAI", "azure", None, env("AZURE_OPENAI_API_KEY"),
           "base_url https://<resource>.openai.azure.com; the model id is the deployment name; list deployments in `models`."),
         p("gemini", Gemini, "Google Gemini", "google", Some("https://generativelanguage.googleapis.com"), env("GEMINI_API_KEY"),
@@ -294,24 +339,31 @@ pub fn presets() -> Vec<Preset> {
           "options.project (else GOOGLE_CLOUD_PROJECT) and options.location (default global); list models in `models`."),
         p("deepseek", OpenAiCompatible, "DeepSeek", "deepseek", Some("https://api.deepseek.com"), env("DEEPSEEK_API_KEY"),
           "Reasoning content is replayed, which DeepSeek requires once tools are in use. Effort goes out as reasoning_effort.")
-            .with(&["deepseek-flash", "deepseek-v4-pro"], serde_json::json!({"replay_reasoning": true, "reasoning_effort": true})),
+            .with(&["deepseek-flash", "deepseek-v4-pro"], Some(ProviderOptions {
+                replay_reasoning: Some(true),
+                reasoning_effort: Some(true),
+                ..Default::default()
+            })),
         p("zai", OpenAiCompatible, "Z.ai GLM", "zai", Some("https://api.z.ai/api/paas/v4"), env("ZAI_API_KEY"),
           "Coding-plan keys use https://api.z.ai/api/coding/paas/v4. Effort goes out as reasoning_effort.")
-            .with(&["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5v-turbo"], serde_json::json!({"reasoning_effort": true})),
+            .with(&["glm-5.3", "glm-5.3-flash", "glm-5.3-flashx", "glm-5v-turbo"], Some(ProviderOptions { reasoning_effort: Some(true), ..Default::default() })),
         p("moonshot", OpenAiCompatible, "Moonshot Kimi", "moonshot", Some("https://api.moonshot.ai/v1"), env("MOONSHOT_API_KEY"),
           "Mainland China accounts use https://api.moonshot.cn/v1.")
-            .with(&["kimi-k3"], Value::Null),
+            .with(&["kimi-k3"], None),
         p("groq", OpenAiCompatible, "Groq", "groq", Some("https://api.groq.com/openai/v1"), env("GROQ_API_KEY"), ""),
         p("mistral", OpenAiCompatible, "Mistral", "mistral", Some("https://api.mistral.ai/v1"), env("MISTRAL_API_KEY"),
           "Magistral's thinking comes back as reasoning; tool-call ids are mapped to Mistral's 9-character form.")
             .with(
                 &["mistral-medium-latest", "mistral-large-latest", "magistral-medium-latest", "devstral-latest",
                   "codestral-latest", "mistral-small-latest"],
-                serde_json::json!({"mistral_compat": true}),
+                Some(ProviderOptions {
+                    mistral_compat: Some(true),
+                    ..Default::default()
+                }),
             ),
         p("xai", OpenAiCompatible, "xAI", "xai", Some("https://api.x.ai/v1"), env("XAI_API_KEY"),
           "Effort goes out as reasoning_effort (low, medium, high, xhigh).")
-            .with(&["grok-4.7"], serde_json::json!({"reasoning_effort": true})),
+            .with(&["grok-4.7"], Some(ProviderOptions { reasoning_effort: Some(true), ..Default::default() })),
         p("meta", OpenAiCompatible, "Meta", "meta", Some("https://api.meta.ai/v1"), env("MODEL_API_KEY"),
           "Muse models over Meta's Model API (OpenAI-compatible). The contributor models train Meta's future models on \
            everything sent to and received from them: they are never defaults and need allow_training_models in the \
@@ -319,17 +371,30 @@ pub fn presets() -> Vec<Preset> {
             .with(
                 &["muse-wonder-1.0", "muse-spark-1.3", "muse-spark-1.2", "muse-spark-1.1",
                   "muse-spark-1.3-contributor", "muse-spark-1.2-contributor"],
-                serde_json::json!({"reasoning_effort": true, "trains_on_data": ["muse-spark-1.3-contributor", "muse-spark-1.2-contributor"]}),
+                Some(ProviderOptions {
+                    reasoning_effort: Some(true),
+                    trains_on_data: vec!["muse-spark-1.3-contributor".into(), "muse-spark-1.2-contributor".into()],
+                    ..Default::default()
+                }),
             ),
         p("openrouter", OpenAiCompatible, "OpenRouter", "openrouter", Some("https://openrouter.ai/api/v1"), env("OPENROUTER_API_KEY"), "")
             .headers(&[("HTTP-Referer", "https://agentplaza.io"), ("X-OpenRouter-Title", "AgentPlaza")])
-            .with(&[], serde_json::json!({"models_cache_secs": 3600})),
+            .with(&[], Some(ProviderOptions {
+                models_cache_secs: Some(3600),
+                ..Default::default()
+            })),
         p("opencode", OpenAiCompatible, "OpenCode Zen", "opencode", Some("https://opencode.ai/inference/v1"), env("OPENCODE_API_KEY"),
           "The model list is live from /models; the static list is the fallback. The models are pay-as-you-go. \
            The free models in options.trains_on_data train on what they are sent and return.")
-            .with(OPENCODE_MODELS, serde_json::json!({"trains_on_data": ["big-pickle", "cat-jam-free", "exo-free",
-                  "mimo-v2.6-flash-free", "mimo-v2.5-free", "ling-3.1-flash-free", "ling-3.0-flash-fin-free",
-                  "muse-spark-1.3-contributor-free"]})),
+            .with(OPENCODE_MODELS, Some(ProviderOptions {
+                trains_on_data: [
+                    "big-pickle", "cat-jam-free", "exo-free", "mimo-v2.6-flash-free", "mimo-v2.5-free",
+                    "ling-3.1-flash-free", "ling-3.0-flash-fin-free", "muse-spark-1.3-contributor-free",
+                ]
+                .map(String::from)
+                .to_vec(),
+                ..Default::default()
+            })),
         p("together", OpenAiCompatible, "Together AI", "together", Some("https://api.together.xyz/v1"), env("TOGETHER_API_KEY"), ""),
         p("fireworks", OpenAiCompatible, "Fireworks AI", "fireworks", Some("https://api.fireworks.ai/inference/v1"),
           env("FIREWORKS_API_KEY"), ""),
@@ -345,13 +410,13 @@ pub fn presets() -> Vec<Preset> {
           "Local; no key."),
         p("openai-decisions", OpenAiDecisions, "OpenAI Decisions", "openai", Some("https://api.openai.com/v1"),
           env("OPENAI_API_KEY"), "Decisions API: named predicates, choices and scores, each with calibrated probabilities.")
-            .with(&["gpt-6-luna"], Value::Null),
+            .with(&["gpt-6-luna"], None),
         p("microsoft-decisions", AzureDecisions, "Microsoft Decision", "microsoft", None, env("AZURE_AI_API_KEY"),
           "Microsoft-Decision-1 on Azure AI Foundry. base_url https://<resource>.services.ai.azure.com; options.path defaults to /v1/systemone.")
-            .with(&["Microsoft-Decision-1"], Value::Null),
+            .with(&["Microsoft-Decision-1"], None),
         p("typesafe", SystemOne, "TypeSafe Jev", "typesafe", Some("https://api.typesafe.ai"), env("TYPESAFE_API_KEY"),
           "Jev decision models over the System One API.")
-            .with(&["jev-latest", "jev-1.13.0"], Value::Null),
+            .with(&["jev-latest", "jev-1.13.0"], None),
         p("mock", Mock, "Mock (offline)", "mock", None, Auth::None,
           "Deterministic, no network: models `agent` (calls a tool, then summarises) and `echo`."),
     ]
@@ -360,11 +425,8 @@ pub fn presets() -> Vec<Preset> {
 /// Whether `model` (a bare model id, no provider) is one of the contributor models a provider's
 /// `options.trains_on_data` lists: models that train the provider's future models on what they are
 /// sent and return.
-pub fn lists_training_model(options: &Value, model: &str) -> bool {
-    options
-        .get("trains_on_data")
-        .and_then(Value::as_array)
-        .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(model)))
+pub fn lists_training_model(options: Option<&ProviderOptions>, model: &str) -> bool {
+    options.is_some_and(|o| o.trains_on_data.iter().any(|name| name == model))
 }
 
 #[cfg(test)]
@@ -381,7 +443,10 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.kind, ProviderKind::Bedrock);
         assert_eq!(cfg.auth, Auth::Env("AWS_BEARER_TOKEN_BEDROCK".into()));
-        assert_eq!(cfg.option("region"), Some("eu-west-1"));
+        assert_eq!(
+            cfg.options.as_ref().and_then(|o| o.region.as_deref()),
+            Some("eu-west-1")
+        );
         let none: ProviderConfig =
             serde_json::from_value(json!({"id": "o", "kind": "openai-compatible"})).unwrap();
         assert_eq!(none.auth, Auth::None);
@@ -459,7 +524,11 @@ mod tests {
             assert_eq!(ds.models, vec!["deepseek-flash", "deepseek-v4-pro"]);
             assert_eq!(
                 ds.options,
-                json!({"replay_reasoning": true, "reasoning_effort": true})
+                Some(ProviderOptions {
+                    replay_reasoning: Some(true),
+                    reasoning_effort: Some(true),
+                    ..ProviderOptions::default()
+                })
             );
             assert_eq!(by_id("zai").base_url, Some("https://api.z.ai/api/paas/v4"));
             let kimi = by_id("moonshot");
@@ -486,7 +555,10 @@ mod tests {
             );
             assert_eq!(or.auth, Auth::Env("OPENROUTER_API_KEY".into()));
             assert!(or.models.is_empty());
-            assert_eq!(or.options, json!({"models_cache_secs": 3600}));
+            assert_eq!(
+                or.options.as_ref().and_then(|o| o.models_cache_secs),
+                Some(3600)
+            );
             let or_cfg = or.config();
             assert_eq!(or_cfg.extra_headers.len(), 2);
             assert_eq!(
@@ -512,8 +584,8 @@ mod tests {
             assert_eq!(oc.auth, Auth::Env("OPENCODE_API_KEY".into()));
             assert_eq!(oc.models.len(), 10);
             assert!(oc.models.contains(&"claude-opus-5-5") && oc.models.contains(&"minimax-m3"));
-            assert!(lists_training_model(&oc.options, "big-pickle"));
-            assert!(!lists_training_model(&oc.options, "gpt-5.6-sol"));
+            assert!(lists_training_model(oc.options.as_ref(), "big-pickle"));
+            assert!(!lists_training_model(oc.options.as_ref(), "gpt-5.6-sol"));
             assert!(oc.config().extra_headers.is_empty());
             let oc_json = serde_json::to_value(&oc).unwrap();
             assert!(oc_json.get("extra_headers").is_none(), "{oc_json}");
@@ -537,18 +609,21 @@ mod tests {
                 && !meta.models.contains(&"muse-wonder-1.0-contributor")
         );
         assert!(lists_training_model(
-            &meta.options,
+            meta.options.as_ref(),
             "muse-spark-1.3-contributor"
         ));
         assert!(lists_training_model(
-            &meta.options,
+            meta.options.as_ref(),
             "muse-spark-1.2-contributor"
         ));
-        assert!(!lists_training_model(&meta.options, "muse-spark-1.3"));
-        assert!(!lists_training_model(&meta.options, "muse-wonder-1.0"));
         assert!(!lists_training_model(
-            &Value::Null,
-            "muse-spark-1.3-contributor"
+            meta.options.as_ref(),
+            "muse-spark-1.3"
         ));
+        assert!(!lists_training_model(
+            meta.options.as_ref(),
+            "muse-wonder-1.0"
+        ));
+        assert!(!lists_training_model(None, "muse-spark-1.3-contributor"));
     }
 }

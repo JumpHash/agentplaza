@@ -91,8 +91,11 @@ fn share_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         record(
             app,
             cid,
-            "share_request",
-            json!({"artifact": id, "title": artifact.title, "approval": item.id}),
+            crate::transcript::Entry::ShareRequest {
+                artifact: id.to_string(),
+                title: artifact.title.clone(),
+                approval: item.id.to_string(),
+            },
         );
         Ok(Response::json(
             202,
@@ -115,7 +118,8 @@ pub fn on_decided(app: &App, approval: &Approval) -> Result<(), String> {
             let id = plan.target.id.clone();
             let share = app
                 .shares
-                .create(plan.target, plan.title, plan.options, &plan.created_by);
+                .create(plan.target, plan.title, plan.options, &plan.created_by)
+                .map_err(|e| format!("the share of {title} could not be saved: {e}"))?;
             app.artifacts.set_shared(&id, true);
             crate::shares::relay::claim(&share.id);
             format!("The owner approved sharing {title}.")
@@ -128,8 +132,11 @@ pub fn on_decided(app: &App, approval: &Approval) -> Result<(), String> {
     record(
         app,
         approval.cid,
-        "share_decision",
-        json!({"text": text, "approved": approved, "title": title}),
+        crate::transcript::Entry::ShareDecision {
+            text,
+            approved,
+            title,
+        },
     );
     Ok(())
 }
@@ -230,19 +237,18 @@ fn refused_by_law(app: &App, cid: u64, id: &str, input: &Value) -> Option<String
     )
 }
 
-/// The name the owner sees for agent `cid`: its name, or `a<cid>` for an unnamed agent.
+/// The label the owner sees for agent `cid`: its role and CID, or `a<cid>` for one not on the roster.
 fn agent_of(app: &App, cid: u64) -> String {
     app.agents
         .get(cid)
-        .map(|agent| agent.name)
-        .filter(|name| !name.is_empty())
+        .map(|agent| agent.label())
         .unwrap_or_else(|| format!("a{cid}"))
 }
 
 /// Records a line in the transcript of agent `cid`, under its current work (0 when it has none).
-fn record(app: &App, cid: u64, kind: &'static str, data: Value) {
+fn record(app: &App, cid: u64, entry: crate::transcript::Entry) {
     let work = app.work.current(cid).map_or(0, |item| item.id);
-    app.transcripts.record(&app.bus, cid, work, kind, data);
+    app.transcripts.record(&app.bus, cid, work, entry);
 }
 
 #[cfg(test)]
@@ -332,10 +338,7 @@ mod tests {
 
     #[test]
     fn an_approved_request_creates_exactly_one_live_share() {
-        let dir = std::env::temp_dir().join(format!("apid-share-request-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the test folder");
-        let store = Store::load(&dir);
+        let store = Store::for_tests();
         let detail = sales_detail(30);
 
         // The denial plans nothing, so nothing is created.
@@ -343,17 +346,18 @@ mod tests {
         assert!(store.live().is_empty());
 
         let planned = plan(&detail, true, unix_ms()).expect("an approval plans a share");
-        let share = store.create(
-            planned.target,
-            planned.title,
-            planned.options,
-            &planned.created_by,
-        );
+        let share = store
+            .create(
+                planned.target,
+                planned.title,
+                planned.options,
+                &planned.created_by,
+            )
+            .expect("the share is saved");
         let live = store.live();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].id, share.id);
         assert_eq!(live[0].target.id, "ar1");
         assert!(live[0].expires_ms.is_some());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

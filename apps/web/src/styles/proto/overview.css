@@ -93,7 +93,7 @@
 .ibx[aria-current="page"]{background:var(--press)}
 .ibx .ii{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:var(--hover);color:var(--ink-2)}
 .ibx .k-review,.ibd-ico.k-review{background:var(--review-soft);color:var(--review)} .ibx .k-tool,.ibd-ico.k-tool{background:var(--warn-soft);color:var(--warn)}
-.ibx .k-deploy,.ibd-ico.k-deploy{background:var(--crit-soft);color:var(--crit)} .ibx .k-payment,.ibd-ico.k-payment{background:var(--info-soft);color:var(--info)}
+.ibx .k-deploy,.ibd-ico.k-deploy{background:var(--crit-soft);color:var(--crit)}
 .ibx .k-sanction,.ibd-ico.k-sanction{background:var(--crit-soft);color:var(--crit)} .ibx .k-proposal,.ibd-ico.k-proposal{background:var(--signal-soft);color:var(--signal-ink)}
 .ibx b{font-weight:500;display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ibx small{display:flex;gap:6px;min-width:0;color:var(--ink-3);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden}

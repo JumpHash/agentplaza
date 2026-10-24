@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 /// The operating system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum Os {
     Macos,
     Windows,
@@ -14,6 +15,7 @@ pub enum Os {
 /// What kind of machine it is. A VM reports `vm`, whatever its guest OS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum Form {
     Laptop,
     Desktop,
@@ -27,6 +29,7 @@ pub enum Form {
 /// <name>" badge wherever the machine appears.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub enum AccountMode {
     AgentUser { name: String },
     Owner { name: String },
@@ -34,6 +37,7 @@ pub enum AccountMode {
 
 /// One GPU. `vram_mb` is 0 when the GPU shares system memory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct Gpu {
     pub vendor: String,
     pub name: String,
@@ -42,6 +46,7 @@ pub struct Gpu {
 
 /// One display: its OS id, its size in points, and its backing scale.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct Display {
     pub id: u32,
     pub w: u32,
@@ -51,6 +56,7 @@ pub struct Display {
 
 /// The machine's facts.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct Facts {
     pub os: Os,
     pub os_version: String,
@@ -59,8 +65,11 @@ pub struct Facts {
     pub form: Form,
     pub cpus: u32,
     pub ram_mb: u64,
+    #[cfg_attr(feature = "store", table(child))]
     pub gpus: Vec<Gpu>,
+    #[cfg_attr(feature = "store", table(child))]
     pub displays: Vec<Display>,
+    #[cfg_attr(feature = "store", table(flatten))]
     pub account: AccountMode,
     /// How many applications the daemon found installed.
     pub apps: u32,
@@ -73,6 +82,31 @@ pub struct Facts {
     /// workstation. Absent from older daemons' facts, so it defaults to none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+}
+
+/// What a machine reads as when nothing is reported (a store that has no row for its facts loads this): an unknown
+/// Linux machine with no GPUs, displays or account.
+impl Default for Facts {
+    fn default() -> Self {
+        Facts {
+            os: Os::Linux,
+            os_version: String::new(),
+            arch: String::new(),
+            hostname: String::new(),
+            form: Form::Vm,
+            cpus: 0,
+            ram_mb: 0,
+            gpus: Vec::new(),
+            displays: Vec::new(),
+            account: AccountMode::Owner {
+                name: String::new(),
+            },
+            apps: 0,
+            virtual_displays: false,
+            ui_tree: false,
+            machine_id: None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 //!
 //! The grid shows the Machines view only: the fleet from `GET /v1/fleet` on the Floor's sky and ground
 //! (`State::machines` + `State::fleet`). Hover lifts a machine and a click opens its popup (Esc closes it); the popup
-//! lists the machine's agents, and each name opens that agent's screen.
+//! lists the machine's agents, and each label opens that agent's screen.
 //!
 //! `APZ_PERF=1` also logs to stderr: each frame whose wall gap from the last one is over 16 ms (with its work time),
 //! and each update over 16 ms, with times from the screen's start.
@@ -20,9 +20,8 @@ use super::Id;
 use crate::console::engine::fleet::{FleetResponse, Machine};
 use crate::console::engine::scene::Color as SceneColor;
 use crate::console::engine::style::{Lamp, Palette};
-use crate::console::engine::world::display_name;
 use crate::console::floor_engine::EngineProgram;
-use crate::console::{Ctx, client, ui};
+use crate::console::{Ctx, client, roles, ui};
 use apz_engine::input::Action;
 use apz_engine::stage::{Stage, ms_since, perf_line, perf_log_on, perf_t};
 use apz_engine::{Engine, Motion};
@@ -32,7 +31,7 @@ const POPUP_W: f32 = 300.0;
 const POPUP_H: f32 = 420.0;
 /// The hue of the popup's kind tag stripe.
 const KIND_HUE: f32 = 200.0;
-/// How many agent names the popup lists.
+/// How many agent labels the popup lists.
 const POPUP_NAMES: usize = 6;
 /// The fleet poll.
 const FLEET_EVERY: Duration = Duration::from_secs(5);
@@ -332,8 +331,8 @@ fn popup_layer<'a>(state: &'a State, w: f32, h: f32) -> Option<Element<'a, Msg>>
     Some(popup(state, machine, x, y, w, h))
 }
 
-/// The machine popup (the agent card's look): the name and kind, the status, the facts and the agents. Each agent
-/// name opens that agent's screen.
+/// The machine popup (the machine card's look): the name and kind, the status, the facts and the agents. Each agent
+/// label opens that agent's screen.
 fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -> Element<'a, Msg> {
     let mut facts_col = column![].spacing(5);
     for (label_text, value) in facts(m, now_millis()) {
@@ -354,13 +353,12 @@ fn popup<'a>(state: &'a State, m: &'a Machine, x: f32, y: f32, w: f32, h: f32) -
         names = names.push(ui::faint("No agents run here."));
     }
     for cid in m.agents.iter().take(POPUP_NAMES) {
-        let name = state
-            .agents
-            .iter()
-            .find(|a| a.cid == *cid)
-            .map_or_else(|| format!("agent {cid}"), |a| display_name(*cid, &a.name));
+        let label = state.agents.iter().find(|a| a.cid == *cid).map_or_else(
+            || roles::agent_label("", *cid),
+            |a| roles::agent_label(&a.role, a.cid),
+        );
         names = names.push(ui::btn(
-            &name,
+            &label,
             None,
             ui::Kind::Ghost,
             Some(Msg::Go(Id::Agent(*cid))),

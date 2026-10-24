@@ -657,14 +657,6 @@ mod tests {
     use super::*;
     use crate::shares::{Options, Store, Target, UNLOCK_LIMIT};
 
-    /// A fresh state folder for one test.
-    fn folder(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-public-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the test folder");
-        dir
-    }
-
     fn artifact(id: &str) -> Target {
         Target {
             kind: "artifact".into(),
@@ -674,7 +666,7 @@ mod tests {
 
     #[test]
     fn a_missing_share_answers_404() {
-        let store = Store::load(&folder("missing"));
+        let store = Store::for_tests();
         let (status, body) = refusal(&store.access(&"f".repeat(32), unix_ms(), false))
             .expect("a missing share is refused");
         assert_eq!(status, 404);
@@ -683,8 +675,10 @@ mod tests {
 
     #[test]
     fn a_revoked_share_is_indistinguishable_from_a_missing_one() {
-        let store = Store::load(&folder("revoked"));
-        let share = store.create(artifact("art-1"), "A".into(), Options::default(), "cid-1");
+        let store = Store::for_tests();
+        let share = store
+            .create(artifact("art-1"), "A".into(), Options::default(), "cid-1")
+            .expect("the share is saved");
         store.revoke(&share.id).expect("the save succeeds");
         assert_eq!(
             refusal(&store.access(&share.id, unix_ms(), false)),
@@ -694,12 +688,14 @@ mod tests {
 
     #[test]
     fn an_expired_share_answers_410() {
-        let store = Store::load(&folder("expired"));
+        let store = Store::for_tests();
         let opts = Options {
             expires_ms: Some(1_000),
             ..Options::default()
         };
-        let share = store.create(artifact("art-1"), "A".into(), opts, "cid-1");
+        let share = store
+            .create(artifact("art-1"), "A".into(), opts, "cid-1")
+            .expect("the share is saved");
         assert_eq!(
             refusal(&store.access(&share.id, 1_000, false)),
             Some((410, json!({"error": "expired"}))),
@@ -708,12 +704,14 @@ mod tests {
 
     #[test]
     fn a_password_share_needs_the_unlock_cookie() {
-        let store = Store::load(&folder("password"));
+        let store = Store::for_tests();
         let opts = Options {
             password: Some("pw".into()),
             ..Options::default()
         };
-        let share = store.create(artifact("art-1"), "A".into(), opts, "cid-1");
+        let share = store
+            .create(artifact("art-1"), "A".into(), opts, "cid-1")
+            .expect("the share is saved");
         let (status, body) = refusal(&store.access(&share.id, unix_ms(), false))
             .expect("a password share is refused without the cookie");
         assert_eq!(status, 401);
@@ -763,32 +761,38 @@ mod tests {
 
     #[test]
     fn only_a_pinned_open_share_is_cacheable() {
-        let store = Store::load(&folder("cache"));
-        let pinned = store.create(
-            artifact("art-1"),
-            "A".into(),
-            Options {
-                version: Some(1),
-                ..Options::default()
-            },
-            "cid-1",
-        );
+        let store = Store::for_tests();
+        let pinned = store
+            .create(
+                artifact("art-1"),
+                "A".into(),
+                Options {
+                    version: Some(1),
+                    ..Options::default()
+                },
+                "cid-1",
+            )
+            .expect("the share is saved");
         assert!(cacheable(&pinned));
-        let latest = store.create(artifact("art-2"), "B".into(), Options::default(), "cid-1");
+        let latest = store
+            .create(artifact("art-2"), "B".into(), Options::default(), "cid-1")
+            .expect("the share is saved");
         assert!(
             !cacheable(&latest),
             "a share that follows the latest version is not cached"
         );
-        let locked = store.create(
-            artifact("art-3"),
-            "C".into(),
-            Options {
-                version: Some(1),
-                password: Some("pw".into()),
-                ..Options::default()
-            },
-            "cid-1",
-        );
+        let locked = store
+            .create(
+                artifact("art-3"),
+                "C".into(),
+                Options {
+                    version: Some(1),
+                    password: Some("pw".into()),
+                    ..Options::default()
+                },
+                "cid-1",
+            )
+            .expect("the share is saved");
         assert!(!cacheable(&locked));
     }
 
@@ -821,12 +825,14 @@ mod tests {
 
     #[test]
     fn the_eleventh_failed_unlock_gets_429() {
-        let store = Store::load(&folder("throttle"));
+        let store = Store::for_tests();
         let opts = Options {
             password: Some("a-long-password".into()),
             ..Options::default()
         };
-        let share = store.create(artifact("art-1"), "A".into(), opts, "cid-1");
+        let share = store
+            .create(artifact("art-1"), "A".into(), opts, "cid-1")
+            .expect("the share is saved");
         let now = unix_ms();
         for _ in 0..UNLOCK_LIMIT {
             assert!(unlock_gate(&store, &share.id, now).is_none());
@@ -858,12 +864,14 @@ mod tests {
 
     #[test]
     fn a_cacheable_share_has_one_short_cache_header() {
-        let store = Store::load(&folder("headers"));
+        let store = Store::for_tests();
         let opts = Options {
             version: Some(1),
             ..Options::default()
         };
-        let share = store.create(artifact("art-1"), "A".into(), opts, "cid-1");
+        let share = store
+            .create(artifact("art-1"), "A".into(), opts, "cid-1")
+            .expect("the share is saved");
         let response = finish(Response::json(200, &json!({})), Some(&share));
         let caches: Vec<&str> = response
             .headers

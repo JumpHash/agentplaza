@@ -1,4 +1,4 @@
-//! Model providers (`providers.json`), their credentials (the secret vault, write-only through the
+//! Model providers (the hub's store, component `providers`), their credentials (the secret vault, write-only through the
 //! API) and the gateway built from them.
 //!
 //! OWNER: slice "providers". Signatures used by other modules are marked
@@ -6,9 +6,11 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use apz_gateway::{
     Auth, Caller, Gateway, ModelInfo, ProviderConfig, ProviderKind, SecretRead, SecretReason,
@@ -16,7 +18,7 @@ use apz_gateway::{
 };
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::state::App;
@@ -29,7 +31,7 @@ const OWNER: &str = "owner";
 /// error echoed. An Edit that sends it back means "keep the stored value" (see [`restore_redacted`]).
 pub(crate) const REDACTED: &str = "•••";
 
-/// The providers a fresh state directory starts with.
+/// The providers a fresh store starts with.
 const SEED_IDS: [&str; 16] = [
     "anthropic",
     "openai",
@@ -48,8 +50,6 @@ const SEED_IDS: [&str; 16] = [
     "openrouter",
     "opencode",
 ];
-/// How long `GET /v1/models` answers from its cache.
-const MODEL_CACHE: Duration = Duration::from_secs(60);
 
 /// A failed mutation: the HTTP status and a message that never names a secret's value.
 pub(crate) type Failure = (u16, String);
@@ -179,79 +179,104 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub struct Store {
-    dir: PathBuf,
     gateway: Gateway,
     /// The secret vault: every provider key lives there.
     vault: Arc<crate::vault::Store>,
     /// Serializes every mutation of providers and their keys.
     write: Mutex<()>,
-    /// The last `GET /v1/models` answer and when it was computed.
-    models: Mutex<Option<(Instant, Value)>>,
+    /// Each provider's last good model listing, refreshed in the background (`provider_listings.rs`).
+    pub listings: Arc<crate::provider_listings::Listings>,
     /// The saved default decision model (`/v1/decisions/default`).
     pub decisions: crate::decisions::DefaultStore,
     /// The last check of each provider, by id (`provider_health.rs`). Kept in memory: the first check
     /// after a start fills it again.
     health: Mutex<BTreeMap<String, Value>>,
+    /// The preset ids offered to this install, so a deleted preset stays deleted (see `offer_presets`).
+    offered: Mutex<Vec<String>>,
+}
+
+/// The providers' tables: the providers in order, and the preset ids offered to the install.
+#[derive(Debug, apz_store::Table)]
+#[table(name = "providers")]
+struct Stored {
+    #[table(child = "provider")]
+    providers: Vec<ProviderConfig>,
+    #[table(list = "provider_offered")]
+    offered: Vec<String>,
+}
+
+/// The providers' tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Stored)
+}
+
+/// A store over `vault` loaded from an empty database: a first start, seeded with the presets.
+#[cfg(test)]
+pub(crate) fn test_store(vault: Arc<crate::vault::Store>) -> Store {
+    let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(&def().ddl()).unwrap();
+    let store = Store::new(vault);
+    store.load(&conn).unwrap();
+    store
 }
 
 impl Store {
-    /// Loads the providers (seeding a fresh state directory) and registers each provider's secret
-    /// with the vault. Keys are read from the vault at call time; `Auth::Env` falls back to the
-    /// process environment. The env file is not read here: the vault imports it at start.
-    pub fn load(state_dir: &Path, vault: Arc<crate::vault::Store>) -> io::Result<Self> {
-        // contract
-        std::fs::create_dir_all(state_dir)?;
-        let providers_path = state_dir.join("providers.json");
-        let offered_path = state_dir.join(OFFERED_FILE);
-        let providers: Vec<ProviderConfig> = match std::fs::read(&providers_path) {
-            Ok(bytes) => {
-                let mut providers: Vec<ProviderConfig> =
-                    serde_json::from_slice(&bytes).map_err(invalid)?;
-                let stored = read_offered(&offered_path)?;
-                let initialise = stored.is_none();
-                let mut offered = stored.unwrap_or_else(|| {
-                    // An install from before the list: it has every preset it holds and every older seed.
-                    let held = providers.iter().map(|p| p.id.clone());
-                    held.chain(LEGACY_SEED_IDS.iter().map(|id| id.to_string()))
-                        .collect()
-                });
-                let introduced = offer_presets(&mut providers, &mut offered);
-                for id in &introduced {
-                    eprintln!("providers: added {id} (new preset)");
-                }
-                if !introduced.is_empty() {
-                    write_atomic(&providers_path, &to_json(&providers)?, 0o600)?;
-                }
-                if initialise || !introduced.is_empty() {
-                    write_atomic(&offered_path, &to_json(&offered)?, 0o600)?;
-                }
-                providers
-            }
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let seeded = seed();
-                write_atomic(&providers_path, &to_json(&seeded)?, 0o600)?;
-                let offered: Vec<String> = seeded.iter().map(|p| p.id.clone()).collect();
-                write_atomic(&offered_path, &to_json(&offered)?, 0o600)?;
-                seeded
-            }
-            Err(e) => return Err(e),
-        };
-        let gateway = Gateway::builder()
-            .providers(providers)
-            .secrets(VaultSecrets(Arc::clone(&vault)))
-            .env(config_env)
-            .build();
-        let store = Self {
-            dir: state_dir.to_path_buf(),
-            gateway,
+    /// An empty store over `vault`: no provider until [`Store::load`] fills it at start.
+    pub fn new(vault: Arc<crate::vault::Store>) -> Self {
+        Self {
+            gateway: Gateway::builder()
+                .secrets(VaultSecrets(Arc::clone(&vault)))
+                .env(config_env)
+                .build(),
             vault,
             write: Mutex::new(()),
-            models: Mutex::new(None),
+            listings: Arc::new(crate::provider_listings::Listings::new()),
             decisions: Default::default(),
             health: Mutex::new(BTreeMap::new()),
+            offered: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Replaces the providers with what the store holds and registers each provider's secret with the vault. A fresh
+    /// store is seeded with the presets. Keys are read from the vault at call time; `Auth::Env` falls back to the
+    /// process environment. The env file is not read here: the vault imports it at start.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let (mut providers, mut offered) = match apz_store::table::load_one::<Stored>(conn, def())?
+        {
+            Some(stored) => (stored.providers, stored.offered),
+            None => {
+                let seeded = seed();
+                let offered = seeded.iter().map(|p| p.id.clone()).collect();
+                (seeded, offered)
+            }
         };
-        store.register(&store.gateway.providers());
-        Ok(store)
+        for id in offer_presets(&mut providers, &mut offered) {
+            eprintln!("providers: added {id} (new preset)");
+        }
+        // A credential the store blanked keeps the live value it has (none at start: `sync_vault` fills it once the
+        // vault is up).
+        keep_live_secrets(&mut providers, &self.gateway.providers());
+        self.gateway.set_providers(providers.clone());
+        self.register(&providers);
+        *lock(&self.offered) = offered;
+        Ok(())
+    }
+
+    /// The providers and the offered presets, as rows of the providers' tables (for the hub's store). A command
+    /// credential and the header values are blanked, as they may hold literal tokens: the store keeps no secret.
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let mut providers = self.gateway.providers();
+        for p in &mut providers {
+            blank_secrets(p);
+        }
+        let stored = Stored {
+            providers,
+            offered: lock(&self.offered).clone(),
+        };
+        apz_store::RowSet::one(def(), &stored)
     }
 
     /// The gateway over the current providers and secrets.
@@ -334,7 +359,7 @@ impl Store {
             "models": p.models,
             "options": p.options,
             "extra_headers": headers,
-            // Not secret: `snapshot` keeps it as it is, where it blanks the command and the header values.
+            // Not secret: plaza.db keeps it as it is, where it blanks the command and the header values.
             "extra_body": p.extra_body,
             "credential": credential,
         })
@@ -417,16 +442,101 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// Saves `providers` and makes them the gateway's providers.
+    /// Makes `providers` the gateway's providers (the store saves them). A command credential or header value that is
+    /// new or changed goes to the vault first (plaza.db keeps them blank): a vault that cannot take it refuses the
+    /// change, and nothing changes.
     fn commit(&self, providers: Vec<ProviderConfig>) -> Result<(), Failure> {
-        let saved = to_json(&providers)
-            .and_then(|b| write_atomic(&self.dir.join("providers.json"), &b, 0o600));
-        saved.map_err(io_failure)?;
-        self.unregister_changed(&self.gateway.providers(), &providers);
+        let old = self.gateway.providers();
+        let now = apz_plaza::now_ms();
+        for p in &providers {
+            let before = old
+                .iter()
+                .find(|o| o.id == p.id)
+                .map(literal_secrets)
+                .unwrap_or_default();
+            for (name, value) in literal_secrets(p) {
+                if !before.contains(&(name.clone(), value.clone())) {
+                    self.vault
+                        .put_plaza(
+                            &name,
+                            &provider_binding(&p.id),
+                            "provider credential",
+                            &SecretString::from(value),
+                            OWNER,
+                            now,
+                        )
+                        .map_err(vault_failure)?;
+                }
+            }
+        }
+        self.unregister_changed(&old, &providers);
         self.register(&providers);
+        // A provider's listing follows its generation: bump the providers that changed, forget the removed ones.
+        for p in &providers {
+            let before = old.iter().find(|o| o.id == p.id);
+            if before.is_none_or(|o| serde_json::to_value(o).ok() != serde_json::to_value(p).ok()) {
+                self.listings.changed(&p.id);
+            }
+        }
+        for o in old
+            .iter()
+            .filter(|o| !providers.iter().any(|p| p.id == o.id))
+        {
+            self.listings.removed(&o.id);
+        }
         self.gateway.set_providers(providers);
-        *lock(&self.models) = None;
         Ok(())
+    }
+
+    /// Fills the command credentials and header values plaza.db keeps blank from the vault, where [`Store::commit`]
+    /// put them, and puts there the ones it does not hold yet (a fresh start's presets). Runs once the vault is up at
+    /// start (state.rs) and after each unseal; a value a sealed vault cannot give stays blank until then.
+    pub fn sync_vault(&self) {
+        let _guard = lock(&self.write);
+        let mut providers = self.gateway.providers();
+        let now = apz_plaza::now_ms();
+        let mut filled = false;
+        for p in &mut providers {
+            let binding = provider_binding(&p.id);
+            let consumer = Consumer {
+                binding: binding.clone(),
+                on_behalf: OnBehalf::Hub,
+            };
+            let mut sync =
+                |name: &str, value: &mut String| match self.vault.resolve(name, &consumer, now) {
+                    Ok(stored) if value.is_empty() => {
+                        value.push_str(stored.expose_secret());
+                        filled |= !value.is_empty();
+                    }
+                    Err(VaultError::NotFound) if !value.is_empty() => {
+                        let secret = SecretString::from(value.clone());
+                        if let Err(e) = self.vault.put_plaza(
+                            name,
+                            &binding,
+                            "provider credential",
+                            &secret,
+                            OWNER,
+                            now,
+                        ) {
+                            eprintln!(
+                                "providers: {}: the vault did not take {name}: {}",
+                                p.id,
+                                e.message()
+                            );
+                        }
+                    }
+                    _ => {}
+                };
+            if let Auth::Command(command) = &mut p.auth {
+                sync(&command_secret(&p.id), command);
+            }
+            for (header, value) in p.extra_headers.iter_mut() {
+                sync(&header_secret(&p.id, header), value);
+            }
+        }
+        if filled {
+            self.gateway.set_providers(providers);
+        }
     }
 
     /// Drops the vault registrations of providers that were removed, or whose secret name changed, so
@@ -554,37 +664,71 @@ impl Store {
         }
         let view = self.view(slot);
         self.commit(providers)?;
+        // A new key changes what the provider lists even when its config did not change.
+        self.listings.changed(id);
         Ok(view)
     }
 
-    /// The last `all_models` answer, however old, without asking any provider (None before the first).
-    fn cached_models(&self) -> Option<Value> {
-        lock(&self.models).as_ref().map(|(_, v)| v.clone())
-    }
-
-    /// `GET /v1/models`: every provider's models, cached for [`MODEL_CACHE`].
-    fn all_models(&self) -> Value {
-        let cached = lock(&self.models)
-            .as_ref()
-            .filter(|(at, _)| at.elapsed() < MODEL_CACHE)
-            .map(|(_, v)| v.clone());
-        if let Some(value) = cached {
-            return value;
-        }
+    /// Every enabled provider's last good listing, however old, without asking any provider, in the
+    /// `GET /v1/models` shape; `pending` names the providers never listed yet. Never waits.
+    fn cached_models(&self) -> Value {
         let mut models = Vec::new();
         let mut errors = Vec::new();
+        let mut pending = Vec::new();
         for p in self.gateway.providers().into_iter().filter(|p| p.enabled) {
-            match self
-                .gateway
-                .list_models_for(&p.id, &Caller::Owner { node: None })
-            {
-                Ok(list) => models.extend(list.into_iter().map(|m| model_entry(&p, m))),
-                Err(e) => errors.push(json!({ "provider": p.id, "error": e.to_string() })),
+            match self.listings.peek(&p.id) {
+                Some(listing) => models.extend(
+                    listing
+                        .models
+                        .iter()
+                        .map(|m| model_entry(&p, ModelInfo::from(m))),
+                ),
+                None => pending.push(p.id.clone()),
+            }
+            if let Some(error) = self.listings.attempt(&p.id).and_then(|a| a.error) {
+                errors.push(json!({ "provider": p.id, "error": error }));
             }
         }
-        let value = json!({ "models": models, "errors": errors });
-        *lock(&self.models) = Some((Instant::now(), value.clone()));
-        value
+        json!({ "models": models, "errors": errors, "pending": pending })
+    }
+
+    /// `GET /v1/models`: every enabled provider's models from the cache, at once. Providers never listed are
+    /// listed now, all together, and waited for at most [`crate::provider_listings::COLD_WAIT`] (a cold start);
+    /// one that takes longer lands in the cache later and is named in `pending` meanwhile.
+    fn all_models(&self) -> Value {
+        let providers: Vec<ProviderConfig> = self.gateway.providers();
+        let missing: Vec<&ProviderConfig> = providers
+            .iter()
+            .filter(|p| p.enabled && self.listings.peek(&p.id).is_none())
+            .collect();
+        if !missing.is_empty() {
+            self.listings.fetch_all(
+                &self.gateway,
+                &missing,
+                false,
+                crate::provider_listings::COLD_WAIT,
+            );
+        }
+        self.cached_models()
+    }
+
+    /// Lists every provider whose listing is due (missing, from an older generation, or past its interval), all at
+    /// once; returns whether any listing was fetched. The refresher thread calls it every
+    /// [`crate::provider_listings::TICK`].
+    pub fn refresh_due(&self) -> bool {
+        let providers = self.gateway.providers();
+        let due = self.listings.due(&providers);
+        if due.is_empty() {
+            return false;
+        }
+        // Each listing runs under the listing client's own deadline; this waits for all of them.
+        self.listings.fetch_all(
+            &self.gateway,
+            &due,
+            false,
+            apz_gateway::LISTING_DEADLINE + Duration::from_secs(1),
+        );
+        true
     }
 
     /// The last check of `p`, or `unknown` before its first.
@@ -598,31 +742,66 @@ impl Store {
             .unwrap_or_else(|| json!({ "status": "unknown", "message": "Not checked yet" }))
     }
 
-    /// Checks provider `id` now (see [`crate::provider_health::check`]) and keeps the result.
+    /// Checks provider `id` now (see [`crate::provider_health::check`]: a forced refresh of its listing) and keeps
+    /// the result.
     pub fn check(&self, id: &str) -> Result<Value, Failure> {
         let p = self.find(id)?;
-        let health = crate::provider_health::check(&self.gateway, &p, self.credential(&p));
+        let health =
+            crate::provider_health::check(&self.listings, &self.gateway, &p, self.credential(&p));
         lock(&self.health).insert(p.id.clone(), health.clone());
         Ok(json!({ "id": p.id, "health": health }))
     }
 
-    /// Checks every enabled provider, one after another, and returns each one's result by id.
+    /// Checks every enabled provider at once (one thread each, each under the listing deadline) and returns each
+    /// one's result by id. A check refreshes the listing it probes; it clears nothing.
     pub fn check_all(&self) -> Value {
+        let providers = self.gateway.providers();
+        let checked: Vec<(String, Value)> = std::thread::scope(|scope| {
+            let running: Vec<_> = providers
+                .iter()
+                .map(|p| {
+                    scope.spawn(move || {
+                        let health = if p.enabled {
+                            crate::provider_health::check(
+                                &self.listings,
+                                &self.gateway,
+                                p,
+                                self.credential(p),
+                            )
+                        } else {
+                            self.health_of(p)
+                        };
+                        (p.id.clone(), health)
+                    })
+                })
+                .collect();
+            running.into_iter().filter_map(|t| t.join().ok()).collect()
+        });
         let mut out = serde_json::Map::new();
-        for p in self.gateway.providers() {
-            let health = if p.enabled {
-                let health = crate::provider_health::check(&self.gateway, &p, self.credential(&p));
-                lock(&self.health).insert(p.id.clone(), health.clone());
-                health
-            } else {
-                self.health_of(&p)
-            };
-            out.insert(p.id.clone(), health);
+        for (id, health) in checked {
+            if providers.iter().any(|p| p.id == id && p.enabled) {
+                lock(&self.health).insert(id.clone(), health.clone());
+            }
+            out.insert(id, health);
         }
-        // A check can change what the listing would show (a key that now works).
-        *lock(&self.models) = None;
         Value::Object(out)
     }
+}
+
+/// Starts the listings' refresher: every [`crate::provider_listings::TICK`] it lists the providers whose listing is
+/// due, and tells the consoles when a listing changed (a `models` event: a hint to revalidate their list).
+pub fn spawn_refresher(app: Arc<App>) {
+    std::thread::Builder::new()
+        .name("model-listings".into())
+        .spawn(move || {
+            loop {
+                if app.providers.refresh_due() {
+                    app.bus.publish("models", &json!({ "refreshed": true }));
+                }
+                std::thread::sleep(crate::provider_listings::TICK);
+            }
+        })
+        .expect("spawn the model listings thread");
 }
 
 /// `/v1/provider-kinds`, `/v1/providers…`, `/v1/models`.
@@ -772,18 +951,30 @@ fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
-fn provider_models_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+/// `GET /v1/providers/{id}/models[?refresh=1]`: the provider's listing from the cache (listed now if it never was);
+/// `refresh=1` lists it again first.
+fn provider_models_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let id = p.get("id");
-    if let Err(f) = app.providers.find(id) {
-        return failure(f);
-    }
-    match app
-        .providers
-        .gateway()
-        .list_models_for(id, &Caller::Owner { node: None })
-    {
-        Ok(models) => Response::json(200, &models),
-        Err(e) => Response::json(502, &json!({ "error": e.to_string() })),
+    let config = match app.providers.find(id) {
+        Ok(config) => config,
+        Err(f) => return failure(f),
+    };
+    let force = req
+        .query_param("refresh")
+        .is_some_and(|v| v == "1" || v == "true");
+    let listing = match app.providers.listings.peek(id) {
+        Some(listing) if !force => Ok(listing),
+        _ => app
+            .providers
+            .listings
+            .fetch(&app.providers.gateway, &config, force),
+    };
+    match listing {
+        Ok(listing) => {
+            let models: Vec<ModelInfo> = listing.models.iter().map(ModelInfo::from).collect();
+            Response::json(200, &models)
+        }
+        Err(e) => Response::json(502, &json!({ "error": e })),
     }
 }
 
@@ -807,7 +998,7 @@ fn all_models_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
 /// contributor model that trains its provider's future models on what it is sent (`trains_on_data`),
 /// and its context window in tokens (`context`, null when the provider's listing does not say).
 fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
-    let trains_on_data = apz_gateway::lists_training_model(&p.options, &m.id);
+    let trains_on_data = apz_gateway::lists_training_model(p.options.as_ref(), &m.id);
     json!({ "provider": p.id, "provider_label": display_label(p), "accent": p.accent, "group": p.kind.group(), "id": m.id, "name": m.name, "context": m.context, "trains_on_data": trains_on_data })
 }
 
@@ -816,10 +1007,7 @@ fn model_entry(p: &ProviderConfig, m: ModelInfo) -> Value {
 /// None when neither knows it, as for a local model.
 /// Reads only the cached listing: metrics compose this every few seconds and must never wait on a provider.
 pub fn context_window(app: &App, model: &str) -> Option<u64> {
-    app.providers
-        .cached_models()
-        .and_then(|listed| listed_window(&listed["models"], model))
-        .or_else(|| known_window(model))
+    listed_window(&app.providers.cached_models()["models"], model).or_else(|| known_window(model))
 }
 
 /// The window the `/v1/models` entries (`models`, the array `all_models` answers with) state for
@@ -915,45 +1103,13 @@ fn vault_failure(e: VaultError) -> Failure {
     (status, e.message())
 }
 
-/// The providers of a fresh state directory: the presets named in `SEED_IDS`.
+/// The providers of a fresh store: the presets named in `SEED_IDS`.
 fn seed() -> Vec<ProviderConfig> {
     presets()
         .iter()
         .filter(|p| SEED_IDS.contains(&p.id))
         .map(|p| p.config())
         .collect()
-}
-
-/// The seed list before the offered list existed. An install that predates `OFFERED_FILE` was
-/// given these, so a deleted one stays deleted when the list is first written.
-const LEGACY_SEED_IDS: [&str; 14] = [
-    "anthropic",
-    "openai",
-    "xai",
-    "deepseek",
-    "gemini",
-    "zai",
-    "moonshot",
-    "ollama",
-    "llamacpp",
-    "mock",
-    "mistral",
-    "openai-decisions",
-    "typesafe",
-    "meta",
-];
-
-/// The preset ids offered to this install, beside `providers.json`: each `SEED_IDS` preset is
-/// offered once, so a provider the owner deletes does not come back on the next load.
-const OFFERED_FILE: &str = "providers-offered.json";
-
-/// The offered ids in `path`, or `None` when the file does not exist yet.
-fn read_offered(path: &Path) -> io::Result<Option<Vec<String>>> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(invalid),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }
 }
 
 /// Offers each `SEED_IDS` preset not yet in `offered`: appends its config to `providers` unless a
@@ -1022,18 +1178,6 @@ pub(crate) fn display_label(p: &ProviderConfig) -> String {
     p.label.clone().unwrap_or_else(|| label_of(p))
 }
 
-fn to_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
-    serde_json::to_vec_pretty(value).map_err(invalid)
-}
-
-fn invalid(e: impl std::fmt::Display) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-}
-
-fn io_failure(e: io::Error) -> Failure {
-    (500, format!("cannot save: {e}"))
-}
-
 /// Writes `bytes` to `path` through a temporary file created with `mode`.
 /// A private mode (no group or other bits, 0600) goes through [`apz_os::private::write`]; any other
 /// mode is applied to the new file on Unix (ignored on Windows).
@@ -1054,47 +1198,59 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8], mode: u32) -> io::Result<(
     std::fs::rename(&tmp, path)
 }
 
-impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    /// A command credential and extra-header values may hold literal tokens, so they are blanked.
-    pub fn snapshot(&self) -> String {
-        let mut providers = self.gateway.providers();
-        for p in &mut providers {
-            if let Auth::Command(command) = &mut p.auth {
-                command.clear();
-            }
-            for value in p.extra_headers.values_mut() {
-                value.clear();
-            }
-        }
-        to_json(&providers)
-            .map(|b| String::from_utf8_lossy(&b).into_owned())
-            .unwrap_or_default()
-    }
+/// The vault name of a provider's command credential.
+fn command_secret(id: &str) -> String {
+    name_for(&format!("{id}-command"))
+}
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing. Blanked
-    /// credentials keep their live values.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let _guard = lock(&self.write);
-        let mut providers: Vec<ProviderConfig> =
-            serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let live = self.gateway.providers();
-        for p in &mut providers {
-            let Some(old) = live.iter().find(|o| o.id == p.id) else {
-                continue;
-            };
-            if let (Auth::Command(command), Auth::Command(live_command)) = (&mut p.auth, &old.auth)
-                && command.is_empty()
-            {
-                command.clone_from(live_command);
-            }
-            for (name, value) in p.extra_headers.iter_mut() {
-                if let (true, Some(live_value)) = (value.is_empty(), old.extra_headers.get(name)) {
-                    value.clone_from(live_value);
-                }
+/// The vault name of one of a provider's header values.
+fn header_secret(id: &str, header: &str) -> String {
+    name_for(&format!("{id}-header-{header}"))
+}
+
+/// A provider's literal credentials, by vault name: its command (`Auth::Command`) and its header values, which may
+/// hold literal tokens. plaza.db keeps them blank and the vault holds them.
+fn literal_secrets(p: &ProviderConfig) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Auth::Command(command) = &p.auth
+        && !command.is_empty()
+    {
+        out.push((command_secret(&p.id), command.clone()));
+    }
+    for (header, value) in &p.extra_headers {
+        if !value.is_empty() {
+            out.push((header_secret(&p.id, header), value.clone()));
+        }
+    }
+    out
+}
+
+/// Blanks a provider's command credential and header values, which may hold literal tokens: what the store keeps.
+fn blank_secrets(p: &mut ProviderConfig) {
+    if let Auth::Command(command) = &mut p.auth {
+        command.clear();
+    }
+    for value in p.extra_headers.values_mut() {
+        value.clear();
+    }
+}
+
+/// Keeps, for each blanked command credential or header value of `providers`, the live value of the same provider.
+fn keep_live_secrets(providers: &mut [ProviderConfig], live: &[ProviderConfig]) {
+    for p in providers.iter_mut() {
+        let Some(old) = live.iter().find(|o| o.id == p.id) else {
+            continue;
+        };
+        if let (Auth::Command(command), Auth::Command(live_command)) = (&mut p.auth, &old.auth)
+            && command.is_empty()
+        {
+            command.clone_from(live_command);
+        }
+        for (name, value) in p.extra_headers.iter_mut() {
+            if let (true, Some(live_value)) = (value.is_empty(), old.extra_headers.get(name)) {
+                value.clone_from(live_value);
             }
         }
-        self.commit(providers).map_err(|(_, message)| message)
     }
 }
 
@@ -1119,7 +1275,7 @@ mod tests {
     /// A booted vault in `dir`, as `App` starts one (the key file is created at boot).
     fn vault_in(dir: &Path) -> Arc<crate::vault::Store> {
         std::fs::create_dir_all(dir).unwrap();
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(apz_plaza::now_ms()).unwrap();
         Arc::new(vault)
     }
@@ -1168,19 +1324,48 @@ mod tests {
         VaultSecrets(Arc::clone(vault)).get(name, &read)
     }
 
-    /// A vault in `dir` as it is after a restart: boot refuses a tampered file, and the vault stays up to say why.
+    /// A database holding the providers' tables, empty.
+    fn db() -> apz_store::rusqlite::Connection {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        conn
+    }
+
+    /// A store over `vault`, loaded from `conn`: what a start reads.
+    fn load_from(conn: &apz_store::rusqlite::Connection, vault: Arc<crate::vault::Store>) -> Store {
+        let store = Store::new(vault);
+        store.load(conn).unwrap();
+        store
+    }
+
+    /// Saves `store`'s rows to `conn`, as the saver does.
+    fn save_to(conn: &apz_store::rusqlite::Connection, store: &Store) {
+        apz_store::table::replace(conn, def(), &store.rows().unwrap()).unwrap();
+    }
+
+    /// A database holding `stored` as the providers' tables.
+    fn saved(stored: &Stored) -> apz_store::rusqlite::Connection {
+        let conn = db();
+        let rows = apz_store::RowSet::one(def(), stored).unwrap();
+        apz_store::table::replace(&conn, def(), &rows).unwrap();
+        conn
+    }
+
+    /// A vault in `dir` as it is after a restart: boot refuses a tampered store, and the vault stays up to say why.
     fn reopen(dir: &Path) -> Arc<crate::vault::Store> {
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         let _ = vault.boot(apz_plaza::now_ms());
         Arc::new(vault)
     }
 
-    /// Changes `from` to `to` in the vault file outside the API, so its index MAC no longer matches.
-    fn tamper_with_the_vault_file(dir: &Path, from: &str, to: &str) {
-        let path = dir.join("vault.json");
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains(from), "the vault file names {from}");
-        std::fs::write(&path, text.replacen(from, to, 1)).unwrap();
+    /// Changes the binding `from` to `to` in the stored vault outside the API, so its index MAC no longer matches.
+    fn tamper_with_the_stored_vault(dir: &Path, from: &str, to: &str) {
+        let edited = crate::vault::tamper_rows(
+            dir,
+            "UPDATE vault_entry_binding SET value = ?2 WHERE value = ?1",
+            &[from, to],
+        );
+        assert_eq!(edited, 1, "the stored vault names {from}");
     }
 
     #[test]
@@ -1221,7 +1406,7 @@ mod tests {
     #[test]
     fn first_load_seeds_the_presets() {
         let dir = scratch("seed");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
+        let store = test_store(vault_in(&dir));
         let mut ids: Vec<String> = store
             .gateway()
             .providers()
@@ -1234,66 +1419,50 @@ mod tests {
         assert_eq!(ids, want);
         assert_eq!(want.len(), 16, "the seeded providers: {want:?}");
         assert!(ids.iter().any(|id| id == "openrouter") && ids.iter().any(|id| id == "opencode"));
-        assert!(dir.join("providers.json").exists());
         // A fresh install records every seed as offered, so a deleted preset is never offered back.
-        let mut offered: Vec<String> =
-            serde_json::from_slice(&std::fs::read(dir.join(OFFERED_FILE)).unwrap()).unwrap();
+        let mut offered = lock(&store.offered).clone();
         offered.sort();
         assert_eq!(offered, want, "every seed is recorded as offered");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An install from before the offered list: `providers.json` holds the legacy seed, no `OFFERED_FILE`.
-    fn legacy_install(dir: &Path) {
-        let legacy: Vec<ProviderConfig> = seed()
-            .into_iter()
-            .filter(|p| LEGACY_SEED_IDS.contains(&p.id.as_str()))
-            .collect();
-        std::fs::create_dir_all(dir).unwrap();
-        write_atomic(
-            &dir.join("providers.json"),
-            &to_json(&legacy).unwrap(),
-            0o600,
-        )
-        .unwrap();
-    }
-
-    fn providers_on_disk(dir: &Path) -> Vec<ProviderConfig> {
-        serde_json::from_slice(&std::fs::read(dir.join("providers.json")).unwrap()).unwrap()
-    }
-
     #[test]
     fn an_existing_install_gains_the_new_presets_once() {
-        let dir = scratch("offered-once");
-        legacy_install(&dir);
-        let before = providers_on_disk(&dir);
-        let vault = vault_in(&dir);
-        drop(Store::load(&dir, Arc::clone(&vault)).unwrap());
-        let after = providers_on_disk(&dir);
-        assert_eq!(after.len(), before.len() + 2);
-        assert_eq!(
-            &after[..before.len()],
-            &before[..],
-            "existing entries are untouched"
-        );
+        let vault = vault_in(&scratch("offered-once"));
+        // An install offered only the presets it holds, not the two added since.
+        let held: Vec<ProviderConfig> = seed()
+            .into_iter()
+            .filter(|p| p.id != "openrouter" && p.id != "opencode")
+            .collect();
+        let offered: Vec<String> = held.iter().map(|p| p.id.clone()).collect();
+        let conn = saved(&Stored {
+            providers: held.clone(),
+            offered,
+        });
+        let store = load_from(&conn, Arc::clone(&vault));
+        let after = store.gateway().providers();
+        assert_eq!(after.len(), held.len() + 2);
+        for p in &held {
+            assert!(after.contains(p), "{} is untouched", p.id);
+        }
         for id in ["openrouter", "opencode"] {
             assert_eq!(after.iter().filter(|p| p.id == id).count(), 1, "{id} once");
         }
-        drop(Store::load(&dir, Arc::clone(&vault)).unwrap());
-        assert_eq!(providers_on_disk(&dir), after, "a second load adds nothing");
-        let _ = std::fs::remove_dir_all(&dir);
+        // Saved and loaded again, the two come back once and nothing more is added.
+        save_to(&conn, &store);
+        let again = load_from(&conn, vault).gateway().providers();
+        assert_eq!(again.len(), after.len(), "a second load adds nothing");
     }
 
     #[test]
     fn a_deleted_preset_stays_deleted() {
-        let dir = scratch("offered-deleted");
-        legacy_install(&dir);
-        let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let vault = vault_in(&scratch("offered-deleted"));
+        let conn = db();
+        let store = test_store(Arc::clone(&vault));
         store.remove("opencode").unwrap();
         store.remove("meta").unwrap();
-        drop(store);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        save_to(&conn, &store);
+        let store = load_from(&conn, Arc::clone(&vault));
         let ids: Vec<String> = store
             .gateway()
             .providers()
@@ -1306,20 +1475,21 @@ mod tests {
             "{ids:?}"
         );
         drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_secret_never_appears_in_the_list_view() {
         let dir = scratch("view");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         store.set_secret("openai", SENTINEL).unwrap();
         let views = serde_json::to_string(&store.views()).unwrap();
         assert!(!views.contains(SENTINEL));
         assert!(views.contains("\"secret\""));
         // It is stored in the vault, and a reload still reads it (for the upstream call).
-        let reloaded = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let conn = db();
+        save_to(&conn, &store);
+        let reloaded = load_from(&conn, Arc::clone(&vault));
         let openai = reloaded.find("openai").unwrap();
         assert_eq!(openai.auth, Auth::Env("OPENAI_API_KEY".to_string()));
         let key = reloaded
@@ -1335,7 +1505,7 @@ mod tests {
     fn a_key_is_written_to_the_vault_and_no_secrets_file() {
         let dir = scratch("mode");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         store.set_secret("mock", "value-for-the-mode-test").unwrap();
         // The mock provider had no named key: it now names one, and the vault holds it.
         assert_eq!(
@@ -1351,10 +1521,10 @@ mod tests {
         assert_eq!(entry["bindings"], json!(["provider:mock"]));
         assert_eq!(entry["scope"]["kind"], "plaza");
         assert!(!dir.join("secrets.json").exists());
-        // The vault's file is private (0600), as the secrets file was.
+        // The key file is private (0600), as the secrets file was: the vault's rows are in plaza.db.
         #[cfg(unix)]
         assert_eq!(
-            std::fs::metadata(dir.join("vault.json"))
+            std::fs::metadata(dir.join("vault.key"))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -1377,7 +1547,7 @@ mod tests {
                 nodes: vec!["n3".into()],
             },
         );
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let views = store.views();
         let credential = |id: &str| {
             views
@@ -1439,7 +1609,7 @@ mod tests {
     #[test]
     fn a_key_value_reaches_no_view_no_check_and_no_file() {
         let dir = scratch("leak");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
+        let store = test_store(vault_in(&dir));
         // A local endpoint that refuses connections: the check fails without a real network call.
         let mut local = ProviderConfig::new("local", ProviderKind::OpenAiCompatible);
         local.base_url = Some("http://127.0.0.1:9/v1".to_string());
@@ -1457,7 +1627,9 @@ mod tests {
             redact(format!("bad key {SENTINEL}"), Some(SENTINEL)),
             "bad key •••"
         );
-        // Nothing on disk carries the value: the vault stores ciphertext only.
+        // Nothing on disk carries the value: the vault stores ciphertext only. The store is closed first, since
+        // Windows locks the bytes of an open database.
+        drop(store);
         assert!(!dir.join("secrets.json").exists());
         for file in files_under(&dir) {
             let bytes = std::fs::read(&file).unwrap();
@@ -1476,7 +1648,7 @@ mod tests {
     fn openrouter_and_opencode_read_their_env_keys_through_their_bindings() {
         let dir = scratch("openrouter");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         assert_eq!(
             store.find("openrouter").unwrap().auth,
             Auth::Env("OPENROUTER_API_KEY".to_string())
@@ -1533,7 +1705,7 @@ mod tests {
     #[test]
     fn extra_headers_are_listed_for_a_provider_that_has_them() {
         let dir = scratch("headers");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
+        let store = test_store(vault_in(&dir));
         let mut providers = store.gateway().providers();
         let openrouter = providers.iter_mut().find(|p| p.id == "openrouter").unwrap();
         openrouter.extra_headers.insert(
@@ -1555,7 +1727,7 @@ mod tests {
     #[test]
     fn views_and_model_entries_carry_the_group() {
         let dir = scratch("group");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
+        let store = test_store(vault_in(&dir));
         let views = store.views();
         let group_of = |id: &str| {
             views
@@ -1591,7 +1763,7 @@ mod tests {
         {
             let dir = scratch("consumers");
             let vault = vault_in(&dir);
-            let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+            let store = test_store(Arc::clone(&vault));
             let wants = |vault: &crate::vault::Store| -> Vec<String> {
                 vault
                     .consumers(&[])
@@ -1619,7 +1791,7 @@ mod tests {
         {
             let dir = scratch("bedrock-consumers");
             let vault = vault_in(&dir);
-            let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+            let store = test_store(Arc::clone(&vault));
             let wants = |vault: &crate::vault::Store, id: &str| -> Vec<String> {
                 vault
                     .consumers(&[])
@@ -1670,7 +1842,7 @@ mod tests {
     fn a_key_is_served_from_the_vault_by_node_not_the_process_environment() {
         let dir = scratch("served");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let mut local = ProviderConfig::new("local-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("SERVED_KEY_4417".to_string());
         store.insert(local).unwrap();
@@ -1777,7 +1949,7 @@ mod tests {
     fn the_aws_pair_view_reports_secret_missing_out_of_scope_and_sealed() {
         let dir = scratch("bedrock-view");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let credential = |store: &Store, id: &str| {
             store.view(&store.find(id).unwrap())["credential"]
                 .as_str()
@@ -1835,7 +2007,7 @@ mod tests {
     fn a_sealed_vault_serves_no_key_not_even_from_the_process_environment() {
         let dir = scratch("sealed");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let mut local = ProviderConfig::new("sealed-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("SEALED_KEY_4417".to_string());
         store.insert(local).unwrap();
@@ -1878,7 +2050,7 @@ mod tests {
     fn a_tampered_vault_refuses_the_key_with_its_reason() {
         let dir = scratch("tampered");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let mut local = ProviderConfig::new("tamp-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("TAMPERED_KEY_4417".to_string());
         store.insert(local).unwrap();
@@ -1889,11 +2061,13 @@ mod tests {
             "PLAZA-VALUE-4417",
             Scope::Plaza,
         );
+        let conn = db();
+        save_to(&conn, &store);
         drop(store);
         drop(vault);
-        tamper_with_the_vault_file(&dir, "provider:tamp-env", "provider:tamp-xxx");
+        tamper_with_the_stored_vault(&dir, "provider:tamp-env", "provider:tamp-xxx");
         let vault = reopen(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = load_from(&conn, Arc::clone(&vault));
         let caller = Caller::Agent {
             cid: 7,
             node: Some("n3".to_string()),
@@ -1919,7 +2093,7 @@ mod tests {
     fn an_agent_off_the_node_holding_the_key_gets_out_of_scope() {
         let dir = scratch("out-of-scope");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let mut local = ProviderConfig::new("scoped-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("SCOPED_KEY_4417".to_string());
         store.insert(local).unwrap();
@@ -1958,10 +2132,12 @@ mod tests {
     }
 
     /// The deny lines in the vault's audit log.
-    fn deny_lines(dir: &Path) -> usize {
-        let text = std::fs::read_to_string(dir.join("vault-audit.jsonl")).unwrap_or_default();
-        text.lines()
-            .filter(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["event"] == "deny"))
+    fn deny_lines(vault: &crate::vault::Store) -> usize {
+        vault
+            .audit_page(0, usize::MAX)
+            .unwrap_or_default()
+            .iter()
+            .filter(|line| line["event"] == "deny")
             .count()
     }
 
@@ -1969,7 +2145,7 @@ mod tests {
     fn a_refused_lookup_is_audited_once_per_call() {
         let dir = scratch("audit-once");
         let vault = vault_in(&dir);
-        let store = Store::load(&dir, Arc::clone(&vault)).unwrap();
+        let store = test_store(Arc::clone(&vault));
         let mut local = ProviderConfig::new("n3-env", ProviderKind::OpenAiCompatible);
         local.auth = Auth::Env("N3_KEY_4417".to_string());
         local.base_url = Some("http://127.0.0.1:9/v1".to_string());
@@ -1988,14 +2164,14 @@ mod tests {
             node: Some("n4".to_string()),
         };
         // The upstream path: one lookup, one deny line.
-        let before = deny_lines(&dir);
+        let before = deny_lines(&vault);
         assert_eq!(
             store.upstream("n3-env", &on_n4).unwrap_err(),
             VaultError::OutOfScope
         );
-        assert_eq!(deny_lines(&dir) - before, 1);
+        assert_eq!(deny_lines(&vault) - before, 1);
         // The gateway path: one refused call, one lookup, one deny line.
-        let before = deny_lines(&dir);
+        let before = deny_lines(&vault);
         let err = store
             .gateway()
             .list_models_for("n3-env", &on_n4)
@@ -2004,14 +2180,14 @@ mod tests {
             matches!(err, apz_gateway::GatewayError::Vault { status: 403, .. }),
             "{err:?}"
         );
-        assert_eq!(deny_lines(&dir) - before, 1);
+        assert_eq!(deny_lines(&vault) - before, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn duplicate_and_malformed_ids_are_refused() {
         let dir = scratch("ids");
-        let store = Store::load(&dir, vault_in(&dir)).unwrap();
+        let store = test_store(vault_in(&dir));
         assert_eq!(
             store
                 .insert(ProviderConfig::new("openai", ProviderKind::OpenAi))
@@ -2049,7 +2225,7 @@ mod tests {
         // An edit of the view keeps the redacted values and extra body.
         {
             let dir = scratch("edit-redacted");
-            let store = Store::load(&dir, vault_in(&dir)).unwrap();
+            let store = test_store(vault_in(&dir));
             let stored = stored_gateway();
             store.insert(stored.clone()).unwrap();
 
@@ -2157,5 +2333,66 @@ mod tests {
         assert_eq!(known_window("deepseek/deepseek-chat"), Some(128_000));
         assert_eq!(known_window("ollama/llama3"), None);
         assert_eq!(known_window("local/qwen2.5-coder"), None);
+    }
+
+    /// A command credential and header values live in the vault, never in plaza.db, and come back after a restart.
+    #[test]
+    fn a_command_and_header_values_are_kept_in_the_vault_and_come_back_after_a_restart() {
+        let dir = scratch("literal-secrets");
+        let vault = vault_in(&dir);
+        let conn = db();
+        let store = load_from(&conn, Arc::clone(&vault));
+        store.sync_vault();
+        store.insert(stored_gateway()).unwrap();
+        save_to(&conn, &store);
+        let rows = format!("{:?}", store.rows().unwrap().tables);
+        assert!(
+            !rows.contains(SENTINEL),
+            "plaza.db keeps neither the command nor the header values: {rows}"
+        );
+
+        // A restart: the rows load blank, and the vault fills them once it is up.
+        let restarted = load_from(&conn, Arc::clone(&vault));
+        assert_eq!(
+            restarted.find("gw").unwrap().auth,
+            Auth::Command(String::new())
+        );
+        restarted.sync_vault();
+        assert_eq!(restarted.find("gw").unwrap(), stored_gateway());
+        // A preset's fixed headers reached the vault at the first start too.
+        let openrouter = |store: &Store| store.find("openrouter").unwrap().extra_headers;
+        assert!(openrouter(&store).values().all(|v| !v.is_empty()));
+        assert_eq!(openrouter(&restarted), openrouter(&store));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sealed vault leaves the blanked values blank; its unseal fills them.
+    #[test]
+    fn a_sealed_vault_leaves_the_command_blank_until_it_is_unsealed() {
+        let dir = scratch("literal-sealed");
+        let vault = vault_in(&dir);
+        let conn = db();
+        let store = load_from(&conn, Arc::clone(&vault));
+        store.insert(stored_gateway()).unwrap();
+        save_to(&conn, &store);
+        vault.seal("owner", apz_plaza::now_ms()).unwrap();
+
+        let restarted = load_from(&conn, Arc::clone(&vault));
+        restarted.sync_vault();
+        assert_eq!(
+            restarted.find("gw").unwrap().auth,
+            Auth::Command(String::new())
+        );
+        // An edit that brings a new command needs the vault, and changes nothing without it.
+        let mut edited = stored_gateway();
+        edited.auth = Auth::Command("echo other".to_string());
+        assert_eq!(restarted.replace("gw", edited).unwrap_err().0, 503);
+
+        vault
+            .unseal(crate::vault::Unlock::Keyfile, "owner", apz_plaza::now_ms())
+            .unwrap();
+        restarted.sync_vault();
+        assert_eq!(restarted.find("gw").unwrap(), stored_gateway());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

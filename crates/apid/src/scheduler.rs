@@ -1,40 +1,35 @@
 //! Work items: per-agent FIFO queues (one item in flight per agent), sending
 //! them through the hub, closing them, and the scheduler that turns open
-//! tasks, done tasks awaiting review and open motions into work.
+//! tasks and done tasks awaiting review into work.
 //!
 //! OWNER: slice "scheduler". Signatures used by other modules are marked
 //! `// contract` — keep them.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use apz_metrics::{EntityKind, Registry, SeriesKey};
-use apz_plaza::council::is_seated;
 use apz_plaza::tasks::{FinishOutcome, TaskState};
-use apz_plaza::treasury::{MARGIN_CAP_PCT, PostError};
 use apz_proto::wire::{HostMessage, WorkKind, WorkStatus};
+use apz_store::rusqlite::Connection;
+use apz_store::{Db, RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::agents::{Agent, Status, connected_agent};
+use crate::agents::{Agent, Status};
 use crate::approvals::{Approval, State as ApprovalState, Store as ApprovalStore};
-use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
-/// How many council motions the scheduler looks at per tick.
-const MOTION_SCAN_LIMIT: usize = 50;
-
-/// The role that verifies done tasks before they pay.
+/// The role that verifies done tasks before they are done.
 pub const REVIEWER_ROLE: &str = "reviewer";
 
 /// What a work item is about, beyond its prompt.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
 pub struct Origin {
     pub task: Option<String>,
-    pub motion: Option<String>,
     /// For `message` work: the agent who wrote.
     pub from_cid: Option<u64>,
     /// True for the owner's own chat (the owner chat route sets it); automated chats leave it false.
@@ -46,30 +41,31 @@ pub struct Origin {
     /// True when the owner's message came from an editor over ACP (`/v1/acp`).
     #[serde(default)]
     pub acp: bool,
-    /// The owner's conversation with the orchestrator this message is in (`conversations`): its answer goes there.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conversation: Option<String>,
     /// The task's lane in Weft, for a worker's task item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(flatten)]
     pub lane: Option<apz_proto::wire::WorkLane>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
 pub struct WorkItem {
     pub id: u64,
     pub cid: u64,
     pub kind: WorkKind,
     pub thread: String,
     pub prompt: String,
+    #[table(flatten)]
     pub origin: Origin,
     pub created_ms: u64,
     pub started_ms: Option<u64>,
 }
 
 /// One agent's queue: the item in flight and the items waiting behind it.
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize, apz_store::Table)]
 struct Lane {
+    #[table(child = "work_lane_queue")]
     queue: VecDeque<WorkItem>,
+    #[table(child = "work_lane_current")]
     current: Option<WorkItem>,
 }
 
@@ -162,15 +158,6 @@ impl Lanes {
         })
     }
 
-    fn holds_task(&self, task: &str) -> bool {
-        self.lanes.values().any(|lane| {
-            lane.current
-                .iter()
-                .chain(lane.queue.iter())
-                .any(|item| item.origin.task.as_deref() == Some(task))
-        })
-    }
-
     /// Drops the waiting items of plaza task `task` from `cid`'s lane. Returns whether its item is in flight: the
     /// caller cancels that one (the in-flight item is not dropped here, it ends when the agent says so).
     fn drop_task(&mut self, cid: u64, task: &str) -> bool {
@@ -188,7 +175,7 @@ impl Lanes {
 /// The work queues: one lane per agent, one item in flight per lane.
 /// A done task awaiting its reviewer's verdict.
 struct Review {
-    /// The worker whose done is being verified (paid on a pass).
+    /// The worker whose done is being verified.
     worker: u64,
     /// The reviewer's work item: only its verdict, or its end, settles the task.
     work: u64,
@@ -201,11 +188,9 @@ pub struct Queues {
     posters: Mutex<std::collections::HashMap<String, u64>>,
     /// task id → the review awaiting a verdict.
     reviews: Mutex<std::collections::HashMap<String, Review>>,
-    /// Held while a task is reviewed or ruled on, so a task is paid at most once and no review
+    /// Held while a task is reviewed or ruled on, so a task is ruled on at most once and no review
     /// starts on a task that a ruling has already ended.
     rulings: Mutex<()>,
-    /// task id → credits metered against it so far (its real cost).
-    spend: Mutex<std::collections::HashMap<String, i64>>,
     /// Work items interrupted to move their agent (`Queues::interrupt`): their end puts them back in the
     /// queue instead of ending them.
     interrupted: Mutex<BTreeSet<u64>>,
@@ -219,7 +204,6 @@ impl Default for Queues {
             posters: Mutex::default(),
             reviews: Mutex::default(),
             rulings: Mutex::default(),
-            spend: Mutex::default(),
             interrupted: Mutex::default(),
         }
     }
@@ -323,17 +307,26 @@ impl Queues {
             &app.bus,
             cid,
             work,
-            "work_end",
-            json!({ "status": state, "summary": summary }),
+            crate::transcript::Entry::WorkEnd {
+                status: outcome_of(status),
+                summary: summary.to_string(),
+            },
         );
         app.bus.publish(
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": state }),
         );
-        crate::conversations::work_ended(app, &item, state, summary);
-        if let Some(task) = item.origin.task.as_deref() {
-            // A worker's done is a claim: the task waits for a reviewer's verdict, and its
-            // escrow stays held until then (see `assign_reviews`).
+        // A chat item (thread `chat:<id>`): its answer goes into the chat; a seat message it carried was read.
+        crate::work_loop::on_chat_work_end(app, cid, &item.thread, summary);
+        crate::work_loop::on_item_done(app, work);
+        // A session's step: the work loop moves the task's seats on and ends the session, whose VM it retires.
+        if crate::work_loop::on_work_end(app, cid, work, status, summary) {
+            return;
+        }
+        if let Some(task) = item.origin.task.as_deref()
+            && !crate::work_loop::owns(app, task)
+        {
+            // A worker's done is a claim: the task waits for a reviewer's verdict (see `assign_reviews`).
             let waiting = matches!(status, WorkStatus::Done)
                 && matches!(item.kind, WorkKind::Task)
                 && self.await_review(app, task, summary);
@@ -397,8 +390,9 @@ impl Queues {
             &app.bus,
             cid,
             work,
-            "work_interrupted",
-            json!({ "reason": "its machine is stopping; the work resumes on another machine" }),
+            crate::transcript::Entry::WorkInterrupted {
+                reason: "its machine is stopping; the work resumes on another machine".to_string(),
+            },
         );
         app.bus.publish(
             "work",
@@ -429,7 +423,7 @@ impl Queues {
     }
 
     /// Tells a task's poster (the orchestrator) that it ended, continuing the
-    /// poster's conversation with the operator so it keeps its plan.
+    /// poster's chat with the operator so it keeps its plan.
     fn tell_poster(&self, app: &App, task: &str, worker: u64, state: &str, summary: &str) {
         let poster = self
             .posters
@@ -439,25 +433,25 @@ impl Queues {
         let Some(poster) = poster.filter(|&p| p != worker) else {
             return;
         };
-        crate::society::task_ended(app, task, poster, worker, state == "done");
         // A poster that may not work now (it left the project) is not told: its queue would only hold it.
-        if crate::membership::held_cid(app, poster).is_some() {
+        if crate::projects::held_cid(app, poster).is_some() {
             return;
         }
         let worker_name = app
             .agents
             .get(worker)
-            .map_or_else(|| format!("agent {worker}"), |a| a.name);
+            .map_or_else(|| format!("agent {worker}"), |a| a.label());
         let prompt = format!(
             "[plaza] Task {task}, worked by {worker_name}, ended: {state}.\nSummary: {summary}\n\n\
              Review it (plaza_task_result), continue your plan, and tell the operator when the goal is complete."
         );
-        // A project started from a conversation hears of its tasks there.
-        if let Some(conversation) = project_conversation(app, task, poster) {
-            crate::conversations::notify(
+        // A project whose draft started hears of its tasks in its chat.
+        if let Some(chat) = project_chat(app, task, poster) {
+            crate::work_loop::tell_chat(
                 app,
-                &conversation,
-                crate::conversations::shown_line(&prompt),
+                &chat,
+                poster,
+                crate::work_loop::shown_line(&prompt),
                 &prompt,
             );
             return;
@@ -499,14 +493,15 @@ impl Queues {
             &app.bus,
             cid,
             work,
-            "work_end",
-            json!({ "status": "stopped", "summary": reason }),
+            crate::transcript::Entry::WorkEnd {
+                status: crate::transcript::Outcome::Stopped,
+                summary: reason.to_string(),
+            },
         );
         app.bus.publish(
             "work",
             &json!({ "cid": cid, "work": work, "state": "ended", "status": "stopped" }),
         );
-        crate::conversations::work_ended(app, &item, "stopped", reason);
         if let Some(task) = item.origin.task.as_deref() {
             settle_task(app, task, WorkStatus::Stopped, reason);
         }
@@ -544,15 +539,18 @@ impl Queues {
                 &app.bus,
                 cid,
                 item.id,
-                "work_end",
-                json!({ "status": "failed", "summary": "agent went offline" }),
+                crate::transcript::Entry::WorkEnd {
+                    status: crate::transcript::Outcome::Failed,
+                    summary: "agent went offline".to_string(),
+                },
             );
             app.bus.publish(
                 "work",
                 &json!({ "cid": cid, "work": item.id, "state": "ended", "status": "failed" }),
             );
-            crate::conversations::work_ended(app, &item, "failed", "agent went offline");
-            if let Some(task) = item.origin.task.as_deref() {
+            if let Some(task) = item.origin.task.as_deref()
+                && !crate::work_loop::owns(app, task)
+            {
                 settle_task(app, task, WorkStatus::Failed, "agent went offline");
             }
             self.review_lost(app, item.id, "reviewer went offline");
@@ -560,25 +558,8 @@ impl Queues {
         app.agents.update(cid, |a| a.status = Status::Offline);
     }
 
-    /// Adds metered `credits` to `task`'s real cost.
-    pub fn add_spend(&self, task: &str, credits: i64) {
-        // contract
-        let mut spend = self.spend.lock().unwrap_or_else(|p| p.into_inner());
-        *spend.entry(task.to_string()).or_insert(0) += credits;
-    }
-
-    /// The credits metered against `task` so far.
-    fn spent(&self, task: &str) -> i64 {
-        self.spend
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(task)
-            .copied()
-            .unwrap_or(0)
-    }
-
-    /// The worker reported `task` done: it waits for a reviewer's verdict, and its escrow stays
-    /// held. False when the task cannot wait (it already ended), and the caller settles it as before.
+    /// The worker reported `task` done: it waits for a reviewer's verdict. False when the task cannot
+    /// wait (it already ended), and the caller settles it as before.
     fn await_review(&self, app: &App, task: &str, summary: &str) -> bool {
         app.plaza
             .tasks
@@ -601,6 +582,10 @@ impl Queues {
                 continue;
             };
             let id = view.id.to_string();
+            // A task the work loop runs is reviewed by its reviewer seat.
+            if crate::work_loop::owns(app, &id) {
+                continue;
+            }
             // A task whose lane is sealed in Weft is reviewed by the review graph (review_graph::tick).
             if crate::review_graph::handles(app, &id) {
                 continue;
@@ -619,7 +604,7 @@ impl Queues {
                 let worker_name = app
                     .agents
                     .get(worker)
-                    .map_or_else(|| format!("agent {worker}"), |a| a.name);
+                    .map_or_else(|| format!("agent {worker}"), |a| a.label());
                 let escalation = escalate_review(
                     &app.approvals,
                     &id,
@@ -630,7 +615,7 @@ impl Queues {
                     waited,
                 );
                 if let Some(item) = escalation {
-                    app.bus.publish("approval", &item);
+                    crate::approvals::announce(app, &item);
                 }
             }
         }
@@ -651,14 +636,12 @@ impl Queues {
         let Some(project) = record.project().map(str::to_string) else {
             return false;
         };
-        if crate::membership::project_state(app, &project)
-            != crate::membership::ProjectState::Active
-        {
+        if crate::projects::state(app, &project) != crate::projects::ProjectState::Active {
             return false;
         }
-        let members = app.members.members(&project);
+        let on_project = crate::projects::agents_of(app, &project);
         let reviewers = app.agents.select(|a| {
-            (a.role == REVIEWER_ROLE && a.status == Status::Idle && members.contains(&a.cid))
+            (a.role == REVIEWER_ROLE && a.status == Status::Idle && on_project.contains(&a.cid))
                 .then(|| a.clone())
         });
         let Some(reviewer) = next_reviewer(&reviewers, worker) else {
@@ -667,7 +650,7 @@ impl Queues {
         let worker_name = app
             .agents
             .get(worker)
-            .map_or_else(|| format!("agent {worker}"), |a| a.name);
+            .map_or_else(|| format!("agent {worker}"), |a| a.label());
         let acceptance = record
             .acceptance()
             .map_or_else(|| "none stated".to_string(), |a| a.to_string());
@@ -691,9 +674,8 @@ impl Queues {
         true
     }
 
-    /// The reviewer's verdict on `task`, from review work `work`. Pass pays the
-    /// worker its margin-capped share and completes the task; fail fails it (the
-    /// escrow goes back to the plaza's budget).
+    /// The reviewer's verdict on `task`, from review work `work`: a pass completes the task, a fail
+    /// fails it.
     pub fn verdict(
         &self,
         app: &App,
@@ -714,7 +696,7 @@ impl Queues {
             .remove(task)
             .ok_or_else(|| format!("no verdict is pending on task {task}"))?;
         drop(reviews);
-        let summary = self.settle_ruling(app, task, review.worker, work, pass, notes);
+        let summary = self.settle_ruling(app, task, pass, notes);
         // The owner's card for this task, if one was raised, is no longer needed.
         publish_withdrawn(
             app,
@@ -731,7 +713,7 @@ impl Queues {
         Ok(summary)
     }
 
-    /// The owner's ruling on `task`, which is awaiting review: a pass pays the worker and completes the
+    /// The owner's ruling on `task`, which is awaiting review: a pass completes the
     /// task, a fail fails it. A reviewer still working on it is no longer awaited.
     pub fn owner_verdict(
         &self,
@@ -756,13 +738,11 @@ impl Queues {
         let worker = view
             .agent_cid
             .ok_or_else(|| format!("task {task} names no worker"))?;
-        let reviewer = self
-            .reviews
+        self.reviews
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(task);
-        let work = reviewer.map_or(0, |r| r.work);
-        let summary = self.settle_ruling(app, task, worker, work, pass, notes);
+        let summary = self.settle_ruling(app, task, pass, notes);
         drop(rulings);
         self.tell_poster(
             app,
@@ -774,32 +754,16 @@ impl Queues {
         Ok(summary)
     }
 
-    /// Pays the worker for a pass and ends the task, which releases the rest of its escrow. The caller
-    /// holds `rulings`, so the task is paid at most once.
-    fn settle_ruling(
-        &self,
-        app: &App,
-        task: &str,
-        worker: u64,
-        work: u64,
-        pass: bool,
-        notes: &str,
-    ) -> String {
-        let paid = if pass {
-            self.pay_worker(app, task, worker, work)
-        } else {
-            0
-        };
+    /// Ends the task on a verdict: a pass completes it, a fail fails it. The caller holds `rulings`, so the
+    /// task is ruled on at most once.
+    fn settle_ruling(&self, app: &App, task: &str, pass: bool, notes: &str) -> String {
         let status = if pass {
             WorkStatus::Done
         } else {
             WorkStatus::Failed
         };
         settle_task(app, task, status, notes);
-        format!(
-            "verdict {}: paid {paid}",
-            if pass { "pass" } else { "fail" }
-        )
+        format!("verdict {}", if pass { "pass" } else { "fail" })
     }
 
     /// Ends a review whose reviewer ended, or went offline, without a verdict: the task fails.
@@ -822,47 +786,6 @@ impl Queues {
         self.tell_poster(app, &task, review.worker, "failed", reason);
     }
 
-    /// Pays `worker` 20% of `task`'s real cost, capped by the chain's margin
-    /// cap; returns the amount paid.
-    fn pay_worker(&self, app: &App, task: &str, worker: u64, work: u64) -> i64 {
-        let spent = self.spent(task);
-        let treasury = &app.plaza.treasury;
-        let cap = spent * MARGIN_CAP_PCT / 100;
-        let paid = if cap <= 0 {
-            0
-        } else {
-            match treasury.pay_agent(task, worker, cap) {
-                Ok(_) => cap,
-                // The margin cap refused: pay what it still allows, or nothing.
-                Err(PostError::MarginCap {
-                    paid_to_agents,
-                    real_cost,
-                    ..
-                }) => {
-                    let allowance = real_cost * i128::from(MARGIN_CAP_PCT) / 100 - paid_to_agents;
-                    match i64::try_from(allowance) {
-                        Ok(allowance)
-                            if allowance > 0
-                                && treasury.pay_agent(task, worker, allowance).is_ok() =>
-                        {
-                            allowance
-                        }
-                        _ => 0,
-                    }
-                }
-                Err(_) => 0,
-            }
-        };
-        app.transcripts.record(
-            &app.bus,
-            worker,
-            work,
-            "payment",
-            json!({ "task": task, "amount": paid, "spent": spent }),
-        );
-        paid
-    }
-
     /// Starts the next item for every idle, connected agent that has queued work and nothing
     /// in flight — after a restart (restored queues) or anything else that left work waiting.
     pub fn dispatch_idle(&self, app: &App) {
@@ -878,10 +801,10 @@ impl Queues {
     fn dispatch(&self, app: &App, cid: u64) {
         let agent = app.agents.get(cid);
         let status = agent.as_ref().map(|a| a.status);
-        // An agent on the bench, or on a paused project, keeps its work queued and is not woken for it.
+        // An agent whose project is paused or over keeps its work queued and is not woken for it.
         let held = agent
             .as_ref()
-            .is_some_and(|a| crate::membership::held(app, a).is_some());
+            .is_some_and(|a| crate::projects::held(app, a).is_some());
         match dispatch_step(
             status,
             app.control.paused() || held,
@@ -923,13 +846,12 @@ impl Queues {
             &app.bus,
             cid,
             item.id,
-            "work_start",
-            json!({
-                "kind": item.kind,
-                "thread": item.thread,
-                "prompt": item.prompt,
-                "origin": item.origin,
-            }),
+            crate::transcript::Entry::WorkStart {
+                kind: item.kind.into(),
+                thread: item.thread.clone(),
+                prompt: item.prompt.clone(),
+                origin: serde_json::to_value(&item.origin).unwrap_or(Value::Null),
+            },
         );
         app.bus.publish(
             "work",
@@ -939,20 +861,20 @@ impl Queues {
     }
 }
 
-/// The conversation task `task`'s project was started from, when agent `cid` is the orchestrator it talks to: where
-/// that orchestrator hears of the project's tasks.
-pub(crate) fn project_conversation(app: &App, task: &str, cid: u64) -> Option<String> {
+/// The chat of task `task`'s project, when agent `cid` leads the project: where the lead hears of the project's tasks.
+pub(crate) fn project_chat(app: &App, task: &str, cid: u64) -> Option<String> {
     let pid = app.plaza.tasks.find(task)?.project()?.to_string();
-    crate::conversations::of_project(app, &pid)
-        .filter(|conversation| conversation.cid == cid)
-        .map(|conversation| conversation.id)
+    if app.projects.get(&pid)?.lead_cid != cid {
+        return None;
+    }
+    crate::drafts::chat_of(app, &pid).map(|chat| chat.id)
 }
 
 /// What `dispatch` does with an agent's waiting work, decided before anything moves.
 #[derive(Debug, PartialEq, Eq)]
 enum DispatchStep {
-    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (on the bench, or its project
-    /// paused, see `membership`), it is away (moving, or on a stopped node it leaves first:
+    /// Keep it queued: STOP ALL holds the plaza, the agent may not work now (its project is paused or over, see
+    /// `projects::held`), it is away (moving, or on a stopped node it leaves first:
     /// `mover::holds`), or it is gone (or unknown).
     Hold,
     /// Keep it queued and wake the agent: it is asleep (`crate::sleep`).
@@ -961,7 +883,7 @@ enum DispatchStep {
     Send,
 }
 
-/// `held`: STOP ALL holds the plaza, or the agent may not work now (`membership`); `away`: it is moving,
+/// `held`: STOP ALL holds the plaza, or the agent may not work now (`projects::held`); `away`: it is moving,
 /// or on a stopped node (`mover::holds`).
 fn dispatch_step(status: Option<Status>, held: bool, away: bool) -> DispatchStep {
     match status {
@@ -985,6 +907,15 @@ fn set_queued_gauge(registry: &Registry, lanes: &Lanes, cid: u64) {
 }
 
 /// The wire spelling of a work status, for the transcript and events.
+/// The outcome a work item's status records (`work_end`).
+fn outcome_of(status: WorkStatus) -> crate::transcript::Outcome {
+    match status {
+        WorkStatus::Done => crate::transcript::Outcome::Done,
+        WorkStatus::Failed => crate::transcript::Outcome::Failed,
+        WorkStatus::Stopped => crate::transcript::Outcome::Stopped,
+    }
+}
+
 fn status_str(status: WorkStatus) -> &'static str {
     match status {
         WorkStatus::Done => "done",
@@ -1008,17 +939,11 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     if finished && matches!(outcome, FinishOutcome::Failed) {
         crate::weft_hub::abandon(app, task.id(), summary);
     }
-    // A task of a project that is over refunded its project's budget: that goes back to the plaza too.
-    if let Some(pid) = task.project()
-        && crate::membership::project_state(app, pid) == crate::membership::ProjectState::Over
-    {
-        crate::project_settings::return_rest(app, pid);
-    }
 }
 
 /// Puts a task back in the queue when the owner takes the workstation its worker was using (the lease is released
 /// with reason `owner_takeover`, takeover.rs): the task is `open` again with `reason` as its note, the worker's work
-/// on it is cancelled, and `assign_tasks` gives it to an idle worker of its role. A task that is not claimed (it
+/// on it is cancelled, and the work loop runs it again. A task that is not claimed (it
 /// ended, or it waits for a review) is left alone, and the error says so.
 pub fn requeue_task(app: &App, task: &str, reason: &str) -> Result<(), String> {
     let record = app
@@ -1130,11 +1055,12 @@ fn withdraw_orphaned_reviews(
         .collect()
 }
 
-/// Publishes the approvals that were withdrawn, so the owner's view drops them.
+/// Publishes the approvals that were withdrawn, so the owner's view drops them, and withdraws their cards.
 fn publish_withdrawn(app: &App, withdrawn: &[Approval]) {
     for item in withdrawn {
         app.bus.publish("approval", item);
     }
+    crate::approvals::withdraw_cards(app, withdrawn);
 }
 
 /// Withdraws the pending review cards whose task no longer awaits review, whichever path ended it.
@@ -1193,17 +1119,15 @@ pub fn spawn(app: Arc<App>) {
     let spawned = thread::Builder::new()
         .name("apid-scheduler".into())
         .spawn(move || {
-            let mut motions_seen: HashSet<(String, u64)> = HashSet::new();
             loop {
                 // While STOP ALL holds the plaza, nothing new starts; usage still drains.
                 if !app.control.paused() {
-                    ask_names(&app);
-                    assign_tasks(&app);
+                    // Tasks run as sessions filling seats (work_loop.rs).
+                    crate::work_loop::tick(&app);
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);
                     withdraw_stale_reviews(&app);
-                    offer_motions(&app, &mut motions_seen);
                 }
                 crate::llm_proxy::drain_usage(&app);
                 crate::plaza::retain(&app);
@@ -1224,140 +1148,13 @@ pub fn spawn(app: Arc<App>) {
     }
 }
 
-/// Asks each unnamed agent, once and only after its session settled, to name itself.
-fn ask_names(app: &App) {
-    let now = apz_plaza::now_ms();
-    // An agent on the bench is asked once it joins a project: until then it does nothing, not even this.
-    let unnamed = app.agents.select(|agent| {
-        let settled = now.saturating_sub(agent.connected_at_ms) > 2_000;
-        (agent.name.is_empty()
-            && agent.status == Status::Idle
-            && settled
-            && crate::membership::held(app, agent).is_none())
-        .then_some(agent.cid)
-    });
-    for cid in unnamed {
-        if app.names.first_ask(cid) {
-            let prompt = "Choose a short first name for yourself (one word, letters only, 2–16 characters, not a job title) and set it with plaza_set_name. Then reply with just your name.";
-            app.work.enqueue(
-                app,
-                cid,
-                WorkKind::Chat,
-                format!("op-{cid}"),
-                prompt.to_owned(),
-                Origin::default(),
-            );
-        }
-    }
-}
-
-/// Gives each ready task (open, and every task it runs after done) with no work behind it to an idle worker of
-/// its role on its project. A task that waits on its links stays open; the pass after its last link is done hands
-/// it out. A task outside projects, or of a paused or ended project, is not handed out (`membership`).
-fn assign_tasks(app: &App) {
-    for task in app.plaza.tasks.list() {
-        if !task.is_ready() {
-            continue;
-        }
-        let Some(project) = task.project().map(str::to_string) else {
-            continue;
-        };
-        if crate::membership::project_state(app, &project)
-            != crate::membership::ProjectState::Active
-        {
-            continue;
-        }
-        let busy = app.work.locked().holds_task(task.id());
-        if busy {
-            continue;
-        }
-        let members = app.members.members(&project);
-        let role = task.role().map(str::to_string);
-        // A model agent (a promoted model, no VM) takes no task, and an agent on a stopped node is leaving it:
-        // a new task goes to one that can start on it now.
-        let worker = app
-            .agents
-            .select(|a| {
-                (a.status == Status::Idle
-                    && a.kind != "model"
-                    && tier_of(&a.role) == Tier::Worker
-                    && members.contains(&a.cid)
-                    && role.as_deref().is_none_or(|r| a.role == r))
-                .then_some(a.cid)
-            })
-            .into_iter()
-            .find(|&cid| !crate::mover::holds(app, cid))
-            .and_then(|cid| app.agents.get(cid));
-        let Some(worker) = worker else {
-            continue;
-        };
-        if task.claim(&connected_agent(&worker)).is_err() {
-            continue;
-        }
-        let prompt = match task.acceptance() {
-            Some(acceptance) => format!("{}\n\nAcceptance: {acceptance}", task.goal()),
-            None => task.goal().to_string(),
-        };
-        // The task's lane in Weft: the worker's files are checked out from it and snapshotted each turn.
-        let (prompt, origin) = crate::weft_hub::task_work(app, &task, worker.cid, prompt);
-        app.work.enqueue(
-            app,
-            worker.cid,
-            WorkKind::Task,
-            format!("task-{}", task.id()),
-            prompt,
-            origin,
-        );
-    }
-}
-
-/// Asks each seated, connected agent that has not voted on an open motion
-/// to vote, once per (motion, agent).
-fn offer_motions(app: &App, seen: &mut HashSet<(String, u64)>) {
-    let view = app.plaza.council.motions(MOTION_SCAN_LIMIT);
-    for motion in view.motions.iter().filter(|m| m.state == "open") {
-        // A motion is its proposer's project's: only the seated agents working on that project vote on it.
-        let Some(project) = app.members.project_of(motion.proposer_cid) else {
-            continue;
-        };
-        let members = app.members.members(&project);
-        let seated = app.agents.select(|a| {
-            (a.status != Status::Offline
-                && is_seated(&a.role)
-                && members.contains(&a.cid)
-                && crate::membership::held(app, a).is_none())
-            .then_some(a.cid)
-        });
-        // Voters are collected once per motion, so each seated agent's check is a set lookup.
-        let voted: HashSet<_> = motion.votes.iter().map(|v| v.agent_cid).collect();
-        for cid in not_yet_voted(seated, &voted) {
-            if !seen.insert((motion.id.clone(), cid)) {
-                continue;
-            }
-            let prompt = format!(
-                "Council motion {} ({}): {}",
-                motion.id, motion.kind, motion.text
-            );
-            let origin = Origin {
-                motion: Some(motion.id.clone()),
-                ..Origin::default()
-            };
-            app.work.enqueue(
-                app,
-                cid,
-                WorkKind::Motion,
-                format!("motion-{}", motion.id),
-                prompt,
-                origin,
-            );
-        }
-    }
-}
-
-/// The saved form of the queues: the id counter and every lane (queue and item in flight).
-#[derive(Serialize, Deserialize)]
+/// The saved form of the queues: the id counter (the one row of `work`) and every lane (`work_lane`, with its queue
+/// and item in flight as child tables).
+#[derive(Default, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "work")]
 struct Saved {
     next_id: u64,
+    #[table(map = "work_lane")]
     lanes: BTreeMap<u64, Lane>,
 }
 
@@ -1377,41 +1174,33 @@ fn resumed(prompt: &str, prefix: &str) -> String {
 }
 
 impl Queues {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let lanes = self.locked().clone();
-        let next_id = self.next_id.load(Ordering::Relaxed);
-        if next_id == 1
-            && lanes
-                .lanes
-                .values()
-                .all(|l| l.current.is_none() && l.queue.is_empty())
-        {
-            return String::new();
-        }
-        serde_json::to_string(&Saved {
-            next_id,
-            lanes: lanes.lanes,
-        })
-        .expect("work queues serialize")
+    /// The queues' rows, as they are now (the saver writes what changed): the id counter and every lane.
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let saved = Saved {
+            next_id: self.next_id.load(Ordering::Relaxed),
+            lanes: self.locked().lanes.clone(),
+        };
+        RowSet::one(def(), &saved)
     }
 
-    /// Replaces the state with a [`Queues::snapshot`]; a refusal changes nothing.
-    /// Work that was in flight goes back to the front of its agent's queue, marked
-    /// as resumed. Nothing is sent: the queues dispatch as agents are idle.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let (next_id, mut lanes) = if json.is_empty() {
-            (1, Lanes::default())
-        } else {
-            let saved: Saved =
-                serde_json::from_str(json).map_err(|e| format!("work queues: {e}"))?;
-            (saved.next_id, Lanes { lanes: saved.lanes })
+    /// Replaces the queues with what plaza.db holds (at start). Work that was in flight goes back to the front of
+    /// its agent's queue, marked as resumed, and the id counter moves past the queued work. Nothing is sent: the
+    /// queues dispatch as agents are idle. A change made here is written back at once, through `db`, so the tables
+    /// hold the queues as they are in memory: the saver's first pass diffs from what it loaded.
+    pub fn load(&self, conn: &Connection, db: &Db) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<Saved>(conn, def())?;
+        let stored_next = stored.as_ref().map_or(1, |saved| saved.next_id);
+        let (mut next_id, mut lanes) = match stored {
+            Some(saved) => (saved.next_id, Lanes { lanes: saved.lanes }),
+            None => (1, Lanes::default()),
         };
+        let mut changed = false;
         for lane in lanes.lanes.values_mut() {
             if let Some(mut item) = lane.current.take() {
                 item.started_ms = None;
                 item.prompt = resumed(&item.prompt, RESUMED_PREFIX);
                 lane.queue.push_front(item);
+                changed = true;
             }
         }
         let highest = lanes
@@ -1421,36 +1210,33 @@ impl Queues {
             .map(|i| i.id)
             .max()
             .unwrap_or(0);
-        let next_id = next_id.max(highest.saturating_add(1));
+        next_id = next_id.max(highest.saturating_add(1));
+        changed |= next_id != stored_next;
+        if changed {
+            let rows = RowSet::one(
+                def(),
+                &Saved {
+                    next_id,
+                    lanes: lanes.lanes.clone(),
+                },
+            )?;
+            db.write(move |conn| apz_store::table::replace(conn, def(), &rows))?;
+        }
         *self.locked() = lanes;
         self.next_id.store(next_id, Ordering::Relaxed);
         Ok(())
     }
 }
 
-/// The seated agents that have not voted on a motion, in seated order. `voters` are the agents that have.
-fn not_yet_voted<T: Copy + Eq + std::hash::Hash>(
-    seated: impl IntoIterator<Item = T>,
-    voters: &HashSet<T>,
-) -> Vec<T> {
-    seated
-        .into_iter()
-        .filter(|cid| !voters.contains(cid))
-        .collect()
+/// The work queues' tables: `work` (the id counter), `work_lane` (one lane per agent) with its queue and item in
+/// flight as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Saved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn not_yet_voted_keeps_the_seated_order() {
-        // The same as checking each seated agent against every vote, for a small input.
-        let voters: HashSet<u64> = [3, 1].into_iter().collect();
-        assert_eq!(not_yet_voted(vec![5, 1, 4, 3, 2], &voters), vec![5, 4, 2]);
-        assert!(not_yet_voted(vec![1, 3], &voters).is_empty());
-        assert!(not_yet_voted(Vec::<u64>::new(), &voters).is_empty());
-    }
 
     #[test]
     fn the_queued_gauge_follows_the_lane_as_items_are_queued_and_started() {
@@ -1494,7 +1280,6 @@ mod tests {
     fn agent(cid: u64, role: &str, status: Status) -> Agent {
         Agent {
             cid,
-            name: format!("agent{cid}"),
             role: role.to_string(),
             model_override: None,
             status,
@@ -1503,7 +1288,6 @@ mod tests {
             run: None,
             vm: None,
             usage: Default::default(),
-            species: String::new(),
             kind: "llm".to_string(),
             caps: Vec::new(),
         }
@@ -1532,11 +1316,7 @@ mod tests {
 
     #[test]
     fn a_task_no_reviewer_takes_in_time_asks_the_owner_once() {
-        let dir =
-            std::env::temp_dir().join(format!("apid-review-escalation-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = ApprovalStore::load(&dir);
+        let store = ApprovalStore::default();
 
         // Nothing is asked before the timeout; at it, the owner is.
         assert!(!review_overdue(29 * 60_000, 30 * 60_000));
@@ -1566,15 +1346,11 @@ mod tests {
                 .count(),
             2
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_reviewers_ruling_withdraws_the_owners_pending_card_and_only_that_one() {
-        let dir = std::env::temp_dir().join(format!("apid-review-withdraw-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = ApprovalStore::load(&dir);
+        let store = ApprovalStore::default();
         let asked = escalate_review(&store, "t7", 4, "agent4", "ship it", "done", 30 * 60_000)
             .expect("asked");
         let other = escalate_review(&store, "t8", 4, "agent4", "other", "done", 30 * 60_000)
@@ -1605,15 +1381,11 @@ mod tests {
             .find(|a| a.id == other.id)
             .expect("kept");
         assert_eq!(still.state, ApprovalState::Pending);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_card_whose_task_ended_by_another_path_is_withdrawn_too() {
-        let dir = std::env::temp_dir().join(format!("apid-review-orphan-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = ApprovalStore::load(&dir);
+        let store = ApprovalStore::default();
         escalate_review(&store, "t7", 4, "agent4", "a", "done", 30 * 60_000).expect("asked");
         let live =
             escalate_review(&store, "t8", 4, "agent4", "b", "done", 30 * 60_000).expect("asked");
@@ -1633,7 +1405,6 @@ mod tests {
             .find(|a| a.id == live.id)
             .expect("kept");
         assert_eq!(kept.state, ApprovalState::Pending);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1672,7 +1443,7 @@ mod tests {
         assert_eq!(
             dispatch_step(Some(Status::Idle), true, false),
             DispatchStep::Hold,
-            "an agent on the bench (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
+            "an agent whose project is held (or STOP ALL) keeps its work queued, and an asleep one is not woken for it"
         );
         assert_eq!(
             dispatch_step(Some(Status::Idle), false, true),
@@ -1798,15 +1569,14 @@ mod tests {
     }
 
     #[test]
-    fn drain_takes_flight_then_queue_and_task_is_held_until_then() {
+    fn drain_takes_the_item_in_flight_then_the_queue() {
         let mut lanes = Lanes::default();
         lanes.push(item(1, 7, Some("t1")));
         lanes.push(item(2, 7, None));
         lanes.start_next(7, 0);
-        assert!(lanes.holds_task("t1"));
         let ids: Vec<u64> = lanes.drain(7).into_iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![1, 2]);
-        assert!(!lanes.holds_task("t1"));
+        assert!(lanes.current(7).is_none());
     }
 
     #[test]
@@ -1841,8 +1611,65 @@ mod tests {
         );
     }
 
+    /// A work item's whole origin, its Weft lane included, comes back from the lane's tables as it was saved.
     #[test]
-    fn snapshot_restores_queues_and_resumes_in_flight_first() {
+    fn a_work_items_origin_comes_back_whole() {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let mut owner = item(1, 7, Some("t9"));
+        owner.kind = WorkKind::Chat;
+        owner.origin = Origin {
+            task: Some("t9".into()),
+            from_cid: Some(5),
+            owner: true,
+            mcp: true,
+            acp: false,
+            lane: Some(apz_proto::wire::WorkLane {
+                change: "c-4".into(),
+                repo: "weft".into(),
+            }),
+        };
+        let mut lanes = BTreeMap::new();
+        lanes.insert(
+            7,
+            Lane {
+                queue: VecDeque::from([owner.clone()]),
+                current: Some(owner.clone()),
+            },
+        );
+        let saved = Saved { next_id: 2, lanes };
+        apz_store::table::replace(&conn, def(), &RowSet::one(def(), &saved).unwrap()).unwrap();
+        let loaded: Saved = apz_store::table::load_one(&conn, def()).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&loaded.lanes[&7].queue[0]).unwrap(),
+            serde_json::to_value(&owner).unwrap()
+        );
+        assert_eq!(
+            loaded.lanes[&7].current.as_ref().unwrap().origin.lane,
+            owner.origin.lane
+        );
+    }
+
+    /// The queues come back from their tables. Work that was in flight goes back to the front of its agent's queue,
+    /// marked as resumed, and the load writes that back, so the tables hold what memory holds.
+    #[test]
+    fn queues_come_back_from_their_tables_and_resume_in_flight_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let migrations: &'static [apz_store::Migration] =
+            Box::leak(Box::new([apz_store::Migration {
+                version: 1,
+                name: "work",
+                sql: Box::leak(def().ddl().into_boxed_str()),
+            }]));
+        let files: &'static [apz_store::FileSpec] = Box::leak(Box::new([apz_store::FileSpec {
+            name: "plaza",
+            file: "plaza.db",
+            durability: apz_store::Durability::Full,
+            migrations,
+        }]));
+        let store = apz_store::Store::open(dir.path(), files).unwrap();
+        let db = Arc::clone(store.db("plaza"));
+
         let queues = Queues::default();
         {
             let mut lanes = queues.locked();
@@ -1854,11 +1681,12 @@ mod tests {
             lanes.start_next(7, 0); // item 1 is in flight for agent 7
         }
         queues.next_id.store(4, Ordering::Relaxed);
-        let json = queues.snapshot();
-        assert!(!json.is_empty());
+        let rows = queues.rows().unwrap();
+        db.write(move |conn| apz_store::table::replace(conn, def(), &rows))
+            .unwrap();
 
         let fresh = Queues::default();
-        fresh.restore(&json).expect("restores");
+        db.read(|conn| fresh.load(conn, &db)).unwrap();
         assert_eq!(
             fresh.queued(7).len(),
             2,
@@ -1866,7 +1694,7 @@ mod tests {
         );
         assert!(
             fresh.current(7).is_none(),
-            "nothing is in flight after restore"
+            "nothing is in flight after load"
         );
         assert_eq!(fresh.queued(8).len(), 1);
         let first = &fresh.queued(7)[0];
@@ -1875,10 +1703,17 @@ mod tests {
         assert_eq!(fresh.queued(7)[1].prompt, "work 2");
         assert!(fresh.next_id.load(Ordering::Relaxed) >= 4);
 
-        // A refusal changes nothing.
-        assert!(fresh.restore("not json").is_err());
-        assert_eq!(fresh.queued(7).len(), 2);
-        assert_eq!(fresh.queued(8).len(), 1);
+        // The move was written back: the tables now hold the queue, with nothing in flight.
+        let stored = db
+            .read(|conn| apz_store::table::load_one::<Saved>(conn, def()))
+            .unwrap()
+            .expect("the work row");
+        assert!(stored.lanes[&7].current.is_none());
+        assert_eq!(stored.lanes[&7].queue.len(), 2);
+        assert_eq!(
+            stored.lanes[&7].queue[0].prompt,
+            format!("{RESUMED_PREFIX}work 1")
+        );
     }
 }
 

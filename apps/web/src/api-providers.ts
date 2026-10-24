@@ -5,7 +5,7 @@
 // An engine runs only inside an agent's VM and reaches models only through the plaza gateway, so no key ever
 // goes into an engine: subscription accounts come in through a CLIProxyAPI hub added as an API provider.
 
-import { call } from './api';
+import { call, readable } from './api';
 import type { Auth, ModelGroup } from './api';
 
 /** A check's result: `off` for a disabled instance, `unknown` before its first check. */
@@ -166,7 +166,7 @@ const enc = encodeURIComponent;
 
 export const providersApi = {
   // API instances
-  list: () => call<ApiInstance[]>('GET', '/v1/providers'),
+  list: readable<ApiInstance[]>('/v1/providers'),
   get: (id: string) => call<ApiInstance>('GET', `/v1/providers/${enc(id)}`),
   create: (cfg: ApiInstanceInput) => call<ApiInstance>('POST', '/v1/providers', cfg),
   replace: (cfg: ApiInstanceInput) => call<ApiInstance>('PUT', `/v1/providers/${enc(cfg.id)}`, cfg),
@@ -177,7 +177,7 @@ export const providersApi = {
   catalog: () => call<ProviderCatalog>('GET', '/v1/provider-catalog'),
 
   // Engines
-  engines: () => call<EngineInstance[]>('GET', '/v1/engines'),
+  engines: readable<EngineInstance[]>('/v1/engines'),
   engine: (id: string) => call<EngineInstance>('GET', `/v1/engines/${enc(id)}`),
   addEngine: (edit: EngineEdit) => call<EngineInstance>('POST', '/v1/engines', edit),
   editEngine: (id: string, edit: EngineEdit) => call<EngineInstance>('PUT', `/v1/engines/${enc(id)}`, edit),
@@ -187,7 +187,7 @@ export const providersApi = {
   registry: (refresh = false) => call<Registry>('GET', `/v1/acp/registry${refresh ? '?refresh=1' : ''}`),
 
   // Usage providers
-  usage: () => call<UsageProvider[]>('GET', '/v1/usage-providers'),
+  usage: readable<UsageProvider[]>('/v1/usage-providers'),
   addUsage: (body: { url: string; key: string; label?: string }) =>
     call<UsageProvider>('POST', '/v1/usage-providers', { kind: 'cliproxyapi', ...body }),
   readUsage: (id: string) => call<UsageReading>('GET', `/v1/usage-providers/${enc(id)}/usage`),

@@ -1386,6 +1386,21 @@ pub fn ellipsize(s: &str, max_chars: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
+/// How long ago an epoch-millisecond instant was, in the web's short words: "42s ago", "3m ago", "2h ago", "5d ago".
+pub fn ago(ms: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(ms);
+    let secs = now.saturating_sub(ms) / 1000;
+    match secs {
+        0..=59 => format!("{secs}s ago"),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86_399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
 /// Dollars to the cent with separators; a non-zero amount under a cent reads as "<$0.01".
 pub fn usd(v: f64) -> String {
     if v != 0.0 && v.abs() < 0.005 {
@@ -1590,6 +1605,18 @@ mod open_url_tests {
         ] {
             assert_eq!(openable(url), want, "openable({url:?})");
         }
+    }
+
+    #[test]
+    fn a_past_instant_reads_in_the_short_words() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        assert_eq!(super::ago(now - 42_000), "42s ago");
+        assert_eq!(super::ago(now - 90_000), "1m ago");
+        assert_eq!(super::ago(now - 7_200_000), "2h ago");
+        assert_eq!(super::ago(now - 5 * 86_400_000), "5d ago");
     }
 
     #[test]

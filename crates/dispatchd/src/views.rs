@@ -27,7 +27,7 @@ pub struct Task {
     /// How it will be judged complete, when the creator said.
     #[serde(default)]
     pub acceptance: Option<String>,
-    /// The task's budget, in credits.
+    /// The task's budget, as the hub reports it.
     #[serde(default)]
     pub budget: u64,
     /// The role the task was created for, when it named one.

@@ -10,7 +10,7 @@
 //! settings. Each editor session is a thread of its own on the agent (`acp-<id>`), so it never mixes
 //! with the owner's console chat.
 //!
-//! - [`store`]: the sessions, kept in Postgres with the rest of the plaza state.
+//! - [`store`]: the sessions, kept in plaza.db with the rest of the plaza state (table `acp_session`).
 //! - [`agent`]: the ACP methods, over the [`agent::Hub`] the plaza gives them ([`app_hub`]).
 //! - [`feed`]: a session's work as ACP `session/update`s, live from the bus or replayed.
 //! - [`apz_acp::compat`]: the ACP v2 draft, next to v1. Off until the owner turns on `acp_v2`; an editor

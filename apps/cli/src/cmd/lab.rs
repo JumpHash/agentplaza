@@ -10,6 +10,7 @@ mod models;
 use clap::Subcommand;
 use serde_json::{Value, json};
 
+use crate::cmd::agents::label_of;
 use crate::cmd::models::items;
 use crate::ctx::{self, Ctx, confirm};
 
@@ -314,7 +315,7 @@ fn breeder_summary(agents: &Value, jobs: &Value, cap: Option<f64>) -> Value {
             let cid = a["cid"].as_u64();
             let own: Vec<Value> = items(jobs).filter(|j| cid.is_some() && j["agent"].as_u64() == cid).cloned().collect();
             let used: f64 = own.iter().map(|j| j["gpu_hours"].as_f64().unwrap_or(0.0)).sum();
-            json!({ "cid": a["cid"].clone(), "name": ctx::s(a, "name"), "status": ctx::s(a, "status"), "jobs": own, "gpu_hours": used })
+            json!({ "cid": a["cid"].clone(), "role": ctx::s(a, "role"), "status": ctx::s(a, "status"), "jobs": own, "gpu_hours": used })
         })
         .collect();
     json!({ "cap": cap.unwrap_or(PER_JOB_CAP_FALLBACK), "cap_read": cap.is_some(), "breeders": breeders })
@@ -345,14 +346,14 @@ fn print_breeders(s: &Value) {
                 .sum();
             vec![
                 ctx::text(b, "cid"),
-                breeder_name(b),
+                label_of(b),
                 ctx::s(b, "status").to_string(),
                 items(&b["jobs"]).count().to_string(),
                 format!("{own:.2}"),
             ]
         })
         .collect();
-    ctx::table(&["cid", "name", "status", "jobs", "gpu-h"], &rows);
+    ctx::table(&["cid", "agent", "status", "jobs", "gpu-h"], &rows);
     let job_rows: Vec<Vec<String>> = list
         .iter()
         .flat_map(|b| {
@@ -373,16 +374,6 @@ fn print_breeders(s: &Value) {
         &["breeder", "job", "status", "recipe", "gpu-h", "created"],
         &job_rows,
     );
-}
-
-/// A breeder's name, or `agent <cid>` when it has none.
-fn breeder_name(b: &Value) -> String {
-    let name = ctx::s(b, "name").trim();
-    if name.is_empty() {
-        format!("agent {}", ctx::text(b, "cid"))
-    } else {
-        name.to_string()
-    }
 }
 
 #[cfg(test)]

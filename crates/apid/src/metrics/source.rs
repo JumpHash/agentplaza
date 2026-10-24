@@ -97,9 +97,6 @@ impl Source for LiveSource<'_> {
     fn monthly_budget(&self) -> Option<f64> {
         self.m.settings.get().monthly_budget_usd
     }
-    fn treasury(&self) -> Option<(f64, f64)> {
-        misc::treasury(self)
-    }
     fn report(&self, node: &str) -> serde_json::Value {
         let node = node.strip_prefix("node:").unwrap_or(node);
         super::lock(&self.m.links)
@@ -117,14 +114,10 @@ impl Source for LiveSource<'_> {
         misc::links(self)
     }
     fn saved(&self) -> Saved {
-        self.m
-            .store
-            .kv_get("dashboards")
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_else(|| Saved {
-                starter: true,
-                ..Saved::default()
-            })
+        self.m.store.dashboards().unwrap_or_else(|| Saved {
+            starter: true,
+            ..Saved::default()
+        })
     }
     fn basis_days(&self) -> u32 {
         self.m.settings.get().basis_days

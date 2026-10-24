@@ -87,8 +87,8 @@ fn relay(app: &App, req: &Request, cid: u64, rest: &str) -> Result<Response, Res
     if !safe_tail(tail) {
         return Err(Response::error(400, "the vendor path is not a plain path"));
     }
-    // Held by STOP ALL like every other model call (see `llm_proxy::relay`), and so is an agent on the bench or
-    // on a paused project (see `membership`).
+    // Held by STOP ALL like every other model call (see `llm_proxy::relay`), and so is an agent whose project is
+    // paused or over (see `projects::held`).
     if app.control.paused() {
         return Err(Response::error(
             409,
@@ -99,7 +99,7 @@ fn relay(app: &App, req: &Request, cid: u64, rest: &str) -> Result<Response, Res
         .agents
         .get(cid)
         .ok_or_else(|| Response::error(404, "unknown agent"))?;
-    if let Some(why) = crate::membership::held(app, &agent) {
+    if let Some(why) = crate::projects::held(app, &agent) {
         return Err(Response::error(409, &why));
     }
     // Only an agent that may run this vendor's engine reaches the vendor with the owner's account.

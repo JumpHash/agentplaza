@@ -27,15 +27,18 @@ Dockerfile.{cuda,rocm,cpu}
 
 ## Run
 
-```sh
-uv sync                       # CPU torch from the PyTorch CPU index on Linux
-uv run pytest -q              # the suite (about 70 s)
+torch is one of the extras, each a different build: `cpu`, `cuda`, `rocm` or `xpu` (on macOS all take the PyPI
+wheel, with MPS). `uv run` syncs to the extras it is given, so pass the same `--extra` to each command.
 
-uv run python -m apz_train.synthetic --out /tmp/rungs --n 4000
-uv run python -m apz_train.run --job job.json --plan plan.json
+```sh
+uv sync --extra cpu                        # the environment: cpu here; cuda on an NVIDIA node, rocm, xpu
+uv run --extra cpu pytest -q               # the suite (about 70 s)
+
+uv run --extra cpu python -m apz_train.synthetic --out /tmp/rungs --n 4000
+uv run --extra cpu python -m apz_train.run --job job.json --plan plan.json
 torchrun --standalone --nproc_per_node=2 -m apz_train.run --job job.json --plan plan.json
-uv run python -m apz_train.hub --islands i1,i2 --port 8800 &
-uv run python -m apz_train.run --job job.json --plan plan.json --island i1 --hub http://127.0.0.1:8800
+uv run --extra cpu python -m apz_train.hub --islands i1,i2 --port 8800 &
+uv run --extra cpu python -m apz_train.run --job job.json --plan plan.json --island i1 --hub http://127.0.0.1:8800
 ```
 
 Stdout is the event stream (see `PROTOCOL.md`); the last line is `done` or `error`. Outputs go to the
@@ -58,8 +61,9 @@ plain-cascade baseline, accuracy, over- and under-routing rates, and ECE. Data s
 
 ## Images
 
-`docker build -f Dockerfile.cuda -t apz-trainer:cuda .` (also `rocm`, `cpu`), from this directory. The
-recipes directory can be mounted over `/opt/apz/recipes` or pointed at with `APZ_RECIPES`.
+The hub runs the trainer natively, so it needs no image. `Dockerfile.{cuda,rocm,cpu}` build the same package
+as a container, from this directory (`docker build -f Dockerfile.cuda -t apz-trainer:cuda .`); the recipes
+directory can be mounted over `/opt/apz/recipes` or pointed at with `APZ_RECIPES`.
 
 ## Notes
 

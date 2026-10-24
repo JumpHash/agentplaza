@@ -6,7 +6,7 @@ members = ["crates/*", "crates/apz-setup", "apps/desktop", "apps/cli", "tools/ap
 default-members = ["crates/*", "apps/cli", "tools/apz-pack", "tools/apz-kit"]
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "Apache-2.0"
 

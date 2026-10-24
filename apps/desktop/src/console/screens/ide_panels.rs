@@ -181,8 +181,8 @@ pub fn line_diff(old: &str, new: &str) -> Vec<DiffLine> {
     out
 }
 
-/// The held calls of agent `cid` that still wait, from `GET /v1/approvals`. Tool calls only: sanctions and
-/// payments are decided on the Approvals screen.
+/// The held calls of agent `cid` that still wait, from `GET /v1/approvals`. Tool calls only: the other kinds (reviews,
+/// shares) are decided on the Approvals screen.
 fn pending_for(list: &Value, cid: u64) -> Vec<Held> {
     list.as_array()
         .map(|items| {
@@ -712,7 +712,7 @@ pub fn update(st: &mut State, msg: Msg, client: &Client, ws: &WorkspaceId) -> Ta
             let c = client.clone();
             let sent: Vec<String> = st.attachments.iter().map(|a| a.id.clone()).collect();
             // Working, the text steers the work in flight; idle, it is a chat turn of its own (the hub says why when
-            // the agent is on the bench, or its project is paused).
+            // the agent has no project, or its project is paused).
             let (path, body) = if st.agent_working {
                 (
                     format!("/v1/agents/{cid}/control"),
@@ -1386,7 +1386,7 @@ mod tests {
             {"id": "a1", "cid": 7, "state": "pending", "tool": "write_file", "input": {"path": "x"}},
             {"id": "a2", "cid": 8, "state": "pending", "tool": "bash", "input": {}},
             {"id": "a3", "cid": 7, "state": "approved", "tool": "bash", "input": {}},
-            {"id": "a4", "cid": 7, "state": "pending", "kind": "sanction", "tool": "", "input": {}},
+            {"id": "a4", "cid": 7, "state": "pending", "kind": "artifact.share", "tool": "", "input": {}},
         ]);
         let held = pending_for(&list, 7);
         assert_eq!(held.len(), 1);

@@ -1,11 +1,10 @@
 // The owner's side of the board, shared by the board screen and the IDE's board panel: a composer
-// that posts to the board (with @mentions, an @all chip and @-suggestions of agent names and roles),
+// that posts to the board (with @mentions, an @all chip and @-suggestions of agent roles),
 // Pause board / Resume board, Export (Markdown), and the banner a paused board shows. The hub holds
 // a paused board's posts and does not deliver their mentions until it resumes.
 
 import '../styles/board-owner.css';
 import { api, type Agent, type BoardPost } from '../api';
-import { roleLabel } from '../roles';
 import { agents } from '../store';
 import { button, toast } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -19,7 +18,7 @@ export interface MentionOption {
   detail: string;
 }
 
-/** What an @-mention can name: `all`, then each agent by its name and by its role (no repeats). */
+/** What an @-mention can name: `all`, then each role an agent holds (no repeats). Agents have no names of their own. */
 export function mentionOptions(list: Agent[]): MentionOption[] {
   const seen = new Set<string>();
   const out: MentionOption[] = [];
@@ -30,10 +29,7 @@ export function mentionOptions(list: Agent[]): MentionOption[] {
     out.push({ name, detail });
   };
   add('all', 'everyone');
-  for (const agent of list) {
-    add(agent.name.trim(), roleLabel(agent.role));
-    add(agent.role, 'role');
-  }
+  for (const agent of list) add(agent.role, 'role');
   return out;
 }
 

@@ -3,8 +3,9 @@
 //!
 //! [`Store`] is the vault: its state, its unseal and seal, every change and [`Store::resolve`], the
 //! one call other modules use to get a value. [`routes`] is the HTTP surface. [`crypto`] holds the
-//! primitives, [`slots`] the keyslots, [`audit`] the MAC chain, [`model`] the document, [`disk`] its
-//! files, [`dotenv`] the `.env` reader and [`process`] the process hardening.
+//! primitives, [`slots`] the keyslots, [`audit`] the MAC chain, [`model`] the document (its rows are
+//! the `vault` tables of `plaza.db`), [`disk`] the key file's atomic writes, [`dotenv`] the `.env`
+//! reader and [`process`] the process hardening.
 
 pub mod audit;
 mod crypto;
@@ -28,8 +29,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Map, Value, json};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::db::Db;
 use crate::nodes::Node;
+use apz_store::Db;
 use audit::{Head, Record};
 use crypto::Key;
 use model::{Document, Entry, Slot, Tombstone, Version};
@@ -57,7 +58,7 @@ pub enum VaultError {
     Uninitialized,
     /// Sealed: nothing resolves until the owner unseals it.
     Sealed,
-    /// The vault file was changed outside the API. Nothing resolves; the reason says what failed.
+    /// The stored vault was changed outside the API. Nothing resolves; the reason says what failed.
     Tampered(String),
     /// A wrong passphrase or recovery code.
     BadSecret,
@@ -131,8 +132,7 @@ pub enum OnBehalf {
     Agent { cid: u64, node: Option<String> },
     /// The owner, testing from the console. `None` means the hub's own machine.
     Owner { node: Option<String> },
-    /// The hub's background work: plaza-scope entries only. The first background consumer builds it.
-    #[allow(dead_code)]
+    /// The hub's background work: plaza-scope entries only (the providers' command credentials and header values).
     Hub,
 }
 
@@ -235,7 +235,7 @@ type UseTally = (u64, u64, String, String);
 /// Everything the lock guards.
 struct Inner {
     doc: Option<Document>,
-    /// Set when the vault file was refused: nothing resolves and nothing is written.
+    /// Set when the stored vault was refused: nothing resolves and nothing is written.
     tamper: Option<String>,
     keys: Option<Arc<Keys>>,
     head: Head,
@@ -256,57 +256,60 @@ struct Inner {
 
 /// The vault. It lives in `App` and is shared by every thread.
 pub struct Store {
-    state_dir: PathBuf,
     key_file: PathBuf,
-    db: Option<Arc<Db>>,
+    /// `plaza.db`: the vault's tables and its audit table.
+    db: Arc<Db>,
+    /// The hub's generations: a save of the document, a seal or an unseal bumps `vault`.
+    gens: Arc<apz_cache::Generations<String>>,
     inner: Mutex<Inner>,
+    /// A test vault's own folder store. Dropping the vault closes the folder, so a restart opens it again.
+    #[cfg(test)]
+    _files: Option<apz_store::Store>,
 }
 
 impl Store {
-    /// The vault's files: `state_dir/vault.json` (when there is no Postgres), `vault-audit.jsonl`,
-    /// and the key file. Nothing is unlocked yet: call [`Store::boot`].
-    pub fn open(state_dir: &Path, key_file: &Path, db: Option<Arc<Db>>) -> Store {
-        let store = Store {
-            state_dir: state_dir.to_path_buf(),
-            key_file: key_file.to_path_buf(),
-            db,
-            inner: Mutex::new(Inner {
-                doc: None,
-                tamper: None,
-                keys: None,
-                head: Head::genesis(),
-                audit_ok: None,
-                rekeyed_ms: None,
-                failures: Vec::new(),
-                locked_until: 0,
-                pending: Vec::new(),
-                uses: BTreeMap::new(),
-                usage_dirty: false,
-                consumers: Vec::new(),
-                env_file_keys: 0,
-            }),
+    /// Counts this vault's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<apz_cache::Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
+    /// The vault over `db` (`plaza.db`, which holds its tables) and the key file at `key_file`. The stored document
+    /// is read now. Nothing is unlocked yet: call [`Store::boot`].
+    pub fn open(key_file: &Path, db: Arc<Db>) -> Store {
+        let mut inner = Inner {
+            doc: None,
+            tamper: None,
+            keys: None,
+            head: Head::genesis(),
+            audit_ok: None,
+            rekeyed_ms: None,
+            failures: Vec::new(),
+            locked_until: 0,
+            pending: Vec::new(),
+            uses: BTreeMap::new(),
+            usage_dirty: false,
+            consumers: Vec::new(),
+            env_file_keys: 0,
         };
-        if store.db.is_none() {
-            let loaded = disk::read(&store.doc_path());
-            let mut inner = store.lock();
-            match loaded {
-                Ok(Some(text)) => match serde_json::from_str::<Document>(&text) {
-                    Ok(doc) => inner.doc = Some(doc),
-                    Err(_) => inner.tamper = Some("vault.json is not a vault document".into()),
-                },
-                Ok(None) => {}
-                Err(err) => inner.tamper = Some(format!("vault.json cannot be read: {err}")),
+        match load(&db) {
+            Ok(Some(doc)) if doc.format != FORMAT => {
+                inner.tamper = Some(format!("vault format {} is not supported", doc.format));
+            }
+            Ok(Some(doc)) => inner.doc = Some(doc),
+            Ok(None) => {}
+            Err(err) => {
+                inner.tamper = Some(format!("the vault cannot be read from plaza.db: {err}"));
             }
         }
-        store
-    }
-
-    fn doc_path(&self) -> PathBuf {
-        self.state_dir.join("vault.json")
-    }
-
-    fn audit_path(&self) -> PathBuf {
-        self.state_dir.join("vault-audit.jsonl")
+        Store {
+            key_file: key_file.to_path_buf(),
+            db,
+            gens: Arc::default(),
+            inner: Mutex::new(inner),
+            #[cfg(test)]
+            _files: None,
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -320,32 +323,10 @@ impl Store {
         let mut inner = self.lock();
         if inner.tamper.is_some() {
             eprintln!(
-                "vault: {}; nothing resolves until the file is put right",
+                "vault: {}; nothing resolves until the stored vault is put right",
                 inner.tamper.clone().unwrap_or_default()
             );
             return Ok(());
-        }
-        if inner.doc.is_none() && self.db.is_some() {
-            // Postgres is configured but holds no vault: a vault.json from before it was (copied once,
-            // the file is kept). Refusing would be worse than copying: a fresh vault would orphan it.
-            match disk::read(&self.doc_path()) {
-                Ok(Some(text)) => match serde_json::from_str::<Document>(&text) {
-                    Ok(doc) => {
-                        self.save(&doc)?;
-                        inner.doc = Some(doc);
-                        eprintln!(
-                            "vault: copied {} into the database; the file can be deleted",
-                            self.doc_path().display()
-                        );
-                    }
-                    Err(_) => {
-                        inner.tamper = Some("vault.json is not a vault document".into());
-                        return Ok(());
-                    }
-                },
-                Ok(None) => {}
-                Err(err) => return Err(VaultError::Storage(format!("vault.json: {err}"))),
-            }
         }
         if inner.doc.is_none() {
             return self.initialise(&mut inner, now);
@@ -421,7 +402,9 @@ impl Store {
     /// Unseals with `unlock`, as `actor`. Failures are rate-limited and audited.
     pub fn unseal(&self, unlock: Unlock, actor: &str, now: u64) -> Result<(), VaultError> {
         let mut inner = self.lock();
-        self.unseal_in(&mut inner, unlock, actor, now)
+        let out = self.unseal_in(&mut inner, unlock, actor, now);
+        crate::sources::bump(&self.gens, crate::sources::VAULT);
+        out
     }
 
     fn unseal_in(
@@ -516,7 +499,7 @@ impl Store {
                 }
                 if !index_ok(&keys, &doc) {
                     let reason =
-                        "the index MAC does not match: the vault file was changed outside the API"
+                        "the index MAC does not match: the stored vault was changed outside the API"
                             .to_string();
                     let keys = Arc::new(keys);
                     self.audit(
@@ -528,11 +511,10 @@ impl Store {
                     inner.tamper = Some(reason.clone());
                     return Err(VaultError::Tampered(reason));
                 }
-                let text = disk::read(&self.audit_path())
-                    .map_err(|e| VaultError::Storage(e.to_string()))?
-                    .unwrap_or_default();
-                let verdict = audit::verify(&text, &keys.audit);
-                inner.head = verdict.head.clone();
+                let lines =
+                    audit::lines(&self.db).map_err(|e| VaultError::Storage(e.to_string()))?;
+                let verdict = audit::verify(&lines, &keys.audit);
+                inner.head = audit::tail(&lines);
                 inner.audit_ok = Some(verdict.ok);
                 inner.rekeyed_ms = verdict.last_rekey_ms;
                 if let Some(line) = verdict.broken_at {
@@ -577,7 +559,7 @@ impl Store {
                         version.hint_nonce = Some(nonce);
                         version.hint_ct = Some(ct);
                     }
-                    // The clone is dropped: the plaintext stays in the file until a later unseal succeeds.
+                    // The clone is dropped: the plaintext stays stored until a later unseal succeeds.
                     Err(err) => {
                         eprintln!("vault: a hint could not be encrypted: {}", err.message());
                         return;
@@ -628,6 +610,7 @@ impl Store {
         let Some(keys) = inner.keys.clone() else {
             return Ok(());
         };
+        crate::sources::bump(&self.gens, crate::sources::VAULT);
         self.flush_uses(&mut inner, &keys, now, true);
         if let Some(doc) = &inner.doc
             && let Err(err) = self.save(doc)
@@ -673,20 +656,15 @@ impl Store {
         let inner = self.lock();
         let keys = inner.keys.clone().ok_or_else(|| self.unavailable(&inner))?;
         drop(inner);
-        let text = disk::read(&self.audit_path())
-            .map_err(|e| VaultError::Storage(e.to_string()))?
-            .unwrap_or_default();
-        let verdict = audit::verify(&text, &keys.audit);
+        let lines = audit::lines(&self.db).map_err(|e| VaultError::Storage(e.to_string()))?;
+        let verdict = audit::verify(&lines, &keys.audit);
         self.lock().audit_ok = Some(verdict.ok);
         Ok(verdict)
     }
 
     /// The audit lines after sequence number `after`, at most `limit`. They carry no values.
     pub fn audit_page(&self, after: u64, limit: usize) -> Result<Vec<Value>, VaultError> {
-        let text = disk::read(&self.audit_path())
-            .map_err(|e| VaultError::Storage(e.to_string()))?
-            .unwrap_or_default();
-        Ok(audit::page(&text, after, limit))
+        audit::page(&self.db, after, limit).map_err(|e| VaultError::Storage(e.to_string()))
     }
 
     /// Adds a passphrase slot: Argon2id under a fresh salt, at the current cost.
@@ -1641,25 +1619,6 @@ impl Store {
         })
     }
 
-    /// The database's `vault` component: the whole document (ciphertext and public metadata).
-    pub fn snapshot(&self) -> String {
-        match &self.lock().doc {
-            Some(doc) => serde_json::to_string(doc).unwrap_or_default(),
-            None => String::new(),
-        }
-    }
-
-    /// Restores the `vault` component at start. The vault is still sealed after it.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let doc: Document = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        if doc.format != FORMAT {
-            return Err(format!("vault format {} is not supported", doc.format));
-        }
-        let mut inner = self.lock();
-        inner.doc = Some(doc);
-        Ok(())
-    }
-
     // ----- internals ------------------------------------------------------------------------
 
     /// The unlocked keys and a copy of the document, to change.
@@ -1697,30 +1656,21 @@ impl Store {
         Ok(())
     }
 
-    /// Writes the document: the database's `vault` component when Postgres is configured, else
-    /// `vault.json`. Never over a component that could not be read at start.
+    /// Writes the document: the vault's tables in `plaza.db` are replaced by its rows in one transaction, and the
+    /// commit is waited for. A failed write is a storage error, and the stored rows stay as they were.
     fn save(&self, doc: &Document) -> Result<(), VaultError> {
-        let text =
-            serde_json::to_string_pretty(doc).map_err(|e| VaultError::Storage(e.to_string()))?;
-        match &self.db {
-            Some(db) => {
-                if db.is_held("vault") {
-                    return Err(VaultError::Storage(
-                        "the stored vault could not be read at start; it is not overwritten".into(),
-                    ));
-                }
-                db.store("vault", &text)
-                    .map(|_| ())
-                    .map_err(VaultError::Storage)
-            }
-            None => disk::write_atomic(&self.doc_path(), text.as_bytes())
-                .map_err(|e| VaultError::Storage(format!("vault.json: {e}"))),
-        }
+        let rows =
+            apz_store::RowSet::one(def(), doc).map_err(|e| VaultError::Storage(e.to_string()))?;
+        self.db
+            .write(move |conn| apz_store::table::replace(conn, def(), &rows))
+            .map_err(|e| VaultError::Storage(e.to_string()))?;
+        crate::sources::bump(&self.gens, crate::sources::VAULT);
+        Ok(())
     }
 
     /// Appends a record. A failed append is logged and marks the audit as not known to be ok.
     fn audit(&self, inner: &mut Inner, key: &[u8; 32], record: Record, now: u64) {
-        if let Err(err) = audit::append(&self.audit_path(), &mut inner.head, key, &record, now) {
+        if let Err(err) = audit::append(&self.db, &mut inner.head, key, &record, now) {
             eprintln!("vault: an audit line could not be written: {err}");
             inner.audit_ok = Some(false);
         }
@@ -1769,6 +1719,16 @@ pub fn spawn_saver(app: Arc<crate::state::App>) {
 }
 
 // ----- free helpers ------------------------------------------------------------------------
+
+/// The vault's tables in `plaza.db`: `vault` (the document's one row) and the rows below it.
+pub(crate) fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Document)
+}
+
+/// The stored document, or `None` before the vault's first start.
+fn load(db: &Db) -> Result<Option<Document>, apz_store::StoreError> {
+    db.read(|conn| apz_store::table::load_one::<Document>(conn, def()))
+}
 
 /// The keys derived from the root key. The root is kept too, to wrap a new slot.
 fn derive(root: &[u8; 32], vault_id: &str) -> Keys {
@@ -2214,4 +2174,48 @@ fn rewrap_value(
     version.nonce = model::enc(&nonce);
     version.ct = model::enc(&ct);
     Ok(())
+}
+
+// ----- the storage's test helpers ---------------------------------------------------------------
+
+/// A `plaza.db` in `dir` with the vault's tables and the audit's, and nothing else.
+#[cfg(test)]
+fn test_files(dir: &Path) -> apz_store::Store {
+    let ddl = format!("{}{}", def().ddl(), audit::def().ddl());
+    let sql: &'static str = Box::leak(ddl.into_boxed_str());
+    let migrations: &'static [apz_store::Migration] = Box::leak(Box::new([apz_store::Migration {
+        version: 1,
+        name: "vault",
+        sql,
+    }]));
+    let files: &'static [apz_store::FileSpec] = Box::leak(Box::new([apz_store::FileSpec {
+        name: crate::store::PLAZA,
+        file: "plaza.db",
+        durability: apz_store::Durability::Full,
+        migrations,
+    }]));
+    apz_store::Store::open(dir, files).expect("the folder opens")
+}
+
+#[cfg(test)]
+impl Store {
+    /// A vault in `dir`, over a `plaza.db` of its own. Not booted. Dropping it closes the folder, so a restart is
+    /// opening the folder again.
+    pub(crate) fn open_in(dir: &Path, key_file: &Path) -> Store {
+        let files = test_files(dir);
+        let mut store = Store::open(key_file, Arc::clone(files.db(crate::store::PLAZA)));
+        store._files = Some(files);
+        store
+    }
+}
+
+/// Changes stored rows of the vault in `dir` outside the API, through a connection of its own: what an edit of
+/// `plaza.db` by another program does. Returns how many rows changed.
+#[cfg(test)]
+pub(crate) fn tamper_rows(dir: &Path, sql: &str, params: &[&str]) -> usize {
+    let conn = apz_store::rusqlite::Connection::open(dir.join("plaza.db")).expect("plaza.db");
+    conn.busy_timeout(Duration::from_secs(5))
+        .expect("a timeout");
+    conn.execute(sql, apz_store::rusqlite::params_from_iter(params))
+        .expect("the edit")
 }

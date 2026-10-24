@@ -243,7 +243,7 @@ fn serve_connection<S, H>(
         Err(refused) => (refused, false),
         Ok(request) => {
             let pooled = keeps_alive(&request);
-            (handler(&request), pooled)
+            (handler(&request).revalidated(&request), pooled)
         }
     };
     // A client reading to the close (no length) needs the server to close first.

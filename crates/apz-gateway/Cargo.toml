@@ -9,6 +9,8 @@ publish = false
 [dependencies]
 apz-http = { path = "../apz-http" }
 apz-proto.workspace = true
+# Provider options and config are stored as typed tables; `extra_body` is content kept as written (JSON text).
+apz-store = { path = "../apz-store", features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

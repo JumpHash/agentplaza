@@ -1,6 +1,7 @@
 //! Hugging Face imports and their routes (`docs/design/foundry.md`, "Hugging Face"): the import list
-//! (`<state>/foundry/hf/imports.json`), the queue (one download at a time), resumable downloads with
+//! (in plaza.db, table `hf_imports`), the queue (one download at a time), resumable downloads with
 //! their sha256 checks, the registration, and the token (a vault entry, `HF_TOKEN`). The HTTP client is `hf.rs`.
+//! The downloaded files and their `.part` files stay under `<state>/foundry/hf` as files.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -11,6 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -35,7 +37,7 @@ const RESERVE_BYTES: u64 = GIB;
 const ACTIVE: [&str; 4] = ["queued", "downloading", "verifying", "registering"];
 
 /// One file of an import: its size and LFS sha256 from the tree, and how far it has got.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct FileRec {
     pub path: String,
     pub size: u64,
@@ -44,8 +46,8 @@ pub struct FileRec {
     pub state: String,
 }
 
-/// One import, as the routes show it (see `docs/design/foundry.md`).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// One import, as the routes show it (see `docs/design/foundry.md`). Its files are child rows (`hf_import_file`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Import {
     pub n: u64,
     pub id: String,
@@ -55,6 +57,7 @@ pub struct Import {
     pub as_: String,
     pub state: String,
     pub dir: String,
+    #[table(child = "hf_import_file")]
     pub files: Vec<FileRec>,
     pub bytes: u64,
     pub total: u64,
@@ -66,10 +69,18 @@ pub struct Import {
     pub updated_ms: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Saved {
+/// The import list as the store holds it: the next import number, and the imports (each with its files as child rows).
+#[derive(Debug, Clone, Default, apz_store::Table)]
+#[table(name = "hf_imports")]
+struct Stored {
     next: u64,
+    #[table(child = "hf_import")]
     imports: Vec<Import>,
+}
+
+/// The import list's tables: `hf_imports`, with its `hf_import` rows and their `hf_import_file` rows.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Stored)
 }
 
 #[derive(Default)]
@@ -109,30 +120,49 @@ struct Job {
 }
 
 impl Imports {
-    /// Opens `<state>/foundry/hf`. Imports that were running when apid stopped are `interrupted`.
-    pub fn open(state_dir: &Path) -> Imports {
-        let dir = state_dir.join("foundry").join("hf");
-        let mut saved: Saved = fs::read(dir.join("imports.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+    /// An empty list whose downloads go under `<state>/foundry/hf`. Nothing is read here: [`Imports::load`] fills the
+    /// list from plaza.db at start.
+    pub fn new(state_dir: &Path) -> Imports {
+        Imports {
+            dir: state_dir.join("foundry").join("hf"),
+            inner: Mutex::new(Inner {
+                next: 1,
+                ..Inner::default()
+            }),
+            slot: Mutex::new(()),
+        }
+    }
+
+    /// Replaces the list with what plaza.db holds (at start). Imports that were running when apid stopped are
+    /// `interrupted`.
+    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), StoreError> {
+        let stored: Option<Stored> = apz_store::table::load_one(conn, def())?;
+        let stored = stored.unwrap_or_default();
         let now = apz_plaza::now_ms();
-        for import in &mut saved.imports {
+        let next = stored.next.max(1);
+        let mut imports = stored.imports;
+        for import in &mut imports {
             if ACTIVE.contains(&import.state.as_str()) {
                 import.state = "interrupted".into();
                 import.updated_ms = now;
             }
         }
-        let inner = Inner {
-            next: saved.next.max(1),
-            imports: saved.imports,
-            cancel: BTreeMap::new(),
-        };
-        Imports {
-            dir,
-            inner: Mutex::new(inner),
-            slot: Mutex::new(()),
-        }
+        let mut inner = self.lock();
+        inner.next = next;
+        inner.imports = imports;
+        Ok(())
+    }
+
+    /// The list as rows of its tables, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let inner = self.lock();
+        RowSet::one(
+            def(),
+            &Stored {
+                next: inner.next,
+                imports: inner.imports.clone(),
+            },
+        )
     }
 
     pub fn dir(&self) -> &Path {
@@ -143,33 +173,18 @@ impl Imports {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn save(&self, inner: &Inner) -> Result<(), String> {
-        let saved = Saved {
-            next: inner.next,
-            imports: inner.imports.clone(),
-        };
-        let bytes = serde_json::to_vec_pretty(&saved).map_err(|e| e.to_string())?;
-        fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("creating {}: {e}", self.dir.display()))?;
-        crate::providers::write_atomic(&self.dir.join("imports.json"), &bytes, 0o600)
-            .map_err(|e| format!("saving the imports: {e}"))
-    }
-
-    /// Applies `change` to import `n` (none when it is gone) and saves when `persist`.
-    fn update<T>(&self, n: u64, persist: bool, change: impl FnOnce(&mut Import) -> T) -> Option<T> {
+    /// Applies `change` to import `n` (none when it is gone). The saver writes the change.
+    fn update<T>(&self, n: u64, change: impl FnOnce(&mut Import) -> T) -> Option<T> {
         let mut inner = self.lock();
         let import = inner.imports.iter_mut().find(|i| i.n == n)?;
         let value = change(import);
         import.updated_ms = apz_plaza::now_ms();
-        if persist {
-            let _ = self.save(&inner);
-        }
         Some(value)
     }
 
     /// Sets an import's state, unless it was cancelled (a cancelled import stays cancelled).
     fn set_state(&self, n: u64, state: &str) -> bool {
-        self.update(n, true, |import| {
+        self.update(n, |import| {
             if import.state == "cancelled" {
                 return false;
             }
@@ -394,7 +409,6 @@ impl Imports {
         let flag = Arc::new(AtomicBool::new(false));
         inner.imports.push(import.clone());
         inner.cancel.insert(n, flag.clone());
-        self.save(&inner).map_err(|e| Fail::new(500, e))?;
         drop(inner);
         frame(app, n, &id, "", 0, total, "queued");
         let job = Job {
@@ -440,7 +454,6 @@ impl Imports {
             import.state = "cancelled".into();
             import.updated_ms = apz_plaza::now_ms();
             let shown = import.clone();
-            let _ = self.save(&inner);
             frame(app, n, &shown.id, "", shown.bytes, shown.total, "cancelled");
             return Ok(json!({ "import": shown }));
         }
@@ -458,7 +471,6 @@ impl Imports {
             })
             .collect();
         clear_partials(Path::new(&import.dir), &import.files, &keep);
-        let _ = self.save(&inner);
         Ok(json!({ "removed": n }))
     }
 }
@@ -654,7 +666,7 @@ fn fetch_file(app: &App, job: &Job, index: usize, file: &FileRec) -> Result<Step
         }
     };
     app.hf
-        .update(job.n, false, |i| i.files[index].state = "verifying".into());
+        .update(job.n, |i| i.files[index].state = "verifying".into());
     if let Err(message) = check(&checked_path, file, digest.as_deref()) {
         discard_failed(&checked_path, &part);
         return Err(message);
@@ -662,7 +674,7 @@ fn fetch_file(app: &App, job: &Job, index: usize, file: &FileRec) -> Result<Step
     if checked_path == part {
         fs::rename(&part, &target).map_err(|e| format!("moving {} into place: {e}", file.path))?;
     }
-    app.hf.update(job.n, true, |i| {
+    app.hf.update(job.n, |i| {
         i.files[index].state = "done".into();
         i.files[index].bytes = file.size;
     });
@@ -709,7 +721,7 @@ fn download(
         // The server sent the whole file, not the range: start the partial file over.
         offset = 0;
     }
-    app.hf.update(job.n, false, |i| {
+    app.hf.update(job.n, |i| {
         i.files[index].state = "downloading".into();
         i.files[index].bytes = offset;
     });
@@ -775,7 +787,7 @@ impl Progress<'_> {
         }
         self.last = (Instant::now(), bytes);
         let index = self.index;
-        let Some((all, total)) = self.app.hf.update(self.job.n, false, |i| {
+        let Some((all, total)) = self.app.hf.update(self.job.n, |i| {
             i.files[index].bytes = bytes;
             i.bytes = i.files.iter().map(|f| f.bytes).sum();
             (i.bytes, i.total)
@@ -944,7 +956,7 @@ fn register(app: &App, job: &Job) {
                 .as_ref()
                 .and_then(|s| s.servable_reason.clone());
             let model_id = record.card.id.clone();
-            app.hf.update(job.n, true, |i| {
+            app.hf.update(job.n, |i| {
                 i.state = "done".into();
                 i.model_id = Some(model_id.clone());
                 i.servable = Some(servable);
@@ -957,7 +969,7 @@ fn register(app: &App, job: &Job) {
 }
 
 fn fail(app: &App, job: &Job, message: &str) {
-    let finished = app.hf.update(job.n, true, |i| {
+    let finished = app.hf.update(job.n, |i| {
         if i.state == "cancelled" {
             return None;
         }
@@ -1380,21 +1392,23 @@ mod tests {
             created_ms: 1,
             updated_ms: 1,
         };
-        let saved = Saved {
-            next: 5,
-            imports: vec![import],
-        };
-        fs::create_dir_all(dir.join("foundry").join("hf")).unwrap();
-        fs::write(
-            dir.join("foundry").join("hf").join("imports.json"),
-            serde_json::to_vec(&saved).unwrap(),
-        )
-        .unwrap();
-        let opened = Imports::open(&dir);
-        let listed = opened.list();
+        let imports = Imports::new(&dir);
+        {
+            let mut inner = imports.lock();
+            inner.next = 5;
+            inner.imports.push(import);
+        }
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &imports.rows().unwrap()).unwrap();
+
+        let reopened = Imports::new(&dir);
+        reopened.load(&conn).unwrap();
+        let listed = reopened.list();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].state, "interrupted");
-        assert_eq!(opened.lock().next, 5);
+        assert_eq!(listed[0].files, vec![record("config.json", 1, None)]);
+        assert_eq!(reopened.lock().next, 5);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1465,7 +1479,7 @@ mod tests {
 
     /// A booted vault in `dir`, as the hub has it at start.
     fn vault_in(dir: &Path) -> crate::vault::Store {
-        let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+        let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
         vault.boot(apz_plaza::now_ms()).expect("boot");
         vault
     }
@@ -1474,7 +1488,7 @@ mod tests {
     fn the_token_is_a_vault_entry_and_never_a_file_or_a_status_value() {
         let dir = scratch("token");
         let vault = vault_in(&dir);
-        let imports = Imports::open(&dir);
+        let imports = Imports::new(&dir);
         assert!(imports.token(&vault).is_none());
         imports.set_token(&vault, "  SENTINEL-HF-2290  ").unwrap();
         assert_eq!(imports.token(&vault).as_deref(), Some("SENTINEL-HF-2290"));
@@ -1498,7 +1512,7 @@ mod tests {
     fn a_sealed_vault_refuses_the_token_with_its_own_status() {
         let dir = scratch("token-sealed");
         let vault = vault_in(&dir);
-        let imports = Imports::open(&dir);
+        let imports = Imports::new(&dir);
         vault.seal("owner", apz_plaza::now_ms()).expect("seal");
         let put = imports.set_token(&vault, "SENTINEL-HF-2290").unwrap_err();
         assert_eq!(

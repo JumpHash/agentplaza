@@ -89,7 +89,7 @@ pub const RUN_CID_BASE: u64 = 20;
 pub const RUN_CID_END: u64 = 99;
 
 /// The guest's console device: the first flag of every run's command line.
-const CONSOLE: &str = "console=ttyS0";
+pub(crate) const CONSOLE: &str = "console=ttyS0";
 
 /// How soon the run watcher looks at its VMs again after something changed: the
 /// shortest it sleeps between passes. The watcher sleeps for its interval
@@ -1325,7 +1325,7 @@ struct RegistryInner {
 }
 
 /// `spawner::spawn`, timed into `crate::metrics::SPAWN`.
-fn spawn_timed(spec: VmSpec) -> Result<VmHandle, SpawnError> {
+pub(crate) fn spawn_timed(spec: VmSpec) -> Result<VmHandle, SpawnError> {
     let started = std::time::Instant::now();
     let spawned = spawner::spawn(spec);
     crate::metrics::SPAWN.observe(started.elapsed());
@@ -1378,6 +1378,21 @@ impl Registry {
     /// The node's volume store, if it keeps volumes.
     pub fn volume_store(&self) -> Option<&VolumeStore> {
         self.volumes.as_deref()
+    }
+
+    /// The guest images every run boots from.
+    pub fn images(&self) -> &VmImages {
+        &self.images
+    }
+
+    /// The directory the per-VM vsock sockets live in.
+    pub fn uds_dir(&self) -> &Path {
+        &self.uds_dir
+    }
+
+    /// The persistent directory, if the node keeps one (see [`Registry::with_persist_dir`]).
+    pub fn persist_dir(&self) -> Option<&Path> {
+        self.persist_dir.as_deref()
     }
 
     /// The data volumes a live run's VMs carry: volume name to the guest CIDs that mount it.

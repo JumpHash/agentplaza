@@ -9,7 +9,7 @@ import '../styles/proto/work.css';
 import { scope } from '../scope';
 import { api, PROJECT_STAGES, type AgentStep, type GraphTask, type Project, type ProjectGraph, type Task } from '../api';
 import { loadGraph, type GraphLayout, type Layout } from '../graph/wasm';
-import { agentName, roleLabel } from '../roles';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { go, href } from '../router';
 import { agents, on } from '../store';
 import { attempt, badge, button, type Tone } from '../ui/components';
@@ -156,7 +156,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   const nameOf = (cid: number): string => {
     const a = agents.get().find((x) => x.cid === cid);
-    return a ? agentName(a) : `agent ${cid}`;
+    return a ? agentName(a) : agentLabel(cid);
   };
   const stepOf = (cid: number): AgentStep | null | undefined =>
     steps.has(cid) ? steps.get(cid) : agents.get().find((a) => a.cid === cid)?.step;
@@ -406,7 +406,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         col(at('research'), docsOf(['research']), 'Researchers attach what they find.'),
         col(at('proposal'), docsOf(['proposal', 'design', 'spec', 'tasks', 'revision']), 'The planner writes the proposal, the design and the tasks list.'),
         col(at('critique'), crits, 'Agents other than the author critique the plan.'),
-        col(at('approval'), [], 'The mayor approves.'),
+        col(at('approval'), [], 'The orchestrator approves.'),
       ),
       h(
         'section.wk-note',
@@ -454,7 +454,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       );
     }
     if (t.agent_cid !== null) {
-      step('→', h('span', null, 'Claimed by ', h('a', { href: href('agents', t.agent_cid) }, nameOf(t.agent_cid))));
+      step('→', h('span', null, 'Claimed by ', h('a', { href: href('sessions', t.agent_cid) }, nameOf(t.agent_cid))));
       if (state === 'working' || state === 'needs-you') step('●', lineOf(g, t, state));
       if (state === 'needs-you') step('!', h('a', { href: href('approvals') }, 'Decide in Approvals'));
     } else if (state === 'ready') {

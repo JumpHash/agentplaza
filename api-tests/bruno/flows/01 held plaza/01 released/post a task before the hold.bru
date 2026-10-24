@@ -17,8 +17,7 @@ headers {
 body:json {
   {
     "goal": "flows task before the hold",
-    "project": "{{flowHeldPid}}",
-    "budget": 300
+    "project": "{{flowHeldPid}}"
   }
 }
 
@@ -36,6 +35,5 @@ tests {
     const b = res.getBody();
     expect(b.state).to.equal('open');
     expect(b.agent_cid).to.equal(null);
-    expect(b.budget).to.equal(300);
   });
 }

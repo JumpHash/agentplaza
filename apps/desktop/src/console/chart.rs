@@ -1,6 +1,6 @@
 //! Reusable canvas charts for the console: a stacked area over time with a hover crosshair and
 //! tooltip, bars, and a sparkline. They take plain series and labels, so any screen can use them
-//! (the Metrics screen does; the Treasury can). The math that places them (stacking, round axis
+//! (the Lab's job detail does). The math that places them (stacking, round axis
 //! ceilings, blending between two frames, the point under a cursor) is pure and tested alone.
 
 use iced::alignment;

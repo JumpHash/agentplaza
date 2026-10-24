@@ -1,6 +1,6 @@
-//! The screens around the floor: the header, the tab bar, each tab's body, the event log and the
-//! footer. Every value is shown as the hub sent it. The Agents and Tasks tabs list the project the
-//! switcher shows (`scope`), which the header names.
+//! The screens around the tabs: the header, the tab bar, each tab's body and the footer. Every value
+//! is shown as the hub sent it. The Sessions and Tasks tabs list the project the switcher shows
+//! (`scope`), which the header names. The Sessions and Inbox panes are in `sessions.rs` and `inbox.rs`.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -16,7 +16,6 @@ use super::onboarding::Stage;
 use super::scope;
 use super::style::{chip, dot, hints, key_hint, mix, panel, pulse, spinner};
 use super::workspace_view::tail;
-use crate::cmd::agents::{held_of, place_of};
 use crate::rich;
 
 /// A value as text: strings bare, missing or null as "-", anything else as its JSON.
@@ -45,7 +44,7 @@ pub fn clip(text: &str, max: usize) -> String {
 }
 
 /// One value of the header of a detail block: a muted label, then the value.
-fn kv(label: &str, value: String, app: &App) -> Line<'static> {
+pub(super) fn kv(label: &str, value: String, app: &App) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label:>12}  "), Style::new().fg(app.palette.muted)),
         Span::raw(value),
@@ -115,14 +114,6 @@ pub fn local_time(ms: i64) -> String {
         minute_of_day / 60,
         minute_of_day % 60
     )
-}
-
-/// What an agent is doing now: its work's kind and prompt, or "-".
-fn doing(agent: &Value) -> String {
-    match (agent.pointer("/work/kind"), agent.pointer("/work/prompt")) {
-        (Some(kind), Some(prompt)) => format!("{}: {}", show(Some(kind)), show(Some(prompt))),
-        _ => "-".to_string(),
-    }
 }
 
 /// `dim` breathing up to `bright` on the clock. Only RGB colours breathe; the 16-colour and the
@@ -267,33 +258,6 @@ pub fn tab_bar(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// The last events the floor's log holds, as many as the area has lines for: the newest in ink2,
-/// the older ones muted.
-pub fn event_log(frame: &mut Frame, area: Rect, app: &App) {
-    let p = app.palette;
-    let rows = usize::from(area.height.saturating_sub(2));
-    let width = usize::from(area.width.saturating_sub(4));
-    let skip = app.log.len().saturating_sub(rows);
-    let shown = app.log.len() - skip;
-    let lines: Vec<Line> = app
-        .log
-        .iter()
-        .skip(skip)
-        .enumerate()
-        .map(|(i, line)| {
-            let colour = if i + 1 == shown { p.ink2() } else { p.muted };
-            Line::from(vec![
-                Span::styled("· ", Style::new().fg(p.rule_strong())),
-                Span::styled(clip(line, width), Style::new().fg(colour)),
-            ])
-        })
-        .collect();
-    frame.render_widget(
-        Paragraph::new(lines).block(panel(" events ", &p, false)),
-        area,
-    );
-}
-
 /// The keys a tab's status line shows, in the order they drop out when the row is narrow.
 fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
     match tab {
@@ -310,12 +274,12 @@ fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
             ("E", "export"),
             ("o", "IDE"),
             ("Enter", "expand"),
-            ("0-9", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("q", "quit"),
         ],
         Tab::Workstations => &[
             ("^K", "commands"),
-            ("1-9,0,w,c", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("Tab", "next"),
             ("↑↓", "move"),
             ("T", "take over"),
@@ -323,21 +287,39 @@ fn tab_keys(tab: Tab) -> &'static [(&'static str, &'static str)] {
             ("?", "tour"),
             ("q", "quit"),
         ],
+        Tab::Sessions => &[
+            ("^K", "commands"),
+            ("1-8,w,c,m,i", "tabs"),
+            ("Tab", "next"),
+            ("↑↓", "move"),
+            ("Enter", "details"),
+            ("p/P", "project"),
+            ("s", "stop all"),
+            ("r", "refresh"),
+            ("?", "tour"),
+            ("q", "quit"),
+        ],
+        Tab::Inbox => &[
+            ("^K", "commands"),
+            ("1-8,w,c,m,i", "tabs"),
+            ("↑↓", "card"),
+            ("←→", "button"),
+            ("Enter", "answer"),
+            ("r", "refresh"),
+            ("q", "quit"),
+        ],
         Tab::Chat => &[
             ("^K", "commands"),
-            ("1-9,0,w,c", "tabs"),
-            ("↑↓", "conversation"),
+            ("1-8,w,c,m,i", "tabs"),
+            ("↑↓", "chat"),
             ("t", "message"),
-            ("i", "context"),
-            ("M", "model"),
-            ("n", "new conversation"),
-            ("S", "start the draft"),
+            ("n", "new chat"),
             ("r", "refresh"),
             ("q", "quit"),
         ],
         _ => &[
             ("^K", "commands"),
-            ("1-9,0,w,c", "tabs"),
+            ("1-8,w,c,m", "tabs"),
             ("Tab", "next"),
             ("↑↓", "move"),
             ("Enter", "details"),
@@ -390,15 +372,21 @@ pub fn footer(frame: &mut Frame, area: Rect, app: &App) {
             ],
             &[("y", "yes"), ("n", "no")],
         )
-    } else if let Some((cid, draft)) = &app.draft {
+    } else if let Some(amount) = &app.amount {
         (
             vec![
-                chip("MESSAGE", p.on_accent(), p.accent),
-                Span::styled(format!(" to agent {cid}  "), ink2),
-                Span::styled(draft.clone(), ink),
+                chip("AMOUNT", p.on_accent(), p.accent),
+                Span::styled(
+                    format!(
+                        " {} on {} · dollars, or tokens: ",
+                        amount.choice, amount.card
+                    ),
+                    ink2,
+                ),
+                Span::styled(amount.text.clone(), ink),
                 Span::styled(cursor, accent),
             ],
-            &[("Enter", "sends"), ("Esc", "cancels")],
+            &[("Enter", "answers"), ("Esc", "cancels")],
         )
     } else if let Some(compose) = &app.compose {
         let room = usize::from(area.width).saturating_sub(60);
@@ -477,7 +465,7 @@ fn scoped(name: &str, app: &App) -> String {
 }
 
 /// A table's title: its name capitalised, the project the switcher shows when it shows one, and the count.
-fn titled(name: &str, count: usize, app: &App) -> String {
+pub(super) fn titled(name: &str, count: usize, app: &App) -> String {
     let base = scoped(name, app);
     let mut chars = base.chars();
     let head: String = chars
@@ -487,20 +475,9 @@ fn titled(name: &str, count: usize, app: &App) -> String {
     format!("{head}{} · {count}", chars.as_str())
 }
 
-/// Where an agent works and since when: its project, the bench, or every project for the orchestrator.
-fn place(agent: &Value) -> String {
-    let place = place_of(agent);
-    match agent.get("joined_ms").and_then(Value::as_i64) {
-        Some(ms) if place != "bench" && place != "all" => {
-            format!("{place} · since {}", local_time(ms))
-        }
-        _ => place,
-    }
-}
-
 /// The colour of a status word: working accent, idle and done ok, held or stopping warn, failed or
 /// revoked crit, anything else muted.
-fn status_colour(status: &str, p: &Palette) -> Color {
+pub(super) fn status_colour(status: &str, p: &Palette) -> Color {
     match status {
         "working" => p.accent,
         "idle" | "online" | "done" => p.ok,
@@ -511,7 +488,7 @@ fn status_colour(status: &str, p: &Palette) -> Color {
 }
 
 /// A state as a cell: its dot (for `dot_status`, see `style::dot`), then the word in `colour`.
-fn state_cell(dot_status: &str, word: &str, colour: Color, app: &App) -> Cell<'static> {
+pub(super) fn state_cell(dot_status: &str, word: &str, colour: Color, app: &App) -> Cell<'static> {
     Cell::from(Line::from(vec![
         dot(dot_status, app.clock, &app.palette),
         Span::styled(format!(" {word}"), Style::new().fg(colour)),
@@ -704,7 +681,7 @@ pub fn overview(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// The keys a list answers, as the bottom edge's hint.
-fn keys(items: &[(&str, &str)], p: &Palette) -> Line<'static> {
+pub(super) fn keys(items: &[(&str, &str)], p: &Palette) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, (key, label)) in items.iter().enumerate() {
         if i > 0 {
@@ -715,109 +692,9 @@ fn keys(items: &[(&str, &str)], p: &Palette) -> Line<'static> {
     Line::from(spans)
 }
 
-pub fn agents(frame: &mut Frame, area: Rect, app: &App) {
-    let p = &app.palette;
-    let list = app.shown_agents();
-    let (table_area, detail_area) = if app.detail && !list.is_empty() {
-        let [table, detail] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(12)]).areas(area);
-        (table, Some(detail))
-    } else {
-        (area, None)
-    };
-    let rows: Vec<Vec<Cell<'static>>> = list
-        .iter()
-        .map(|a| {
-            let status = show(a.get("status"));
-            vec![
-                Cell::from(show(a.get("cid"))),
-                Cell::from(show(a.get("name"))),
-                Cell::from(show(a.get("role_label"))),
-                Cell::from(place_of(a)),
-                state_cell(&status, &status, status_colour(&status, p), app),
-                Cell::from(show(a.get("model"))),
-                Cell::from(show(a.get("queue"))),
-                Cell::from(doing(a)),
-            ]
-        })
-        .collect();
-    grid(
-        frame,
-        table_area,
-        Grid {
-            title: titled("agents", list.len(), app),
-            empty: "No agents here yet",
-            header: &[
-                "CID", "NAME", "ROLE", "PROJECT", "STATUS", "MODEL", "QUEUE", "DOING",
-            ],
-            widths: &[
-                Constraint::Length(6),
-                Constraint::Length(14),
-                Constraint::Length(16),
-                Constraint::Length(8),
-                Constraint::Length(11),
-                Constraint::Length(24),
-                Constraint::Length(6),
-                Constraint::Fill(1),
-            ],
-            rows,
-            hint: None,
-        },
-        app,
-    );
-    if let (Some(detail), Some(agent)) = (detail_area, list.get(app.selected).copied()) {
-        let lines = vec![
-            kv("name", show(agent.get("name")), app),
-            kv(
-                "role",
-                format!(
-                    "{} · {}",
-                    show(agent.get("role_label")),
-                    show(agent.get("tier"))
-                ),
-                app,
-            ),
-            kv(
-                "model",
-                format!(
-                    "{} · from {}",
-                    show(agent.get("model")),
-                    show(agent.get("model_source"))
-                ),
-                app,
-            ),
-            kv("status", show(agent.get("status")), app),
-            kv("project", place(agent), app),
-            kv("held", held_of(agent), app),
-            kv(
-                "run / vm",
-                format!("{} / {}", show(agent.get("run")), show(agent.get("vm"))),
-                app,
-            ),
-            kv("queue", show(agent.get("queue")), app),
-            kv("doing", doing(agent), app),
-            kv(
-                "tokens",
-                format!(
-                    "in {} · out {}",
-                    show(agent.pointer("/usage/input_tokens")),
-                    show(agent.pointer("/usage/output_tokens")),
-                ),
-                app,
-            ),
-        ];
-        let block = panel("Agent", p, false).title_bottom(bottom_hint(hints(
-            &[("t", "message"), ("Enter", "close")],
-            detail.width,
-            p,
-        )));
-        frame.render_widget(Paragraph::new(lines).block(block), detail);
-    }
-}
-
 pub fn tasks(frame: &mut Frame, area: Rect, app: &App) {
     let p = &app.palette;
-    let rich_ctx = app.rich_ctx();
+    let rich_ctx = apz_rich::Ctx::default();
     let shown = app.shown_tasks();
     let rows: Vec<Vec<Cell<'static>>> = shown
         .iter()
@@ -946,7 +823,7 @@ pub fn approvals(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn board(frame: &mut Frame, area: Rect, app: &App) {
-    let rich_ctx = app.rich_ctx();
+    let rich_ctx = apz_rich::Ctx::default();
     let posts = app.wrapped("/v1/board", "posts");
     let rows: Vec<Vec<Cell<'static>>> = posts
         .iter()
@@ -976,53 +853,6 @@ pub fn board(frame: &mut Frame, area: Rect, app: &App) {
             widths: &[
                 Constraint::Length(20),
                 Constraint::Length(9),
-                Constraint::Fill(1),
-            ],
-            rows,
-            hint: None,
-        },
-        app,
-    );
-}
-
-pub fn conversations(frame: &mut Frame, area: Rect, app: &App) {
-    let p = &app.palette;
-    let rich_ctx = app.rich_ctx();
-    let items = app.wrapped("/v1/conversations", "conversations");
-    let rows: Vec<Vec<Cell<'static>>> = items
-        .iter()
-        .map(|c| {
-            let delivered = flag(c.get("delivered"));
-            vec![
-                Cell::from(format!(
-                    "{} #{}",
-                    show(c.get("from_role")),
-                    show(c.get("from_cid"))
-                )),
-                Cell::from(format!(
-                    "{} #{}",
-                    show(c.get("to_role")),
-                    show(c.get("to_cid"))
-                )),
-                Cell::from(Line::from(Span::styled(
-                    if delivered { "yes" } else { "no" },
-                    Style::new().fg(if delivered { p.ok } else { p.muted }),
-                ))),
-                Cell::from(Line::from(rich::spans(&show(c.get("text")), &rich_ctx))),
-            ]
-        })
-        .collect();
-    grid(
-        frame,
-        area,
-        Grid {
-            title: titled("conversations", items.len(), app),
-            empty: "No conversations yet",
-            header: &["FROM", "TO", "DELIVERED", "TEXT"],
-            widths: &[
-                Constraint::Length(20),
-                Constraint::Length(20),
-                Constraint::Length(10),
                 Constraint::Fill(1),
             ],
             rows,
@@ -1093,17 +923,17 @@ pub fn nodes(frame: &mut Frame, area: Rect, app: &App) {
 
 /// One list's table: its title (with the count), the header, the rows, the column widths, the line a
 /// list with no rows shows, and the keys its bottom edge hints.
-struct Grid<'a, C> {
-    title: String,
-    empty: &'a str,
-    header: &'a [&'a str],
-    widths: &'a [Constraint],
-    rows: Vec<Vec<C>>,
-    hint: Option<Line<'static>>,
+pub(super) struct Grid<'a, C> {
+    pub title: String,
+    pub empty: &'a str,
+    pub header: &'a [&'a str],
+    pub widths: &'a [Constraint],
+    pub rows: Vec<Vec<C>>,
+    pub hint: Option<Line<'static>>,
 }
 
 /// A panel's keys on its bottom edge: at the right, with a space kept from the corner and the frame.
-fn bottom_hint(line: Line<'static>) -> Line<'static> {
+pub(super) fn bottom_hint(line: Line<'static>) -> Line<'static> {
     let mut spans = vec![Span::raw(" ")];
     spans.extend(line.spans);
     spans.push(Span::raw(" "));
@@ -1138,7 +968,12 @@ fn empty_state(frame: &mut Frame, area: Rect, block: Block<'static>, text: &str,
 /// A list as a table in a rounded panel. The selected row is marked by an accent bar and a raised
 /// background; a rule sits under the header. Cells are text, or styled lines for agent text
 /// (`rich::spans`).
-fn grid<C: Into<Cell<'static>>>(frame: &mut Frame, area: Rect, spec: Grid<'_, C>, app: &App) {
+pub(super) fn grid<C: Into<Cell<'static>>>(
+    frame: &mut Frame,
+    area: Rect,
+    spec: Grid<'_, C>,
+    app: &App,
+) {
     let p = &app.palette;
     let Grid {
         title,

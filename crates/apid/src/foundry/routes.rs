@@ -225,6 +225,7 @@ fn upload(app: &App, req: &Request) -> Response {
 pub fn machines(app: &App) -> (Vec<Machine>, Reach) {
     let mut all = Vec::new();
     if let Ok((200, facts)) = app.noded.get("/v1/machine") {
+        let facts: crate::nodes::Machine = serde_json::from_value(facts).unwrap_or_default();
         all.push(machine_of(fleet::LOCAL, &facts, true));
     }
     let now = apz_plaza::now_ms();
@@ -239,14 +240,36 @@ pub fn machines(app: &App) -> (Vec<Machine>, Reach) {
 }
 
 /// A planner machine from noded's facts (`accelerators`, `trainer`, `fabric`).
-fn machine_of(id: &str, facts: &Value, online: bool) -> Machine {
+fn machine_of(id: &str, facts: &crate::nodes::Machine, online: bool) -> Machine {
     Machine {
         id: id.into(),
         online,
-        accelerators: serde_json::from_value(facts["accelerators"].clone()).unwrap_or_default(),
-        trainer_ok: facts["trainer"]["ok"].as_bool().unwrap_or(false),
-        fabric: serde_json::from_value(facts["fabric"].clone()).unwrap_or_default(),
+        accelerators: planner_accelerators(&facts.accelerators),
+        trainer_ok: facts.trainer.as_ref().is_some_and(|trainer| trainer.ok),
+        fabric: facts.fabric.clone(),
     }
+}
+
+/// The planner's accelerators from a node's: a device that lacks a figure the planner reads makes the whole list
+/// empty, as the planner has always read it.
+fn planner_accelerators(devices: &[crate::nodes::MachineAccelerator]) -> Vec<Accelerator> {
+    devices
+        .iter()
+        .map(|device| {
+            Some(Accelerator {
+                index: device.index,
+                vendor: device.vendor.clone(),
+                name: device.name.clone(),
+                memory_mib: device.memory_mib?,
+                backend: device.backend.clone(),
+                link: device.link.clone(),
+                busy: device.busy,
+                util_pct: device.util_pct?,
+                mem_used_mib: device.mem_used_mib?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
 }
 
 /// `GET /v1/foundry/devices`: every accelerator, with the job whose running run holds it.
@@ -297,7 +320,8 @@ fn dry_run(app: &App, body: &[u8]) -> Response {
         .and_then(|found| {
             let (machines, reach) = machines(app);
             let plan = jobs::place(&machines, &reach, &spec)?;
-            Ok(jobs::plan_document(&plan, &spec, &found))
+            let job_dir = app.foundry.jobs_dir().join(&spec.job_id);
+            Ok(jobs::plan_document(&plan, &spec, &found, &job_dir))
         });
     match result {
         Ok(plan) => Response::json(200, &plan),
@@ -340,7 +364,8 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
         .and_then(|found| {
             let (machines, reach) = machines(app);
             let plan = jobs::place(&machines, &reach, &spec)?;
-            let plan_doc = jobs::plan_document(&plan, &spec, &found);
+            let job_dir = app.foundry.jobs_dir().join(&spec.job_id);
+            let plan_doc = jobs::plan_document(&plan, &spec, &found, &job_dir);
             let dir = jobs::write_job_dir(&app.foundry, &spec.job_id, &doc, &plan_doc, &found)?;
             Ok((plan, plan_doc, dir))
         });
@@ -382,6 +407,7 @@ pub(crate) fn submit_job(app: &App, doc: Value) -> Result<Job, (u16, String)> {
         mode: plan.mode.to_string(),
         budget_gpu_hours: spec.budget,
         gpu_hours: 0.0,
+        agent: doc.get("agent").and_then(Value::as_u64),
         doc,
         plan: plan_doc,
         runs,
@@ -412,7 +438,7 @@ fn job_summary(job: &Job) -> Value {
            "created_ms": job.created_ms, "updated_ms": job.updated_ms, "gpu_hours": job.gpu_hours,
            "budget_gpu_hours": job.budget_gpu_hours, "error": job.error, "runs": job.runs.len(),
            // The breeder (agent cid) that submitted it, if an agent did; the owner's own jobs have none.
-           "agent": job.doc.get("agent").and_then(Value::as_u64)})
+           "agent": job.agent})
 }
 
 /// One job in full: the summary, its plan, runs, series, metrics and outputs.
@@ -505,7 +531,14 @@ mod tests {
             created_ms: 1,
             ..Job::default()
         };
-        older.series = vec![json!({"step": 1})];
+        older.series = vec![crate::foundry::store::Point::Step {
+            island: "i1".into(),
+            step: Some(1),
+            loss: None,
+            lr: None,
+            samples: None,
+            t: 0,
+        }];
         let newer = Job {
             id: "b".into(),
             created_ms: 2,

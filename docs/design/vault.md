@@ -5,13 +5,14 @@ hold a key; they ask the hub, and the hub decides. The vault is where those keys
 `secrets.json`, `connector-secrets.json`, the Hugging Face token file and the `--env-file` keys, which were
 plaintext on disk.
 
-Status (2026-10-14): built. The code is `crates/apid/src/vault/` (`crypto.rs`, `disk.rs`, `audit.rs` (the audit log
-`vault-audit.jsonl`), `slots.rs`, `model.rs`, `routes.rs`, `migrate.rs`, `dotenv.rs`, `process.rs`), and the routes
+Status (2026-10-14): built. The code is `crates/apid/src/vault/` (`crypto.rs`, `disk.rs` (the key file's writes),
+`audit.rs` (the audit log, the `vault_audit` table), `slots.rs`, `model.rs` (the document's tables),
+`routes.rs`, `migrate.rs`, `dotenv.rs`, `process.rs`), and the routes
 below are the ones it serves. The tests named at the end are in `vault/tests.rs`.
 
 ## Goals
 
-- **Encrypted at rest.** A copy of the state directory, a Postgres dump or a backup holds only ciphertext.
+- **Encrypted at rest.** A copy of the state directory, a database dump or a backup holds only ciphertext.
   The key that opens it is not stored next to it.
 - **Write-only.** No route, log, event, error, transcript, metric or panic message carries a secret's value.
   The console shows a name, a fingerprint and the last four characters, never more.
@@ -78,12 +79,19 @@ the config directory, never the state directory, so a copy of the state director
 
 ## Storage
 
-- **Where.** A Postgres component `vault` when Postgres is configured, else `state_dir/vault.json` (0600).
-  The plaza's usual persistence rule applies.
-- **How writes land.** Writes are atomic: temp file, `fsync`, rename, directory `fsync`. Postgres is
-  written in one statement.
+- **Where.** `plaza.db`, in typed `vault` tables: `vault` (the document's one row: `format`, `vault_id`,
+  `created_ms`, `index_mac`), and below it `vault_slot`, `vault_entry`, `vault_entry_scope`,
+  `vault_scope_node`, `vault_entry_binding`, `vault_version` and `vault_tombstone`. Each list keeps its
+  order in a `*_pos` column. Sealed fields are base64 TEXT, as they always were. `plaza.db` is
+  FULL-synchronous, so an acknowledged write survives a power loss.
+- **How writes land.** On every change the vault's tables are replaced by the document's rows in one
+  transaction, and the write waits for its commit. A failed write is a storage error and leaves the stored
+  rows as they were.
+- **The key file.** `vault.key` stays a file, written atomically and privately (temp file, `fsync`,
+  rename, directory `fsync`, mode 0600). The key never goes into the database.
 - **Document shape:**
-  `{format:1, vault_id, created_ms, slots:[…], entries:[…], tombstones:[…], index_mac}`.
+  `{format:1, vault_id, created_ms, slots:[…], entries:[…], tombstones:[…], index_mac}` (its JSON form is
+  what the MAC covers; the tables are its rows).
 - **What `index_mac` covers.** It is `HMAC(K_index, canonical_json(slots without their wrapped keys,
   entries without usage counters, tombstones))`. Load verifies it after unseal. On a mismatch the vault's
   state is `tampered`: nothing resolves, and the owner sees what failed.
@@ -146,8 +154,8 @@ Entry {
 
 ## Audit
 
-- **Where.** `state_dir/vault-audit.jsonl` (0600, append-only), mirrored to a Postgres table when
-  configured.
+- **Where.** The `vault_audit` table of `plaza.db`: one row per line, keyed by `seq`. A line is an insert
+  through the writer, and the write waits for its commit; a sequence number already stored is refused.
 - **Line shape.** `{seq, ts_ms, event, entry?, name?, actor, binding?, node?, cid?, detail?, prev, mac}`,
   with `mac = hex(HMAC(K_audit, prev ‖ canonical_json(line without mac)))`.
 - **Events:**
@@ -223,7 +231,7 @@ GET    /v1/vault/audit?after=&limit=&verify=1 → {entries, chain_ok}
   - a round trip works;
   - a flipped byte in a ciphertext, nonce, DEK or slot fails;
   - swapping ciphertexts between entries or versions fails;
-  - a scope or binding edited in the file fails the index MAC (`tampered`).
+  - a scope or binding edited in the database fails the index MAC (`tampered`).
 - Slots:
   - a wrong passphrase fails and is rate-limited;
   - add and remove slots, and the last slot cannot be removed;

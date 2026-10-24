@@ -8,17 +8,16 @@
 //! the module allows dead code until it lands.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read};
+use std::io::Read;
+#[cfg(test)]
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::providers::write_atomic;
 use crate::state::App;
 use crate::vault::{OnBehalf, node_for_cid};
 use secrecy::SecretString;
@@ -723,13 +722,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// One connector's operator settings. Empty `roles` means every role, and empty `projects` every project (and the
 /// agents on none, such as the orchestrator).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, apz_store::Table)]
 struct Setting {
-    #[serde(default)]
     enabled: bool,
-    #[serde(default)]
+    #[table(list)]
     roles: Vec<String>,
-    #[serde(default)]
+    #[table(list)]
     projects: Vec<String>,
 }
 
@@ -760,34 +758,83 @@ fn admits_project(setting: &Setting, project: Option<&str>) -> bool {
 }
 
 pub struct Store {
-    dir: PathBuf,
+    /// The hub's generations: a change to the settings, the proposals or the catalog bumps `connectors`.
+    gens: Arc<apz_cache::Generations<String>>,
     settings: Mutex<BTreeMap<String, Setting>>,
     /// The vault. A connector field's credential is the entry named `Field.env`, bound to `connector:<id>`.
     vault: Arc<crate::vault::Store>,
-    /// Serializes every write to the files.
+    /// Serializes every mutation of the settings, the proposals and the keys.
     write: Mutex<()>,
     /// Every connector proposal an agent made, oldest first. Kept whatever its state.
     proposals: Mutex<Vec<Proposal>>,
 }
 
+/// The connectors' document: the operator settings by connector id, and every proposal in order.
+#[derive(Debug, Default, apz_store::Table)]
+#[table(name = "connectors")]
+struct Doc {
+    #[table(map)]
+    settings: BTreeMap<String, Setting>,
+    #[table(child = "connector_proposal")]
+    proposals: Vec<ProposalRow>,
+}
+
+/// The connectors' tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Doc)
+}
+
 impl Store {
-    /// Loads `<state-dir>/connectors.json` and the proposals. A connector without a setting is disabled.
-    /// Approved proposals join the catalog first, so their fields register with the vault too.
-    pub fn load(state_dir: &Path, vault: Arc<crate::vault::Store>) -> io::Result<Self> {
-        std::fs::create_dir_all(state_dir)?;
-        let proposals = read_proposals(&state_dir.join(PROPOSALS))?;
+    /// An empty store over `vault`, with the built-in connectors' fields registered; [`Store::load`] fills it at start.
+    pub fn new(vault: Arc<crate::vault::Store>) -> Self {
+        let store = Self {
+            gens: Arc::default(),
+            settings: Mutex::new(BTreeMap::new()),
+            vault,
+            write: Mutex::new(()),
+            proposals: Mutex::new(Vec::new()),
+        };
+        store.register();
+        store
+    }
+
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<apz_cache::Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
+    /// Replaces the settings and proposals with what the store holds (at start). Approved proposals join the catalog
+    /// first, so their fields register with the vault too. A connector without a setting is disabled.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let doc: Doc = apz_store::table::load_one(conn, def())?.unwrap_or_default();
+        let proposals = doc
+            .proposals
+            .into_iter()
+            .map(Proposal::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
         for proposal in proposals.iter().filter(|p| p.state == "approved") {
             adopt(&proposal.spec);
         }
-        let store = Self {
-            dir: state_dir.to_path_buf(),
-            settings: Mutex::new(read_map(&state_dir.join("connectors.json"))?),
-            vault,
-            write: Mutex::new(()),
-            proposals: Mutex::new(proposals),
+        *lock(&self.settings) = doc.settings;
+        *lock(&self.proposals) = proposals;
+        self.register();
+        Ok(())
+    }
+
+    /// The settings and the proposals, as rows of the connectors' tables (for the hub's store).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let doc = Doc {
+            settings: lock(&self.settings).clone(),
+            proposals: lock(&self.proposals)
+                .iter()
+                .map(ProposalRow::from)
+                .collect(),
         };
-        store.register();
-        Ok(store)
+        apz_store::RowSet::one(def(), &doc)
     }
 
     /// Registers every catalog field with the vault: its binding, the connector's label, and the entry name it
@@ -914,8 +961,8 @@ impl Store {
                 .filter(|p| !p.is_empty())
                 .collect();
         }
-        save(&self.dir.join("connectors.json"), &next).map_err(io_failure)?;
         *lock(&self.settings) = next;
+        crate::sources::bump(&self.gens, crate::sources::CONNECTORS);
         Ok(self.view(c))
     }
 
@@ -1129,7 +1176,7 @@ pub fn call(
     let plan = gate(&app.connectors, role, connector, action, &on_behalf)?;
     // An agent's call is held to the connector's projects too; the owner's and the console's are not.
     if let Some((cid, _)) = agent {
-        let project = app.members.project_of(cid);
+        let project = crate::projects::project_of(app, cid);
         if !admits_project(
             &app.connectors.setting(plan.connector.id),
             project.as_deref(),
@@ -1527,65 +1574,10 @@ fn action_view(a: &Action) -> Value {
     })
 }
 
-fn read_map<T: DeserializeOwned>(path: &Path) -> io::Result<BTreeMap<String, T>> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(e) => Err(e),
-    }
-}
-
-/// Saves a map atomically at mode 0600.
-fn save<T: Serialize>(path: &Path, map: &BTreeMap<String, T>) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(map)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    write_atomic(path, &bytes, 0o600)
-}
-
-fn io_failure(e: io::Error) -> Failure {
-    (500, format!("cannot save: {e}"))
-}
-
-/// The snapshot's shape: the operator settings and every proposal, whatever its state. The vault is not in it.
-#[derive(Serialize, Deserialize)]
-struct Snapshot {
-    settings: BTreeMap<String, Setting>,
-    proposals: Vec<Proposal>,
-}
-
-impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let snap = Snapshot {
-            settings: lock(&self.settings).clone(),
-            proposals: lock(&self.proposals).clone(),
-        };
-        serde_json::to_string(&snap).unwrap_or_default()
-    }
-
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let snap: Snapshot =
-            serde_json::from_str(json).map_err(|e| format!("bad connectors snapshot: {e}"))?;
-        let _guard = lock(&self.write);
-        save(&self.dir.join("connectors.json"), &snap.settings)
-            .map_err(|e| format!("write connectors: {e}"))?;
-        save_proposals(&self.dir.join(PROPOSALS), &snap.proposals)
-            .map_err(|e| format!("write proposals: {e}"))?;
-        for proposal in snap.proposals.iter().filter(|p| p.state == "approved") {
-            adopt(&proposal.spec);
-        }
-        *lock(&self.settings) = snap.settings;
-        *lock(&self.proposals) = snap.proposals;
-        Ok(())
-    }
-}
-
 /// A booted vault in `dir`, as the hub has it at start (unsealed by its key file).
 #[cfg(test)]
 fn vault_for(dir: &Path) -> Arc<crate::vault::Store> {
-    let vault = crate::vault::Store::open(dir, &dir.join("vault.key"), None);
+    let vault = crate::vault::Store::open_in(dir, &dir.join("vault.key"));
     vault.boot(apz_plaza::now_ms()).expect("boot");
     Arc::new(vault)
 }
@@ -1639,7 +1631,7 @@ mod tests {
     #[test]
     fn secret_is_stored_in_the_vault_and_never_listed() {
         let dir = scratch("secret");
-        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let store = Store::new(vault_for(&dir));
         store
             .set_secret("unsplash", None, "SENTINEL-CONN-4417")
             .unwrap();
@@ -1654,8 +1646,11 @@ mod tests {
             !dir.join("connector-secrets.json").exists(),
             "no plaintext connector file is written"
         );
-        let vault_file = std::fs::read(dir.join("vault.json")).unwrap();
-        assert!(!String::from_utf8_lossy(&vault_file).contains("SENTINEL-CONN-4417"));
+        // The vault's rows are in plaza.db (and its write-ahead log): no file in the folder holds the value.
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap_or_default();
+            assert!(!String::from_utf8_lossy(&bytes).contains("SENTINEL-CONN-4417"));
+        }
         assert_eq!(
             store
                 .values(connector("unsplash"), &OnBehalf::Hub)
@@ -1669,7 +1664,7 @@ mod tests {
     #[test]
     fn a_field_is_registered_and_removal_takes_its_binding_away() {
         let dir = scratch("remove");
-        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let store = Store::new(vault_for(&dir));
         let vault = Arc::clone(&store.vault);
         let wanted = |v: &crate::vault::Store| {
             v.consumers(&[])
@@ -1697,7 +1692,7 @@ mod tests {
     #[test]
     fn unsplash_needs_only_its_access_key() {
         let dir = scratch("unsplash");
-        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let store = Store::new(vault_for(&dir));
         let ua = connector("unsplash");
         assert!(!store.configured(ua));
         store
@@ -1721,7 +1716,7 @@ mod tests {
     #[test]
     fn unknown_fields_are_refused() {
         let dir = scratch("unknown");
-        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let store = Store::new(vault_for(&dir));
         assert_eq!(
             store
                 .set_secret("unsplash", Some("nope"), "x")
@@ -1782,7 +1777,7 @@ mod tests {
     #[test]
     fn gate_refuses_unknown_disabled_keyless_and_foreign_roles() {
         let dir = scratch("gate");
-        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let store = Store::new(vault_for(&dir));
         assert!(refusal(gate(&store, "any", "nope", "x", &OnBehalf::Hub)).contains("no connector"));
         assert!(
             refusal(gate(&store, "any", "unsplash", "nope", &OnBehalf::Hub)).contains("no action")
@@ -1879,15 +1874,12 @@ pub fn specs_for(app: &App, role: &str, project: Option<&str>) -> Vec<apz_proto:
 
 // ---- Connectors proposed by agents ---------------------------------------------------------------
 
-/// The file the proposals are kept in, beside the connector settings and the vault.
-const PROPOSALS: &str = "connector-proposals.json";
-
 /// The approved connectors: each leaked once, when its proposal is approved, and kept for the
 /// life of the process. The built-in entries stay in `CATALOG`.
 static CUSTOM: Mutex<Vec<&'static Connector>> = Mutex::new(Vec::new());
 
 /// A connector an agent proposes: the propose tool's input, as the owner reviews it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct Spec {
     pub id: String,
@@ -1896,19 +1888,22 @@ pub struct Spec {
     pub description: String,
     pub docs_url: String,
     pub base_url: String,
+    #[table(flatten)]
     pub auth: AuthSpec,
+    #[table(child)]
     pub fields: Vec<FieldSpec>,
+    #[table(child)]
     pub actions: Vec<ActionSpec>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct AuthSpec {
     pub kind: String,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct FieldSpec {
     pub name: String,
@@ -1919,7 +1914,7 @@ pub struct FieldSpec {
     pub required: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct ActionSpec {
     pub name: String,
@@ -1927,6 +1922,8 @@ pub struct ActionSpec {
     pub risk: String,
     pub method: String,
     pub path: String,
+    /// The action's JSON Schema, kept as written (content: read back as text, never as state).
+    #[table(content)]
     pub input_schema: Value,
 }
 
@@ -2178,19 +2175,55 @@ fn adopt(spec: &Spec) {
     custom.push(to_connector(spec));
 }
 
-fn read_proposals(path: &Path) -> io::Result<Vec<Proposal>> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e),
+/// A proposal as the store holds it: a child row of the connectors' document. Its spec is an optional child table
+/// (the derive stores a sub-struct with child tables as one), converted at the boundary.
+#[derive(Debug, Clone, apz_store::Table)]
+struct ProposalRow {
+    id: String,
+    proposer_cid: u64,
+    proposer: String,
+    created_ms: u64,
+    state: String,
+    note: Option<String>,
+    #[table(list)]
+    checks: Vec<String>,
+    #[table(child)]
+    spec: Option<Spec>,
+}
+
+impl From<&Proposal> for ProposalRow {
+    fn from(p: &Proposal) -> Self {
+        ProposalRow {
+            id: p.id.clone(),
+            proposer_cid: p.proposer_cid,
+            proposer: p.proposer.clone(),
+            created_ms: p.created_ms,
+            state: p.state.clone(),
+            note: p.note.clone(),
+            checks: p.checks.clone(),
+            spec: Some(p.spec.clone()),
+        }
     }
 }
 
-fn save_proposals(path: &Path, proposals: &[Proposal]) -> io::Result<()> {
-    let bytes = serde_json::to_vec_pretty(proposals)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-    write_atomic(path, &bytes, 0o600)
+impl TryFrom<ProposalRow> for Proposal {
+    type Error = apz_store::StoreError;
+
+    fn try_from(row: ProposalRow) -> Result<Self, Self::Error> {
+        let spec = row.spec.ok_or_else(|| {
+            apz_store::StoreError::invalid(format!("proposal {} has no spec", row.id))
+        })?;
+        Ok(Proposal {
+            id: row.id,
+            proposer_cid: row.proposer_cid,
+            proposer: row.proposer,
+            created_ms: row.created_ms,
+            state: row.state,
+            note: row.note,
+            checks: row.checks,
+            spec,
+        })
+    }
 }
 
 fn now_ms() -> u64 {
@@ -2229,7 +2262,6 @@ impl Store {
             spec,
         };
         next.push(proposal.clone());
-        save_proposals(&self.dir.join(PROPOSALS), &next).map_err(io_failure)?;
         *lock(&self.proposals) = next;
         Ok(proposal)
     }
@@ -2264,10 +2296,10 @@ impl Store {
         proposal.state = if approve { "approved" } else { "rejected" }.to_string();
         proposal.note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
         let reviewed = proposal.clone();
-        save_proposals(&self.dir.join(PROPOSALS), &next).map_err(io_failure)?;
         *lock(&self.proposals) = next;
         if approve {
             adopt(&reviewed.spec);
+            crate::sources::bump(&self.gens, crate::sources::CONNECTORS);
             self.register();
         }
         Ok(reviewed)
@@ -2280,7 +2312,7 @@ pub fn propose(app: &App, agent: &crate::agents::Agent, input: &Value) -> Result
         serde_json::from_value(input.clone()).map_err(|e| format!("not a connector spec: {e}"))?;
     let proposal = app
         .connectors
-        .submit(agent.cid, &agent.name, spec)
+        .submit(agent.cid, &agent.label(), spec)
         .map_err(|(_, message)| message)?;
     app.bus.publish("connector", &proposal);
     let mut text = format!(
@@ -2398,7 +2430,8 @@ mod proposal_tests {
     #[test]
     fn approved_proposals_join_the_catalog_and_persist() {
         let dir = scratch("proposals");
-        let store = Store::load(&dir, vault_for(&dir)).unwrap();
+        let vault = vault_for(&dir);
+        let store = Store::new(Arc::clone(&vault));
         let mut bad_spec = sample("acme-bad");
         bad_spec.base_url = "http://api.acme-test.example".to_string();
         let bad = store.submit(7, "scout", bad_spec).unwrap();
@@ -2418,15 +2451,49 @@ mod proposal_tests {
             "https://api.acme-test.example/v1/notes"
         );
         assert_eq!(store.review(&good.id, false, None).unwrap_err().0, 409);
-        drop(store);
-
-        let reloaded = Store::load(&dir, vault_for(&dir)).unwrap();
+        store
+            .update(
+                "acme-good",
+                Patch {
+                    enabled: Some(true),
+                    roles: Some(vec!["scout".into()]),
+                    projects: None,
+                },
+            )
+            .unwrap();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let reloaded = Store::new(vault);
+        reloaded.load(&conn).unwrap();
         let listed = reloaded.proposals_newest_first();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, "cp2");
         assert_eq!(listed[0].state, "approved");
         assert_eq!(listed[1].state, "pending");
         assert_eq!(reloaded.proposer_of("acme-good").as_deref(), Some("scout"));
+        assert_eq!(reloaded.setting("acme-good"), store.setting("acme-good"));
+        assert!(reloaded.setting("acme-good").enabled);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_change_to_a_connectors_setting_moves_the_connectors_source() {
+        let dir = scratch("connector-gens");
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::new(vault_for(&dir)).with_generations(std::sync::Arc::clone(&gens));
+        let id = catalog()[0].id;
+        store
+            .update(
+                id,
+                Patch {
+                    enabled: Some(true),
+                    roles: None,
+                    projects: None,
+                },
+            )
+            .expect("update");
+        assert!(gens.get(&crate::sources::CONNECTORS.to_string()) > 0);
+        assert_eq!(gens.get(&crate::sources::VAULT.to_string()), 0);
     }
 }

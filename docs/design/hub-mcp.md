@@ -21,7 +21,7 @@ for its agents. Here, the hub *is* an MCP server for clients outside the plaza. 
 - **Least power by default.** A token has a scope: `observe` (read only), `operate`, or `govern`. A token may also be
   narrowed to a list of tools. Scopes are cumulative.
 - **The owner's hard lines hold here too.** Some things are never reachable over MCP, at any scope: secret values,
-  money, laws, sanctions, STOP ALL and RESUME, node join codes, the owner token, and provider keys (see the Never
+  laws, STOP ALL and RESUME, node join codes, the owner token, and provider keys (see the Never
   list below). A `govern` tool does nothing on its own. It files an approval, which the owner decides in the
   console, as the plaza's C-tier rule already requires ("allow with confirmation").
 - **Everything is audited.** Each call is logged with its token, tool, an argument digest, the outcome and its
@@ -91,7 +91,7 @@ namespace them.
 
 | Tool | Input | Returns |
 |---|---|---|
-| `plaza_status` | none | hub version, plaza state (running or held), counts (agents by status, open tasks, pending approvals), treasury balance |
+| `plaza_status` | none | hub version, plaza state (running or held), counts (agents by status, open tasks, pending approvals) |
 | `list_agents` | `role?`, `status?`, `limit?` (≤200), `cursor?` | agents: cid, name, role, tier, status, node, model, current task |
 | `get_agent` | `cid` | profile, limits, permissions summary, current task, last activity |
 | `get_transcript` | `cid`, `after?`, `limit?` (≤200) | transcript entries (role, text, time); tool results truncated to 4 KB each |
@@ -103,7 +103,6 @@ namespace them.
 | `project_graph` | `project` | the project's tasks in the order their `after` links let them run (`GET /v1/projects/{id}/graph`): each task's depth, state, readiness, claimant, reviewer and current step; the links as `[from, to]` edges; the frontier; the longest chain still to finish; the ready tasks waiting for an agent, by role |
 | `list_approvals` | `status?` (default `pending`) | approval requests: id, kind, who asks, what, risk, created |
 | `list_machines` | none | machines: name, kind, status, CPU, memory, GPUs, agents running |
-| `treasury_summary` | `window?` (`day` or `week`) | balances, recent journal entries, spend by agent |
 | `usage_summary` | `window?` | model calls, tokens and cost by provider and model |
 | `search_library` | `query`, `limit?` | library packages and files that match, with their versions |
 | `list_laws` | none | the laws in force: id, tier, text, overrides |
@@ -124,14 +123,13 @@ namespace them.
 | `restart_agent` | `cid` | Restarts one agent's VM. |
 | `propose_agent` | `role`, `model?`, `node?`, `why` | Files an agent proposal. Spawning costs money, so the owner approves it in the console. |
 | `prompt_propose` | `id`, `body`, `note?`, `base_version` | Adds a version to a prompt, authored over MCP. It never publishes; returns the version, whether it was created, its score and error count. |
-| `skill_propose` | `id`, `skill_md`, `files`, `base_version`, `note?` | Adds a version to a skill, authored over MCP (`files`: `{path, content_b64 \| sha256, executable}`). It never publishes; returns the version, its score and error count. |
+| `skill_propose` | `id`, `skill_md`, `files`, `base_version`, `note?` | Adds a version to a skill, authored over MCP (`files`: `{path, content_b64 \| hash, executable}`). It never publishes; returns the version, its score and error count. |
 
 ### `govern`: files an approval, never acts directly
 
 | Tool | Input | Effect |
 |---|---|---|
 | `request_decision` | `approval_id`, `decision` (`approve` or `deny`), `note` | Records the client's recommendation on a pending approval and notifies the owner. The approval is decided only when the owner confirms it in the console or the CLI. |
-| `propose_law_change` | `law`, `change`, `why` | Files a council motion, which the plaza votes on under its own process. |
 | `prompt_publish` | `id`, `version` | Publishes one version as the live one. Refused while the version has error-level findings. |
 | `skill_publish` | `id`, `version` | Publishes one skill version as the live one. Refused while the version has error-level findings. |
 
@@ -143,10 +141,7 @@ These have no tool, and a test asserts that `tools/list` never contains anything
 - provider keys and secrets;
 - the owner token;
 - node join codes;
-- treasury mint, fine and transfers;
-- payments;
 - law edits and overrides;
-- sanctions;
 - STOP ALL and RESUME;
 - Foundry promote and retire;
 - connector secrets;

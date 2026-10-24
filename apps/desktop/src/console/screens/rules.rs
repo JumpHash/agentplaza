@@ -1,6 +1,6 @@
 //! The Rules screen (parity with the web console's `rules` view): the plaza's laws (JHRL) by tier
 //! with filters, each built-in statute with its override, the owner's own rules in a checked JHRL
-//! editor, each statute's recent refusals, the latest infractions beside them, and the strict permits switch.
+//! editor, each statute's recent refusals, and the strict permits switch.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use super::Id;
 use super::tools::encode;
 use crate::console::ui::{self, Kind, Tone};
-use crate::console::{Ctx, client, events};
+use crate::console::{Ctx, client, events, roles};
 use crate::theme::SANS;
 
 /// The tier of the constitution: switching one of its laws off needs its id typed in.
@@ -29,10 +29,6 @@ const SANS_SEMIBOLD: Font = Font {
     ..SANS
 };
 
-const DAY_MS: i64 = 86_400_000;
-const INFRACTION_FETCH: usize = 200;
-const LATEST_SHOWN: usize = 20;
-const VIOLATION_LIMIT: usize = 50;
 const INTRO: &str = "The laws the plaza ships with, and the owner’s own JHRL rules.";
 const OWNER_DESC: &str = "Laws you write in JHRL. A rule takes effect once its source compiles; its laws stop applying when the rule is disabled or deleted.";
 const BUILTIN_DESC: &str = "The laws the plaza ships with. Disabling one asks for a reason, and the reason stays with the override until the statute is enabled again.";
@@ -80,11 +76,11 @@ pub enum Effect {
     Forbid,
 }
 
-/// An agent named by a law's usage.
+/// An agent in a law's usage, by its label.
 #[derive(Debug, Clone)]
 pub struct LawAgent {
     cid: u64,
-    name: String,
+    label: String,
     count: i64,
 }
 
@@ -168,35 +164,12 @@ pub struct SaveFailure {
     diagnostics: Vec<Diagnostic>,
 }
 
-/// One violation of a law (`GET /v1/laws/violations`).
-#[derive(Debug, Clone)]
-pub struct Violation {
-    cid: u64,
-    at_ms: i64,
-    tool: String,
-    detail: String,
-    agent_name: String,
-}
-
-/// One infraction (`GET /v1/infractions`).
-#[derive(Debug, Clone)]
-pub struct Infraction {
-    cid: u64,
-    law: String,
-    at_ms: i64,
-    tool: String,
-    detail: String,
-    law_title: String,
-    agent_name: String,
-}
-
-/// What a refresh reads: the laws, the owner's rules, the strict permits switch and the infractions.
+/// What a refresh reads: the laws, the owner's rules and the strict permits switch.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     laws: Vec<Law>,
     rules: Vec<Rule>,
     strict: bool,
-    recent: Vec<Infraction>,
 }
 
 #[derive(Debug, Default)]
@@ -208,7 +181,6 @@ pub struct State {
     laws: Vec<Law>,
     rules: Vec<Rule>,
     strict: bool,
-    recent: Vec<Infraction>,
     /// The statute filters: the search text, the effect, the severity and the tier.
     query: String,
     effect: Effect,
@@ -234,9 +206,6 @@ pub struct State {
     disable: Option<Named>,
     /// Whether the rule editor is open (New rule, or Edit on a rule).
     editor_open: bool,
-    /// The law whose violations are open, and its rows (None while they load).
-    selected_law: Option<String>,
-    violations: Option<Result<Vec<Violation>, String>>,
     /// The constitutional law whose switch-off dialog is open, and the id typed into it so far.
     switch_off: Option<SwitchOff>,
 }
@@ -269,7 +238,6 @@ pub enum Msg {
     Deleted(Result<String, String>),
     Saved(Result<Rule, SaveFailure>),
     Checked(Result<Checked, String>),
-    ViolationsLoaded(String, Result<Vec<Violation>, String>),
     Query(String),
     Effect(Effect),
     Severity(Option<&'static str>),
@@ -289,9 +257,8 @@ pub enum Msg {
     CancelDisable,
     /// The id typed into the open switch-off dialog.
     TypeConfirm(String),
-    /// A hub event: a law, agent or violation change reloads the screen.
+    /// A hub event: a law or agent change reloads the screen.
     Event(events::Event),
-    SelectLaw(String),
     NewRule,
     SelectRule(String),
     /// Closes the rule editor.
@@ -330,16 +297,13 @@ pub fn go(msg: &Msg) -> Option<Id> {
     }
 }
 
-/// Loads the laws, the owner's rules and the latest infractions (called when it opens and on every
-/// poll tick). An open law's violations reload with them.
-pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
+/// Loads the laws and the owner's rules (called when it opens and on every poll tick).
+pub fn load(_state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let client = ctx.client.clone();
-    let snapshot = client::task(
+    client::task(
         move || {
             let laws = client.get::<Value>("/v1/laws")?;
             let rules = client.get::<Value>("/v1/laws/rules")?;
-            let infractions =
-                client.get::<Value>(&format!("/v1/infractions?limit={INFRACTION_FETCH}"))?;
             Ok(Snapshot {
                 laws: parse_laws(&laws),
                 rules: parse_rules(&rules),
@@ -347,15 +311,10 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                     .get("strict_permits")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
-                recent: parse_infractions(&infractions),
             })
         },
         Msg::Loaded,
-    );
-    match state.selected_law.clone() {
-        Some(law) => Task::batch([snapshot, fetch_violations(ctx, law)]),
-        None => snapshot,
-    }
+    )
 }
 
 pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
@@ -365,7 +324,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.laws = snapshot.laws;
             state.rules = snapshot.rules;
             state.strict = snapshot.strict;
-            state.recent = snapshot.recent;
             state.loaded = true;
             state.error = None;
         }
@@ -420,11 +378,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 Err(e) => state.action_error = Some(e),
             }
         }
-        Msg::ViolationsLoaded(law, result) => {
-            if state.selected_law.as_deref() == Some(law.as_str()) {
-                state.violations = Some(result);
-            }
-        }
         Msg::Query(q) => state.query = q,
         Msg::Effect(e) => state.effect = e,
         Msg::Severity(s) => state.severity = s,
@@ -476,7 +429,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Event(event) => {
-            if event.kind == "law" || event.kind == "agent" || event.kind == "violation" {
+            if event.kind == "law" || event.kind == "agent" {
                 return load(state, ctx);
             }
         }
@@ -527,16 +480,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 move || client.call("PUT", &path, Some(&body)).map(|_| line),
                 Msg::Done,
             );
-        }
-        Msg::SelectLaw(id) => {
-            if state.selected_law.as_deref() == Some(id.as_str()) {
-                state.selected_law = None;
-                state.violations = None;
-            } else {
-                state.selected_law = Some(id.clone());
-                state.violations = None;
-                return fetch_violations(ctx, id);
-            }
         }
         Msg::NewRule => {
             clear_editor(state);
@@ -709,8 +652,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         if let Some(line) = &state.notice {
             body.push(ui::faint(line.clone()).into());
         }
-        body.push(stats(state, now));
-        // The web's two columns: the screen's cards on the left, the latest infractions on the right.
+        body.push(stats(state));
         let main = column![
             panel(
                 panel_head("Strict permits", Some(strict_switch(state))),
@@ -737,17 +679,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
         ]
         .spacing(GAP)
         .width(Length::Fill);
-        let side = container(panel(
-            panel_head("Latest infractions", None),
-            infractions(state, now),
-        ))
-        .width(Length::Fixed(340.0));
-        body.push(
-            row![main, side]
-                .spacing(GAP)
-                .align_y(Alignment::Start)
-                .into(),
-        );
+        body.push(main.into());
     }
     // The web's dialogs lay over the screen: the switch-off, the disable and the delete.
     let dialog = state
@@ -816,7 +748,14 @@ fn constitution_banner<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
     );
     let links: Vec<Element<'a, Msg>> = off
         .iter()
-        .map(|l| ui::link(&l.id, Msg::SelectLaw(l.id.clone()), true))
+        .map(|l| {
+            ui::mono(
+                l.id.clone(),
+                crate::theme::TYPE_META,
+                crate::theme::palette().warn,
+            )
+            .into()
+        })
         .collect();
     Some(
         container(
@@ -980,7 +919,7 @@ fn delete_dialog<'a>(state: &'a State, dialog: &'a Named) -> Option<Element<'a, 
     ))
 }
 
-/// The hub's events for this screen: a law, agent or violation change on the hub reloads it.
+/// The hub's events for this screen: a law or agent change on the hub reloads it.
 pub fn subscription(ctx: &Ctx) -> Subscription<Msg> {
     events::subscription(&ctx.client).map(Msg::Event)
 }
@@ -1051,19 +990,6 @@ fn set_strict(client: &client::Client, on: bool) -> Result<(), String> {
         .map(|_| ())
 }
 
-fn fetch_violations(ctx: &Ctx, law: String) -> Task<Msg> {
-    let client = ctx.client.clone();
-    let path = format!(
-        "/v1/laws/violations?law={}&limit={VIOLATION_LIMIT}",
-        encode(&law)
-    );
-    let key = law.clone();
-    client::task(
-        move || client.get::<Value>(&path).map(|v| parse_violations(&v)),
-        move |r| Msg::ViolationsLoaded(key.clone(), r),
-    )
-}
-
 fn clear_editor(state: &mut State) {
     state.editing = None;
     state.title.clear();
@@ -1110,10 +1036,13 @@ fn parse_law(v: &Value) -> Law {
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
-                .map(|x| LawAgent {
-                    cid: x.get("cid").and_then(Value::as_u64).unwrap_or(0),
-                    name: text_of(x, "name"),
-                    count: int_of(x, "count"),
+                .map(|x| {
+                    let cid = x.get("cid").and_then(Value::as_u64).unwrap_or(0);
+                    LawAgent {
+                        cid,
+                        label: roles::agent_label(&text_of(x, "role"), cid),
+                        count: int_of(x, "count"),
+                    }
                 })
                 .collect()
         })
@@ -1206,40 +1135,6 @@ fn parse_checked(v: &Value) -> Checked {
         laws: strings_of(v, "laws"),
         would_refuse,
     }
-}
-
-fn parse_violations(v: &Value) -> Vec<Violation> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .map(|x| Violation {
-                    cid: x.get("cid").and_then(Value::as_u64).unwrap_or(0),
-                    at_ms: int_of(x, "at_ms"),
-                    tool: text_of(x, "tool"),
-                    detail: text_of(x, "detail"),
-                    agent_name: text_of(x, "agent_name"),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn parse_infractions(v: &Value) -> Vec<Infraction> {
-    v.as_array()
-        .map(|a| {
-            a.iter()
-                .map(|x| Infraction {
-                    cid: x.get("cid").and_then(Value::as_u64).unwrap_or(0),
-                    law: text_of(x, "law"),
-                    at_ms: int_of(x, "at_ms"),
-                    tool: text_of(x, "tool"),
-                    detail: text_of(x, "detail"),
-                    law_title: text_of(x, "law_title"),
-                    agent_name: text_of(x, "agent_name"),
-                })
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// The tier a law belongs to, read from its tier field, then from the file it lives in.
@@ -1427,23 +1322,15 @@ fn stat_cell<'a>(label: &'static str, value: String) -> Element<'a, Msg> {
     .into()
 }
 
-fn stats<'a>(state: &State, now: i64) -> Element<'a, Msg> {
+fn stats<'a>(state: &State) -> Element<'a, Msg> {
     let ready = state.loaded;
     let figure = |v: String| if ready { v } else { "—".to_string() };
     let forbids = state.laws.iter().filter(|l| l.effect == "forbid").count();
-    let cut = now - 30 * DAY_MS;
-    let n30 = state.recent.iter().filter(|i| i.at_ms >= cut).count();
-    let n30_text = if state.recent.len() >= INFRACTION_FETCH {
-        format!("{n30}+")
-    } else {
-        n30.to_string()
-    };
-    // The web's `.rl-strip`: four stat cards in a row.
+    // The web's `.rl-strip`: three stat cards in a row.
     row![
         stat_cell("Laws", figure(state.laws.len().to_string())),
         stat_cell("Allows", figure((state.laws.len() - forbids).to_string())),
         stat_cell("Forbids", figure(forbids.to_string())),
-        stat_cell("Infractions, 30 days", figure(n30_text)),
     ]
     .spacing(GAP)
     .width(Length::Fill)
@@ -1638,7 +1525,7 @@ fn usage<'a>(l: &Law, now: i64) -> Element<'a, Msg> {
     let mut items: Vec<Element<'a, Msg>> = vec![ui::faint(line).into()];
     for a in &l.agents {
         items.push(link(
-            &format!("{} ({})", a.name, a.count),
+            &format!("{} ({})", a.label, a.count),
             Msg::Go(Id::Agent(a.cid)),
         ));
     }
@@ -1730,7 +1617,6 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
     if l.refusals > 0 {
         body.push(usage(l, now));
     }
-    body.push(recent_refusals(state, l, now));
     body.push(override_control(state, l, now));
     body.push(source_block(l, open));
 
@@ -1740,31 +1626,6 @@ fn statute<'a>(state: &'a State, l: &'a Law, open: bool, now: i64) -> Element<'a
         .width(Length::Fill)
         .style(ui::card_style)
         .into()
-}
-
-/// The law's recent refusals, as the web's expander: its count, and the list once it is the selected law.
-fn recent_refusals<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, Msg> {
-    let open = state.selected_law.as_deref() == Some(l.id.as_str());
-    let toggle = ui::link(
-        &format!("Recent refusals ({})", l.refusals),
-        Msg::SelectLaw(l.id.clone()),
-        false,
-    );
-    if open {
-        column![
-            toggle,
-            container(violation_list(state, now)).padding(Padding {
-                top: 0.0,
-                right: 0.0,
-                bottom: 0.0,
-                left: 16.0,
-            }),
-        ]
-        .spacing(8)
-        .into()
-    } else {
-        toggle
-    }
 }
 
 /// The switch for a statute: a reason field and "Switch off" while it is on; who switched it off,
@@ -1803,18 +1664,6 @@ fn override_control<'a>(state: &'a State, l: &'a Law, now: i64) -> Element<'a, M
             )
         }
     }
-}
-
-/// Items with a hairline between them.
-fn divided<'a>(items: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let mut col = column![].spacing(14).width(Length::Fill);
-    for (i, item) in items.into_iter().enumerate() {
-        if i > 0 {
-            col = col.push(ui::hairline::<Msg>());
-        }
-        col = col.push(item);
-    }
-    col.into()
 }
 
 fn owner_rules<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
@@ -2062,13 +1911,12 @@ fn check_result<'a>(c: &Checked, now: i64) -> Element<'a, Msg> {
 }
 
 fn refusal_row<'a>(w: &Refusal, now: i64) -> Element<'a, Msg> {
-    let who = if w.role.is_empty() {
-        format!("Agent {}", w.cid)
-    } else {
-        format!("Agent {} as {}", w.cid, w.role)
-    };
     column![
-        ui::sans(who, 12.0, crate::theme::palette().ink_2),
+        ui::sans(
+            roles::agent_label(&w.role, w.cid),
+            12.0,
+            crate::theme::palette().ink_2
+        ),
         ui::faint(format!(
             "{} · {} · {}",
             or(&w.tool, "a tool"),
@@ -2078,140 +1926,6 @@ fn refusal_row<'a>(w: &Refusal, now: i64) -> Element<'a, Msg> {
     ]
     .spacing(2)
     .into()
-}
-
-fn violation_list<'a>(state: &'a State, now: i64) -> Element<'a, Msg> {
-    match &state.violations {
-        None => ui::loading(),
-        Some(Err(e)) => ui::error_line(&format!("The violations could not be loaded: {e}")),
-        Some(Ok(rows)) if rows.is_empty() => {
-            ui::faint("No violations recorded for this law.").into()
-        }
-        Some(Ok(rows)) => divided(rows.iter().map(|v| violation_row(v, now)).collect()),
-    }
-}
-
-fn violation_row<'a>(v: &Violation, now: i64) -> Element<'a, Msg> {
-    let agent = if v.agent_name.is_empty() {
-        format!("agent {}", v.cid)
-    } else {
-        v.agent_name.clone()
-    };
-    let mut meta: Vec<Element<'a, Msg>> = Vec::new();
-    if !v.tool.is_empty() {
-        meta.push(ui::mono(v.tool.clone(), 12.0, crate::theme::palette().ink_3).into());
-    }
-    if !v.detail.is_empty() {
-        meta.push(ui::faint(v.detail.clone()).into());
-    }
-    meta.push(ui::faint(ago(v.at_ms, now)).into());
-    column![
-        button(
-            text(agent)
-                .font(SANS)
-                .size(14.0)
-                .color(crate::theme::palette().ink)
-        )
-        .padding([0, 0])
-        .style(link_style)
-        .on_press(Msg::Go(Id::Agent(v.cid))),
-        row(meta).spacing(10).align_y(Alignment::Center),
-    ]
-    .spacing(4)
-    .into()
-}
-
-fn infractions<'a>(state: &State, now: i64) -> Element<'a, Msg> {
-    let body: Element<'a, Msg> = if !state.loaded {
-        ui::loading()
-    } else {
-        let mut latest: Vec<&Infraction> = state.recent.iter().collect();
-        latest.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
-        latest.truncate(LATEST_SHOWN);
-        if latest.is_empty() {
-            ui::faint("No infractions yet.").into()
-        } else {
-            let mut rows = column![].width(Length::Fill);
-            for (k, i) in latest.into_iter().enumerate() {
-                if k > 0 {
-                    rows = rows.push(
-                        container(Space::new().height(1.0))
-                            .width(Length::Fill)
-                            .style(|_: &Theme| container::Style {
-                                background: Some(crate::theme::palette().rule_faint.into()),
-                                ..Default::default()
-                            }),
-                    );
-                }
-                rows = rows.push(infraction_row(i, now));
-            }
-            rows.into()
-        }
-    };
-    body
-}
-
-fn infraction_row<'a>(i: &Infraction, now: i64) -> Element<'a, Msg> {
-    let agent = if i.agent_name.is_empty() {
-        format!("agent {}", i.cid)
-    } else {
-        i.agent_name.clone()
-    };
-    let law = if i.law_title.is_empty() {
-        i.law.clone()
-    } else {
-        i.law_title.clone()
-    };
-    let mut meta: Vec<Element<'a, Msg>> = Vec::new();
-    if !i.tool.is_empty() {
-        meta.push(ui::mono(i.tool.clone(), 12.0, crate::theme::palette().ink_3).into());
-    }
-    if !i.detail.is_empty() {
-        meta.push(
-            text(i.detail.clone())
-                .font(SANS)
-                .size(12.0)
-                .color(crate::theme::palette().ink_3)
-                .into(),
-        );
-    }
-    meta.push(
-        text(ago(i.at_ms, now))
-            .font(SANS)
-            .size(12.0)
-            .color(crate::theme::palette().ink_3)
-            .into(),
-    );
-    let line = row![
-        button(
-            text(agent)
-                .font(SANS)
-                .size(14.0)
-                .color(crate::theme::palette().ink)
-        )
-        .padding(0.0)
-        .style(link_style)
-        .on_press(Msg::Go(Id::Agent(i.cid))),
-        text("violated")
-            .font(SANS)
-            .size(14.0)
-            .color(crate::theme::palette().ink_2),
-        text(law)
-            .font(SANS)
-            .size(14.0)
-            .color(crate::theme::palette().ink),
-    ]
-    .spacing(6)
-    .align_y(Alignment::Center);
-    column![line, row(meta).spacing(10).align_y(Alignment::Center)]
-        .spacing(4)
-        .padding(Padding {
-            top: 12.0,
-            right: 0.0,
-            bottom: 12.0,
-            left: 0.0,
-        })
-        .into()
 }
 
 /// The strict permits switch, in the card's head as the web's: its state as the label, off while an action runs.

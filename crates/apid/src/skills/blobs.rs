@@ -1,111 +1,43 @@
-//! `Blobs` for skill files: `FsBlobs` under `<state_dir>/skills/blobs/<sha256>`, and `LibraryBlobs` in Garage through
-//! the Library's store (`deliverables::Store`), under the key `skills/<sha256>`.
+//! `Blobs` for skill files: `StoreBlobs` keeps them in the hub's object store (`apz_blobs::Blobs`, in `<state_dir>/blobs`)
+//! under their BLAKE3 hash, next to every other blob the hub holds. Nothing deletes bytes here: a row that goes drops its
+//! reference, and the hub's sweep frees the bytes no row names (`Skills::hashes` lists the skill files' roots).
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{Blobs, sha256_hex};
+use super::Blobs;
 
-/// A sha256 as the stores name blobs: 64 lower-case hex characters.
-fn valid_sha(sha256: &str) -> bool {
-    sha256.len() == 64
-        && sha256
-            .bytes()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+/// Skill files in the hub's object store.
+pub struct StoreBlobs {
+    blobs: Arc<apz_blobs::Blobs>,
 }
 
-fn checked(sha256: &str, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
-    if sha256_hex(&bytes) == sha256 {
-        Ok(bytes)
-    } else {
-        Err(format!("the bytes under {sha256} do not hash to it"))
+impl StoreBlobs {
+    pub fn new(blobs: Arc<apz_blobs::Blobs>) -> StoreBlobs {
+        StoreBlobs { blobs }
     }
 }
 
-pub struct FsBlobs {
-    dir: PathBuf,
-}
-
-impl FsBlobs {
-    pub fn open(state_dir: &Path) -> FsBlobs {
-        FsBlobs {
-            dir: state_dir.join("skills").join("blobs"),
-        }
-    }
-
-    fn path(&self, sha256: &str) -> Result<PathBuf, String> {
-        if !valid_sha(sha256) {
-            return Err(format!("{sha256} is not a sha256"));
-        }
-        Ok(self.dir.join(sha256))
+/// A hash as the rows hold it: 64 lower-case hex digits.
+fn parse_hash(text: &str) -> Result<apz_blobs::Hash, String> {
+    match text.parse::<apz_blobs::Hash>() {
+        Ok(hash) if hash.hex() == text => Ok(hash),
+        _ => Err(format!("{text} is not a hash (64 lower-case hex digits)")),
     }
 }
 
-impl Blobs for FsBlobs {
+impl Blobs for StoreBlobs {
     fn put(&self, bytes: &[u8]) -> Result<String, String> {
-        let sha256 = sha256_hex(bytes);
-        let path = self.path(&sha256)?;
-        if path.is_file() {
-            return Ok(sha256);
+        Ok(self.blobs.put(bytes)?.hex())
+    }
+
+    fn get(&self, hash: &str) -> Result<Vec<u8>, String> {
+        let want = parse_hash(hash)?;
+        let bytes = self.blobs.get(&want)?;
+        // The store checks only the large (chunked) blobs it reads, so every read is checked here.
+        if apz_blobs::Hash::of(&bytes) == want {
+            Ok(bytes)
+        } else {
+            Err(format!("the bytes under {hash} do not hash to it"))
         }
-        std::fs::create_dir_all(&self.dir)
-            .map_err(|e| format!("creating {}: {e}", self.dir.display()))?;
-        // A temporary name no other write uses, so two writers of the same bytes never share one file.
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let tmp = self.dir.join(format!(
-            ".{sha256}.{}.{}.tmp",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let written = std::fs::File::create(&tmp)
-            .and_then(|mut f| {
-                use std::io::Write;
-                f.write_all(bytes)?;
-                f.sync_all()
-            })
-            .and_then(|()| std::fs::rename(&tmp, &path));
-        if let Err(e) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("writing {}: {e}", path.display()));
-        }
-        Ok(sha256)
-    }
-
-    fn get(&self, sha256: &str) -> Result<Vec<u8>, String> {
-        let path = self.path(sha256)?;
-        let bytes = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
-        checked(sha256, bytes)
-    }
-}
-
-/// Skill files in the Library's object store (Garage when it is configured, else its local folder).
-pub struct LibraryBlobs {
-    library: Arc<crate::deliverables::Store>,
-}
-
-impl LibraryBlobs {
-    pub fn new(library: Arc<crate::deliverables::Store>) -> LibraryBlobs {
-        LibraryBlobs { library }
-    }
-}
-
-fn library_key(sha256: &str) -> Result<String, String> {
-    if !valid_sha(sha256) {
-        return Err(format!("{sha256} is not a sha256"));
-    }
-    Ok(format!("skills/{sha256}"))
-}
-
-impl Blobs for LibraryBlobs {
-    fn put(&self, bytes: &[u8]) -> Result<String, String> {
-        let sha256 = sha256_hex(bytes);
-        self.library.put_object(&library_key(&sha256)?, bytes)?;
-        Ok(sha256)
-    }
-
-    fn get(&self, sha256: &str) -> Result<Vec<u8>, String> {
-        let bytes = self.library.get_object(&library_key(sha256)?)?;
-        checked(sha256, bytes)
     }
 }

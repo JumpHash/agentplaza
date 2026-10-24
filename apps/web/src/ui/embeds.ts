@@ -6,6 +6,7 @@
 // (the hub sends no TTL) and failures for one. A chip or card that is waiting shows its neutral state and upgrades
 // when its answer lands.
 
+import { agentLabelIn } from '../roles';
 import '../styles/embeds.css';
 import { api, type UnfurlAnswer, type UnfurlCard } from '../api';
 import { artifactHref } from '../api-artifacts';
@@ -20,7 +21,7 @@ import { label, targetOf, type AgentName, type Ref, type RefSpan, type RichCtx }
 
 /** What markdown needs to render rich content: the classifier's context and the handlers for clicks. */
 export interface EmbedContext extends RichCtx {
-  /** An agent was chosen: its cid when the text gives one or the name resolves to one, else its name. */
+  /** An agent was chosen: its cid when the text gives one, else its name (a legacy `@Name`; agents have no names now). */
   openAgent?: (who: number | string) => void;
   /** A task by its number (`task #528`). */
   openTask?: (number: number) => void;
@@ -394,7 +395,7 @@ function leading(r: Ref): Node | null {
 function cidOf(r: Extract<Ref, { kind: 'agent' }>, embeds: EmbedContext): number | null {
   if (r.cid !== null) return r.cid;
   if (r.name === null) return null;
-  const known = embeds.agents?.find((a: AgentName) => a.name === r.name) ?? roster.get().find((a) => a.name === r.name);
+  const known = embeds.agents?.find((a: AgentName) => a.name === r.name);
   return known ? known.cid : null;
 }
 
@@ -446,8 +447,7 @@ function chip(r: Ref, raw: string, text: string | null, embeds: EmbedContext): H
   const target = targetOf(raw);
   const href = forge && /^https?:\/\//i.test(target) ? target : null;
   const agentCid = r.kind === 'agent' ? cidOf(r, embeds) : null;
-  const agentName = r.kind === 'agent' ? (r.name ?? embeds.agents?.find((a) => a.cid === agentCid)?.name ?? null) : null;
-  const shown = text || (agentName ? `@${agentName}` : label(r));
+  const shown = text || (r.kind === 'agent' && r.name !== null ? `@${r.name}` : agentCid !== null ? agentLabelIn(roster.get(), agentCid) : label(r));
   const action = actionFor(r, embeds);
   const hasCard = carded(r.kind) || previewable(r, embeds);
 
@@ -797,14 +797,9 @@ export function refNode(value: RefSpan['value'], embeds: EmbedContext): HTMLElem
   }
 }
 
-/** An agent by its cid, or by its name (the roster's). Opens its page; a name nobody holds opens nothing. */
+/** An agent's page, by its cid. Agents have no names, so a name opens nothing. */
 function openAgentPage(who: number | string): void {
-  if (typeof who === 'number') {
-    go('agents', who);
-    return;
-  }
-  const known = roster.get().find((a) => a.name === who);
-  if (known) go('agents', known.cid);
+  if (typeof who === 'number') go('sessions', who);
 }
 
 /** A library item opens on the Library (a deliverable by its id); a library tool (`name/version`) on the Tools screen. */
@@ -813,19 +808,15 @@ function openLibraryPage(id: string): void {
   else go('library', id);
 }
 
-/** The page's rich-content context: the agent roster (names to cids), the hub's own host, and the handlers that open an
- * agent's page, a task and a library item. A page passes what it knows in `extra`: the project and the workspace paths
+/** The page's rich-content context: the hub's own host, and the handlers that open an agent's page, a task and a library
+ * item. A page passes what it knows in `extra`: the project and the workspace paths
  * (the IDE), and its own handlers. */
 export function embedContextFromStore(extra: Partial<EmbedContext> = {}): EmbedContext {
-  const names = roster
-    .get()
-    .filter((a) => a.name !== '')
-    .map((a) => ({ name: a.name, cid: a.cid }));
   return {
     project: null,
     hub_host: typeof location === 'undefined' ? null : location.host,
     paths: [],
-    agents: names,
+    agents: [],
     openAgent: openAgentPage,
     openTask: (number) => go('tasks', number),
     openLibrary: openLibraryPage,

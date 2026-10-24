@@ -4,18 +4,23 @@
 //! instance was started with.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use apz_sandbox::{Network, Spec};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::client::{Client, Error, ServerInfo, ToolInfo};
-use super::config::{McpServer, Setting, Transport as Wire, volume_name};
-use super::egress::{Egress, Lease, proxy_env};
+use super::config::{McpServer, Package, Setting, TransportKind};
+use super::egress::Egress;
 use super::http::{HttpTransport, Policy, check_endpoint};
-use super::stdio::{LaunchSpec, Launcher, StdioTransport, push_capped};
+use super::runtimes::{Fetch, Runtimes};
+use super::stdio::{self, Child, Launcher, Layout, StdioTransport, push_capped};
+use super::vm::{self, VmHost};
 use super::{McpSecrets, OnBehalf};
+use crate::fleet::LOCAL;
 
 /// Failures in this window count toward giving up.
 pub const FAILURE_WINDOW_MS: u64 = 10 * 60_000;
@@ -25,6 +30,10 @@ pub const MAX_FAILURES: usize = 5;
 pub const MAX_BACKOFF_MS: u64 = 60_000;
 /// How long a handshake may take.
 const HANDSHAKE: Duration = Duration::from_secs(30);
+/// How long a stdio server's handshake may take: a PyPI package is installed by `uv tool run` on its first start.
+const STDIO_HANDSHAKE: Duration = Duration::from_secs(120);
+/// The marker an npm install leaves in the server's `pkg/`: the `name@version` it installed.
+const MARK_INSTALLED: &str = ".apz-installed";
 /// Stderr lines kept per instance.
 const LOG_LINES: usize = 200;
 /// The text that stands in for a secret.
@@ -52,6 +61,8 @@ pub struct LogLine {
 #[derive(Default)]
 struct State {
     status: Status,
+    /// How the instance runs: in a microVM, or under the sandbox and why not.
+    launcher: String,
     last_used_ms: u64,
     idle_ms: u64,
     last_error: Option<String>,
@@ -114,6 +125,8 @@ pub struct Probe {
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
     pub status: Status,
+    /// How the server's instance runs ("vm", or "sandbox: <why>"); empty before it has started.
+    pub launcher: String,
     pub last_used_ms: u64,
     pub last_error: Option<String>,
     pub server_info: Option<ServerInfo>,
@@ -123,8 +136,13 @@ pub struct Summary {
 pub struct Runtime {
     launcher: Arc<dyn Launcher>,
     slots: Mutex<BTreeMap<(String, String), Arc<Slot>>>,
-    /// The egress proxy stdio containers reach the network through. None runs containers without one (tests).
+    /// The egress proxy stdio servers reach the network through. None runs them with no network (tests).
     egress: Option<Arc<Egress>>,
+    /// The microVM host of this hub's node. None runs every server under the sandbox.
+    vm: Option<Arc<dyn VmHost>>,
+    /// Where the servers' directories (`<state>/mcp/<id>/`) and the runtimes (`<state>/runtimes/`) are.
+    state_dir: PathBuf,
+    runtimes: Runtimes,
 }
 
 /// The backoff before restart number `failures` (1 s, 2 s, 4 s … capped at 60 s).
@@ -269,23 +287,53 @@ pub fn shape(result: &Value, secrets: &[String], cap: usize) -> (String, bool, V
 }
 
 impl Runtime {
-    /// A runtime whose stdio servers get no network proxy: their launches are not isolated (tests only).
-    #[cfg(test)]
-    pub fn new(launcher: Arc<dyn Launcher>) -> Runtime {
+    /// A runtime for stdio servers: they run under `launcher`, reach the network only through `egress` (when it is
+    /// given), and provision their runtimes and binaries through `fetch`.
+    pub fn new(
+        state_dir: PathBuf,
+        fetch: Arc<dyn Fetch>,
+        launcher: Arc<dyn Launcher>,
+        egress: Option<Arc<Egress>>,
+    ) -> Runtime {
         Runtime {
             launcher,
             slots: Mutex::new(BTreeMap::new()),
-            egress: None,
+            egress,
+            vm: None,
+            runtimes: Runtimes::new(&state_dir, fetch),
+            state_dir,
         }
     }
 
-    /// A runtime whose stdio servers reach the network only through `egress`.
-    pub fn with_egress(launcher: Arc<dyn Launcher>, egress: Arc<Egress>) -> Runtime {
-        Runtime {
-            launcher,
-            slots: Mutex::new(BTreeMap::new()),
-            egress: Some(egress),
+    /// Runs the servers of this hub's node in microVMs that `vm` boots, when it can (see [`Runtime::microvm`]).
+    pub fn with_vm(mut self, vm: Arc<dyn VmHost>) -> Runtime {
+        self.vm = Some(vm);
+        self
+    }
+
+    /// Removes a stdio server's data directory (its storage) and the storage its microVM keeps. Its installed packages
+    /// and binaries stay.
+    pub fn purge_data(&self, server_id: &str) -> Result<(), String> {
+        if let Some(vm) = &self.vm {
+            vm.purge(server_id)?;
         }
+        let data = Layout::new(&self.state_dir, server_id).data;
+        match std::fs::remove_dir_all(&data) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("cannot remove {}: {e}", data.display())),
+        }
+    }
+
+    /// The microVM host that runs a server for `node`, or why the sandbox runs it instead. Only this hub's own node
+    /// has microVMs the hub can reach.
+    fn microvm(&self, node: &str) -> Result<&Arc<dyn VmHost>, String> {
+        if node != LOCAL {
+            return Err(format!("node {node} is not this hub's node"));
+        }
+        let vm = self.vm.as_ref().ok_or("this hub has no microVM host")?;
+        vm.available()?;
+        Ok(vm)
     }
 
     fn slot(&self, server: &str, node: &str) -> Arc<Slot> {
@@ -429,7 +477,11 @@ impl Runtime {
             }
         }
         // Secrets resolve before anything starts; a refused resolution is not a failure of the server.
-        let resolved = match resolve(server, ctx) {
+        let data_dir = Layout::new(&self.state_dir, &server.id)
+            .data
+            .to_string_lossy()
+            .into_owned();
+        let resolved = match resolve(server, ctx, &data_dir) {
             Ok(resolved) => resolved,
             Err(why) => {
                 record_failure(&mut lock(&slot.state), ctx.now, &why);
@@ -437,72 +489,21 @@ impl Runtime {
             }
         };
         lock(&slot.state).secrets = resolved.secrets.clone();
-        let transport: Box<dyn super::client::Transport> = match &server.transport {
-            Wire::Stdio {
-                image,
-                command,
-                workdir,
-            } => {
-                let lease: Option<Lease> = match &self.egress {
-                    Some(egress) => {
-                        match egress.attach(&server.id, server.allow_private, &ctx.blocklist) {
-                            Ok(lease) => Some(lease),
-                            Err(why) => {
-                                record_failure(&mut lock(&slot.state), ctx.now, &why);
-                                return Err(format!("{} did not start: {why}", server.id));
-                            }
-                        }
-                    }
-                    None => None,
-                };
-                let mut env = resolved.env;
-                if let Some(lease) = &lease {
-                    env.extend(proxy_env(lease.proxy()));
-                }
-                let spec = LaunchSpec {
-                    server: server.id.clone(),
-                    image: image.clone(),
-                    command: command.clone(),
-                    workdir: workdir.clone(),
-                    env,
-                    ip: lease.as_ref().map(Lease::ip),
-                    volume: server.storage.volume.then(|| volume_name(&server.id)),
-                };
-                let child = match self.launcher.launch(&spec) {
-                    Ok(child) => child,
-                    Err(why) => {
-                        record_failure(
-                            &mut lock(&slot.state),
-                            ctx.now,
-                            &redact(&why, &resolved.secrets),
-                        );
-                        return Err(format!("{} did not start: {why}", server.id));
-                    }
-                };
-                let sink_slot = Arc::clone(slot);
-                let on_stderr: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
-                    let mut st = lock(&sink_slot.state);
-                    let line = redact(&line, &st.secrets.clone());
-                    push_capped(
-                        &mut st.logs,
-                        LogLine {
-                            ts_ms: apz_plaza::now_ms(),
-                            stream: "stderr",
-                            line,
-                        },
-                        LOG_LINES,
+        let transport: Box<dyn super::client::Transport> = match server.transport.kind {
+            TransportKind::Stdio => match self.start_stdio(server, slot, ctx, &resolved) {
+                Ok(transport) => Box::new(transport),
+                Err(why) => {
+                    record_failure(
+                        &mut lock(&slot.state),
+                        ctx.now,
+                        &redact(&why, &resolved.secrets),
                     );
-                });
-                match StdioTransport::new(child, on_stderr, lease) {
-                    Ok(transport) => Box::new(transport),
-                    Err(why) => {
-                        record_failure(&mut lock(&slot.state), ctx.now, &why);
-                        return Err(format!("{} did not start: {why}", server.id));
-                    }
+                    return Err(format!("{} did not start: {why}", server.id));
                 }
-            }
-            Wire::Http { url } => {
-                if let Err(why) = check_endpoint(url, server.allow_private, &ctx.blocklist) {
+            },
+            TransportKind::Http => {
+                let url = server.transport.url.clone().unwrap_or_default();
+                if let Err(why) = check_endpoint(&url, server.allow_private, &ctx.blocklist) {
                     record_failure(&mut lock(&slot.state), ctx.now, &why);
                     return Err(format!("{}: {why}", server.id));
                 }
@@ -511,16 +512,20 @@ impl Runtime {
                     blocklist: ctx.blocklist.clone(),
                 };
                 Box::new(HttpTransport::new(
-                    url.clone(),
+                    url,
                     resolved.headers,
                     resolved.secrets.clone(),
                     policy,
                 ))
             }
         };
+        let timeout = match server.transport.kind {
+            TransportKind::Stdio => STDIO_HANDSHAKE,
+            TransportKind::Http => HANDSHAKE,
+        };
         let mut client = Client::new(transport);
         let handshake = client
-            .initialize("agentplaza", env!("CARGO_PKG_VERSION"), HANDSHAKE)
+            .initialize("agentplaza", env!("CARGO_PKG_VERSION"), timeout)
             .and_then(|info| {
                 let tools = client.list_tools(HANDSHAKE)?;
                 Ok((info, tools))
@@ -547,6 +552,148 @@ impl Runtime {
                 Err(format!("{} did not start: {detail}", server.id))
             }
         }
+    }
+
+    /// Provisions the server's runtime and package, attaches its proxy credential, and starts its process under the
+    /// sandbox. An npm package is installed first, sandboxed the same way, unless its install marker is there.
+    fn start_stdio(
+        &self,
+        server: &McpServer,
+        slot: &Arc<Slot>,
+        ctx: &Ctx,
+        resolved: &Resolved,
+    ) -> Result<StdioTransport, String> {
+        let package = server
+            .transport
+            .package
+            .clone()
+            .ok_or("the server names no package")?;
+        let layout = Layout::new(&self.state_dir, &server.id);
+        layout.prepare(server.storage.volume)?;
+        let workdir = match server.transport.workdir.as_deref() {
+            Some(dir) if !dir.is_empty() => layout.data.join(dir),
+            _ => layout.data.clone(),
+        };
+        std::fs::create_dir_all(&workdir)
+            .map_err(|e| format!("cannot make {}: {e}", workdir.display()))?;
+        let lease = match &self.egress {
+            Some(egress) => {
+                Some(egress.attach(&server.id, server.allow_private, &ctx.blocklist)?)
+            }
+            None => None,
+        };
+        let proxy = lease.as_ref().map(|l| l.proxy().to_string());
+        let network = match &lease {
+            Some(lease) => Network::LoopbackPort(lease.port()),
+            None => Network::None,
+        };
+        let runtimes_root = self.state_dir.join("runtimes");
+        let mut read_only = vec![layout.bin.clone(), layout.pkg.clone()];
+        let (program, args, path_dirs, extra_env) = match &package {
+            Package::Npm { name, version } => {
+                let node = self.runtimes.node()?;
+                read_only.push(runtimes_root.clone());
+                if !npm_installed(&layout, name, version) {
+                    let mut install_env = stdio::base_env(
+                        &layout,
+                        std::slice::from_ref(&node.bin_dir),
+                        proxy.as_deref(),
+                    );
+                    install_env.extend(npm_env(&layout));
+                    let mut writable = layout.writable();
+                    writable.push(layout.pkg.clone());
+                    let spec = Spec {
+                        program: node.node.clone(),
+                        args: stdio::npm_install_args(&node.npm_cli, &layout.pkg, name, version),
+                        env: install_env,
+                        workdir: layout.tmp.clone(),
+                        read_only: vec![runtimes_root.clone()],
+                        read_write: writable,
+                        network,
+                        limits: apz_sandbox::Limits::default(),
+                    };
+                    stdio::run_to_end(self.launcher.as_ref(), &spec, stdio::INSTALL_TIMEOUT)
+                        .map_err(|why| format!("cannot install {name}@{version}: {why}"))?;
+                    std::fs::write(layout.pkg.join(MARK_INSTALLED), format!("{name}@{version}"))
+                        .map_err(|e| format!("cannot finish the install of {name}: {e}"))?;
+                }
+                let bin = stdio::npm_bin(&layout.pkg.join("node_modules").join(name), name)?;
+                let mut args = vec![bin.to_string_lossy().into_owned()];
+                args.extend(server.transport.args.iter().cloned());
+                (
+                    node.node.clone(),
+                    args,
+                    vec![node.bin_dir.clone()],
+                    Vec::new(),
+                )
+            }
+            Package::Pypi {
+                name,
+                version,
+                entry,
+            } => {
+                let uv = self.runtimes.uv()?;
+                read_only.push(runtimes_root.clone());
+                let args =
+                    stdio::uv_run_args(name, version, entry.as_deref(), &server.transport.args);
+                (uv, args, Vec::new(), uv_env(&layout))
+            }
+            Package::Binary { url, sha256, entry } => {
+                let file = self.runtimes.binary(&layout.bin, url, sha256, entry)?;
+                (file, server.transport.args.clone(), Vec::new(), Vec::new())
+            }
+        };
+        let mut env = stdio::base_env(&layout, &path_dirs, proxy.as_deref());
+        env.extend(extra_env);
+        env.extend(resolved.env.iter().cloned());
+        let spec = Spec {
+            program,
+            args,
+            env,
+            workdir,
+            read_only,
+            read_write: layout.writable(),
+            network,
+            limits: apz_sandbox::Limits::default(),
+        };
+        let child: Box<dyn Child> = match (self.microvm(&ctx.node), &lease) {
+            (Ok(vm), Some(lease)) => {
+                let run = vm::run_id(&server.id);
+                let request = vm::request(
+                    &spec,
+                    &layout.root,
+                    &server.id,
+                    &run,
+                    server.storage.volume,
+                    lease.port(),
+                )?;
+                lock(&slot.state).launcher = "vm".into();
+                vm.launch(&request)?
+            }
+            (Ok(_), None) => {
+                lock(&slot.state).launcher = "sandbox: the server has no egress proxy".into();
+                Box::new(self.launcher.launch(&spec)?)
+            }
+            (Err(why), _) => {
+                lock(&slot.state).launcher = format!("sandbox: {why}");
+                Box::new(self.launcher.launch(&spec)?)
+            }
+        };
+        let sink_slot = Arc::clone(slot);
+        let on_stderr: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line: String| {
+            let mut st = lock(&sink_slot.state);
+            let line = redact(&line, &st.secrets.clone());
+            push_capped(
+                &mut st.logs,
+                LogLine {
+                    ts_ms: apz_plaza::now_ms(),
+                    stream: "stderr",
+                    line,
+                },
+                LOG_LINES,
+            );
+        });
+        StdioTransport::new(child, on_stderr, lease)
     }
 
     /// Stops every instance of `server_id` (its child is killed; an http session is forgotten).
@@ -614,6 +761,9 @@ impl Runtime {
             if out.last_error.is_none() {
                 out.last_error = st.last_error.clone();
             }
+            if out.launcher.is_empty() {
+                out.launcher = st.launcher.clone();
+            }
             if out.server_info.is_none() {
                 out.server_info = st.server_info.clone();
             }
@@ -664,6 +814,48 @@ fn record_failure(st: &mut State, now: u64, why: &str) {
     st.next_attempt_ms = now + backoff_ms(st.failures.len());
 }
 
+/// Whether the server's npm package is installed at the version named (its marker is there).
+fn npm_installed(layout: &Layout, name: &str, version: &str) -> bool {
+    std::fs::read_to_string(layout.pkg.join(MARK_INSTALLED))
+        .map(|text| text == format!("{name}@{version}"))
+        .unwrap_or(false)
+}
+
+/// npm's environment for an install: its cache and user config inside the server, and no update checks.
+fn npm_env(layout: &Layout) -> Vec<(String, String)> {
+    vec![
+        (
+            "npm_config_cache".into(),
+            layout.cache.join("npm").to_string_lossy().into_owned(),
+        ),
+        (
+            "npm_config_userconfig".into(),
+            layout.home.join(".npmrc").to_string_lossy().into_owned(),
+        ),
+        ("npm_config_update_notifier".into(), "false".into()),
+        ("npm_config_fund".into(), "false".into()),
+    ]
+}
+
+/// uv's environment: its cache, its tool environments and its managed Pythons, all inside the server.
+fn uv_env(layout: &Layout) -> Vec<(String, String)> {
+    vec![
+        (
+            "UV_CACHE_DIR".into(),
+            layout.cache.join("uv").to_string_lossy().into_owned(),
+        ),
+        (
+            "UV_TOOL_DIR".into(),
+            layout.tools.to_string_lossy().into_owned(),
+        ),
+        (
+            "UV_PYTHON_INSTALL_DIR".into(),
+            layout.python.to_string_lossy().into_owned(),
+        ),
+        ("UV_NO_PROGRESS".into(), "1".into()),
+    ]
+}
+
 /// The env and headers a server gets, with secrets resolved for `ctx`.
 struct Resolved {
     env: Vec<(String, String)>,
@@ -672,32 +864,34 @@ struct Resolved {
     secrets: Vec<String>,
 }
 
-fn resolve(server: &McpServer, ctx: &Ctx) -> Result<Resolved, String> {
+fn resolve(server: &McpServer, ctx: &Ctx, data_dir: &str) -> Result<Resolved, String> {
     let mut out = Resolved {
         env: Vec::new(),
         headers: Vec::new(),
         secrets: Vec::new(),
     };
     for (name, setting) in &server.env {
-        let value = value_of(setting, server, ctx, &mut out.secrets)?;
+        let value = value_of(setting, server, ctx, &mut out.secrets, data_dir)?;
         out.env.push((name.clone(), value));
     }
     for (name, setting) in &server.headers {
-        let value = value_of(setting, server, ctx, &mut out.secrets)?;
+        let value = value_of(setting, server, ctx, &mut out.secrets, data_dir)?;
         out.headers.push((name.clone(), value));
     }
     Ok(out)
 }
 
-/// One setting's value: the literal, or the vault's value for the server (with a header's `format` applied).
+/// One setting's value: the literal (with `{data}` made the server's data directory), or the vault's value for the
+/// server (with a header's `format` applied).
 fn value_of(
     setting: &Setting,
     server: &McpServer,
     ctx: &Ctx,
     secrets: &mut Vec<String>,
+    data_dir: &str,
 ) -> Result<String, String> {
     match setting {
-        Setting::Value { value } => Ok(value.clone()),
+        Setting::Value { value } => Ok(value.replace("{data}", data_dir)),
         Setting::Secret { secret, format } => {
             let raw = ctx.secrets.resolve(secret, &server.id, &ctx.behalf)?;
             secrets.push(raw.expose().to_string());

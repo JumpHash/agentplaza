@@ -1,0 +1,25 @@
+meta {
+  name: Archive the project chat: it leaves the list
+  type: http
+  seq: 14
+}
+
+patch {
+  url: {{baseUrl}}/v1/chats/{{we_chat}}
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {"archived": true}
+}
+
+assert {
+  res.status: eq 200
+  res.body.archived: eq true
+  res.responseTime: lt {{budgetMs}}
+}

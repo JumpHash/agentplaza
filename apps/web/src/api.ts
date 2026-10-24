@@ -1,6 +1,7 @@
 // The apid client: one function per endpoint, typed by what apid returns.
 // The console is served by apid, so every path is same-origin.
 
+import { forget, getCached, keep, nextRequest, storedTag } from './api-cache';
 import type { FileChange, Stats, TreePage, WorkspaceKind } from './ide/types';
 import type { Ref } from './ui/rich';
 import type { Around as MetricsAround, LiveLease, MetricDef, MetricsSettings, Rule as MetricsRule, Saved as MetricsSaved, ScopeNode as MetricsScopeNode, Table as MetricsTable, View as MetricsView, ViewQuery as MetricsQuery } from './metrics/model';
@@ -12,14 +13,22 @@ export class ApiError extends Error {
   }
 }
 
-/** One JSON request to the hub; the screens' own API modules (api-weft.ts, api-review.ts) call through it. */
+/**
+ * One JSON request to the hub; the screens' own API modules (api-weft.ts, api-review.ts) call through it. A GET is
+ * revalidated against the copies api-cache.ts keeps: a 304 answers with the kept body.
+ */
 export async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (method === 'GET') return revalidate<T>(path);
   const res = await fetch(path, {
     method,
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const text = await res.text();
+  return answer<T>(method, path, res, await res.text());
+}
+
+/** The body of an answer, parsed; a refusal throws the `ApiError` the hub's `error` (or `message`) makes. */
+function answer<T>(method: string, path: string, res: Response, text: string): T {
   const data = text ? (JSON.parse(text) as unknown) : null;
   if (!res.ok) {
     // Off loopback the hub wants the owner's sign-in; the shell shows the sign-in screen.
@@ -30,6 +39,28 @@ export async function call<T>(method: string, path: string, body?: unknown): Pro
     throw new ApiError(res.status, message, (data as { diagnostics?: Diagnostic[] } | null)?.diagnostics ?? [], data);
   }
   return data as T;
+}
+
+/**
+ * A GET with its copy. The kept ETag goes out as `If-None-Match`; a 304 answers with the kept body, and a 200 is kept
+ * with its tag. `no-store` keeps the browser's own HTTP cache out of it, so the 304 reaches this code as it is.
+ */
+async function revalidate<T>(path: string): Promise<T> {
+  const request = nextRequest();
+  const tag = storedTag(path);
+  let res = await fetch(path, { method: 'GET', headers: tag === undefined ? {} : { 'if-none-match': tag }, cache: 'no-store' });
+  if (res.status === 304) {
+    const kept = getCached<T>(path);
+    if (kept !== undefined) return kept;
+    // The copy was dropped while the answer was on its way: ask for the body.
+    res = await fetch(path, { method: 'GET', headers: {}, cache: 'no-store' });
+  }
+  const text = await res.text();
+  const etag = res.headers.get('etag');
+  if (res.status === 200 && etag !== null && text !== '') keep(path, etag, text, request);
+  // A refusal or an answer without a tag makes the copy untrue; a server error keeps it (the hub is unwell, not changed).
+  else if (res.status === 200 || (res.status >= 400 && res.status < 500)) forget(path);
+  return answer<T>('GET', path, res, text);
 }
 
 /**
@@ -58,31 +89,51 @@ const query = (params: Record<string, string | number | undefined>): string => {
   return parts.length ? `?${parts.join('&')}` : '';
 };
 
+/** A GET the screens paint from first: `api.x()` asks the hub (revalidated), `api.x.cached()` is the last answer, at once. */
+export interface Readable<A extends unknown[], R> {
+  (...args: A): Promise<R>;
+  cached(...args: A): R | undefined;
+}
+
+/** A GET whose path takes the arguments; `pick` reads the body (the body itself by default). */
+export function readableAt<A extends unknown[], T, R = T>(path: (...args: A) => string, pick?: (body: T) => R): Readable<A, R> {
+  const read = (...args: A): Promise<R> => get<T>(path(...args)).then((body) => (pick ? pick(body) : (body as unknown as R)));
+  const cached = (...args: A): R | undefined => {
+    const body = getCached<T>(path(...args));
+    if (body === undefined) return undefined;
+    return pick ? pick(body) : (body as unknown as R);
+  };
+  return Object.assign(read, { cached });
+}
+
+/** A GET of a fixed path: see readableAt. */
+export const readable = <T, R = T>(path: string, pick?: (body: T) => R): Readable<[], R> => readableAt<[], T, R>(() => path, pick);
+
 // ---- Types -----------------------------------------------------------------
 
 /** A sleeping agent's VM is paused or stopped; a chat or a task wakes it. */
 /** `dozing`: the VM is paused and paged out after a short idle; it resumes in milliseconds (shown as asleep, light). */
 export type AgentStatus = 'offline' | 'idle' | 'working' | 'asleep' | 'dozing';
 export type Tier = 'orchestrator' | 'worker';
-export type WorkKind = 'task' | 'chat' | 'message' | 'motion';
+export type WorkKind = 'task' | 'chat' | 'message';
 
 export interface Usage { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number }
 
 export interface WorkItem {
   id: number; cid: number; kind: WorkKind; thread: string; prompt: string;
-  origin: { task: string | null; motion: string | null; from_cid: number | null };
+  origin: { task: string | null; from_cid: number | null };
   created_ms: number; started_ms: number | null;
 }
 
 export interface Agent {
-  cid: number; name: string; role: string; role_label: string; tier: Tier; status: AgentStatus;
+  cid: number; role: string; role_label: string; tier: Tier; status: AgentStatus;
   /** Where the model comes from: the agent's own override, its project's settings, the plaza's role model, the default. */
   model: string; model_override: string | null; model_source: 'agent' | 'project' | 'role' | 'default';
-  /** The project it works on (null: on the bench, or the orchestrator, which works on every project), since when, and
-   * why it does not work now (on the bench, or its project paused), if it does not. */
-  project?: string | null; joined_ms?: number | null; held?: string | null;
+  /** The project of its live session (null: no live session, or the orchestrator, which works on every project), and why
+   * its work waits now (its project is paused or over), if it does. */
+  project?: string | null; held?: string | null;
   connected_at_ms: number; last_seen_ms: number; run: string | null; vm: number | null;
-  usage: Usage; work: WorkItem | null; queue: number; species?: string;
+  usage: Usage; work: WorkItem | null; queue: number;
   kind: string;
   /** What it is doing right now (the hub's `step`); null before its first step. Live as the `agent_step` event. */
   step?: AgentStep | null;
@@ -174,11 +225,8 @@ export type DecisionAnswer =
 export interface DecisionResponse { provider: string; model: string; answers: DecisionAnswer[]; usage: { input_tokens: number } }
 export interface DecisionDefault { provider: string | null; model: string | null }
 
-/** The owner's retention limits (apid's `retention` block). `0` days keeps forever. */
-export interface Retention { conversations_max: number; conversations_days: number; posts_max: number; posts_days: number }
 
 export interface Settings {
-  retention?: Retention;
   default_model: string; orchestrator_model: string; role_models: Record<string, string>;
   model_policy: { orchestrator: string[]; worker: string[] };
   effort: string | null; max_turns: number; max_tokens: number; fetch_block: string[];
@@ -225,7 +273,7 @@ export interface VmCheckpoint {
 
 export interface VmCheckpointList { checkpoints: VmCheckpoint[] }
 
-export interface ForkedAgent { cid: number; run: string; name: string }
+export interface ForkedAgent { cid: number; run: string }
 
 /** The forks made from one checkpoint of the agent's VM, which the forks start from. */
 export interface ForkResult { forks: ForkedAgent[]; checkpoint: VmCheckpoint }
@@ -233,7 +281,7 @@ export interface ForkResult { forks: ForkedAgent[]; checkpoint: VmCheckpoint }
 export interface VmRestoreResult { ok: boolean; safety: VmCheckpoint }
 
 export interface Task {
-  id: string; state: string; goal: string; acceptance: string | null; role: string | null; budget: number;
+  id: string; state: string; goal: string; acceptance: string | null; role: string | null;
   assignee_id: string | null; agent_cid: number | null; note: string | null; outcome: string | null;
   created_at: number; updated_at: number;
   /** The project it is for, or null. */
@@ -292,44 +340,13 @@ export interface ProjectSettings {
 }
 /** A setting the project's agents get, and where it comes from. */
 export interface EffectiveValue { value: unknown; source: 'project' | 'plaza' }
-/** A project's budget: its own `town_budget` account (once credits are set aside), and the plaza's. */
-export interface ProjectBudget { project: string; own: boolean; balance: number; plaza: number }
-export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue>; budget: ProjectBudget }
-/** An agent that holds tasks of a project from before membership, with those tasks. */
-export type SuggestedMember = Agent & { tasks: string[] };
-/** A message of the owner's conversation with the orchestrator: the owner's, the orchestrator's answer (with how its
- * work ended), or a plaza notice (a project started, a task ended). */
-export interface OwnerMessage {
-  from: 'owner' | 'orchestrator' | 'plaza'; text: string; at_ms: number; work: number; status?: 'done' | 'failed' | 'stopped';
-  /** The files the owner attached (api-projects.ts `attach`). */
-  attachments?: { id: string; name: string; size: number; type: string }[];
-}
-export interface DraftTask { key: string; goal: string; acceptance?: string; role?: string; budget?: number; after?: string[] }
-/** One role on a draft's team: `count` agents, of which `bench` (guest CIDs) come from the bench and the rest are spawned. */
-export interface DraftSeat { role: string; count: number; bench?: number[]; model?: string }
-export interface ProjectDraft {
-  revision: number; title: string; goal: string; kind: 'code' | 'other'; repo?: string; tasks: DraftTask[]; team: DraftSeat[];
-  budget?: number; settings?: ProjectSettings; updated_by: 'owner' | 'orchestrator'; updated_ms: number; started_ms?: number;
-  /** What still stops Start. */
-  problems: string[];
-}
-export interface OwnerConversation {
-  id: string; title: string; cid: number; messages: OwnerMessage[]; works: number[]; created_ms: number; updated_ms: number;
-  archived: boolean; project?: string; draft?: ProjectDraft; draft_seen: number; thread: string;
-  /** The owner's messages still waiting for an answer, by work item. */
-  pending: number[];
-}
-export interface OwnerConversationSummary {
-  id: string; title: string; cid: number; created_ms: number; updated_ms: number; archived: boolean; project: string | null;
-  draft: { revision: number; title: string } | null; messages: number; pending: number; last: { from: string; text: string; at_ms: number } | null;
-}
-export interface StartedProject { project: string; tasks: { key: string; id: string; after: string[]; ready: boolean }[]; joined: number[]; spawned: { role: string; count: number }[] }
+export interface EffectiveSettings { project: string; settings: Record<string, EffectiveValue>; role_models: Record<string, EffectiveValue> }
 export interface HarnessLimits { max_turns: number | null; compress_at: number | null; keep_recent: number | null }
 export interface HarnessLoop { id: string; cid: number; prompt: string; every_secs: number; max_runs: number; runs: number; next_at_ms: number; state: 'running' | 'done' | 'stopped'; by: string; by_cid: number; created_ms: number; last_work: number | null; last_summary: string | null }
 export interface LawInfo {
   id: string; title: string; tier: string; enforcement: string; severity: string; statement: string; rationale: string;
   effect: 'permit' | 'forbid'; ops: string[]; principal: string; resource: string; conditions: string[]; explanation: string;
-  file: string; source: string; refusals: number; agents: { cid: number; name: string; count: number }[]; last_at_ms: number | null;
+  file: string; source: string; refusals: number; agents: { cid: number; count: number }[]; last_at_ms: number | null;
   origin: 'built-in' | 'owner'; enabled: boolean; rule_id: string; overridden: LawOverride | null;
   /** A constitutional law that is switched off now. */
   constitutional_off: boolean;
@@ -343,7 +360,6 @@ export interface LawRules { rules: LawRule[]; overrides: LawOverride[]; strict_p
 export interface Diagnostic { file: string; line: number; column: number; message: string }
 export interface WouldRefuse { cid: number; role: string; tool: string; at_ms: number; laws: string[] }
 export interface LawCheck { ok: boolean; diagnostics: Diagnostic[]; laws: string[]; would_refuse: WouldRefuse[] }
-export interface Infraction { cid: number; law: string; at_ms: number; tool: string; detail: string; law_title: string; statement: string; agent_name: string }
 export interface RoleDef {
   id: string; title: string; purpose: string; responsibilities: string[]; deliverables: string[]; collaboration: string;
   boundaries: string[]; tools: string[]; budget: number; model: string; prompt: string; created_by: string; created_ms: number;
@@ -358,43 +374,6 @@ export interface BoardComment { id: string; post: string; agent_cid: number | nu
 export interface BoardPost { id: string; agent_cid: number; role: string; subject: string; body: string; created_at: number; task: string | null; comments: BoardComment[]; attachments: string[]; owner?: boolean; project?: string | null; mentions?: string[] }
 /** The board as the list endpoint answers it: the posts (newest first), and whether its deliveries are paused. */
 export interface BoardView { posts: BoardPost[]; total: number; limit: number; truncated: boolean; unread: { agent_cid: number; count: number }[]; project: string | null; paused: boolean; paused_all: boolean; paused_projects: string[] }
-export interface Conversation { id: string; from_cid: number; to_cid: number; from_role: string; to_role: string; text: string; created_at: number; delivered: boolean; attachments?: string[] }
-/** One pair's summary over the retained record: `last_at` and `count` are the whole record's, not the page's. */
-export interface ConversationPair { a: number; b: number; active: boolean; count: number; last_at: number }
-/** Paging and search for the conversation reads; `before` is the `next_before` of the page before. */
-export interface ConversationQuery { limit?: number; before?: number; q?: string }
-/** `GET /v1/conversations`: one page of exchanges, newest first. */
-export interface ConversationsPage {
-  conversations: Conversation[]; pairs: ConversationPair[]; active_secs: number; total: number;
-  limit: number; truncated: boolean; next_before: number | null; pairs_total: number; pairs_truncated: boolean;
-}
-/** `GET /v1/conversations/{a}/{b}`: one page of a thread, oldest first within the page. */
-export interface ThreadPage {
-  a: number; b: number; active: boolean; active_secs: number; messages: Conversation[];
-  total: number; limit: number; truncated: boolean; next_before: number | null;
-}
-/** The quorum a motion is counted under: the rule in words and its numbers. */
-export interface MotionQuorum { rule: string; seats: number; filled: number; required: number; can_decide: boolean }
-/** One seat's vote on a motion: the seat (its role), the agent that cast it, the word and the reason. */
-export interface MotionVote { seat: string; agent_cid: number; vote: string; reason: string; at: number }
-export interface Motion { id: string; kind: string; text: string; state: string; proposer_cid: number; tally: { yes: number; no: number; abstain: number; voted: number; seats: number }; votes?: MotionVote[]; quorum: MotionQuorum; created_at: number }
-export interface Account { id: number; kind: string; owner_ref: string; balance: number; credit_limit: number; created_at: number }
-export interface Treasury { accounts: Account[]; totals: { accounts: number; entries: number; credits: number; debits: number; balance: number }; spent: number; plaza_budget: number; note: string }
-/** One leg of a journal entry: a debit is negative, a credit positive. `account` is the account id. */
-export interface Posting { account: number; amount: number; kind: string; owner_ref: string }
-/** A posted entry. `amount` is the size of the movement; `postings` say where it went. Newest first by `id`. */
-export interface JournalEntry { id: number; kind: string; amount: number; created_at: number; memo: string; posted_by: string; postings: Posting[]; task_id: string | null; root_task: string | null }
-export interface JournalPage { entries: JournalEntry[]; total: number; limit: number; truncated: boolean; next_before: number | null }
-export interface JournalQuery { before?: number; limit?: number; kind?: string; wallet?: number; task?: string }
-/** One bucket of the series: the flows inside [at_ms, end_ms) and the balances at its end. */
-export interface TreasuryPoint {
-  at_ms: number; end_ms: number; entries: number;
-  minted: number; escrowed: number; paid: number; refunded: number; fined: number; spent: number;
-  by_kind: Record<string, number>;
-  plaza_budget_end: number; circulating_end: number; treasury_end: number;
-}
-export interface TreasurySeries { from_ms: number; to_ms: number; bucket_ms: number; points: TreasuryPoint[] }
-export interface Wallet { cid: number; name: string; balance: number }
 export interface Machine { name: string; arch: string; backend: string; irqchip: string; class: string; cpus: number; memory_mib: number; vsock_mode: string; started_at_ms: number }
 export interface Vm { index: number; state: string; guest_cid: number | null; role?: string | null }
 export interface Run { id: string; state: string; vcpus: number; memory_mib: number; beats: number | null; role: string | null; created_at: number; ended_at: number | null; vms: Vm[] }
@@ -404,7 +383,7 @@ export interface ProcessUsage { name: string; pid: number; cpu_percent: number; 
 /** An agent VM's process, and its guest memory as the balloon reports it. */
 export interface VmUsage extends ProcessUsage { run: string; vm: number; cid: number | null; role: string | null; usable_mib: number | null; guest_used_mib: number | null }
 export interface PlazaUsage {
-  /** apid, the hub (vsockd), noded, garage — whichever run on this machine. */
+  /** apid, the hub (vsockd), noded — whichever run on this machine. */
   services: ProcessUsage[];
   vms: VmUsage[];
   total: { cpu_percent: number; rss_mib: number; services_cpu_percent: number; services_rss_mib: number; vms_cpu_percent: number; vms_rss_mib: number };
@@ -431,32 +410,6 @@ export interface MachineNode extends Machine {
   } | null;
 }
 
-/** One agent's view of another (AP-072): decayed evidence r/s, belief, disbelief, uncertainty, expected trust. */
-export interface Opinion { r: number; s: number; b: number; d: number; u: number; e: number; updated_ms: number }
-/** A directed contact edge (AP-071) with the holder's opinion of the peer. `note` is the holder's private memory of the peer. */
-export interface Bond {
-  from: number; to: number; kind: 'met' | 'hired' | 'was-hired' | 'added'; since_ms: number;
-  strength: number; interactions: number; last_ms: number; note: string | null; blocked: boolean;
-  opinion: Opinion;
-}
-export interface SocietyAgent { cid: number; name: string; role: string; reputation: number; confidence: number; wallet: number }
-export interface Society { agents: SocietyAgent[]; bonds: Bond[]; computed_ms: number }
-export interface MemoryNote { slug: string; title: string; kind: 'note' | 'journal' | 'person'; links: string[]; tags: string[]; updated_ms: number; size: number }
-export interface MemoryDoc extends MemoryNote { body: string; backlinks: string[]; provenance: { task: string | null; work: number | null } }
-
-/** One agent's record (GET /v1/agents/{cid}/profile): money, work, standing and conduct. */
-export interface AgentProfile {
-  cid: number; joined_ms: number;
-  wallet: number; earned: number; spent: number;
-  tasks: { posted: number; done: number; verified: number; failed: number };
-  reputation: number; confidence: number; contacts: number; memory_notes: number;
-  /** 0–100: starts at 100, loses points for law violations (30 days), refused tool calls (7 days) and fines. */
-  conduct: number;
-  fines: { count: number; total: number };
-  denials: number;
-  violations: { law: string; at_ms: number; detail: string }[];
-}
-
 /** A connector an agent proposed: its declarative spec, waiting for (or past) the owner's review. */
 export interface ConnectorProposal {
   id: string; proposer_cid: number; proposer: string; created_ms: number;
@@ -480,9 +433,7 @@ export type UnfurlCard = { kind: string; url?: string | null } & Record<string, 
 /** A deliverable in the Library: a file an agent handed in with deliver_file. */
 export interface Deliverable {
   id: string; name: string; title: string; description: string | null; content_type: string; size: number;
-  author_cid: number; author: string; task: string | null; created_ms: number; sha256: string;
-  /** Where it is stored: "garage" (S3) or "local". */
-  store: string;
+  author_cid: number; author: string; task: string | null; created_ms: number; hash: string;
   /** A deliverable the owner asked for, or a file an agent shared. */
   kind: 'deliverable' | 'shared';
   /** public: every agent (and the board); private: its author, the agents in `allowed`, and the owner. */
@@ -556,8 +507,6 @@ export type Takeover = 'agent_waits' | 'release_lease' | 'keep_working_pointer_p
 export interface StationSettings {
   takeover: Takeover; record: boolean; retention_days: number; record_fps: number;
   record_takeovers: boolean; work_folder: string; snapshot_reset: boolean;
-  /** What an hour of a lease costs the lease's task, in plaza credits (1 credit is $0.001); 0 is free. */
-  rate_per_hour: number;
 }
 export type LeaseKind = 'shared' | 'pixel';
 export type LeaseState = 'queued' | 'opening' | 'active';
@@ -643,11 +592,14 @@ export const approvalPath = (id: string): string => `/v1/approvals/${seg(id)}`;
 /** A work-folder file's URL: each segment of its path encoded, the slashes kept. */
 const filesUrl = (station: string, path: string): string => `/v1/stations/${seg(station)}/files/${path.split('/').map(seg).join('/')}`;
 
-export const api = {
-  overview: () => get<Overview>('/v1/overview'),
+/** The chat models of a models view: decision models are never offered to a chat picker. */
+const chatOnly = (view: ModelsView): ModelsView => ({ ...view, models: view.models.filter((m) => m.group !== 'decisions') });
 
-  providerKinds: () => get<ProviderKind[]>('/v1/provider-kinds'),
-  providers: () => get<Provider[]>('/v1/providers'),
+export const api = {
+  overview: readable<Overview>('/v1/overview'),
+
+  providerKinds: readable<ProviderKind[]>('/v1/provider-kinds'),
+  providers: readable<Provider[]>('/v1/providers'),
   addProvider: (p: ProviderInput) => post<Provider>('/v1/providers', p),
   updateProvider: (p: ProviderInput) => put<Provider>(`/v1/providers/${p.id}`, p),
   removeProvider: (id: string) => del<unknown>(`/v1/providers/${id}`),
@@ -655,10 +607,7 @@ export const api = {
   testProvider: (id: string, model?: string) => post<TestReport>(`/v1/providers/${id}/test`, model ? { model } : {}),
   providerModels: (id: string) => get<{ id: string; name: string | null }[]>(`/v1/providers/${id}/models`),
   /** Chat models only: every chat picker (agents, policy) is built from this, so decision models are never offered. */
-  models: async (): Promise<ModelsView> => {
-    const view = await get<ModelsView>('/v1/models');
-    return { ...view, models: view.models.filter((m) => m.group !== 'decisions') };
-  },
+  models: readable<ModelsView>('/v1/models', chatOnly),
   /** Decision models only. */
   decisionModels: async (): Promise<ModelsView> => {
     const view = await get<ModelsView>('/v1/models');
@@ -667,17 +616,16 @@ export const api = {
   askDecision: (r: DecisionRequest) => post<DecisionResponse>('/v1/decisions', r),
   getDecisionDefault: () => get<DecisionDefault>('/v1/decisions/default'),
   setDecisionDefault: (d: { provider: string; model: string }) => put<DecisionDefault>('/v1/decisions/default', d),
-  settings: () => get<Settings>('/v1/settings'),
+  settings: readable<Settings>('/v1/settings'),
   saveSettings: (s: Settings) => put<Settings>('/v1/settings', s),
 
-  agents: () => get<Agent[]>('/v1/agents'),
-  /** A project's agents, or the bench (`bench`: the agents that could join a project and are on none). */
+  agents: readable<Agent[]>('/v1/agents'),
+  /** The agents whose live session is on `project`. */
   agentsOf: (project: string) => get<Agent[]>(`/v1/agents${query({ project })}`),
   agent: (cid: number) => get<Agent>(`/v1/agents/${cid}`),
-  /** Spawns `count` agents of `role`; with a `project`, they join it at their first hello. */
-  spawnAgents: (role: string, count: number, model?: string, project?: string) => post<unknown>('/v1/agents', { role, count, model, project }),
+  /** Spawns `count` agents of `role`, on `node` when one is named. */
+  spawnAgents: (role: string, count: number, model?: string, node?: string) => post<unknown>('/v1/agents', { role, count, model, node }),
   setAgentModel: (cid: number, model: string | null) => patch<Agent>(`/v1/agents/${cid}`, { model }),
-  renameAgent: (cid: number, name: string) => patch<Agent>(`/v1/agents/${cid}`, { name }),
   killAgent: (cid: number) => del<unknown>(`/v1/agents/${cid}`),
   /** `attachments`: ids from api-projects.ts `attach`, which the agent may read from this turn on. */
   chat: (cid: number, text: string, attachments: string[] = []) => post<{ work: number }>(`/v1/agents/${cid}/chat`, attachments.length ? { text, attachments } : { text }),
@@ -688,13 +636,12 @@ export const api = {
   /** The newest `last` entries, oldest first. The hub's `after` pages from the oldest, so a long log would hide its newest steps. */
   transcriptLast: (cid: number, last = 1000) => get<Entry[]>(`/v1/agents/${cid}/transcript?last=${last}`),
 
-  tasks: () => get<{ tasks: Task[] }>('/v1/tasks').then((r) => r.tasks),
+  tasks: readable<{ tasks: Task[] }, Task[]>('/v1/tasks', (r) => r.tasks),
   /** The tasks of one project, or only the ready ones (`GET /v1/tasks?project=&ready=`). */
-  tasksWhere: (q: { project?: string; ready?: boolean }) =>
-    get<{ tasks: Task[] }>(`/v1/tasks${query({ project: q.project, ready: q.ready === undefined ? undefined : String(q.ready) })}`).then((r) => r.tasks),
-  task: (id: string) => get<Task>(`/v1/tasks/${id}`),
+  tasksWhere: readableAt((q: { project?: string; ready?: boolean }) => `/v1/tasks${query({ project: q.project, ready: q.ready === undefined ? undefined : String(q.ready) })}`, (r: { tasks: Task[] }) => r.tasks),
+  task: readableAt<[string], Task>((id) => `/v1/tasks/${id}`),
   /** Every task belongs to a project. */
-  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; budget?: number; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
+  createTask: (t: { goal: string; project: string; acceptance?: string; role?: string; assignee?: number; after?: string[] }) => post<Task>('/v1/tasks', t),
   /** Moves a task from before projects into one, with the tasks linked to it. */
   moveTask: (id: string, project: string) => post<{ project: string; moved: Task[] }>(`/v1/tasks/${encodeURIComponent(id)}/move`, { project }),
   withdrawTask: (id: string) => del<Task>(`/v1/tasks/${id}`),
@@ -711,33 +658,9 @@ export const api = {
     post<{ project: string | null; on: boolean; changed: boolean; paused: boolean; paused_all: boolean; paused_projects: string[] }>('/v1/board/pause', { on, project }),
   /** The thread as a download: Markdown or JSON, for a project or the whole board. */
   boardExportUrl: (format: 'md' | 'json', project?: string) => `/v1/board/export${query({ format, project })}`,
-  conversations: () => get<{ conversations: Conversation[] }>('/v1/conversations').then((r) => r.conversations),
-  conversationsPage: (q: ConversationQuery = {}) => get<ConversationsPage>(`/v1/conversations${query({ limit: q.limit, before: q.before, q: q.q })}`),
-  conversationThread: (a: number, b: number, q: ConversationQuery = {}) =>
-    get<ThreadPage>(`/v1/conversations/${a}/${b}${query({ limit: q.limit, before: q.before, q: q.q })}`),
-  motions: () => get<{ motions: Motion[] }>('/v1/motions').then((r) => r.motions),
-  /** The owner's decision: `approve` ratifies the motion, `false` vetoes it. A blank `note` is sent as `null`, since the hub refuses an empty string. */
-  decide: (id: string, approve: boolean, note?: string) => post<Motion>(`/v1/motions/${id}/decide`, { approve, note: note?.trim() ? note.trim() : null }),
-  treasury: () => get<Treasury>('/v1/treasury'),
-  /** Entries newest first. Pass the previous page's `next_before` to load older ones. */
-  treasuryJournal: (q: JournalQuery = {}) =>
-    get<JournalPage>(`/v1/treasury/journal${query({ before: q.before, limit: q.limit, kind: q.kind, wallet: q.wallet, task: q.task })}`),
-  /** Flows per bucket over [from, to) in unix ms, empty buckets included. Day buckets above 2000 buckets are refused. */
-  treasurySeries: (from: number, to: number, bucket: 'hour' | 'day') => get<TreasurySeries>(`/v1/treasury/series${query({ from, to, bucket })}`),
-  treasuryWallets: () => get<Wallet[]>('/v1/treasury/wallets'),
-  mintBudget: (amount: number) => post<unknown>('/v1/treasury/mint', { amount }),
-  fineAgent: (cid: number, amount: number, memo: string) => post<unknown>('/v1/treasury/fine', { cid, amount, memo }),
-  agora: () => get<{ calls: unknown[] }>('/v1/agora').then((r) => r.calls),
-
-  profile: (cid: number) => get<AgentProfile>(`/v1/agents/${cid}/profile`),
-  society: () => get<Society>('/v1/society'),
-  /** The owner rates an agent (AP-072: the owner is the root of trust), value in [-1, 1]. */
-  rateAgent: (cid: number, value: number) => post<Opinion>(`/v1/agents/${cid}/rating`, { value }),
-  memory: (cid: number) => get<{ notes: MemoryNote[] }>(`/v1/agents/${cid}/memory`).then((r) => r.notes),
-  memoryNote: (cid: number, slug: string) => get<MemoryDoc>(`/v1/agents/${cid}/memory/${encodeURIComponent(slug)}`),
 
   machine: () => get<Machine>('/v1/machine'),
-  machines: () => get<MachineNode[]>('/v1/machines'),
+  machines: readable<MachineNode[]>('/v1/machines'),
   fleet: () => get<FleetResponse>('/v1/fleet'),
   runs: () => get<{ runs: Run[] }>('/v1/runs').then((r) => r.runs),
   run: (id: string) => get<Run & { vms: (Vm & { serial?: string })[] }>(`/v1/runs/${id}`),
@@ -745,8 +668,8 @@ export const api = {
   killRun: (id: string) => del<Run>(`/v1/runs/${id}`),
 
   files: (kind?: 'deliverable' | 'shared') => get<Deliverable[]>(`/v1/files${kind ? `?kind=${kind}` : ''}`),
-  projects: () => get<Project[]>('/v1/projects'),
-  project: (id: string) => get<Project>(`/v1/projects/${id}`),
+  projects: readable<Project[]>('/v1/projects'),
+  project: readableAt<[string], Project>((id) => `/v1/projects/${id}`),
   projectGraph: (id: string) => get<ProjectGraph>(`/v1/projects/${encodeURIComponent(id)}/graph`),
   approveProject: (id: string, note = '') => post<Project>(`/v1/projects/${id}/approve`, { note }),
   /** Opens a project for the owner, its plan the owner's. */
@@ -754,29 +677,10 @@ export const api = {
   pauseProject: (id: string) => post<Project>(`/v1/projects/${id}/pause`),
   resumeProject: (id: string) => post<Project>(`/v1/projects/${id}/resume`),
   archiveProject: (id: string) => post<Project>(`/v1/projects/${id}/archive`),
-  projectMembers: (id: string) => get<Agent[]>(`/v1/projects/${id}/members`),
-  addMember: (id: string, cid: number) => post<Agent>(`/v1/projects/${id}/members`, { cid }),
-  removeMember: (id: string, cid: number) => del<unknown>(`/v1/projects/${id}/members/${cid}`),
-  suggestedMembers: (id: string) => get<SuggestedMember[]>(`/v1/projects/${id}/suggested-members`),
   projectSettings: (id: string) => get<ProjectSettings>(`/v1/projects/${id}/settings`),
   /** A field set to `null` goes back to the plaza's; `role_models` merge role by role. */
   patchProjectSettings: (id: string, change: Record<string, unknown>) => patch<ProjectSettings>(`/v1/projects/${id}/settings`, change),
   effectiveSettings: (id: string) => get<EffectiveSettings>(`/v1/projects/${id}/settings/effective`),
-  projectBudget: (id: string) => get<ProjectBudget>(`/v1/projects/${id}/budget`),
-  /** Positive sets credits aside from the plaza's budget; negative gives some back. */
-  moveProjectBudget: (id: string, credits: number) => post<ProjectBudget>(`/v1/projects/${id}/budget`, { credits }),
-  ownerConversations: (archived = false) => get<OwnerConversationSummary[]>(`/v1/owner/conversations${archived ? '?archived=true' : ''}`),
-  ownerConversation: (id: string) => get<OwnerConversation>(`/v1/owner/conversations/${id}`),
-  /** Starts a conversation with the orchestrator, `text` its first message. */
-  openConversation: (text: string, attachments: string[] = []) => post<OwnerConversation>('/v1/owner/conversations', attachments.length ? { text, attachments } : { text }),
-  sayInConversation: (id: string, text: string, attachments: string[] = []) => post<OwnerConversation>(`/v1/owner/conversations/${id}/messages`, attachments.length ? { text, attachments } : { text }),
-  patchConversation: (id: string, change: { title?: string; archived?: boolean }) => patch<OwnerConversation>(`/v1/owner/conversations/${id}`, change),
-  conversationTranscript: (id: string, after = 0, limit = 1000) => get<Entry[]>(`/v1/owner/conversations/${id}/transcript${query({ after, limit })}`),
-  conversationDraft: (id: string) => get<ProjectDraft>(`/v1/owner/conversations/${id}/draft`),
-  editDraft: (id: string, edit: Partial<Omit<ProjectDraft, 'problems' | 'updated_by' | 'updated_ms' | 'started_ms'>> & { revision: number }) =>
-    patch<OwnerConversation>(`/v1/owner/conversations/${id}/draft`, edit),
-  /** Starts the drafted project at `revision`, the one the owner looked at. */
-  startDraft: (id: string, revision: number) => post<OwnerConversation & { started: StartedProject }>(`/v1/owner/conversations/${id}/start`, { revision }),
   vetoProject: (id: string, stage: ProjectStage, reason: string) => post<Project>(`/v1/projects/${id}/veto`, { stage, reason }),
   loops: () => get<HarnessLoop[]>('/v1/loops'),
   startLoop: (cid: number, prompt: string, every_minutes: number, max_runs: number) => post<HarnessLoop>('/v1/loops', { cid, prompt, every_minutes, max_runs }),
@@ -792,14 +696,11 @@ export const api = {
   checkLaw: (source: string, id?: string) => post<LawCheck>('/v1/laws/check', id ? { source, id } : { source }),
   /** Switching a constitutional law off needs `confirm` set to its exact id (the API answers 409 without it). */
   setLawOverride: (law: string, disabled: boolean, reason: string, confirm?: string) => put<{ law: string; override: LawOverride | null }>(`/v1/laws/overrides/${law}`, { disabled, reason, confirm }),
-  lawViolations: (law: string, limit = 20) => get<Infraction[]>(`/v1/laws/violations${query({ law, limit })}`),
-  infractions: (limit = 200) => get<Infraction[]>(`/v1/infractions?limit=${limit}`),
-  agentInfractions: (cid: number) => get<Infraction[]>(`/v1/agents/${cid}/infractions`),
   plazaState: () => get<PlazaState>('/v1/plaza/state'),
   stopAll: (reason = '') => post<PlazaState>('/v1/plaza/stop', { reason }),
   resumeAll: () => post<PlazaState>('/v1/plaza/resume', {}),
   restartAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/restart`, {}),
-  wipeAgent: (cid: number, opts: { memory?: boolean; transcript?: boolean; identity?: boolean }) => post<{ ok: boolean; wiped: string[] }>(`/v1/agents/${cid}/wipe`, opts),
+  wipeAgent: (cid: number, opts: { transcript?: boolean }) => post<{ ok: boolean; wiped: string[] }>(`/v1/agents/${cid}/wipe`, opts),
   retireAgent: (cid: number) => post<unknown>(`/v1/agents/${cid}/retire`, {}),
   /** Refused (409) while the agent works or has queued work. */
   sleepAgent: (cid: number) => post<{ ok: boolean }>(`/v1/agents/${cid}/sleep`),
@@ -843,13 +744,7 @@ export const api = {
   testConnector: (id: string) => post<ConnectorTest>(`/v1/connectors/${id}/test`),
 
   approvals: () => get<Approval[]>('/v1/approvals'),
-  /** `action` picks what a sanction escalation does; left out, approve and deny act as they always have. */
-  decideApproval: (id: string, approve: boolean, reason?: string, action?: ApprovalAction) => post<unknown>(approvalPath(id), { approve, reason, action }),
-  /** The sanctions register, newest first. `cid`, `law` and `limit` (default 100) narrow it. `active` answers only the suspensions in force (no sanctions, no limit). */
-  sanctions: (q: { cid?: number; law?: string; limit?: number; active?: boolean } = {}) =>
-    get<SanctionsView>(`/v1/sanctions${query({ cid: q.cid, law: q.law, limit: q.limit, active: q.active ? 1 : undefined })}`),
-  /** Lifts an active suspension. 404 for an unknown id, 409 when it is not an active suspension. */
-  liftSanction: (id: number, reason: string) => post<Sanction>(`/v1/sanctions/${id}/lift`, { reason }),
+  decideApproval: (id: string, approve: boolean, reason?: string) => post<unknown>(approvalPath(id), { approve, reason }),
   permissions: (cid: number) => get<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`),
   setPermissions: (cid: number, mode: PermissionMode) => put<{ mode: PermissionMode }>(`/v1/agents/${cid}/permissions`, { mode }),
 
@@ -858,14 +753,14 @@ export const api = {
   /** Trades the owner token for this browser's session cookie (HttpOnly; the token is not kept). */
   signIn: (token: string) => post<{ ok: boolean }>('/v1/auth/session', { token }),
   signOut: () => del<{ ok: boolean }>('/v1/auth/session'),
-  hubIdentity: () => get<HubIdentity>('/v1/hub/identity'),
+  hubIdentity: readable<HubIdentity>('/v1/hub/identity'),
   /** A new owner token, shown once; every signed-in browser must sign in again. */
   rotateOwnerToken: () => post<{ token: string }>('/v1/hub/owner-token/rotate'),
 
-  nodes: () => get<NodeView[]>('/v1/nodes'),
+  nodes: readable<NodeView[]>('/v1/nodes'),
   /** A join code: its token is in this answer only. `ttl_minutes` ≤ 60 (0: the default 15). */
   issueJoinCode: (label: string, ttl_minutes: number) => post<{ id: string; token: string; expires_ms: number }>('/v1/nodes/codes', { label, ttl_minutes }),
-  joinCodes: () => get<JoinCode[]>('/v1/nodes/codes'),
+  joinCodes: readable<JoinCode[]>('/v1/nodes/codes'),
   revokeJoinCode: (id: string) => del<unknown>(`/v1/nodes/codes/${id}`),
   revokeNode: (id: string) => post<NodeView>(`/v1/nodes/${id}/revoke`),
   /** Takes a node out of service (n0 too): its agents move to the other machines. `now` interrupts their turns, which resume where they go. */
@@ -876,7 +771,7 @@ export const api = {
   rebalance: (dryRun = false) => post<Rebalance>('/v1/nodes/rebalance', { dry_run: dryRun }),
   nodeMachine: (id: string) => get<Machine>(`/v1/nodes/${id}/machine`),
   nodeRuns: (id: string) => get<unknown>(`/v1/nodes/${id}/runs`),
-  nodeLink: () => get<NodeLink>('/v1/node-link'),
+  nodeLink: readable<NodeLink>('/v1/node-link'),
   /** Joins the network whose Nodes screen issued `code`. 400 `{error}` on a bad code, 409 when already joined. */
   joinNodeLink: (code: string) => post<NodeLink>('/v1/node-link/join', { code }),
   /** Leaves that network; `forget` also drops its saved hub details. */
@@ -886,7 +781,7 @@ export const api = {
   issueStationCode: (label: string, ttl_minutes: number) => post<{ id: string; token: string; expires_ms: number }>('/v1/stations/codes', { label, ttl_minutes }),
   stationCodes: () => get<StationCode[]>('/v1/stations/codes'),
   revokeStationCode: (id: string) => del<unknown>(`/v1/stations/codes/${encodeURIComponent(id)}`),
-  stations: () => get<StationView[]>('/v1/stations'),
+  stations: readable<StationView[]>('/v1/stations'),
   /** The workstation VMs the plaza made on its nodes. */
   stationVms: () => get<StationVm[]>('/v1/stations/vms'),
   createStationVm: (body: StationVmBody) => post<StationVm>('/v1/stations/vms', body),
@@ -1016,28 +911,13 @@ export interface JoinCode { id: string; label: string; created_ms: number; expir
 
 export type ApprovalState = 'pending' | 'approved' | 'denied' | 'used' | 'withdrawn';
 /**
- * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call), "sanction"
- * (an escalation from the conduct laws) or "payment" (a held payment). For a tool call `subject` is the tool
- * and `detail` its input; a sanction's `detail` carries `sanction_id`.
+ * A call waiting on (or recording) the owner's decision. `kind` is "tool" (an agent's tool call), "review", "deploy" or
+ * "artifact.share". For a tool call `subject` is the tool and `detail` its input.
  */
 export interface Approval {
   id: string; cid: number; tool: string; input: unknown; created_ms: number; state: ApprovalState; reason: string | null;
   kind: string; subject: string; detail: unknown;
 }
-/** What the owner does on a sanction escalation: acknowledge it, lift the suspension, or record a retirement. */
-/** A sanction's `acknowledge`, `lift` or `retire`; a review card's `rework` (Send back). */
-export type ApprovalAction = 'acknowledge' | 'lift' | 'retire' | 'rework';
-
-/** A sanction on the register. `lifted` is set once the owner has lifted it; `owner_action` is the owner's latest decision on the record. */
-export interface Sanction {
-  id: number; cid: number; law: string; title: string; severity: string; count: number; tool: string; at_ms: number;
-  sanction: string; outcome: string; fine: number; entry: number | null; until_ms: number | null;
-  lifted: { at_ms: number; by: 'owner'; why: string } | null; approval: string | null;
-  owner_action: { action: 'acknowledge' | 'retire'; at_ms: number } | null;
-}
-/** A suspension: the agent may not use `tool` until `until_ms`. `active` is false once it has run out or been lifted. */
-export interface Suspension { id: number; cid: number; tool: string; law: string; until_ms: number; active: boolean }
-export interface SanctionsView { sanctions: Sanction[]; suspensions: Suspension[] }
 /** `autonomous` acts freely, `ask` queues changes for approval, `read_only` refuses them. */
 export type PermissionMode = 'autonomous' | 'ask' | 'read_only';
 
@@ -1550,10 +1430,10 @@ export interface SkillSummary {
 }
 /** The editable parts of a skill (PUT /v1/skills/{id}): its title and tags. */
 export interface SkillMeta { title: string; tags: string[] }
-export interface SkillFile { path: string; sha256: string; size: number; executable: boolean }
+export interface SkillFile { path: string; hash: string; size: number; executable: boolean }
 export interface SkillVersionMeta {
   version: number; note: string; author: string; created_ms: number; score: number; errors: number; warnings: number;
-  infos: number; rules_version: number; sha256: string; file_count: number; total_bytes: number; source_commit: string | null;
+  infos: number; rules_version: number; hash: string; file_count: number; total_bytes: number; source_commit: string | null;
 }
 /** A whole version. `stale` when scored under an older rule set; `recheck` is then today's report. */
 export interface SkillVersion extends SkillVersionMeta {
@@ -1568,8 +1448,8 @@ export type SkillAction = 'create' | 'version' | 'publish' | 'unpublish' | 'edit
 export interface SkillEvent { id: number; skill_id: string; action: SkillAction; version: number | null; actor: string; at_ms: number }
 export interface SkillRule { id: string; severity: SkillSeverity; title: string; why: string }
 export interface SkillRules { rules_version: number; rules: SkillRule[]; template: string }
-/** A file to save: new bytes (base64), or an unchanged file by its sha256. */
-export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { sha256: string });
+/** A file to save: new bytes (base64), or an unchanged file by its hash. */
+export type SkillFileIn = { path: string; executable: boolean } & ({ content_b64: string } | { hash: string });
 /** An import preview (15 minutes): the skills found, each checked. `exists` names a live skill with the same name. */
 export interface SkillPreview {
   preview_id: string; source: SkillSource; expires_ms: number;

@@ -47,7 +47,6 @@ for _ in $(seq 60); do
 done
 kill -0 "$hub" 2>/dev/null && grep -q "listening on http://127.0.0.1:$port" "$out/apid.log" ||
   { echo "the scratch hub is not listening on $port:"; cat "$out/apid.log"; exit 1; }
-grep -q "no APZ_DATABASE_URL" "$out/apid.log" || { echo "the scratch hub found a database: refusing"; exit 1; }
 
 status=0
 token="$(cat "$state/hub/internal.token")"

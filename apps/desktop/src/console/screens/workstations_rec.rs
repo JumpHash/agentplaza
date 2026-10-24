@@ -20,7 +20,7 @@ use serde_json::Value;
 
 use super::lab_common::now_ms;
 use super::workstations::{Load, cells, field, mono_text, settle_into, table};
-use crate::console::{Ctx, client, ui};
+use crate::console::{Ctx, client, roles, ui};
 use crate::theme;
 
 /// The frames a recording keeps a second: at least one, and at most the hub's sampler keeps (`FPS_CAP`).
@@ -644,20 +644,20 @@ pub fn event_label(kind: &str) -> String {
 // ---- Views ----
 
 /// The station's recordings: its list, or the recording open on the page. A deletion is asked for in place.
-pub fn station_view<'a>(state: &'a State, names: &'a HashMap<u64, String>) -> Element<'a, Msg> {
+pub fn station_view<'a>(state: &'a State, labels: &'a HashMap<u64, String>) -> Element<'a, Msg> {
     let mut parts: Vec<Element<'a, Msg>> = Vec::new();
     if let Some(error) = &state.error {
         parts.push(ui::error_line(error.as_str()));
     }
     if let Some(open) = &state.open {
-        parts.push(detail_view(state, open, names));
+        parts.push(detail_view(state, open, labels));
     } else {
-        parts.push(list_view(state, names));
+        parts.push(list_view(state, labels));
     }
     column(parts).spacing(12).width(Length::Fill).into()
 }
 
-fn list_view<'a>(state: &'a State, names: &'a HashMap<u64, String>) -> Element<'a, Msg> {
+fn list_view<'a>(state: &'a State, labels: &'a HashMap<u64, String>) -> Element<'a, Msg> {
     let body: Element<'a, Msg> = match &state.list {
         Load::Pending => ui::loading(),
         Load::Failed => ui::empty("alert", "Could not load the recordings.", ""),
@@ -677,10 +677,10 @@ fn list_view<'a>(state: &'a State, names: &'a HashMap<u64, String>) -> Element<'
             ],
             list.iter()
                 .map(|rec| {
-                    let agent = names
+                    let agent = labels
                         .get(&rec.agent)
                         .cloned()
-                        .unwrap_or_else(|| format!("agent {}", rec.agent));
+                        .unwrap_or_else(|| roles::agent_label("", rec.agent));
                     let mut tags: Vec<Element<'a, Msg>> =
                         vec![ui::link("Open", Msg::Open(rec.id.clone()), false)];
                     if rec.takeover {
@@ -707,7 +707,7 @@ fn list_view<'a>(state: &'a State, names: &'a HashMap<u64, String>) -> Element<'
 fn detail_view<'a>(
     state: &'a State,
     open: &'a Open,
-    names: &'a HashMap<u64, String>,
+    labels: &'a HashMap<u64, String>,
 ) -> Element<'a, Msg> {
     let detail = match &open.detail {
         Load::Pending => return ui::loading(),
@@ -722,10 +722,10 @@ fn detail_view<'a>(
         open.pos as f64 / duration as f64
     };
     let seq = frame_at(open.pos, &timeline(detail));
-    let agent = names
+    let agent = labels
         .get(&rec.agent)
         .cloned()
-        .unwrap_or_else(|| format!("agent {}", rec.agent));
+        .unwrap_or_else(|| roles::agent_label("", rec.agent));
 
     let picture: Element<'a, Msg> = match open.frames.get(&seq) {
         Some(handle) => image(handle.clone())

@@ -1,10 +1,10 @@
 // The console's scope: one project, or All projects. The route carries it (`#/p/<id>/…`, router.ts), so every link the
 // console draws keeps it; the choice is remembered for the next visit. Screens read it to show only that project's
-// agents, tasks, board and approvals, and All projects is the whole plaza, with the bench.
+// agents, tasks, board and approvals, and All projects is the whole plaza.
 
 import { api, type Agent, type Project } from './api';
 import { hrefIn, parse, setLinkScope } from './router';
-import { Cell, on } from './store';
+import { Cell, on, RESYNC } from './store';
 
 const KEY = 'apz.scope';
 
@@ -67,11 +67,6 @@ export function inScope(agent: Pick<Agent, 'project' | 'tier'>, project: string 
   return project === null || agent.project === project || agent.tier === 'orchestrator';
 }
 
-/** Whether `agent` is on the bench: no project, and not the orchestrator (which works without one). */
-export function onBench(agent: Pick<Agent, 'project' | 'tier' | 'kind'>): boolean {
-  return !agent.project && agent.tier !== 'orchestrator' && agent.kind !== 'model';
-}
-
 let loading: Promise<void> | null = null;
 
 export function refreshProjects(): Promise<void> {
@@ -88,8 +83,11 @@ export function refreshProjects(): Promise<void> {
   return loading;
 }
 
-/** Loads the projects and keeps them current. */
+/** Loads the projects and keeps them current. The last read paints first; the fresh one follows. */
 export function startScope(): void {
+  const kept = api.projects.cached();
+  if (kept) projects.set(kept);
   void refreshProjects();
   on('project', () => void refreshProjects());
+  on(RESYNC, () => void refreshProjects());
 }

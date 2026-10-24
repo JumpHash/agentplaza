@@ -1,6 +1,7 @@
 // The IDE's selection: which agent, repository or workstation the centre shows, and which view the centre and the right panel
 // show. Choosing an agent shows its workspace (ide-data); the sidebar's keys and the palette come here. What a selection has
 // (its views, its tabs) is the kind's rule in ide/layout.
+import { agentLabel, agentName } from '../roles';
 import type { IdeWorkspaceInfo, Project } from '../api';
 import { groupByProject, startAgent, projectOf } from '../ide/groups';
 import { centreViewsFor, rightViewsFor } from '../ide/layout';
@@ -11,7 +12,6 @@ import { type IdeCtx } from './ide-ctx';
 import { chatPane } from './ide-chat';
 import { prewake } from '../prewake';
 import { ideEmbeds } from './ide-rich';
-import { openAgentWizard } from './agent-wizard';
 import type { CentreView, RightView } from './ide-frame';
 
 /**
@@ -80,7 +80,7 @@ export function selectAgent(c: IdeCtx, next: number, view: CentreView): void {
     };
     c.chat = chatPane({
       cid: next,
-      agentName: agent?.name ?? `agent ${next}`,
+      agentName: agent ? agentName(agent) : agentLabel(next),
       project: project?.title ?? null,
       working: () => c.agentWorking,
       embeds: () => ideEmbeds(c, projectNow()),
@@ -104,11 +104,6 @@ export function selectWorkspace(c: IdeCtx, info: IdeWorkspaceInfo): void {
   c.dom.sidebar.setSelected(`ws:${info.id}`);
   void setWorkspace(c, info);
   c.act.renderAll();
-}
-
-/** The sidebar's "+ New agent": the agent wizard, in a modal over the IDE. */
-export function newAgent(): void {
-  openAgentWizard();
 }
 
 /**

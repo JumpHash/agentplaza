@@ -50,7 +50,7 @@ export function ideEmbeds(c: IdeCtx, project: Project | null): EmbedContext {
     paths: workspacePaths(c),
     // An agent in the IDE's sidebar is selected there; one the IDE does not list opens nothing.
     openAgent: (who) => {
-      const cid = typeof who === 'number' ? who : c.agentList.find((a) => a.name === who)?.cid;
+      const cid = typeof who === 'number' ? who : undefined;
       if (cid !== undefined && c.agentList.some((a) => a.cid === cid)) c.act.selectAgent(cid);
     },
     // A folder reference has nothing to open in the editor; a file opens at its line.

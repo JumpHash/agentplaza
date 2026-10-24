@@ -60,7 +60,7 @@ const INVALID_PARAMS: i64 = -32602;
 const INTERNAL_ERROR: i64 = -32603;
 
 /// The tools an engine may call through the plaza's MCP server: the profile's tools the hub runs
-/// (the board, tasks, messages, memory, library). The harness's own tools are left out, since the
+/// (the board, tasks, messages, library). The harness's own tools are left out, since the
 /// engine has its own through ACP; so are the owner's IDE tools and `code_engine` itself.
 pub fn plaza_tools(profile_tools: &[ToolSpec]) -> Vec<ToolSpec> {
     profile_tools
@@ -512,13 +512,12 @@ mod tests {
             spec("edit_file"),
             spec("ide_read"),
             spec("code_engine"),
-            spec("memory_write"),
         ];
         let names: Vec<String> = plaza_tools(&profile)
             .into_iter()
             .map(|tool| tool.name)
             .collect();
-        assert_eq!(names, ["board_list", "task_list", "memory_write"]);
+        assert_eq!(names, ["board_list", "task_list"]);
     }
 
     #[test]

@@ -72,9 +72,6 @@ pub enum Action {
         /// A note for the team.
         #[arg(long)]
         note: Option<String>,
-        /// The task's budget in credits, at least 200. The project's default when it is not given.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(200..))]
-        budget: Option<u64>,
         /// The role that does the task, such as builder.
         #[arg(long)]
         role: Option<String>,
@@ -168,13 +165,8 @@ pub fn run(ctx: &Ctx, id: &str, action: Option<Action>) -> Result<(), String> {
             let proposal = find_proposal(&view, id, &pid)?;
             ctx.out(proposal, print_proposal);
         }
-        Action::Approve {
-            pid,
-            note,
-            budget,
-            role,
-        } => {
-            let body = approve_body(note.as_deref(), budget, role.as_deref());
+        Action::Approve { pid, note, role } => {
+            let body = approve_body(note.as_deref(), role.as_deref());
             let p = ctx.client.post(
                 &format!("{base}/proposals/{}/approve", ctx::seg(&pid)),
                 &body,
@@ -242,14 +234,11 @@ fn signal_body(text: &str, details: [Option<String>; 5]) -> Result<Value, String
     Ok(body)
 }
 
-/// The `POST …/approve` body: the note, budget and role, each when it is given.
-fn approve_body(note: Option<&str>, budget: Option<u64>, role: Option<&str>) -> Value {
+/// The `POST …/approve` body: the note and role, each when it is given.
+fn approve_body(note: Option<&str>, role: Option<&str>) -> Value {
     let mut body = json!({});
     if let Some(note) = note {
         body["note"] = json!(note);
-    }
-    if let Some(budget) = budget {
-        body["budget"] = json!(budget);
     }
     if let Some(role) = role {
         body["role"] = json!(role);
@@ -430,10 +419,6 @@ fn print_proposal(p: &Value) {
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    let budget = match ctx::text(effort, "budget").as_str() {
-        "" => "the project's default".to_string(),
-        budget => format!("{budget} credits"),
-    };
     let mut pairs: Vec<(&str, String)> = vec![
         ("id", ctx::text(p, "id")),
         ("kind", ctx::text(p, "kind")),
@@ -473,7 +458,7 @@ fn print_proposal(p: &Value) {
         (
             "effort",
             format!(
-                "{} with {budget}: {}",
+                "{}: {}",
                 ctx::text(effort, "size"),
                 dash(ctx::text(effort, "note"))
             ),
@@ -566,10 +551,10 @@ mod tests {
 
     #[test]
     fn approve_sends_only_what_is_given() {
-        assert_eq!(approve_body(None, None, None), json!({}));
+        assert_eq!(approve_body(None, None), json!({}));
         assert_eq!(
-            approve_body(Some("ship it"), Some(500), None),
-            json!({ "note": "ship it", "budget": 500 })
+            approve_body(Some("ship it"), Some("builder")),
+            json!({ "note": "ship it", "role": "builder" })
         );
     }
 

@@ -1,6 +1,6 @@
 //! The plaza's master switch. STOP ALL cancels every agent's running work and holds the plaza:
 //! nothing new is dispatched (queued work, loops, task assignment) until the owner
-//! resumes. The agents' VMs stay up and their queues are kept. Saved in Postgres ("control").
+//! resumes. The agents' VMs stay up and their queues are kept. Saved in plaza.db (the `control` table).
 //!
 //! GET  /v1/plaza/state   → {paused, since_ms, by, reason, cancelled}
 //! POST /v1/plaza/stop    body {reason?} → the state (cancels running work, pauses)
@@ -9,11 +9,14 @@
 use std::sync::Mutex;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 
 use crate::state::App;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "control")]
 pub struct PlazaState {
     pub paused: bool,
     pub since_ms: u64,
@@ -41,14 +44,21 @@ impl Control {
             *guard = state;
         }
     }
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.state()).unwrap_or_default()
+    /// The state's row, as it is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::one(def(), &self.state())
     }
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let state: PlazaState = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.state.lock().map_err(|e| e.to_string())? = state;
+    /// Replaces the state with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<PlazaState>(conn, def())?;
+        self.set(stored.unwrap_or_default());
         Ok(())
     }
+}
+
+/// The control table: `control`, one row.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(PlazaState)
 }
 
 #[derive(Deserialize)]
@@ -152,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hold_survives_snapshot_and_restore() {
+    fn hold_survives_a_round_trip_through_its_table() {
         let control = Control::default();
         assert!(!control.paused());
         control.set(PlazaState {
@@ -162,15 +172,15 @@ mod tests {
             reason: "bad loop".into(),
             cancelled: 2,
         });
-        let json = control.snapshot();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &control.rows().unwrap()).unwrap();
 
         let restored = Control::default();
-        restored.restore(&json).unwrap();
+        restored.load(&conn).unwrap();
         assert!(restored.paused());
         assert_eq!(restored.state().cancelled, 2);
         assert_eq!(restored.state().reason, "bad loop");
-
-        assert!(restored.restore("not json").is_err());
-        assert!(restored.paused(), "a refused restore changes nothing");
+        assert_eq!(restored.state(), control.state());
     }
 }

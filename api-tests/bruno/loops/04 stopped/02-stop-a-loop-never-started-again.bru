@@ -1,0 +1,22 @@
+meta {
+  name: Stop a loop that was never started: refused
+  type: http
+  seq: 2
+}
+
+delete {
+  url: {{baseUrl}}/v1/loops/never-started
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("refused: no such loop", function () {
+    expect(res.getBody().error).to.include("no loop");
+  });
+}

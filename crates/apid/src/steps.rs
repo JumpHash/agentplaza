@@ -243,12 +243,9 @@ mod tests {
     #[test]
     fn an_approval_is_for_the_tool_the_agent_was_about_to_run() {
         let steps = Steps::default();
-        steps.set(7, "tool", Some("plaza_pay".into()), 1_000);
+        steps.set(7, "tool", Some("bash".into()), 1_000);
         steps.set(7, "approval", None, 3_000);
-        assert_eq!(
-            steps.get(7),
-            Some(step("approval", Some("plaza_pay"), 3_000))
-        );
+        assert_eq!(steps.get(7), Some(step("approval", Some("bash"), 3_000)));
         // A new turn's tools name no tool until a request does.
         steps.set(7, "thinking", None, 9_000);
         steps.set(7, "tool", None, 12_000);

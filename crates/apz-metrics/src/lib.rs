@@ -49,7 +49,19 @@ pub use registry::{Counter, Gauge, Hist, Registry, Sample, Value};
 pub type Point = (u64, f64);
 
 /// What a series is about. The hub resolves a scope (a node, a role, a provider…) into the entities under it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    apz_store::Column,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
     Global,

@@ -59,7 +59,7 @@ pub fn main(args: &[String], out: &mut dyn Write) -> i32 {
                 Some((p, t)) => match Tier::parse(t) {
                     Some(t) => tiers.push((p.to_string(), t)),
                     None => {
-                        let _ = writeln!(out, "unknown tier `{t}` (constitution, statute, system, town, contract, agent)");
+                        let _ = writeln!(out, "unknown tier `{t}` (constitution, statute, system, plaza, contract, agent)");
                         return 2;
                     }
                 },

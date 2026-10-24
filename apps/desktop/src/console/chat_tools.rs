@@ -1,5 +1,5 @@
-//! The chat's model chip, context bar and breakdown (the chats brief). The IDE agent chat, the owner conversation,
-//! the Overview's orchestrator composer and the agent page each hold one [`ChatTools`] for their target: [`load`]
+//! The chat's model chip, context bar and breakdown (the chats brief). The IDE agent chat, the Overview's orchestrator
+//! composer and the agent page each hold one [`ChatTools`] for their target: [`load`]
 //! reads the model list, the chat's model and the hub's context for its latest work; the `context` event and each
 //! send refresh the context ([`ChatTools::on_event`], [`ChatTools::refresh`]); the picker and the effort row save
 //! the chat's model through the hub ([`update`]).
@@ -42,12 +42,10 @@ const TRACK_H: f32 = 4.0;
 /// The track's resolution: a part's segment is its share of this many units.
 const TRACK_UNITS: u128 = 1000;
 
-/// Which chat's model and context a [`ChatTools`] shows: an agent's chat, or an owner conversation (its
-/// orchestrator's work).
+/// Which chat's model and context a [`ChatTools`] shows: an agent's chat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Agent(u64),
-    Conversation(String),
 }
 
 /// One tool's row in the breakdown: its calls, the failed ones, and the tokens its results took.
@@ -144,9 +142,9 @@ pub struct Fetched {
 #[derive(Debug, Clone, Default)]
 pub struct ChatTools {
     target: Option<Target>,
-    /// The agent behind the chat: an agent's own cid, or the conversation record's `cid`.
+    /// The agent behind the chat: its own cid.
     cid: Option<u64>,
-    /// The record's default model (an agent's `model`); empty for a conversation, whose `model` is its override.
+    /// The agent's default model (its `model`), which the chat's own model overrides.
     default_model: String,
     /// The chat's own model, `provider/model[@effort]`, when one is set.
     override_model: Option<String>,
@@ -182,7 +180,6 @@ pub enum ChatToolsMsg {
 fn record_path(target: &Target) -> String {
     match target {
         Target::Agent(cid) => format!("/v1/agents/{cid}"),
-        Target::Conversation(id) => format!("/v1/owner/conversations/{id}"),
     }
 }
 
@@ -330,7 +327,6 @@ impl ChatTools {
                 record["model_override"].as_str(),
                 record["model"].as_str().unwrap_or_default(),
             ),
-            Target::Conversation(_) => (record["cid"].as_u64(), record["model"].as_str(), ""),
         };
         self.target = Some(f.target.clone());
         self.cid = cid;

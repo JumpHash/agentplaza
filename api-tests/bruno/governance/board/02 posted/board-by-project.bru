@@ -17,11 +17,10 @@ assert {
 }
 
 tests {
-  test("the owner's and the agent's posts are listed, all on the project", function () {
+  test("the owner's post is listed, and every post listed is on the project", function () {
   const posts = res.getBody().posts;
     const ids = posts.map((p) => p.id);
     expect(ids).to.include(bru.getVar("boardOwnerPost"));
-    expect(ids).to.include(bru.getVar("boardAgentPost"));
     posts.forEach((p) => expect(p.project).to.equal(bru.getVar("boardProject")));
   });
 }

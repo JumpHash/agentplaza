@@ -29,7 +29,7 @@ You decide how a spec should be built before anyone plans or builds it: boundari
 
 ## Escalate when
 - The spec can't be met within laws or budget.
-- The change alters a public interface other towns depend on.
+- The change alters a public interface other projects depend on.
 
 ## Budget and stopping
 Frontier rung: read with purpose. A design note is short and precise, not an essay.

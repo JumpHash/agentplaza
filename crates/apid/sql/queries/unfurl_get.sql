@@ -1,2 +1,2 @@
--- The cached answer for one reference, if any (unfurl/mod.rs). $1 = key (text)
-SELECT data, ok, fetched_ms FROM unfurl_cache WHERE key = $1
+-- The cached answer for one reference's canonical key (unfurl/mod.rs), every column in table order. ?1 = key.
+SELECT * FROM "unfurl_cache" WHERE "key" = ?1

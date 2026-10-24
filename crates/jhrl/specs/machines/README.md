@@ -1,6 +1,6 @@
 # Formal models (jhrl machines)
 
-The formal models are six jhrl machines in `crates/jhrl/specs/machines/`: AgentSession, Approval, Economy, TaskLifecycle, RestoreMerge and CreditLine. Each is model-checked by jhrl's own explicit-state checker. Each mutant (a deliberately broken copy, written in the file as `mutant … { replace … expect violation … }`) must be caught by the invariant it names. Each witness (a state the model must be able to reach) must be reachable, so an invariant can't pass vacuously.
+The formal models are four jhrl machines in `crates/jhrl/specs/machines/`: AgentSession, Approval, TaskLifecycle and RestoreMerge. Each is model-checked by jhrl's own explicit-state checker. Each mutant (a deliberately broken copy, written in the file as `mutant … { replace … expect violation … }`) must be caught by the invariant it names. Each witness (a state the model must be able to reach) must be reachable, so an invariant can't pass vacuously.
 
 ## Running the checks
 
@@ -45,7 +45,7 @@ State counts: the `quick` model (2 machines, 2 tool calls, 2 VMs) has 64,316 dis
 
 ## Approval: escalation chains (0094)
 
-A request moves up its chain on deadlines and expires to deny after the last step (AP-038). C-004 requests (irreversible, external, money-moving) have the chain `["owner"]` only (AP-052). Decisions can arrive late, from any authority, at any time. The model has two chains (a town request, mayor then owner, and a C-004 request, owner only) and three authorities.
+A request moves up its chain on deadlines and expires to deny after the last step (AP-038). C-004 requests (irreversible, external, money-moving) have the chain `["owner"]` only (AP-052). Decisions can arrive late, from any authority, at any time. The model has two chains (a project request, orchestrator then owner, and a C-004 request, owner only) and three authorities.
 
 State count for the `two chains, three authorities` model: 11 distinct states.
 
@@ -61,42 +61,8 @@ State count for the `two chains, three authorities` model: 11 distinct states.
 
 | Witness | Shows |
 |---|---|
-| A town request escalates to the owner | The town request reaches the owner's step while still pending |
-| An escalated request is approved by the owner | The owner approves a request that escalated from the mayor |
-
-## Economy: escrow, subcontracts, payment, clawback, fines (0039, 0109–0112)
-
-One task chain root → s1 → s2 (the depth limit), two contractors, a 30-credit budget, spends of 5, prices 10 or 20, a 20% cap and a credit line of 1. Every step is one balanced ledger entry, mirroring [docs/treasury-draft/schema.sql](../../../../docs/treasury-draft/schema.sql).
-
-State count for the `one chain, two contractors` model: 80,550 distinct states (the figure recorded with the earlier model; not yet reproduced by jhrl). Deadlock checking is on: every run must end with the root task closed.
-
-| Invariant | Meaning |
-|---|---|
-| Credits are conserved | All accounts (mint, Treasury, external spend, escrows, earnings) always sum to zero |
-| Escrow never goes negative | No task escrow overdraws |
-| Earnings stay above the credit line | Earnings never go below the agent's credit line, even after clawbacks and fines |
-| No task is paid twice | Each task is paid at most once |
-| Failed work is never paid | Failed work earns no margin |
-| The chain's margin stays within the cap | Total margin in the chain ≤ 20% of money that really left (0111) |
-| External spend is metered cost | Real money leaves only as metered spend from escrow |
-| Earnings come from work only | Earnings = margins paid − fines; nothing else creates them |
-| The Treasury holds the fines | The Treasury holds at least what fines brought in |
-| A settled task's escrow is empty | A closed task's escrow is empty |
-| No escrow is stranded | When the chain is done, no credit is stuck anywhere |
-| Only governance mints | Only the root budget is ever minted |
-
-### Economy witnesses
-
-An invariant that can never be tested proves nothing, so each witness must be reachable.
-
-| Witness | Shows |
-|---|---|
-| A margin is paid | Margin is paid for verified work |
-| Margins are paid on both subcontract hops | Margin is paid on both s1 and s2 |
-| The cap limits a payment | The 20% cap actually limits a payment (credit left in escrow after paying) |
-| A margin is clawed back | Clawbacks happen |
-| An agent is fined | Fines happen |
-| Earnings dip into the credit line | Earnings can go below zero, into the credit line |
+| A project request escalates to the owner | The project request reaches the owner's step while still pending |
+| An escalated request is approved by the owner | The owner approves a request that escalated from the orchestrator |
 
 ## TaskLifecycle: tasks, dependencies, rework, re-plans (0123)
 
@@ -111,7 +77,6 @@ State count for the `three tasks, two agents` model (2 agents, up to 2 attempts,
 | No run on a dead task | A live run belongs only to a running or blocked task |
 | Paid only if accepted | Payment happens only for accepted work |
 | Paid at most once | No task is paid more than once |
-| Escrow is released exactly once | A task's escrow is released once, when it closes, and never before |
 | Accepted work is paid at close | A task closed as accepted has been paid |
 | Attempts are bounded | Rework attempts never exceed `MaxAttempts` |
 | Nobody waits on superseded work | No open task waits on a superseded task |
@@ -152,29 +117,9 @@ State count for the `two intents, log up to seven` model: 14,914 distinct states
 | A call is cancelled because the harness never ran it | An open call the harness never ran is cancelled |
 | A lost machine fences an open call | After machine loss, an open call is fenced |
 
-## CreditLine: a credit line between lender and borrower (AP-073)
-
-One credit line between a lender and a borrower (AP-073.R4, R7). Money is conserved: whatever the borrower draws leaves the lender's balance, and repayments move it back. A write-off closes the line and the lender bears the loss; nothing is minted.
-
-State count for the `three credits` model (total 3 credits, balances from 0 to 3): 16 distinct states.
-
-| Invariant | Meaning |
-|---|---|
-| Drawn never exceeds the line | While the line is open, what is drawn never exceeds the limit (AP-073.R4) |
-| Balances never go negative | Neither the lender's nor the borrower's balance goes below zero |
-| Credits are conserved | Lender and borrower balances always add up to the starting total; nothing is minted (AP-073.R7) |
-| A closed line stays closed (transition) | Once written off, a line never reopens |
-
-### CreditLine witnesses
-
-| Witness | Shows |
-|---|---|
-| A line is fully drawn | The borrower draws the whole limit |
-| A line is written off with credits outstanding | A write-off happens while money is still lent out, so the lender bears the loss |
-
 ## Mutants
 
-Thirty mutants, each written in its machine's file. The `expect` line names the invariant that must catch it (or, for one mutant, deadlock checking).
+Twenty mutants, each written in its machine's file. The `expect` line names the invariant that must catch it (or, for one mutant, deadlock checking).
 
 | Machine | Mutant | Caught by |
 |---|---|---|
@@ -183,14 +128,6 @@ Thirty mutants, each written in its machine's file. The `expect` line names the 
 | AgentSession | A move reuses the old session token | At most one copy of the agent is accepted |
 | Approval | Accept any authority | Decided by the chain |
 | Approval | Silence means yes | Decided by the chain |
-| Economy | Payment ignores the chain margin cap | The chain's margin stays within the cap |
-| Economy | A subcontract price counts as real cost | External spend is metered cost |
-| Economy | No once-only guard on payment | No task is paid twice |
-| Economy | Failed work is paid | Failed work is never paid |
-| Economy | Fines are taken from escrow | Earnings come from work only |
-| Economy | A task closes while its subcontracts are open | No escrow is stranded |
-| Economy | Clawback ignores the credit line | Earnings stay above the credit line |
-| Economy | Spend leaves escrow but is never recorded | Credits are conserved |
 | TaskLifecycle | Ready without checking dependencies | Dependencies are accepted before work |
 | TaskLifecycle | The worker verifies its own work | The verifier is not the worker |
 | TaskLifecycle | Superseding leaves the run alive | No run on a dead task |
@@ -206,8 +143,6 @@ Thirty mutants, each written in its machine's file. The `expect` line names the 
 | RestoreMerge | Run cancelled calls | A cancelled call never runs |
 | RestoreMerge | Run fenced calls | Effects are known while running |
 | RestoreMerge | Owner record is a runnable decision | No effect runs twice |
-| CreditLine | Draw ignores the limit | Drawn never exceeds the line |
-| CreditLine | Write-off mints the loss back to the lender | Credits are conserved |
 
 ## What the mutants taught us
 
@@ -217,11 +152,5 @@ The first version of AgentSession only checked `No double external effect`. Two 
 - Results from a stale VM could enter the transcript before the new VM's Hello. The workspace changes behind such a result live on a VM that's about to be discarded. `Only the current session writes the transcript` was added.
 
 Both are guarantees the design promised (0044, 0102); now they're checked.
-
-Modelling the economy corrected the design itself (0121):
-
-- The design said a payment is "real cost + margin". But the real cost is already spent from the child's escrow, so paying it again would pay it twice. **A payment is the margin only.**
-- The ledger had no entry for moving a price from a parent's escrow into a child's. **`subcontract` is now its own entry kind**, and it is not real cost, so margin can't stack across hops.
-- A clawback must stop at the credit line, and the chain's margin must be counted net of clawbacks.
 
 Modelling the restore merge also corrected its design (0135): calls must be keyed by ids that are unique across restores, not by transcript position; and an owner-confirmed effect must be recorded as a result only, or a replacement VM could run it again.

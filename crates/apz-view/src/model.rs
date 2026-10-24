@@ -182,7 +182,7 @@ pub enum Body {
     Html(HtmlBody),
 }
 
-/// A file in an artifact's store (bytes in the deliverables store: Garage or the hub's disk).
+/// A file in an artifact's store (bytes in the hub's object store).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobRef {
     /// The blob's id within its artifact (`b1`, `b2` …), from `artifact_attach_data`.

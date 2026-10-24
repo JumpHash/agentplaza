@@ -1,6 +1,6 @@
-//! First-run setup for **Start locally** and **Host a hub**: the checks, the fixes and their
-//! containers live in the `apz-setup` crate (shared with the CLI). The chooser (`boot.rs`) uses
-//! them through this module, which keeps the `console::setup` path it has always had.
+//! First-run setup for **Start locally** and **Host a hub**: the checks live in the `apz-setup` crate
+//! (shared with the CLI). The chooser (`boot.rs`) uses them through this module, which keeps the
+//! `console::setup` path it has always had.
 
 pub use apz_setup::*;
 
@@ -20,9 +20,9 @@ mod tests {
         };
         assert!(ready(&[]));
         assert!(
-            ready(&[row(Need::Garage, State::Missing, false)]),
-            "Garage is optional"
+            ready(&[row(Need::Hypervisor, State::Missing, false)]),
+            "the hypervisor is optional"
         );
-        assert!(!ready(&[row(Need::Docker, State::Missing, true)]));
+        assert!(!ready(&[row(Need::Services, State::Missing, true)]));
     }
 }

@@ -34,7 +34,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/vault", |app, _, _| status(&ctx(app)))
         .doc(RouteDoc::new("Show the vault's state"))
-        .post("/v1/vault/unseal", |app, req, _| unseal(&ctx(app), req))
+        .post("/v1/vault/unseal", |app, req, _| {
+            let response = unseal(&ctx(app), req);
+            if response.status == 200 {
+                // What plaza.db keeps blank comes back from the vault now that it can give it.
+                app.providers.sync_vault();
+            }
+            response
+        })
         .doc(RouteDoc::new("Unseal the vault").errors(&[400, 409, 429, 503]))
         .post("/v1/vault/seal", |app, _, _| seal(&ctx(app)))
         .doc(RouteDoc::new("Seal the vault").errors(&[409, 423, 503]))

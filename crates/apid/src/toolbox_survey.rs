@@ -21,11 +21,7 @@ pub fn survey(app: &App, agent: &Agent, query: &str) -> String {
     let query = query.trim();
     let words = words_of(query);
     let filtered = !words.is_empty();
-    let who = if agent.name.is_empty() {
-        agent.role.as_str()
-    } else {
-        agent.name.as_str()
-    };
+    let who = agent.label();
 
     let mut out: Vec<String> = vec![if filtered {
         format!("Toolbox for {who}, matching \"{query}\"")

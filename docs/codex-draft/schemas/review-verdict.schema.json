@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/review-verdict.schema.json",
   "title": "Review verdict",
-  "description": "A reviewer's verdict after deterministic checks passed (0053).",
+  "description": "A reviewer's verdict after deterministic checks passed.",
   "type": "object",
   "additionalProperties": false,
   "required": [

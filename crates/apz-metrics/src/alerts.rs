@@ -9,7 +9,7 @@ use crate::query::AggFn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Cmp {
     Gt,
@@ -31,7 +31,7 @@ impl Cmp {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     Warning,
@@ -39,7 +39,7 @@ pub enum Severity {
 }
 
 /// Where an alert is told. Nothing leaves the plaza.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Notify {
     pub console: bool,
     pub desktop: bool,
@@ -56,7 +56,7 @@ impl Default for Notify {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct Rule {
     pub id: String,
     pub name: String,
@@ -73,6 +73,7 @@ pub struct Rule {
     #[serde(default = "yes")]
     pub on: bool,
     #[serde(default)]
+    #[table(flatten)]
     pub notify: Notify,
     /// One of the starter rules (they can be switched off, not deleted).
     #[serde(default)]
@@ -84,7 +85,7 @@ fn yes() -> bool {
 }
 
 /// A subject's state.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, apz_store::Table)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum State {
     Ok,

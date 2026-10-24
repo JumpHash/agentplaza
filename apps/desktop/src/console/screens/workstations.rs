@@ -3,8 +3,8 @@
 //! command to run on the machine), shows each one's state and a thumbnail of its screen, and holds the hub's
 //! recording defaults. A workstation's page shows its live view and the owner's takeover of it
 //! (`workstations_live.rs`), its facts, leases, work folder (`workstations_files.rs`), recordings with
-//! playback (`workstations_rec.rs`), its settings (the takeover policy, recording, the work folder, the hourly
-//! rate), its rename, drain, revoke and audit. Reloads on the screen's poll and on the `station`, `lease_*`,
+//! playback (`workstations_rec.rs`), its settings (the takeover policy, recording and the work folder), its rename,
+//! drain, revoke and audit. Reloads on the screen's poll and on the `station`, `lease_*`,
 //! `station_takeover`, `station_give_back`, `station_sync_conflict` and `station_sync_paused` bus frames.
 
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ use super::workstations_files as files;
 use super::workstations_live as live;
 use super::workstations_rec as rec;
 use super::workstations_vms as vms;
-use crate::console::{Ctx, client, events, ui};
+use crate::console::{Ctx, client, events, roles, ui};
 use crate::theme;
 
 /// The longest name, and the longest join-code label, in characters (the hub's limit).
@@ -36,8 +36,6 @@ const TTL_CHOICES: [u64; 3] = [15, 30, 60];
 const RETENTION_DAYS: (u64, u64) = (1, 3650);
 /// Frames a recording keeps a second: from one to five (the sampler keeps at most five).
 const RECORD_FPS: (u64, u64) = (1, 5);
-/// The hourly rate's bound, in plaza credits (1 credit is $0.001): $1000 an hour.
-const RATE_MAX: u64 = 1_000_000;
 /// How often the list's thumbnails are taken again, while the list is shown.
 const THUMB_EVERY: Duration = Duration::from_secs(10);
 const WORK_FOLDER_MAX: usize = 512;
@@ -104,8 +102,6 @@ pub struct Settings {
     pub record_takeovers: bool,
     pub work_folder: String,
     pub snapshot_reset: bool,
-    /// Plaza credits an hour of a lease here costs its task; 0 is free (1 credit is $0.001).
-    pub rate_per_hour: u64,
 }
 
 /// What the daemon reports about its machine.
@@ -212,12 +208,12 @@ pub struct AuditRow {
     pub kind: String,
 }
 
-/// An agent's CID and name (`GET /v1/agents`), for the leases and the audit.
+/// An agent's CID and role (`GET /v1/agents`), for its label in the leases and the audit.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-pub struct AgentName {
+pub struct AgentRole {
     pub cid: u64,
-    pub name: String,
+    pub role: String,
 }
 
 /// The reply to a settings PUT: the stored settings, and whether they reached the workstation.
@@ -258,7 +254,6 @@ pub struct SettingsForm {
     record_takeovers: bool,
     work_folder: String,
     snapshot_reset: bool,
-    rate_per_hour: String,
 }
 
 impl From<&Settings> for SettingsForm {
@@ -271,7 +266,6 @@ impl From<&Settings> for SettingsForm {
             record_takeovers: s.record_takeovers,
             work_folder: s.work_folder.clone(),
             snapshot_reset: s.snapshot_reset,
-            rate_per_hour: s.rate_per_hour.to_string(),
         }
     }
 }
@@ -286,7 +280,6 @@ pub enum FormEdit {
     RecordTakeovers(bool),
     WorkFolder(String),
     SnapshotReset(bool),
-    Rate(String),
 }
 
 /// The dialog that is open, drawn as a card above the lists.
@@ -307,7 +300,7 @@ pub enum Dialog {
         id: String,
         name: String,
     },
-    /// Release a lease of the open workstation: the agent's name for the words.
+    /// Release a lease of the open workstation: the agent's label for the words.
     ConfirmRelease {
         lease: String,
         who: String,
@@ -329,8 +322,8 @@ pub enum Dialog {
 pub struct State {
     pub stations: Load<Vec<Station>>,
     pub codes: Load<Vec<Code>>,
-    /// The agents' names by CID.
-    names: HashMap<u64, String>,
+    /// The agents' labels by CID.
+    labels: HashMap<u64, String>,
     /// The list's thumbnails of each station's screen, by station id; a station with none has no entry.
     thumbs: HashMap<String, image::Handle>,
     /// When the thumbnails were last taken.
@@ -365,7 +358,7 @@ pub enum Msg {
     Go(Id),
     StationsLoaded(Result<Vec<Station>, String>),
     CodesLoaded(Result<Vec<Code>, String>),
-    AgentsLoaded(Result<Vec<AgentName>, String>),
+    AgentsLoaded(Result<Vec<AgentRole>, String>),
     AuditLoaded(String, Result<Vec<AuditRow>, String>),
     /// A bus frame: the station and lease frames reload the screen.
     Event(events::Event),
@@ -435,7 +428,7 @@ pub fn leave(state: &mut State) {
 }
 
 /// Loads the screen's data (on open, on every poll tick, and on a bus frame): the workstations, the join
-/// codes and the agents' names, and the open workstation's audit.
+/// codes and the agents' labels, and the open workstation's audit.
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     let (stations, codes, agents) = (ctx.client.clone(), ctx.client.clone(), ctx.client.clone());
     let mut tasks = vec![
@@ -448,7 +441,7 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
             Msg::CodesLoaded,
         ),
         client::task(
-            move || agents.get::<Vec<AgentName>>("/v1/agents"),
+            move || agents.get::<Vec<AgentRole>>("/v1/agents"),
             Msg::AgentsLoaded,
         ),
     ];
@@ -564,7 +557,6 @@ fn apply_edit(form: &mut SettingsForm, edit: FormEdit) {
         FormEdit::RecordTakeovers(on) => form.record_takeovers = on,
         FormEdit::WorkFolder(text) => form.work_folder = text,
         FormEdit::SnapshotReset(on) => form.snapshot_reset = on,
-        FormEdit::Rate(text) => form.rate_per_hour = text,
     }
 }
 
@@ -603,7 +595,10 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             Task::none()
         }
         Msg::AgentsLoaded(Ok(list)) => {
-            state.names = list.into_iter().map(|a| (a.cid, a.name)).collect();
+            state.labels = list
+                .into_iter()
+                .map(|a| (a.cid, roles::agent_label(&a.role, a.cid)))
+                .collect();
             Task::none()
         }
         Msg::AgentsLoaded(Err(_)) => Task::none(),
@@ -775,7 +770,7 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let Some(found) = station.leases.iter().find(|l| l.id == lease) else {
                 return Task::none();
             };
-            let who = agent_name(state, found.agent);
+            let who = agent_label(state, found.agent);
             state.dialog = Some(Dialog::ConfirmRelease { lease, who });
             state.error = None;
             Task::none()
@@ -1446,7 +1441,7 @@ fn station_page<'a>(
     ));
     parts.push(ui::card(
         "Recordings",
-        rec::station_view(&state.rec, &state.names).map(Msg::Rec),
+        rec::station_view(&state.rec, &state.labels).map(Msg::Rec),
     ));
     parts.push(ui::card("Settings", settings_view(state, s)));
     parts.push(flush_card("Audit", audit_view(state)));
@@ -1582,7 +1577,7 @@ fn leases_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
                 _ => ui::faint("—").into(),
             };
             vec![
-                mono_text(agent_name(state, l.agent)),
+                mono_text(agent_label(state, l.agent)),
                 task,
                 ui::faint(lease_kind_label(&l.kind)).into(),
                 ui::badge(&label, tone),
@@ -1654,19 +1649,6 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
         folder = folder.on_input(|t| Msg::Form(FormEdit::WorkFolder(t)));
     }
 
-    let mut rate = text_input("0", &f.rate_per_hour)
-        .font(theme::MONO)
-        .style(theme::input)
-        .padding(8.0)
-        .width(Length::Fixed(120.0));
-    if live {
-        rate = rate.on_input(|t| Msg::Form(FormEdit::Rate(t)));
-    }
-    let rate_hint = match whole_in(&f.rate_per_hour, (0, RATE_MAX)) {
-        Some(credits) => rate_text(credits),
-        None => format!("Credits an hour, from 0 to {RATE_MAX}. 1 credit is $0.001."),
-    };
-
     let save = ui::btn(
         if state.saving {
             "Saving…"
@@ -1705,7 +1687,6 @@ fn settings_view<'a>(state: &'a State, s: &'a Station) -> Element<'a, Msg> {
             folder.into(),
             "Under the agent's OS account. It syncs with the hub both ways.",
         ),
-        field("Rate, credits an hour", rate.into(), &rate_hint),
         snapshot.into(),
         row![save].into(),
     ];
@@ -1748,7 +1729,7 @@ fn audit_view(state: &State) -> Element<'_, Msg> {
                 .map(|r| {
                     let agent = r
                         .agent
-                        .map(|cid| agent_name(state, cid))
+                        .map(|cid| agent_label(state, cid))
                         .unwrap_or_else(|| "—".to_string());
                     vec![
                         ui::faint(ago(r.at_ms)).into(),
@@ -2013,13 +1994,13 @@ fn boxed(_: &Theme) -> container::Style {
     }
 }
 
-/// The agent's name for a CID, or "agent N" when the list has none.
-fn agent_name(state: &State, cid: u64) -> String {
+/// The agent's label for a CID, or "agent #N" when the list does not have it.
+fn agent_label(state: &State, cid: u64) -> String {
     state
-        .names
+        .labels
         .get(&cid)
         .cloned()
-        .unwrap_or_else(|| format!("agent {cid}"))
+        .unwrap_or_else(|| roles::agent_label("", cid))
 }
 
 // ---- View-model helpers (pure, tested below) ----
@@ -2237,8 +2218,6 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
             "The work folder is a path of up to {WORK_FOLDER_MAX} characters."
         ));
     }
-    let rate = whole_in(&f.rate_per_hour, (0, RATE_MAX))
-        .ok_or_else(|| format!("Charge whole credits an hour, from 0 to {RATE_MAX}."))?;
     Ok(Settings {
         takeover: f.takeover,
         record: f.record,
@@ -2247,20 +2226,7 @@ pub fn settings_of(f: &SettingsForm) -> Result<Settings, String> {
         record_takeovers: f.record_takeovers,
         work_folder: folder.to_string(),
         snapshot_reset: f.snapshot_reset,
-        rate_per_hour: rate,
     })
-}
-
-/// An hourly rate in words: free at 0, else its credits and its dollars (1 credit is $0.001).
-pub fn rate_text(credits: u64) -> String {
-    if credits == 0 {
-        "Free: a lease here costs its task nothing.".to_string()
-    } else {
-        format!(
-            "{credits} credits an hour: ${:.3} an hour, charged to the task while it holds the machine.",
-            credits as f64 * 0.001
-        )
-    }
 }
 
 /// A whole number from `text` within `(lo, hi)`, or None.
