@@ -705,6 +705,13 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             // A harness from before v7 sends no duration: its calls count as 0 ms.
             let ms = duration_ms.unwrap_or(0);
             app.evals.tool(cid, &tool, ms, ok);
+            let _ = app.sessions.add_usage(
+                cid,
+                &crate::sessions::Usage {
+                    tool_calls: 1,
+                    ..Default::default()
+                },
+            );
             collect::tool_call(app, cid, &tool, ms as f64, ok);
             if tool.starts_with(crate::library::PREFIX) {
                 crate::tool_life::reported(app, &tool, ok, ms);
@@ -1172,6 +1179,7 @@ fn tool_request(
     input: &Value,
 ) -> HostMessage {
     let decided = decide_call(app, cid, agent, work, &call, name, input);
+    count_decided(app, cid, decided.decision);
     HostMessage::ToolDecision {
         call,
         decision: decided.decision,
@@ -1180,6 +1188,20 @@ fn tool_request(
         program: decided.program,
         engine: decided.engine,
         approval: decided.approval,
+    }
+}
+
+/// Counts a call the hub decided (not allowed to run in the guest) as one of its session's tool calls. A call the guest
+/// runs is counted when its report arrives, so each of a session's calls is counted once.
+fn count_decided(app: &App, cid: u64, decision: Decision) {
+    if decision != Decision::Allow {
+        let _ = app.sessions.add_usage(
+            cid,
+            &crate::sessions::Usage {
+                tool_calls: 1,
+                ..Default::default()
+            },
+        );
     }
 }
 
@@ -1192,6 +1214,7 @@ fn tool_batch(app: &App, cid: u64, agent: &Agent, work: u64, calls: Vec<BatchCal
             remember_tool(cid, &call.call, &call.name);
             crate::steps::tool(app, cid, &call.name);
             let decided = decide_call(app, cid, agent, work, &call.call, &call.name, &call.input);
+            count_decided(app, cid, decided.decision);
             BatchDecision {
                 call: call.call,
                 decision: decided.decision,

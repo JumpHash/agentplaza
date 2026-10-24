@@ -30,6 +30,21 @@
         }
       },
       {
+        "name": "tool_search",
+        "input": {
+          "query": "handover_write"
+        }
+      },
+      {
+        "name": "handover_write",
+        "input": {
+          "stands": "add() returns the sum of its arguments and the unit test passes.",
+          "done": "The operator in add() is the only change.",
+          "next": "Nothing: the reviewer checks the change.",
+          "check_first": "That the check in the task passes."
+        }
+      },
+      {
         "text": "Fixed add(): it subtracted instead of adding. The test passes. Handover: the operator in add() is the only change."
       }
     ],
@@ -38,6 +53,12 @@
         "name": "run",
         "input": {
           "command": "rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "plaza_verdict"
         }
       },
       {
@@ -83,6 +104,21 @@
         }
       },
       {
+        "name": "tool_search",
+        "input": {
+          "query": "handover_write"
+        }
+      },
+      {
+        "name": "handover_write",
+        "input": {
+          "stands": "mul() is in src/lib.rs with its test mul_multiplies, and the test passes.",
+          "done": "The new function sits after sub().",
+          "next": "Nothing: the reviewer checks the change.",
+          "check_first": "That the check in the task passes."
+        }
+      },
+      {
         "text": "Added mul() and its test mul_multiplies. Handover: the new function sits after sub()."
       }
     ],
@@ -91,6 +127,12 @@
         "name": "run",
         "input": {
           "command": "grep -q 'pub fn mul(' src/lib.rs && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check tests::mul_multiplies --exact"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "plaza_verdict"
         }
       },
       {
@@ -169,7 +211,22 @@
       {
         "name": "run",
         "input": {
-          "command": "! grep -rq compute_total . && echo renamed"
+          "command": "! grep -rq --exclude-dir=.plaza compute_total . && echo renamed"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "handover_write"
+        }
+      },
+      {
+        "name": "handover_write",
+        "input": {
+          "stands": "compute_total is renamed to sum_total in src/lib.rs and README.md.",
+          "done": "Nothing else refers to the old name.",
+          "next": "Nothing: the reviewer checks the change.",
+          "check_first": "That the check in the task passes."
         }
       },
       {
@@ -180,7 +237,13 @@
       {
         "name": "run",
         "input": {
-          "command": "! grep -rq compute_total . && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
+          "command": "! grep -rq --exclude-dir=.plaza compute_total . && rustc --edition 2021 --test src/lib.rs -o /tmp/apz-review-check && /tmp/apz-review-check"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "plaza_verdict"
         }
       },
       {
@@ -221,6 +284,21 @@
         }
       },
       {
+        "name": "tool_search",
+        "input": {
+          "query": "handover_write"
+        }
+      },
+      {
+        "name": "handover_write",
+        "input": {
+          "stands": "README.md says receive, not recieve.",
+          "done": "Nothing else changed.",
+          "next": "Nothing: the reviewer checks the change.",
+          "check_first": "That the check in the task passes."
+        }
+      },
+      {
         "text": "Fixed the typo recieve, now receive, in README.md. Handover: nothing else changed."
       }
     ],
@@ -229,6 +307,12 @@
         "name": "run",
         "input": {
           "command": "grep -q 'receive' README.md && ! grep -q 'recieve' README.md"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "plaza_verdict"
         }
       },
       {
@@ -278,6 +362,21 @@
         }
       },
       {
+        "name": "tool_search",
+        "input": {
+          "query": "handover_write"
+        }
+      },
+      {
+        "name": "handover_write",
+        "input": {
+          "stands": "ANSWER.txt holds the answer, 3.",
+          "done": "Nothing else to do.",
+          "next": "Nothing: the reviewer checks the change.",
+          "check_first": "That the check in the task passes."
+        }
+      },
+      {
         "text": "Answered in ANSWER.txt: list() returns three items. Handover: nothing else to do."
       }
     ],
@@ -286,6 +385,12 @@
         "name": "run",
         "input": {
           "command": "[ \"$(tr -d ' \\n' < ANSWER.txt)\" = 3 ]"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "plaza_verdict"
         }
       },
       {
@@ -321,6 +426,21 @@
         }
       },
       {
+        "name": "tool_search",
+        "input": {
+          "query": "handover_write"
+        }
+      },
+      {
+        "name": "handover_write",
+        "input": {
+          "stands": "SURVEY.txt holds the TODO count, 4.",
+          "done": "The count covers every file under src/.",
+          "next": "Nothing: the reviewer checks the change.",
+          "check_first": "That the check in the task passes."
+        }
+      },
+      {
         "text": "Counted 4 TODO lines in src/ and wrote 4 into SURVEY.txt. Handover: the count covers every file."
       }
     ],
@@ -329,6 +449,12 @@
         "name": "run",
         "input": {
           "command": "grep -rn TODO src | wc -l"
+        }
+      },
+      {
+        "name": "tool_search",
+        "input": {
+          "query": "plaza_verdict"
         }
       },
       {
