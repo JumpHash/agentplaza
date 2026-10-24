@@ -251,6 +251,14 @@ pub struct Machine {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[table(list = "node_machine_phone")]
     pub phones: Vec<String>,
+    /// The shells the node has on its PATH (`bash`, `zsh`, ...): what a CLI release's shell cells run in (PLAN 22.9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "node_machine_shell")]
+    pub shells: Vec<String>,
+    /// The release-check tools the node has (`codesign`, `cargo-semver-checks`, ...): a cell's `tool:` needs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "node_machine_tool")]
+    pub tools: Vec<String>,
     /// Whether the node can shape its traffic (root with the network-admin capability, and `tc` on Linux): what
     /// a lab run's resilience tests need.
     #[serde(default, skip_serializing_if = "Option::is_none")]

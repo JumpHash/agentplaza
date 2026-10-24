@@ -54,6 +54,29 @@ pub fn browsers() -> Vec<String> {
     })
 }
 
+/// The shells a CLI release's matrix names (`apz_topology::compat`): the ones on this node's PATH.
+const SHELLS: [&str; 6] = ["bash", "zsh", "sh", "dash", "fish", "pwsh"];
+/// The tools a release check runs (a cell's `tool:` need): the signers, and the API check.
+const TOOLS: [&str; 4] = ["codesign", "signtool", "gpg", "cargo-semver-checks"];
+
+/// The shells on this node's PATH, by name (`bash`, `zsh`, ...). Looks only.
+pub fn shells() -> Vec<String> {
+    SHELLS
+        .iter()
+        .filter(|name| on_path(name))
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+/// The release-check tools on this node's PATH, by name. Looks only.
+pub fn tools() -> Vec<String> {
+    TOOLS
+        .iter()
+        .filter(|name| on_path(name))
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
 /// The serials of the phones `adb devices` lists as `device` (pure). A phone that is `unauthorized` or `offline` is not
 /// listed: a test cannot use it.
 pub fn parse_adb_devices(text: &str) -> Vec<String> {

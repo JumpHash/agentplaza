@@ -20138,6 +20138,66 @@
         }
       }
     },
+    "/v1/releases/{id}/compatibility": {
+      "post": {
+        "operationId": "post_v1_releases_id_compatibility",
+        "tags": [
+          "releases"
+        ],
+        "summary": "Judge a release's compatibility and install-and-upgrade matrix on the lab's pools: each cell passed, failed or not run, and each failure as a finding",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/release-channels": {
       "get": {
         "operationId": "get_v1_release_channels",

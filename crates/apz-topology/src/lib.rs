@@ -20,6 +20,8 @@
 //!   restore, concurrent writers and invariants; the cache's hit rate, invalidation and stampede; and the messaging
 //!   stage's delivery, ordering, retries, dead letters and duplicates (PLAN 22.8). Each runs where the guest is and
 //!   records numbers, which the hub judges.
+//! - [`compat`]: the compatibility and install-and-upgrade matrices of a release (PLAN 22.9): the declared cells, their
+//!   placement on pools by capability, and the shell and API runs that judge the CLI and library cells.
 //! - [`load`], [`bench`] and [`compare`]: traffic profiles and their generator, benchmark output parsed, and the
 //!   comparison of a candidate's metrics with a baseline's (PLAN 22.8); [`slowserve`] is the stand-in service the load
 //!   tests aim at.
@@ -29,6 +31,7 @@ pub mod bench;
 pub mod cache;
 pub mod collector;
 pub mod compare;
+pub mod compat;
 pub mod compose;
 pub mod data;
 pub mod fault;

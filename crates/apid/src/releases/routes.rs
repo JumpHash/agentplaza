@@ -23,6 +23,7 @@
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_plaza::ConnectedAgent;
 use apz_plaza::tasks::CreateTask;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use weft::keys::KeyPair;
 
@@ -441,6 +442,15 @@ pub fn routes(router: Router<App>) -> Router<App> {
             )
             .errors(&[404, 409, 503]),
         )
+        .post("/v1/releases/{id}/compatibility", |app, req: &Request, p: &Params<'_>| {
+            compatibility_route(app, req, p)
+        })
+        .doc(
+            RouteDoc::new(
+                "Judge a release's compatibility and install-and-upgrade matrix on the lab's pools: each cell passed, failed or not run, and each failure as a finding",
+            )
+            .errors(&[400, 404]),
+        )
         .get("/v1/release-channels", |_, _, _| {
             Response::json(200, &json!({ "channels": channels::builtin() }))
         })
@@ -499,4 +509,54 @@ pub fn routes(router: Router<App>) -> Router<App> {
             RouteDoc::new("One target's artifact of a release, with Weft's record of it")
                 .errors(&[404]),
         )
+}
+
+/// The body of `POST /v1/releases/{id}/compatibility`: the declaration's TOML, the outcomes the pools reported for its
+/// cells, and the pools to place them on (none: the lab's nodes now).
+#[derive(Debug, Deserialize)]
+struct CompatBody {
+    matrix: String,
+    #[serde(default)]
+    outcomes: Vec<apz_topology::compat::Outcome>,
+    #[serde(default)]
+    pools: Option<Vec<apz_topology::compat::Pool>>,
+}
+
+fn compatibility_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
+    let body: CompatBody = match serde_json::from_slice(&req.body) {
+        Ok(body) => body,
+        Err(e) => return Response::error(400, &format!("the body is not a matrix request: {e}")),
+    };
+    let matrix = match apz_topology::compat::parse(&body.matrix) {
+        Ok(matrix) => matrix,
+        Err(why) => return Response::error(400, &why),
+    };
+    let id = p.get("id");
+    let Some(release) = app.releases.get(id) else {
+        return Response::error(404, "no such release");
+    };
+    let pools = body.pools.unwrap_or_else(|| {
+        crate::test_lab::lab_nodes(app)
+            .into_iter()
+            .map(|node| apz_topology::compat::Pool {
+                name: node.id,
+                capabilities: node.capabilities,
+            })
+            .collect()
+    });
+    let cells = super::compat::assess(
+        &app.reviews,
+        &release,
+        &matrix,
+        &pools,
+        &body.outcomes,
+        &release.compatibility,
+    );
+    let verdict = super::compat::verdict(&cells);
+    let stored = cells.clone();
+    let _ = app.releases.update(id, |r| r.compatibility = stored);
+    Response::json(
+        200,
+        &json!({"release": id, "verdict": verdict, "cells": cells}),
+    )
 }

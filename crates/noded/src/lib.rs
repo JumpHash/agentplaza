@@ -293,6 +293,10 @@ pub struct MachineView {
     pub browsers: Vec<String>,
     /// The Android phones attached and authorized, by serial (`adb devices`).
     pub phones: Vec<String>,
+    /// The shells the node has on its PATH (`lab_caps::shells`): what a CLI release's shell cells need.
+    pub shells: Vec<String>,
+    /// The release-check tools the node has (`lab_caps::tools`).
+    pub tools: Vec<String>,
     /// Whether the node can shape its traffic (`lab_caps::traffic_shaping`).
     pub traffic_shaping: bool,
 }
@@ -385,6 +389,8 @@ impl Node {
             started_at_ms: self.started_at_ms,
             browsers: lab_caps::browsers(),
             phones: lab_caps::phones(),
+            shells: lab_caps::shells(),
+            tools: lab_caps::tools(),
             traffic_shaping: lab_caps::traffic_shaping(),
         }
     }
