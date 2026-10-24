@@ -30,6 +30,7 @@ impl Fetch for NoNet {
 struct FakeLanes {
     tree: Tree,
     tasks: Mutex<Vec<(String, String)>>,
+    afters: Mutex<Vec<Vec<String>>>,
     records: Mutex<Vec<UpgradeBatch>>,
 }
 
@@ -37,7 +38,14 @@ impl Lanes for FakeLanes {
     fn main(&self, _project: &str) -> Result<Tree, String> {
         Ok(self.tree.clone())
     }
-    fn task(&self, _project: &str, goal: &str, acceptance: &str) -> Result<String, String> {
+    fn task(
+        &self,
+        _project: &str,
+        goal: &str,
+        acceptance: &str,
+        after: &[String],
+    ) -> Result<String, String> {
+        self.afters.lock().unwrap().push(after.to_vec());
         let mut tasks = self.tasks.lock().unwrap();
         tasks.push((goal.to_string(), acceptance.to_string()));
         Ok(format!("t{}", tasks.len()))
@@ -230,6 +238,11 @@ fn a_scheduled_run_makes_a_task_per_batch_with_the_commands_that_apply_it() {
     assert!(
         acceptance.contains("tiny 1.0.0 -> 1.2.0: no changelog reachable"),
         "{acceptance}"
+    );
+    // The batches change the same lockfile: the major's task runs after the minor's lands.
+    assert_eq!(
+        *lanes.afters.lock().unwrap(),
+        vec![vec![], vec!["t1".to_string()]]
     );
     // The major: its own task, its manifest moved, the whole suite, and it waits for the owner.
     let major = report

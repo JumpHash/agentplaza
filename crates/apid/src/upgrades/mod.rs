@@ -141,8 +141,15 @@ pub trait Lanes {
     /// The files of `main`.
     fn main(&self, project: &str) -> Result<Tree, String>;
     /// Makes a batch's task in the project, as intake makes an item's (an ordinary task whose goal and acceptance are the
-    /// batch's spec): the change recipe then runs it, and returns its id.
-    fn task(&self, project: &str, goal: &str, acceptance: &str) -> Result<String, String>;
+    /// batch's spec): the change recipe then runs it, and returns its id. `after` are the tasks of the run's earlier
+    /// batches: they change the same lockfile, so this one starts once they are done (landed).
+    fn task(
+        &self,
+        project: &str,
+        goal: &str,
+        acceptance: &str,
+        after: &[String],
+    ) -> Result<String, String>;
     /// Keeps a batch's record (kept before its task starts, so the landing queue reads its hold).
     fn record(&self, project: &str, batch: &UpgradeBatch) -> Result<(), String>;
 }
@@ -493,7 +500,13 @@ pub fn process(ports: &Ports, project: &str, eco: Ecosystem, request: &Request) 
     match planned {
         Ok(batches) => {
             for (kind, updates) in batches {
-                let batch = batch_of(ports, project, eco, kind, &updates, &tree, request);
+                let after: Vec<String> = report
+                    .batches
+                    .iter()
+                    .filter(|b| !b.task.is_empty())
+                    .map(|b| b.task.clone())
+                    .collect();
+                let batch = batch_of(ports, project, eco, kind, &updates, &tree, request, &after);
                 report.batches.push(batch);
             }
         }
@@ -541,6 +554,7 @@ fn batch_of(
     updates: &[Update],
     tree: &Tree,
     request: &Request,
+    after: &[String],
 ) -> UpgradeBatch {
     let now = ports.now;
     let mut batch = UpgradeBatch {
@@ -569,6 +583,7 @@ fn batch_of(
         updates,
         tree,
         dir: &dir,
+        after,
     };
     let outcome = build_and_check(ports, &job, &mut batch);
     let _ = std::fs::remove_dir_all(&dir);
@@ -591,6 +606,7 @@ struct Job<'a> {
     updates: &'a [Update],
     tree: &'a Tree,
     dir: &'a Path,
+    after: &'a [String],
 }
 
 /// The batch's steps in a scratch copy of the tree: apply, read the changelogs, test, review, then open and queue. A
@@ -607,6 +623,7 @@ fn build_and_check(
         updates,
         tree,
         dir,
+        after,
     } = *job;
     materialize(tree, dir).map_err(|e| ("apply_failed", e))?;
     let major = kind == Kind::Major || updates.iter().any(|u| u.bump == Bump::Major);
@@ -662,7 +679,7 @@ fn build_and_check(
     let (goal, acceptance) = spec(eco, kind, updates, &test_command, &batch.changelog);
     batch.task = ports
         .lanes
-        .task(project, &goal, &acceptance)
+        .task(project, &goal, &acceptance, after)
         .map_err(|e| ("task_failed", e))?;
     batch.hold = major || !ports.auto_land;
     batch.state = "task".into();
@@ -1033,7 +1050,13 @@ impl Lanes for WeftLanes<'_> {
         Ok(tree)
     }
 
-    fn task(&self, project: &str, goal: &str, acceptance: &str) -> Result<String, String> {
+    fn task(
+        &self,
+        project: &str,
+        goal: &str,
+        acceptance: &str,
+        after: &[String],
+    ) -> Result<String, String> {
         let p = self
             .app
             .projects
@@ -1058,7 +1081,7 @@ impl Lanes for WeftLanes<'_> {
                 goal: goal.to_string(),
                 acceptance: Some(acceptance.to_string()),
                 role: None,
-                after: Vec::new(),
+                after: after.to_vec(),
                 project: Some(project.to_string()),
             })
             .map_err(|e| e.to_string())?;
