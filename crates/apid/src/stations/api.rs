@@ -322,7 +322,7 @@ fn agent_open_lease_route(app: &App, req: &Request, id: &str, cid: u64) -> Respo
     if body.agent.is_some_and(|named| named != cid) {
         return Response::error(400, "the agent in the body is not the agent in the path");
     }
-    match act::lease_open(app, cid, id, body.kind, body.task) {
+    match act::lease_open(app, cid, id, body.kind, body.task, None) {
         Ok(view) => Response::json(201, &view),
         Err(failure) => fail(failure),
     }
@@ -616,7 +616,7 @@ fn open_lease_route(app: &App, req: &Request, id: &str, cid: Option<u64>, actor:
             );
         }
     };
-    match ops::open_lease(app, id, agent, body.task, body.kind, actor) {
+    match ops::open_lease(app, id, agent, body.task, body.kind, None, actor) {
         Ok(view) => Response::json(201, &view),
         Err(failure) => fail(failure),
     }

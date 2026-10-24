@@ -17,12 +17,16 @@
 //! desktop target (desktop.rs) is a station's screen, leased for the run and driven through the station tools; the
 //! simulator and device targets of 8.4–8.5 implement the same trait.
 
+pub mod android;
+#[cfg(test)]
+mod android_test;
 pub mod desk;
 pub mod desktop;
 #[cfg(test)]
 mod desktop_targets_test;
 #[cfg(test)]
 mod desktop_test;
+pub mod farm;
 pub mod fork;
 pub mod macos;
 pub mod models;
@@ -47,7 +51,7 @@ use crate::previews::proxy::LOCAL_INBOUND;
 use crate::project_memory;
 use crate::project_stack::{self, TargetKind};
 use crate::recipes::graph::StepState;
-use crate::recipes::model::{USER_TEST, UserTest};
+use crate::recipes::model::{FarmTest, USER_TEST, UserTest};
 use crate::recipes::runs::CheckRow;
 use crate::recipes::{Move, Report};
 use crate::review_graph::user::by;
@@ -439,6 +443,7 @@ fn placed_for<'h>(
     if config.stand_in.is_some()
         || config.macos.is_some()
         || config.simulator.is_some()
+        || config.android.is_some()
         || (config.desktop.is_some() && !fork_gui)
     {
         return Ok(None);
@@ -726,6 +731,9 @@ fn opener<'a, 'h>(
         });
         return Ok(open);
     }
+    if let Some(android) = &config.android {
+        return Ok(android::opener(app, android));
+    }
     if config.macos.is_some() || config.simulator.is_some() {
         return desk::opener(app, config);
     }
@@ -833,6 +841,58 @@ fn with_note(summary: String, note: &str) -> String {
     }
 }
 
+/// A device-farm step (PLAN 19.3, 8.5): the farm's suite runs on its devices through the farm's connector, and the results come
+/// back as the run's evidence. The step has no scenarios, so it has no findings: a failing session fails the step.
+fn run_farm(app: &App, run: &str, step: &str, config: &FarmTest, now: u64) -> Vec<Move> {
+    let settle = |passed: bool, summary: String| {
+        finish(
+            app,
+            run,
+            step,
+            Settled {
+                passed,
+                findings: 0,
+                commands: format!("{} device farm", config.farm),
+                summary,
+            },
+            now,
+        )
+    };
+    let (Some((_, app_bytes)), Some((_, test_bytes))) = (
+        app.artifacts.blob(&config.app),
+        app.artifacts.blob(&config.tests),
+    ) else {
+        return settle(
+            false,
+            "the app or the tests are not blobs of the hub, so the farm run did not start".into(),
+        );
+    };
+    let deps = farm::Deps {
+        outbound: &crate::glue::HttpsOutbound,
+        vault: app.vault.as_ref(),
+        pace: farm::Pace::PRODUCTION,
+    };
+    match farm::run(&deps, config, &app_bytes, &test_bytes) {
+        Ok(report) => {
+            let sessions = report.sessions.len();
+            let passed = report.sessions.iter().filter(|s| s.passed).count();
+            app.recipe_runs
+                .record_evidence(run, farm::evidence(&report, &config.farm), now);
+            settle(
+                report.passed(),
+                format!(
+                    "{} run {}: {passed} of {sessions} sessions passed; the results are the run's evidence",
+                    config.farm, report.run
+                ),
+            )
+        }
+        Err(why) => settle(
+            false,
+            format!("the {} run did not finish: {why}", config.farm),
+        ),
+    }
+}
+
 /// One `test:user` step of a run, from its config: the models, the target and the regressions of the project.
 fn run_step(
     app: &App,
@@ -843,6 +903,9 @@ fn run_step(
     change: &str,
     now: u64,
 ) -> Result<Vec<Move>, String> {
+    if let Some(farm_config) = &config.farm {
+        return Ok(run_farm(app, run, step, farm_config, now));
+    }
     let roles = Roles {
         planner: config.planner.clone(),
         driver: config.driver.clone(),

@@ -89,6 +89,8 @@ pub fn release_lease(calls: &dyn Calls, station: &str, lease: &str) -> Result<()
 pub struct StationRunner<'a> {
     calls: Box<dyn Calls + 'a>,
     station: String,
+    /// The program every line starts with on the node: `xcrun` for simctl, `adb` for an Android device.
+    program: String,
 }
 
 impl<'a> StationRunner<'a> {
@@ -98,9 +100,15 @@ impl<'a> StationRunner<'a> {
 
     /// The runner over `calls` (the workstation tools of the production path; a script in a test).
     pub fn over(calls: Box<dyn Calls + 'a>, station: &str) -> Self {
+        Self::over_program(calls, station, XCRUN)
+    }
+
+    /// The runner over `calls` for the program `program` on the node (`xcrun`, or `adb`).
+    pub fn over_program(calls: Box<dyn Calls + 'a>, station: &str, program: &str) -> Self {
         Self {
             calls,
             station: station.to_string(),
+            program: program.to_string(),
         }
     }
 
@@ -124,21 +132,22 @@ impl<'a> StationRunner<'a> {
     }
 }
 
-/// The xcrun line as the node runs it: `xcrun` and its arguments.
-fn tool_line(args: &[String]) -> Vec<String> {
-    std::iter::once(XCRUN.to_string())
+/// The line as the node runs it: the program and its arguments.
+fn tool_line(program: &str, args: &[String]) -> Vec<String> {
+    std::iter::once(program.to_string())
         .chain(args.iter().cloned())
         .collect()
 }
 
 impl Runner for StationRunner<'_> {
     fn run(&self, args: &[String]) -> Result<String, String> {
-        let (exit, output) = self.sh(&shell_line(&tool_line(args)), RUN_MS)?;
+        let (exit, output) = self.sh(&shell_line(&tool_line(&self.program, args)), RUN_MS)?;
         if exit == 0 {
             Ok(output)
         } else {
             Err(format!(
-                "{XCRUN} {} failed on {}: {}",
+                "{} {} failed on {}: {}",
+                self.program,
                 args.join(" "),
                 self.station,
                 output.trim()
@@ -149,7 +158,7 @@ impl Runner for StationRunner<'_> {
     fn start(&self, args: &[String]) -> Result<u32, String> {
         let script = format!(
             "{} </dev/null >/dev/null 2>&1 & echo $!",
-            shell_line(&tool_line(args))
+            shell_line(&tool_line(&self.program, args))
         );
         let (exit, output) = self.sh(&script, START_MS)?;
         if exit != 0 {
@@ -250,17 +259,28 @@ pub fn opener<'a>(app: &'a App, config: &'a UserTest) -> Result<Opener<'a>, Stri
 #[derive(Debug, Default)]
 pub struct Setup {
     recording: Option<(u32, String)>,
+    /// An Android device's lease and recording (`android.rs`), held from the step's start to its end.
+    android: Option<super::android::Held>,
 }
 
 /// Before a step's scenarios: a simulator is booted, the app installed when the step gives its path, and the step's video
 /// started when it names one. A failure shuts the simulator down again. A Mac app needs nothing up front.
 pub fn prepare(app: &App, config: &UserTest) -> Result<Setup, String> {
+    if let Some(android) = &config.android {
+        return super::android::prepare(app, android).map(|held| Setup {
+            recording: None,
+            android: Some(held),
+        });
+    }
     let Some(sim) = &config.simulator else {
         return Ok(Setup::default());
     };
     let runner = StationRunner::new(app, sim.agent, &sim.station);
     match set_up(&runner, sim) {
-        Ok(recording) => Ok(Setup { recording }),
+        Ok(recording) => Ok(Setup {
+            recording,
+            android: None,
+        }),
         Err(why) => {
             let _ = simctl::exec(
                 &runner,
@@ -301,6 +321,9 @@ fn set_up(runner: &dyn Runner, sim: &SimTarget) -> Result<Option<(u32, String)>,
 /// After a step's scenarios: a Mac app is quit, a simulator's video is stopped and landed as an artifact of the run, and the
 /// simulator is shut down. Each step's failure is said in the answer, not raised: the step's result stands.
 pub fn finish(app: &App, config: &UserTest, setup: Setup) -> String {
+    if let Some(android) = &config.android {
+        return super::android::finish(app, android, setup.android);
+    }
     let mut notes = Vec::new();
     if let Some(mac) = &config.macos
         && let Err(why) = macos::quit(&AppCalls::new(app, mac.agent), &mac.station, &mac.bundle)

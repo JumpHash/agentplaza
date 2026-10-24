@@ -1,0 +1,11 @@
+id = "aws-device-farm"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["devicefarm.us-west-2.amazonaws.com"]
+secrets = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"]
+events = []
+actions = []
+webhook = false
+auth_header = ""
+auth_format = ""

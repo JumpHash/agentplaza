@@ -930,6 +930,7 @@ mod tests {
                 started_ms: 1000,
                 state: State::Active,
                 paused: false,
+                device: None,
                 active_ms: Some(1000),
             },
             position: None,

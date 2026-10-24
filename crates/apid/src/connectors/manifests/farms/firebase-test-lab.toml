@@ -1,0 +1,11 @@
+id = "firebase-test-lab"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["oauth2.googleapis.com", "testing.googleapis.com", "storage.googleapis.com"]
+secrets = ["FIREBASE_SERVICE_ACCOUNT", "FIREBASE_PROJECT_ID"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"
