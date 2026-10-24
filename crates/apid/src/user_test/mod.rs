@@ -16,10 +16,15 @@
 //! and the program run in the fork, and the hub only drives them over the fork's exec channel and its port streams. The
 //! desktop, simulator and device targets of 8.3–8.5 implement the same trait.
 
+pub mod desk;
+#[cfg(test)]
+mod desktop_targets_test;
 pub mod fork;
+pub mod macos;
 pub mod models;
 pub mod run;
 pub mod scenario;
+pub mod simulator;
 pub mod target;
 #[cfg(test)]
 mod targets_test;
@@ -424,11 +429,11 @@ fn placed_for<'h>(
     project: &str,
     change: &str,
 ) -> Result<Option<Placed<'h>>, String> {
-    if config.stand_in.is_some() {
+    if config.stand_in.is_some() || config.macos.is_some() || config.simulator.is_some() {
         return Ok(None);
     }
     if config.web.is_none() && config.tui.is_none() {
-        return Err("the step names no target (stand_in, web or tui)".into());
+        return Err("the step names no target (stand_in, web, tui, macos or simulator)".into());
     }
     let rev = project_memory::landed_revision(app, change)?;
     let stack = project_stack::read(app, project)?
@@ -528,7 +533,11 @@ fn opener<'a, 'h>(
         });
         return Ok(open);
     }
-    let placed = placed.ok_or("the step names no target (stand_in, web or tui)")?;
+    if config.macos.is_some() || config.simulator.is_some() {
+        return desk::opener(app, config);
+    }
+    let placed =
+        placed.ok_or("the step names no target (stand_in, web, tui, macos or simulator)")?;
     if let Some(page) = &config.web {
         let url = format!(
             "http://127.0.0.1:{}/{}",
@@ -640,12 +649,21 @@ fn run_step(
             now,
         )
     };
+    if let Err(why) = desk::prepare(app, config) {
+        // A simulator booted before its app failed to install is shut down again.
+        desk::finish(app, config);
+        return Ok(no_target(why));
+    }
     let host = Live(app);
     let placed = match placed_for(app, &host, config, project, change) {
         Ok(placed) => placed,
-        Err(why) => return Ok(no_target(why)),
+        Err(why) => {
+            desk::finish(app, config);
+            return Ok(no_target(why));
+        }
     };
     let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref());
+    desk::finish(app, config);
     if let Some(placed) = placed {
         retire_placed(placed);
     }

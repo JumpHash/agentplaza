@@ -30,6 +30,7 @@ pub mod input;
 pub mod keys;
 pub mod owner;
 pub mod pixels;
+pub mod simctl;
 
 #[cfg(target_os = "macos")]
 mod backend;
@@ -42,3 +43,15 @@ mod workspace;
 
 #[cfg(target_os = "macos")]
 pub use backend::MacDesktop;
+
+/// Whether this process is trusted for Accessibility (the tree and the input need it). Never prompts.
+#[cfg(target_os = "macos")]
+pub fn accessibility_trusted() -> bool {
+    sys::accessibility_trusted()
+}
+
+/// Whether this process may capture the screen (Screen Recording). Never prompts.
+#[cfg(target_os = "macos")]
+pub fn screen_recording_granted() -> bool {
+    sys::screen_recording_granted()
+}

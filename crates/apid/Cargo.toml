@@ -28,6 +28,8 @@ apz-metrics.workspace = true
 apz-uds = { path = "../apz-uds" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
+# The iOS simulator's command lines (simctl) and the Mac-side permission checks (user_test/simulator.rs).
+apz-desktop-macos = { path = "../apz-desktop-macos" }
 # Test selection (PLAN 15.4): the coverage maps, the build graph and the selection (test_select.rs).
 apz-testsel = { path = "../apz-testsel" }
 apz-ide = { path = "../apz-ide" }
