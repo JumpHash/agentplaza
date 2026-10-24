@@ -123,6 +123,7 @@ fn convert_source(
                 observe: Default::default(),
                 traffic: None,
                 assertions: Vec::new(),
+                resilience: Vec::new(),
                 egress: Default::default(),
             };
             topology.check().map_err(bad)?;

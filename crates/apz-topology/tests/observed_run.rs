@@ -158,6 +158,7 @@ fn a_seeded_error_line_is_shipped_and_fails_its_assertion_with_the_line_cited() 
     let observed = Observed {
         logs_dir: Some(logs.clone()),
         otlp: Some(format!("http://{listen}")),
+        fault_binary: None,
     };
     let running = start_observed(&plan, Addressing::Loopback, &standins, &observed).unwrap();
     assert_eq!(running.log_dir(), logs.as_path());

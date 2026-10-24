@@ -33,14 +33,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::fault::Fault;
+
 /// The directory of a project's topology files in its repo at main.
 pub const DIR: &str = ".plaza/topologies";
 /// The most replicas one service may declare (a lab VM is sized for its topology).
 pub const MAX_REPLICAS: u32 = 16;
+/// The largest declared volume size, in MiB (a lab volume is small: a fill writes it).
+pub const MAX_VOLUME_MIB: u64 = 1024;
 
 /// A topology: its name, what it runs, its services (or its k3s cluster), what it observes, its traffic and its egress
 /// allowlist.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Topology {
     pub name: String,
@@ -58,6 +62,9 @@ pub struct Topology {
     /// The test steps the run's observations must pass (PLAN 22.7), each over its logs, traces and series.
     #[serde(rename = "assert", default)]
     pub assertions: Vec<Assertion>,
+    /// The resilience scenarios (PLAN 22.8): a fault or a kill on a service, and the degradation and recovery they judge.
+    #[serde(rename = "resilience", default)]
+    pub resilience: Vec<Scenario>,
     #[serde(default)]
     pub egress: Egress,
 }
@@ -122,6 +129,9 @@ pub struct Volume {
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
+    /// The volume's declared size in MiB (1 to 1024): what a `fill_disk` scenario fills, and the bound of that fill.
+    #[serde(default)]
+    pub size_mib: Option<u64>,
 }
 
 /// A service's health check: the command that runs inside its container, and the timing Compose gives it.
@@ -428,6 +438,181 @@ impl Assertion {
     }
 }
 
+/// A resilience scenario (PLAN 22.8): an action on a service at a time, held for a while, and what the system must do
+/// while it holds and after it is lifted. The `probe` is the traffic that is judged: a GET on a service's path, sent
+/// through the run, whose failures and latencies are measured against `expect`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scenario {
+    pub id: String,
+    pub action: Action,
+    /// The service the action is on: a dependency behind a fault proxy, or the service killed, restarted or skewed.
+    pub target: String,
+    /// The fault a `fault` action injects (a proxy's fault, or `netem` on the lab VM's bridge).
+    #[serde(default)]
+    pub fault: Option<Fault>,
+    /// The target's volume a `fill_disk` action fills.
+    #[serde(default)]
+    pub volume: Option<String>,
+    /// The space a `fill_disk` action leaves free, in MiB.
+    #[serde(default)]
+    pub leave_mib: u64,
+    /// The seconds a `clock_skew` action moves the target's clock by (negative: back).
+    #[serde(default)]
+    pub secs: Option<i64>,
+    /// When the action starts, in seconds from the run's start.
+    pub at_secs: u64,
+    /// How long the action holds, in seconds.
+    pub for_secs: u64,
+    /// The seconds after the action is lifted within which the probe must succeed again.
+    pub recover_within_secs: u64,
+    pub probe: Probe,
+    /// The degradation the spec allows while the action holds.
+    pub expect: Expect,
+}
+
+/// What a scenario does to its target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    /// A fault in front of the target (a fault proxy's, or the lab VM's bridge's with `netem`).
+    Fault,
+    /// The target's process is killed; lifting the action starts it again.
+    Kill,
+    /// The target's process is killed and started again at once.
+    Restart,
+    /// The target's volume is filled, leaving `leave_mib` free.
+    FillDisk,
+    /// The target's clock is moved by `secs`, and moved back when lifted.
+    ClockSkew,
+}
+
+/// The traffic a scenario judges: a GET of `path` on `service`, through the run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Probe {
+    pub service: String,
+    #[serde(default = "root_path")]
+    pub path: String,
+}
+
+fn root_path() -> String {
+    "/".into()
+}
+
+/// The degradation the spec allows while the action holds: the share of probes that may fail, and the 95th percentile
+/// latency of the probes that may not be exceeded (none: not judged).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Expect {
+    pub max_error_percent: f64,
+    #[serde(default)]
+    pub max_p95_ms: Option<u64>,
+}
+
+impl Scenario {
+    /// What the scenario's fields must say for its action, and that its names are in the topology.
+    fn check(&self, topology: &Topology) -> Result<(), String> {
+        let who = format!("resilience scenario {}", self.id);
+        if !is_label(&self.id) {
+            return Err(format!("{who}: the id is not a DNS label"));
+        }
+        let names: BTreeSet<&str> = topology.services.iter().map(|s| s.name.as_str()).collect();
+        if !names.contains(self.target.as_str()) {
+            return Err(format!(
+                "{who} targets {}, which is no service",
+                self.target
+            ));
+        }
+        if !names.contains(self.probe.service.as_str()) {
+            return Err(format!(
+                "{who} probes {}, which is no service",
+                self.probe.service
+            ));
+        }
+        if !self.probe.path.starts_with('/') || self.probe.path.chars().any(char::is_whitespace) {
+            return Err(format!(
+                "{who}: the probe path {:?} is not a path",
+                self.probe.path
+            ));
+        }
+        if self.for_secs == 0 || self.recover_within_secs == 0 {
+            return Err(format!("{who} holds for 0 s or allows no recovery time"));
+        }
+        if !self.expect.max_error_percent.is_finite()
+            || !(0.0..=100.0).contains(&self.expect.max_error_percent)
+        {
+            return Err(format!("{who}: max_error_percent must be 0 to 100"));
+        }
+        if self.expect.max_p95_ms == Some(0) {
+            return Err(format!("{who}: max_p95_ms of 0 ms can never pass"));
+        }
+        let only = |field: &str, set: bool, action: &str| -> Result<(), String> {
+            if set {
+                Err(format!("{who}: {field} goes with a {action} action only"))
+            } else {
+                Ok(())
+            }
+        };
+        match self.action {
+            Action::Fault => {
+                let fault = self
+                    .fault
+                    .as_ref()
+                    .ok_or_else(|| format!("{who} is a fault and names no fault"))?;
+                fault.check().map_err(|e| format!("{who}: {e}"))?;
+                if *fault == Fault::Healthy {
+                    return Err(format!("{who} injects no fault"));
+                }
+                only("volume", self.volume.is_some(), "fill_disk")?;
+                only("secs", self.secs.is_some(), "clock_skew")?;
+            }
+            Action::Kill | Action::Restart => {
+                only("fault", self.fault.is_some(), "fault")?;
+                only("volume", self.volume.is_some(), "fill_disk")?;
+                only("secs", self.secs.is_some(), "clock_skew")?;
+            }
+            Action::FillDisk => {
+                let volume = self
+                    .volume
+                    .as_deref()
+                    .ok_or_else(|| format!("{who} fills a disk and names no volume"))?;
+                let declared = topology.volume_of(&self.target, volume).ok_or_else(|| {
+                    format!("{who} fills {volume}, which {} does not mount", self.target)
+                })?;
+                if declared.size_mib.is_none() {
+                    return Err(format!(
+                        "{who} fills {volume}, which has no size_mib: a fill is bounded by the volume's declared size"
+                    ));
+                }
+                only("fault", self.fault.is_some(), "fault")?;
+                only("secs", self.secs.is_some(), "clock_skew")?;
+            }
+            Action::ClockSkew => {
+                let secs = self
+                    .secs
+                    .ok_or_else(|| format!("{who} skews a clock and names no secs"))?;
+                if secs == 0 || secs.unsigned_abs() > 365 * 86_400 {
+                    return Err(format!("{who}: a clock skew is between 1 s and a year"));
+                }
+                only("fault", self.fault.is_some(), "fault")?;
+                only("volume", self.volume.is_some(), "fill_disk")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Topology {
+    /// The named volume of `service`, as the service mounts it.
+    pub fn volume_of(&self, service: &str, volume: &str) -> Option<&Volume> {
+        self.services
+            .iter()
+            .filter(|s| s.name == service)
+            .find_map(|s| s.volumes.iter().find(|v| v.name == volume))
+    }
+}
+
 /// The hosts the topology may reach through the egress proxy, beyond the images and the artifacts it already holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -539,6 +724,16 @@ impl Topology {
                 ));
             }
         }
+        let mut scenarios: BTreeSet<&str> = BTreeSet::new();
+        for scenario in &self.resilience {
+            scenario.check(self)?;
+            if !scenarios.insert(scenario.id.as_str()) {
+                return Err(format!(
+                    "topology {} has two resilience scenarios named {}",
+                    self.name, scenario.id
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -616,6 +811,17 @@ impl Service {
                 return Err(format!(
                     "service {} mounts {} at {:?}: a target is an absolute path",
                     self.name, volume.name, volume.target
+                ));
+            }
+            if volume
+                .size_mib
+                .is_some_and(|mib| mib == 0 || mib > MAX_VOLUME_MIB)
+            {
+                return Err(format!(
+                    "service {} declares volume {} at {} MiB: 1 to {MAX_VOLUME_MIB} MiB allowed",
+                    self.name,
+                    volume.name,
+                    volume.size_mib.unwrap_or(0)
                 ));
             }
             if !targets.insert(volume.target.as_str()) {
@@ -958,5 +1164,136 @@ mod tests {
             let again = to_toml(&topology).unwrap();
             assert_eq!(parse(&again).unwrap(), topology, "{again}");
         }
+    }
+
+    const RESILIENCE: &str = "name = \"stack\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\nenv = { CACHE_URL = \"redis://cache:6379\" }\n[[service]]\nname = \"cache\"\nimage = \"redis:7\"\nvolumes = [{ name = \"cache-data\", target = \"/data\", size_mib = 4 }]\n";
+
+    fn with(scenario: &str) -> String {
+        format!("{RESILIENCE}[[resilience]]\n{scenario}")
+    }
+
+    #[test]
+    fn a_fault_scenario_parses_with_its_target_probe_and_expected_degradation() {
+        let text = with(
+            "id = \"cache-outage\"\naction = \"fault\"\ntarget = \"cache\"\nfault = { kind = \"reset\", percent = 30 }\nat_secs = 2\nfor_secs = 5\nrecover_within_secs = 10\nprobe = { service = \"api\", path = \"/items\" }\nexpect = { max_error_percent = 5.0, max_p95_ms = 500 }\n",
+        );
+        let topology = parse(&text).unwrap();
+        let scenario = &topology.resilience[0];
+        assert_eq!(scenario.id, "cache-outage");
+        assert_eq!(scenario.action, Action::Fault);
+        assert_eq!(scenario.fault, Some(Fault::Reset { percent: 30 }));
+        assert_eq!((scenario.at_secs, scenario.for_secs), (2, 5));
+        assert_eq!(scenario.probe.path, "/items");
+        assert_eq!(scenario.expect.max_p95_ms, Some(500));
+        assert_eq!(scenario.expect.max_error_percent, 5.0);
+    }
+
+    #[test]
+    fn every_fault_kind_parses() {
+        for fault in [
+            "{ kind = \"latency\", ms = 200 }",
+            "{ kind = \"loss\", percent = 20 }",
+            "{ kind = \"partition\" }",
+            "{ kind = \"netem\", delay_ms = 50, loss_percent = 2 }",
+        ] {
+            let text = with(&format!(
+                "id = \"f\"\naction = \"fault\"\ntarget = \"cache\"\nfault = {fault}\nat_secs = 0\nfor_secs = 1\nrecover_within_secs = 1\nprobe = {{ service = \"api\" }}\nexpect = {{ max_error_percent = 100 }}\n"
+            ));
+            let topology = parse(&text).unwrap_or_else(|e| panic!("{fault}: {e}"));
+            assert!(topology.resilience[0].fault.is_some());
+            assert_eq!(
+                topology.resilience[0].probe.path, "/",
+                "the default probe path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_scenario_is_refused_when_its_names_or_numbers_do_not_fit() {
+        let base = |action: &str, extra: &str| {
+            with(&format!(
+                "id = \"s\"\naction = \"{action}\"\ntarget = \"cache\"\nat_secs = 0\nfor_secs = 1\nrecover_within_secs = 1\nprobe = {{ service = \"api\" }}\nexpect = {{ max_error_percent = 5 }}\n{extra}"
+            ))
+        };
+        // A target or a probe that is no service.
+        let ghost = with(
+            "id = \"s\"\naction = \"kill\"\ntarget = \"queue\"\nat_secs = 0\nfor_secs = 1\nrecover_within_secs = 1\nprobe = { service = \"api\" }\nexpect = { max_error_percent = 5 }\n",
+        );
+        assert!(parse(&ghost).unwrap_err().contains("queue"));
+        let probe = base("kill", "").replace("service = \"api\"", "service = \"web\"");
+        assert!(parse(&probe).unwrap_err().contains("web"));
+        // A fault action names a fault, and not healthy.
+        assert!(
+            parse(&base("fault", ""))
+                .unwrap_err()
+                .contains("names no fault")
+        );
+        let healthy = base("fault", "").replace(
+            "[[resilience]]\n",
+            "[[resilience]]\nfault = { kind = \"healthy\" }\n",
+        );
+        assert!(parse(&healthy).unwrap_err().contains("injects no fault"));
+        // A percentage over 100 and an expectation over 100 %.
+        let over = base("fault", "").replace(
+            "[[resilience]]\n",
+            "[[resilience]]\nfault = { kind = \"loss\", percent = 101 }\n",
+        );
+        assert!(parse(&over).unwrap_err().contains("100"));
+        let expect = base("kill", "").replace("max_error_percent = 5", "max_error_percent = 120");
+        assert!(parse(&expect).unwrap_err().contains("max_error_percent"));
+        // A field of another action is refused, as are a zero hold and a zero recovery.
+        let stray = base("kill", "").replace(
+            "[[resilience]]\n",
+            "[[resilience]]\nvolume = \"cache-data\"\n",
+        );
+        assert!(parse(&stray).unwrap_err().contains("fill_disk"));
+        let zero = base("kill", "").replace("for_secs = 1", "for_secs = 0");
+        assert!(parse(&zero).unwrap_err().contains("0 s"));
+        // Two scenarios of one name.
+        let twice = format!(
+            "{}{}",
+            base("kill", ""),
+            "\n[[resilience]]\nid = \"s\"\naction = \"kill\"\ntarget = \"api\"\nat_secs = 0\nfor_secs = 1\nrecover_within_secs = 1\nprobe = { service = \"api\" }\nexpect = { max_error_percent = 5 }\n"
+        );
+        assert!(parse(&twice).unwrap_err().contains("two resilience"));
+        // An unknown key is refused.
+        let unknown = base("kill", "").replace("for_secs = 1", "for_secs = 1\nseverity = 3");
+        assert!(parse(&unknown).is_err());
+    }
+
+    #[test]
+    fn a_disk_fill_names_a_volume_the_target_mounts_and_a_skew_names_its_seconds() {
+        let fill = with(
+            "id = \"full-disk\"\naction = \"fill_disk\"\ntarget = \"cache\"\nvolume = \"cache-data\"\nleave_mib = 16\nat_secs = 1\nfor_secs = 4\nrecover_within_secs = 5\nprobe = { service = \"api\" }\nexpect = { max_error_percent = 100 }\n",
+        );
+        let topology = parse(&fill).unwrap();
+        assert_eq!(topology.resilience[0].volume.as_deref(), Some("cache-data"));
+        assert_eq!(topology.resilience[0].leave_mib, 16);
+        let other = fill.replace("cache-data\"\nleave", "api-data\"\nleave");
+        assert!(parse(&other).unwrap_err().contains("does not mount"));
+        let unsized_text = RESILIENCE.replace(", size_mib = 4", "");
+        let no_size = format!(
+            "{unsized_text}[[resilience]]\nid = \"full-disk\"\naction = \"fill_disk\"\ntarget = \"cache\"\nvolume = \"cache-data\"\nat_secs = 1\nfor_secs = 4\nrecover_within_secs = 5\nprobe = {{ service = \"api\" }}\nexpect = {{ max_error_percent = 100 }}\n"
+        );
+        assert!(parse(&no_size).unwrap_err().contains("no size_mib"));
+        let too_big = RESILIENCE.replace("size_mib = 4", "size_mib = 4096");
+        assert!(parse(&too_big).unwrap_err().contains("MiB allowed"));
+
+        let skew = with(
+            "id = \"skew\"\naction = \"clock_skew\"\ntarget = \"api\"\nsecs = 3600\nat_secs = 1\nfor_secs = 4\nrecover_within_secs = 5\nprobe = { service = \"api\" }\nexpect = { max_error_percent = 0 }\n",
+        );
+        assert_eq!(parse(&skew).unwrap().resilience[0].secs, Some(3600));
+        let none = skew.replace("secs = 3600", "secs = 0");
+        assert!(parse(&none).unwrap_err().contains("clock skew"));
+    }
+
+    #[test]
+    fn a_topology_with_scenarios_survives_its_own_toml() {
+        let text = with(
+            "id = \"cache-outage\"\naction = \"fault\"\ntarget = \"cache\"\nfault = { kind = \"partition\" }\nat_secs = 2\nfor_secs = 5\nrecover_within_secs = 10\nprobe = { service = \"api\", path = \"/items\" }\nexpect = { max_error_percent = 5.0 }\n",
+        );
+        let topology = parse(&text).unwrap();
+        let again = to_toml(&topology).unwrap();
+        assert_eq!(parse(&again).unwrap(), topology, "{again}");
     }
 }

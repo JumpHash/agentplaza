@@ -21,7 +21,8 @@ use apz_topology::assert::{self, Evidence, REQUESTS, Verdict as Check};
 use apz_topology::collector::TOKEN_HEADER;
 use apz_topology::compare::Limit;
 use apz_topology::observe::{self, LogLine, PointKind, SpanRec};
-use apz_topology::spec::{self, Assertion, Topology};
+use apz_topology::resilience;
+use apz_topology::spec::{self, Assertion, Scenario, Topology};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
@@ -386,6 +387,9 @@ fn metric_names(assertions: &[Assertion]) -> Vec<String> {
     names
 }
 
+/// The finding kind a failing resilience scenario is filed as (PLAN 22.8): the change tree reads it like `performance`.
+pub const RESILIENCE_KIND: &str = "resilience";
+
 /// The finding a failing step becomes on its change's review tree (PLAN 22.7): a confirmed finding of kind
 /// `observability` whose proof is the evidence it cites. Empty when the run names no change or the change has no review
 /// run yet.
@@ -423,6 +427,58 @@ fn file_finding(reviews: &Reviews, run: &LabRun, topology: &Topology, check: &Ch
         kind: "observability".into(),
         verdict: FindingVerdict::Confirmed,
         proof,
+        reason: String::new(),
+        by: Some(by.clone()),
+        verified_by: Some(by),
+        contest: String::new(),
+        ruling: String::new(),
+        ruling_reason: String::new(),
+    };
+    reviews
+        .attach_finding(&run.change, finding)
+        .map_or_else(String::new, |(review, id)| format!("{review}/{id}"))
+}
+
+/// The finding a failing resilience scenario becomes on its change's review tree (PLAN 22.8): a confirmed finding of kind
+/// `resilience` whose proof is the numbers the scenario was judged by. Empty when the run names no change.
+fn file_resilience(
+    reviews: &Reviews,
+    run: &LabRun,
+    topology: &Topology,
+    scenario: &Scenario,
+    check: &Check,
+) -> String {
+    if run.change.is_empty() {
+        return String::new();
+    }
+    let by = By {
+        seat: "test-lab".into(),
+        model: "resilience".into(),
+        session: run.id.clone(),
+    };
+    let finding = Finding {
+        symbol: format!("{}/{}.toml", spec::DIR, topology.name),
+        lineage: None,
+        text: format!("{} failed: {}", check.id, check.detail),
+        severity: "major".into(),
+        node: String::new(),
+        round: 0,
+        id: String::new(),
+        scenario: format!(
+            "lab run {} of topology {}: {:?} on {} for {} s, probed at {}{}, must recover within {} s and fail at most {} % of its probes",
+            run.id,
+            topology.name,
+            scenario.action,
+            scenario.target,
+            scenario.for_secs,
+            scenario.probe.service,
+            scenario.probe.path,
+            scenario.recover_within_secs,
+            scenario.expect.max_error_percent
+        ),
+        kind: RESILIENCE_KIND.into(),
+        verdict: FindingVerdict::Confirmed,
+        proof: format!("lab run {}\n{}", run.id, check.detail),
         reason: String::new(),
         by: Some(by.clone()),
         verified_by: Some(by),
@@ -511,6 +567,45 @@ pub fn assess(
                 lab_performance::file_finding(reviews, &run, &outcome, comparison)
             }));
         }
+    }
+    // Each resilience scenario is judged by the numbers its run recorded (PLAN 22.8). A scenario with no numbers did not
+    // run here: its verdict fails it with the reason, and files nothing, since nothing was observed to be wrong.
+    for scenario in &topology.resilience {
+        let names = resilience::names(&scenario.id);
+        let values = lab_performance::values(metrics, &run.id, &names);
+        let (check, measured) = match resilience::from_metrics(&scenario.id, &values) {
+            Some(measured) => {
+                let judgment = resilience::judge(scenario, &measured);
+                let check = Check {
+                    id: format!("resilience:{}", scenario.id),
+                    kind: RESILIENCE_KIND.into(),
+                    passed: judgment.passed,
+                    detail: judgment.detail,
+                    cites: vec![format!("lab run {} recorded {}", run.id, names.join(", "))],
+                };
+                (check, true)
+            }
+            None => (
+                Check {
+                    id: format!("resilience:{}", scenario.id),
+                    kind: RESILIENCE_KIND.into(),
+                    passed: false,
+                    detail: format!(
+                        "{}: not run, no measurement was recorded at this run",
+                        scenario.id
+                    ),
+                    cites: Vec::new(),
+                },
+                false,
+            ),
+        };
+        out.push(record(lab, &run, &check, || {
+            if measured {
+                file_resilience(reviews, &run, topology, scenario, &check)
+            } else {
+                String::new()
+            }
+        }));
     }
     Ok(out)
 }
@@ -1000,6 +1095,86 @@ pub(crate) mod tests {
         let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
         assert!(!verdicts[0].passed);
         assert!(verdicts[0].finding.is_empty());
+    }
+
+    /// A topology with a cache-outage scenario: the cache is reset for 5 s, and the probe may fail 5 % at most.
+    const OUTAGE: &str = "name = \"fake-run\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\n[[service]]\nname = \"cache\"\nimage = \"redis:7\"\n[[resilience]]\nid = \"cache-outage\"\naction = \"fault\"\ntarget = \"cache\"\nfault = { kind = \"reset\", percent = 30 }\nat_secs = 2\nfor_secs = 5\nrecover_within_secs = 10\nprobe = { service = \"api\", path = \"/items\" }\nexpect = { max_error_percent = 5.0 }\n";
+
+    #[test]
+    fn a_resilience_scenario_that_fails_files_a_finding_with_the_numbers_it_was_judged_by() {
+        let (_files, metrics) = metrics_in("lab-observe-resilience");
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = reviews_in(&dir);
+        reviews.put_run(review_of("c1"));
+        let lab = lab_with("q1", "running", "run-token");
+        // The run's guest recorded what its probes saw: 10 of 30 failed while the cache was reset.
+        let measured = resilience::Measured {
+            requests: 30,
+            failed: 10,
+            error_percent: 33.3,
+            p95_ms: 12.0,
+            recovered_secs: Some(0.15),
+        };
+        let body = resilience::otlp("cache-outage", &measured, NOW);
+        ingest_json(&lab, &metrics, "run-token", "metrics", &body).unwrap();
+        set_state(&lab, "q1", "done");
+
+        let topology = spec::parse(OUTAGE).unwrap();
+        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
+        let verdict = verdicts
+            .iter()
+            .find(|v| v.id == "resilience:cache-outage")
+            .expect("the scenario is judged");
+        assert!(!verdict.passed, "{verdict:?}");
+        assert_eq!(verdict.kind, RESILIENCE_KIND);
+        assert_eq!(
+            verdict.detail,
+            "cache-outage: 33.3 % of 30 probes failed while it held (the spec allows 5.0 %); recovered in 0.15 s (deadline 10 s). Not as the spec says: 33.3 % failed, over the 5.0 % the spec allows"
+        );
+
+        // Filed on the change's review tree, of kind resilience, its proof the numbers.
+        let (review, id) = verdict
+            .finding
+            .split_once('/')
+            .expect("the finding is filed");
+        let run = reviews.run(review).unwrap();
+        let finding = run.findings().find(|f| f.id == id).expect("on the run");
+        assert_eq!(finding.kind, RESILIENCE_KIND);
+        assert_eq!(finding.verdict, FindingVerdict::Confirmed);
+        assert!(
+            finding.proof.contains("33.3 % of 30 probes"),
+            "{}",
+            finding.proof
+        );
+        assert!(
+            finding.scenario.contains("probed at api/items"),
+            "{}",
+            finding.scenario
+        );
+
+        // Assessing again keeps the one finding.
+        assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
+        assert_eq!(reviews.run(review).unwrap().findings().count(), 1);
+    }
+
+    #[test]
+    fn a_resilience_scenario_with_no_measurement_is_not_run_and_files_nothing() {
+        let (_files, metrics) = metrics_in("lab-observe-not-run");
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = reviews_in(&dir);
+        reviews.put_run(review_of("c1"));
+        let lab = lab_with("q1", "running", "run-token");
+        set_state(&lab, "q1", "done");
+        let topology = spec::parse(OUTAGE).unwrap();
+        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
+        let verdict = verdicts
+            .iter()
+            .find(|v| v.id == "resilience:cache-outage")
+            .unwrap();
+        assert!(!verdict.passed);
+        assert!(verdict.detail.contains("not run"), "{}", verdict.detail);
+        assert!(verdict.finding.is_empty());
+        assert_eq!(reviews.run("rv-c1").unwrap().findings().count(), 0);
     }
 
     #[test]

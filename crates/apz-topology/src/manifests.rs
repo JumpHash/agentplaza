@@ -103,6 +103,7 @@ pub fn convert(text: &str, name: &str) -> Result<Conversion, String> {
         observe: Default::default(),
         traffic: None,
         assertions: Vec::new(),
+        resilience: Vec::new(),
         egress: Default::default(),
     };
     topology.check()?;

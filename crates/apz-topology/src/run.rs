@@ -31,11 +31,19 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use std::net::{IpAddr, TcpListener};
+
+use crate::fault::{Fault, Remote};
 use crate::plan::{Container, GuestPlan, Program};
 use crate::resolver::{self, Table};
+use crate::spec::Action;
+use crate::steps::Processes;
 
 /// How long a container waits for its dependencies' ports before it starts anyway, and the run fails.
 const DEPENDENCY_WAIT: Duration = Duration::from_secs(30);
+/// The listen shift of a routed dependency under [`Addressing::Local`]: its real port is its declared port plus this, and
+/// its fault proxy takes the declared one (every container shares 127.0.0.1 there).
+pub const LOCAL_SHIFT: u16 = 10_000;
 /// Tells the scratch roots of runs in one process apart.
 static RUNS: AtomicU64 = AtomicU64::new(0);
 
@@ -44,8 +52,11 @@ static RUNS: AtomicU64 = AtomicU64::new(0);
 pub enum Addressing {
     /// The addresses the plan gives (the bridge's, in the lab VM).
     Plan,
-    /// One loopback address per container, `127.0.1.<n>` for the container at index `n - 1`.
+    /// One loopback address per container, `127.0.1.<n>` for the container at index `n - 1` (Linux).
     Loopback,
+    /// Every container on 127.0.0.1, on its declared ports: a dependency a fault names listens on its port plus
+    /// [`LOCAL_SHIFT`], and its proxy takes the declared port. Runs on any host with a loopback interface.
+    Local,
 }
 
 /// A stand-in for a service's program: the command that runs in its place, with its own environment (a test's).
@@ -64,6 +75,26 @@ pub struct Observed {
     pub logs_dir: Option<PathBuf>,
     /// The OTLP endpoint the containers export to, as JSON (`OTEL_EXPORTER_OTLP_ENDPOINT`). The plan's when None.
     pub otlp: Option<String>,
+    /// The `apz-fault` binary that runs a fault proxy per routed dependency's port (`apz-fault proxy ...`). Required when
+    /// the plan has a fault scenario on a dependency.
+    pub fault_binary: Option<PathBuf>,
+}
+
+/// What a container was started with, kept so a restart starts it the same way.
+#[derive(Debug, Clone)]
+struct Launch {
+    container: Container,
+    addr: Ipv4Addr,
+    argv: Vec<String>,
+    standin: Option<Standin>,
+    extra: Vec<(String, String)>,
+}
+
+/// A fault proxy the run started for one port of a routed dependency, with its control.
+struct RunningProxy {
+    service: String,
+    control: Remote,
+    child: Child,
 }
 
 /// A started plan: its containers' processes and its resolver. Dropping it stops them all and removes its scratch root
@@ -81,6 +112,15 @@ pub struct Running {
     volumes: BTreeMap<String, PathBuf>,
     /// The directory of the containers' output.
     logs_dir: PathBuf,
+    /// What each container was started with, by plan order (a restart starts it the same way).
+    launches: Vec<Launch>,
+    /// The fault proxies of the routed dependencies' ports.
+    proxies: Vec<RunningProxy>,
+    /// Each container's pid file, by container name (`<scratch>/pids/<container>.pid`).
+    pids: BTreeMap<String, PathBuf>,
+    /// The runner's resolver's address and the OTLP endpoint, as the containers were started with them.
+    resolver: SocketAddr,
+    otlp: Option<String>,
 }
 
 /// Starts every container of `plan`. A service with a stand-in runs the stand-in; otherwise its artifact runs. An image
@@ -93,15 +133,59 @@ pub fn start(
     start_observed(plan, addressing, standins, &Observed::default())
 }
 
-/// [`start`], with what the run observes: the containers' output in `observed`'s directory, and their OTLP endpoint.
+/// The dependencies a plan's fault scenarios name (not netem: that shapes the bridge, not a proxy's traffic).
+fn routed(plan: &GuestPlan) -> BTreeSet<String> {
+    plan.resilience
+        .iter()
+        .filter(|s| s.action == Action::Fault)
+        .filter(|s| !matches!(s.fault, Some(Fault::Netem { .. })))
+        .map(|s| s.target.clone())
+        .collect()
+}
+
+/// A loopback port nobody listens on now.
+fn free_port() -> Result<u16, String> {
+    TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .map_err(|e| format!("a loopback port: {e}"))
+}
+
+/// [`start`], with what the run observes: the containers' output in `observed`'s directory, and their OTLP endpoint. A
+/// dependency that a fault scenario names is routed through an apz-fault proxy per port: the resolver answers its name
+/// with the proxy, and the proxy forwards to the dependency's replica.
 pub fn start_observed(
     plan: &GuestPlan,
     addressing: Addressing,
     standins: &BTreeMap<String, Standin>,
     observed: &Observed,
 ) -> Result<Running, String> {
+    let routed = routed(plan);
+    if !routed.is_empty() && observed.fault_binary.is_none() {
+        return Err("the plan's faults route through apz-fault proxies, and the run names no apz-fault binary".into());
+    }
+    let proxy_ip = match addressing {
+        Addressing::Plan => plan.gateway,
+        Addressing::Loopback | Addressing::Local => Ipv4Addr::LOCALHOST,
+    };
+    let shift = if addressing == Addressing::Local {
+        LOCAL_SHIFT
+    } else {
+        0
+    };
+    let scratch = scratch_root()?;
+    let volumes = volume_dirs(plan, &scratch)?;
+    let logs_dir = observed
+        .logs_dir
+        .clone()
+        .unwrap_or_else(|| scratch.join("logs"));
+    std::fs::create_dir_all(&logs_dir).map_err(|e| format!("logs {}: {e}", logs_dir.display()))?;
+    std::fs::create_dir_all(scratch.join("pids")).map_err(|e| format!("pids: {e}"))?;
+    let otlp = observed.otlp.clone().or_else(|| plan.otlp.clone());
+
     let mut table = Table::default();
     let mut launches = Vec::new();
+    let mut routed_done: BTreeSet<&str> = BTreeSet::new();
     for (index, container) in plan.containers.iter().enumerate() {
         let addr = match addressing {
             Addressing::Plan => container.address,
@@ -110,6 +194,7 @@ pub fn start_observed(
                     .map_err(|_| "too many containers for loopback".to_string())?;
                 Ipv4Addr::new(127, 0, 1, last)
             }
+            Addressing::Local => Ipv4Addr::LOCALHOST,
         };
         let standin = standins.get(&container.service);
         let argv = match (standin, &container.program) {
@@ -122,53 +207,147 @@ pub fn start_observed(
                 ));
             }
         };
-        table.add(&container.service, addr);
+        let mut launched = container.clone();
+        if routed.contains(&container.service) {
+            // The dependency's name answers with its proxy; its real ports are shifted under the local addressing.
+            if routed_done.insert(container.service.as_str()) {
+                table.add(&container.service, proxy_ip);
+            }
+            launched.ports = container
+                .ports
+                .iter()
+                .map(|port| port.checked_add(shift))
+                .collect::<Option<Vec<u16>>>()
+                .ok_or_else(|| {
+                    format!(
+                        "{}: a routed port is too high for the local shift",
+                        container.name
+                    )
+                })?;
+        } else {
+            table.add(&container.service, addr);
+        }
         table.add(&container.name, addr);
-        launches.push((container, addr, argv, standin));
+        let extra = volume_env(container, &volumes);
+        launches.push(Launch {
+            container: launched,
+            addr,
+            argv,
+            standin: standin.cloned(),
+            extra,
+        });
     }
     let server = resolver::serve(table).map_err(|e| format!("resolver: {e}"))?;
     let resolver_addr = server.addr();
-    let scratch = scratch_root()?;
-    let volumes = volume_dirs(plan, &scratch)?;
-    let logs_dir = observed
-        .logs_dir
-        .clone()
-        .unwrap_or_else(|| scratch.join("logs"));
-    std::fs::create_dir_all(&logs_dir).map_err(|e| format!("logs {}: {e}", logs_dir.display()))?;
-    let otlp = observed.otlp.clone().or_else(|| plan.otlp.clone());
+    let placed = launches
+        .iter()
+        .map(|l| {
+            (
+                l.container.name.clone(),
+                l.container.service.clone(),
+                l.addr,
+                l.container.ports.clone(),
+            )
+        })
+        .collect();
     let mut running = Running {
         server,
         children: Vec::new(),
-        placed: launches
-            .iter()
-            .map(|(c, addr, _, _)| (c.name.clone(), c.service.clone(), *addr, c.ports.clone()))
-            .collect(),
+        placed,
         started: Vec::new(),
         scratch,
-        volumes: volumes.clone(),
-        logs_dir: logs_dir.clone(),
+        volumes,
+        logs_dir,
+        launches,
+        proxies: Vec::new(),
+        pids: BTreeMap::new(),
+        resolver: resolver_addr,
+        otlp,
     };
+    // The fault proxies first: a routed dependency's proxy listens before any service starts.
+    for service in &routed {
+        let first = plan
+            .containers
+            .iter()
+            .position(|c| &c.service == service && c.replica == 1)
+            .ok_or_else(|| format!("{service} has no replica to proxy"))?;
+        let container = &plan.containers[first];
+        if container.ports.is_empty() {
+            return Err(format!("{service} is faulted and has no port to proxy"));
+        }
+        let upstream_ip = running.launches[first].addr;
+        let binary = observed.fault_binary.as_deref().unwrap_or(Path::new(""));
+        for port in &container.ports {
+            let control = free_port()?;
+            let listen = SocketAddr::new(IpAddr::V4(proxy_ip), *port);
+            let upstream = SocketAddr::new(
+                IpAddr::V4(upstream_ip),
+                port.checked_add(shift).unwrap_or(*port),
+            );
+            let child = spawn_proxy(binary, listen, upstream, control)?;
+            running.proxies.push(RunningProxy {
+                service: service.clone(),
+                control: Remote::new(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), control)),
+                child,
+            });
+        }
+    }
+    let deadline = Instant::now() + DEPENDENCY_WAIT;
+    for proxy in &running.proxies {
+        let control = proxy.control.control();
+        wait_ports(
+            &proxy.service,
+            Ipv4Addr::LOCALHOST,
+            &[control.port()],
+            deadline,
+        )
+        .map_err(|why| format!("the fault proxy in front of {}: {why}", proxy.service))?;
+    }
     for index in start_order(plan)? {
-        let (container, addr, argv, standin) = &launches[index];
-        wait_for_dependencies(&running, container)?;
-        let extra = volume_env(container, &volumes);
+        let name = running.launches[index].container.name.clone();
+        let container = running.launches[index].container.clone();
+        wait_for_dependencies(&running, &container)?;
+        let launch = running.launches[index].clone();
         let output = Output {
-            logs: &logs_dir,
-            otlp: otlp.as_deref(),
+            logs: &running.logs_dir,
+            otlp: running.otlp.as_deref(),
         };
         let child = spawn(
-            container,
-            *addr,
-            argv,
-            *standin,
+            &launch.container,
+            launch.addr,
+            &launch.argv,
+            launch.standin.as_ref(),
             resolver_addr,
-            &extra,
+            &launch.extra,
             &output,
         )?;
-        running.children.push((container.name.clone(), child));
-        running.started.push(container.name.clone());
+        let pid_file = running.pid_path(&name)?;
+        std::fs::write(&pid_file, child.id().to_string())
+            .map_err(|e| format!("{}: {e}", pid_file.display()))?;
+        running.pids.insert(name.clone(), pid_file);
+        running.children.push((name.clone(), child));
+        running.started.push(name);
     }
     Ok(running)
+}
+
+/// Starts `apz-fault proxy <listen> <upstream> <control>`: a fault proxy for one port, its control on loopback.
+fn spawn_proxy(
+    binary: &Path,
+    listen: SocketAddr,
+    upstream: SocketAddr,
+    control: u16,
+) -> Result<Child, String> {
+    Command::new(binary)
+        .arg("proxy")
+        .arg(listen.to_string())
+        .arg(upstream.to_string())
+        .arg(format!("127.0.0.1:{control}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{}: cannot start the fault proxy: {e}", binary.display()))
 }
 
 /// The containers' indices in start order: each service after the services it depends on, the rest in plan order.
@@ -353,6 +532,67 @@ impl Running {
         self.server.addr()
     }
 
+    /// The base URL of each service the probes reach: its first replica's first port.
+    pub fn urls(&self) -> BTreeMap<String, String> {
+        let mut urls = BTreeMap::new();
+        for launch in &self.launches {
+            if launch.container.replica != 1 {
+                continue;
+            }
+            if let Some(port) = launch.container.ports.first() {
+                urls.entry(launch.container.service.clone())
+                    .or_insert_with(|| format!("http://{}:{port}", launch.addr));
+            }
+        }
+        urls
+    }
+
+    /// Where a container's pid file is kept while the run lasts.
+    fn pid_path(&self, container: &str) -> Result<PathBuf, String> {
+        Ok(self.scratch.join("pids").join(format!("{container}.pid")))
+    }
+
+    /// Starts a container again, the way it was started: its old process is ended, its new one's pid goes to its pid
+    /// file, and its ports accept connections again before this returns.
+    fn restart_container(&mut self, container: &str) -> Result<(), String> {
+        let index = self
+            .launches
+            .iter()
+            .position(|l| l.container.name == container)
+            .ok_or_else(|| format!("the run has no process {container}"))?;
+        if let Some((_, old)) = self.children.iter_mut().find(|(name, _)| name == container) {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+        let launch = self.launches[index].clone();
+        let output = Output {
+            logs: &self.logs_dir,
+            otlp: self.otlp.as_deref(),
+        };
+        let child = spawn(
+            &launch.container,
+            launch.addr,
+            &launch.argv,
+            launch.standin.as_ref(),
+            self.resolver,
+            &launch.extra,
+            &output,
+        )?;
+        let pid_file = self.pid_path(container)?;
+        std::fs::write(&pid_file, child.id().to_string())
+            .map_err(|e| format!("{}: {e}", pid_file.display()))?;
+        match self.children.iter_mut().find(|(name, _)| name == container) {
+            Some((_, slot)) => *slot = child,
+            None => self.children.push((container.to_string(), child)),
+        }
+        wait_ports(
+            container,
+            launch.addr,
+            &launch.container.ports,
+            Instant::now() + DEPENDENCY_WAIT,
+        )
+    }
+
     /// The addresses of a service's replicas, in plan order.
     pub fn addresses(&self, service: &str) -> Vec<Ipv4Addr> {
         self.placed
@@ -419,8 +659,54 @@ fn wait_ports(name: &str, addr: Ipv4Addr, ports: &[u16], deadline: Instant) -> R
     Ok(())
 }
 
+impl Processes for Running {
+    fn has_proxy(&self, service: &str) -> bool {
+        self.proxies.iter().any(|p| p.service == service)
+    }
+
+    fn steer(&self, service: &str, fault: Fault) -> Result<(), String> {
+        let mut steered = false;
+        for proxy in self.proxies.iter().filter(|p| p.service == service) {
+            steered = true;
+            crate::fault::Steer::steer(&proxy.control, fault)?;
+        }
+        if steered {
+            Ok(())
+        } else {
+            Err(format!("no fault proxy in front of {service}"))
+        }
+    }
+
+    fn pid_file(&self, service: &str) -> Option<PathBuf> {
+        self.pids.get(&format!("{service}-1")).cloned()
+    }
+
+    fn restart(&mut self, service: &str) -> Result<(), String> {
+        self.restart_container(&format!("{service}-1"))
+    }
+
+    fn volume(&self, service: &str, volume: &str) -> Option<(PathBuf, u64)> {
+        let launch = self
+            .launches
+            .iter()
+            .find(|l| l.container.service == service && l.container.replica == 1)?;
+        let declared = launch
+            .container
+            .volumes
+            .iter()
+            .find(|v| v.name == volume)?
+            .size_mib?;
+        let dir = self.volumes.get(volume)?.clone();
+        Some((dir, declared))
+    }
+}
+
 impl Drop for Running {
     fn drop(&mut self) {
+        for proxy in &mut self.proxies {
+            let _ = proxy.child.kill();
+            let _ = proxy.child.wait();
+        }
         for (_, child) in &mut self.children {
             let _ = child.kill();
             let _ = child.wait();

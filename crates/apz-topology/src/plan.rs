@@ -15,7 +15,9 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::spec::{Collect, Data, Health, Kind, Observe, Serve, Topology, Traffic, Volume};
+use crate::spec::{
+    Collect, Data, Health, Kind, Observe, Scenario, Serve, Topology, Traffic, Volume,
+};
 
 /// The bridge inside the guest.
 pub const BRIDGE: &str = "apz0";
@@ -31,7 +33,7 @@ pub const MAX_CONTAINERS: usize = 253;
 pub const OTLP_PORT: u16 = 4318;
 
 /// A topology's guest plan: the containers of its lab VM, its network and its egress, and what its lab base holds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuestPlan {
     pub topology: String,
     pub bridge: String,
@@ -52,6 +54,10 @@ pub struct GuestPlan {
     /// gateway (PLAN 22.7). None when it collects neither.
     #[serde(default)]
     pub otlp: Option<String>,
+    /// The topology's resilience scenarios (PLAN 22.8): a dependency a fault names is routed through its fault proxy
+    /// when the run starts, and the run's runner can drive the scenarios.
+    #[serde(default)]
+    pub resilience: Vec<Scenario>,
 }
 
 /// One replica of a service: a container with its address on the bridge.
@@ -182,6 +188,7 @@ pub fn plan(
         otlp: (topology.observe.metrics == Collect::Otlp
             || topology.observe.traces == Collect::Otlp)
             .then(|| format!("http://{GATEWAY}:{OTLP_PORT}")),
+        resilience: topology.resilience.clone(),
     })
 }
 

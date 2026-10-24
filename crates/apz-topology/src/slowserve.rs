@@ -50,6 +50,11 @@ impl SlowServer {
     pub fn url(&self) -> String {
         format!("http://{}/", self.addr)
     }
+
+    /// The address the server listens on.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
 }
 
 impl Drop for SlowServer {
