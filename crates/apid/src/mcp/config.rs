@@ -132,6 +132,10 @@ impl Default for Transport {
     }
 }
 
+/// Why a stdio server given a container image is refused: an image is no longer a way to run a server.
+pub const IMAGE_REFUSED: &str =
+    "a container image no longer runs a server: pick the server's package (npm, pypi or binary)";
+
 /// The JSON shape of a transport: a tagged enum, as the console sends it.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -163,10 +167,7 @@ impl TryFrom<TransportRepr> for Transport {
                 workdir,
             } => {
                 if image.is_some() {
-                    return Err(
-                        "a container image no longer runs a server: pick the server's package (npm, pypi or binary)"
-                            .into(),
-                    );
+                    return Err(IMAGE_REFUSED.into());
                 }
                 Ok(Transport {
                     kind: TransportKind::Stdio,

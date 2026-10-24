@@ -1,0 +1,29 @@
+meta {
+  name: Take the owner's chat with an agent with no session: the pause holds nothing
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/agents/61009/chat
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "t-internal chat"
+  }
+}
+
+assert {
+  res.responseTime: lt {{budgetMs}}
+  res.status: eq 200
+  res.body.work: isNumber
+}
+
+tests {
+  test("the chat is queued as work", function () {
+    expect(res.getBody().work).to.be.a("number");
+  });
+}

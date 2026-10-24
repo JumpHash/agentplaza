@@ -260,8 +260,17 @@ fn budget_view(app: &App, kind: OwnerKind, id: &str) -> Response {
     }
 }
 
+/// Whether a project's budget can be read: the plaza's own budget (`plaza`) always can, any other only when its
+/// project exists (a read of an unknown project's budget is a 404, a read of an unknown task's is an empty budget).
+fn project_budget_known(id: &str, exists: bool) -> bool {
+    id == crate::work_loop::PLAZA || exists
+}
+
 /// A project's budget, with its tasks' budgets and its disk.
 fn project_budget_view(app: &App, id: &str) -> Response {
+    if !project_budget_known(id, app.projects.get(id).is_some()) {
+        return Response::error(404, &format!("no project {id}"));
+    }
     let budget = app.budgets.get(OwnerKind::Project, id);
     let quota = budget.as_ref().and_then(|b| b.disk_quota_bytes);
     let mut view = match budget {
@@ -652,6 +661,13 @@ mod tests {
             monthly_cap: None,
             disk_quota_bytes,
         }
+    }
+
+    #[test]
+    fn a_project_budget_is_read_only_for_a_project_that_exists() {
+        assert!(!project_budget_known("pr999999", false));
+        assert!(project_budget_known("pr1", true));
+        assert!(project_budget_known(crate::work_loop::PLAZA, false));
     }
 
     #[test]

@@ -84,6 +84,23 @@ pub struct Store {
     inner: Mutex<Harness>,
 }
 
+/// Checks a loop's own fields (its prompt and interval, before the agent it runs for is looked at) and returns the
+/// trimmed prompt.
+pub fn check_loop(prompt: &str, every_secs: u64) -> Result<&str, String> {
+    let prompt = prompt.trim();
+    let chars = prompt.chars().count();
+    if chars == 0 || chars > 4000 {
+        return Err("a loop's prompt must be 1 to 4000 characters".into());
+    }
+    if every_secs < 60 {
+        return Err("a loop runs at most once a minute (every_minutes >= 1)".into());
+    }
+    if every_secs > MAX_EVERY_SECS {
+        return Err("every_minutes is too large".into());
+    }
+    Ok(prompt)
+}
+
 impl Store {
     fn locked(&self) -> MutexGuard<'_, Harness> {
         self.inner
@@ -142,17 +159,7 @@ impl Store {
         by: &str,
         by_cid: u64,
     ) -> Result<Loop, String> {
-        let prompt = prompt.trim();
-        let chars = prompt.chars().count();
-        if chars == 0 || chars > 4000 {
-            return Err("a loop's prompt must be 1 to 4000 characters".into());
-        }
-        if every_secs < 60 {
-            return Err("a loop runs at most once a minute (every_minutes >= 1)".into());
-        }
-        if every_secs > MAX_EVERY_SECS {
-            return Err("every_minutes is too large".into());
-        }
+        let prompt = check_loop(prompt, every_secs)?;
         let mut guard = self.locked();
         let running = guard
             .loops
@@ -597,13 +604,18 @@ fn start_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(err) => return Response::error(400, &format!("bad body: {err}")),
     };
+    // The loop's own fields are checked first: a bad prompt or interval is refused whoever the agent is.
+    let every_secs = body.every_minutes.saturating_mul(60);
+    if let Err(err) = check_loop(&body.prompt, every_secs) {
+        return Response::error(400, &err);
+    }
     if let Err(err) = loop_target(app, body.cid) {
         return Response::error(400, &err);
     }
     match app.harness.start_loop(
         body.cid,
         &body.prompt,
-        body.every_minutes.saturating_mul(60),
+        every_secs,
         body.max_runs,
         "owner",
         0,
@@ -690,6 +702,19 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loops_prompt_and_interval_are_checked_before_its_agent() {
+        assert_eq!(check_loop("  Check  ", 60), Ok("Check"));
+        assert!(
+            check_loop("   ", 60)
+                .unwrap_err()
+                .contains("1 to 4000 characters")
+        );
+        assert!(check_loop(&"x".repeat(4001), 60).is_err());
+        assert!(check_loop("ok", 59).unwrap_err().contains("once a minute"));
+        assert!(check_loop("ok", MAX_EVERY_SECS + 1).is_err());
+    }
 
     /// A database holding the harness's tables, as the migration creates them.
     fn migrated() -> apz_store::rusqlite::Connection {
