@@ -79,6 +79,7 @@ pub fn convert(text: &str, name: Option<&str>) -> Result<Conversion, String> {
         name,
         kind: Kind::Services,
         services,
+        machines: Vec::new(),
         k3s: None,
         observe: Default::default(),
         traffic: None,

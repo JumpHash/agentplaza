@@ -292,6 +292,7 @@ fn vm_spec(
         balloon: None,
         restore: None,
         volumes,
+        ..Default::default()
     }
 }
 

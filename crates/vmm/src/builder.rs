@@ -175,6 +175,7 @@ fn guest_cmdline(
     has_workspace: bool,
     has_balloon: bool,
     volumes: usize,
+    has_net: bool,
 ) -> String {
     const LOGLEVEL_ARGS: [&str; 4] = ["loglevel=", "ignore_loglevel", "quiet", "debug"];
     const PCI_ARGS: [&str; 1] = ["pci="];
@@ -233,10 +234,16 @@ fn guest_cmdline(
         for (addr, gsi) in data_volume_slots(volumes) {
             defaults.push(format!("virtio_mmio.device={MMIO_LEN:#x}@{addr:#x}:{gsi}"));
         }
+        if has_net {
+            use crate::arch::x86_64::layout::{NET_GSI, NET_MMIO_START};
+            defaults.push(format!(
+                "virtio_mmio.device={MMIO_LEN:#x}@{NET_MMIO_START:#x}:{NET_GSI}"
+            ));
+        }
     }
     // On `aarch64` the device tree describes the transports.
     #[cfg(not(target_arch = "x86_64"))]
-    let _ = (has_vsock, has_workspace, has_balloon, volumes);
+    let _ = (has_vsock, has_workspace, has_balloon, volumes, has_net);
 
     if defaults.is_empty() {
         return requested.to_string();
@@ -647,7 +654,11 @@ mod tests {
             ),
         ];
         for (case, input, want) in cases {
-            assert_eq!(guest_cmdline(input, false, false, false, 0), want, "{case}");
+            assert_eq!(
+                guest_cmdline(input, false, false, false, 0, false),
+                want,
+                "{case}"
+            );
         }
     }
 
@@ -673,15 +684,15 @@ mod tests {
 
         // A vsock device, a workspace volume, or both.
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, false, false, 0),
+            guest_cmdline("console=ttyS0", true, false, false, 0, false),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock}")
         );
         assert_eq!(
-            guest_cmdline("console=ttyS0", false, true, false, 0),
+            guest_cmdline("console=ttyS0", false, true, false, 0, false),
             format!("console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={workspace}")
         );
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, false, 0),
+            guest_cmdline("console=ttyS0", true, true, false, 0, false),
             format!(
                 "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
                  virtio_mmio.device={workspace}"
@@ -691,7 +702,7 @@ mod tests {
         let balloon = format!("{MMIO_LEN:#x}@{BALLOON_MMIO_START:#x}:{BALLOON_GSI}");
         assert!(balloon != vsock && balloon != workspace);
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, true, 0),
+            guest_cmdline("console=ttyS0", true, true, true, 0, false),
             format!(
                 "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
                  virtio_mmio.device={workspace} virtio_mmio.device={balloon}"
@@ -708,7 +719,7 @@ mod tests {
         };
         assert!(volume(0) != balloon && volume(1) != volume(0));
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, true, 2),
+            guest_cmdline("console=ttyS0", true, true, true, 2, false),
             format!(
                 "console=ttyS0 pci=off loglevel=7 reboot=acpi virtio_mmio.device={vsock} \
                  virtio_mmio.device={workspace} virtio_mmio.device={balloon} \
@@ -719,12 +730,19 @@ mod tests {
         );
         // A VM with neither device registers no transport...
         assert_eq!(
-            guest_cmdline("console=ttyS0", false, false, false, 0),
+            guest_cmdline("console=ttyS0", false, false, false, 0, false),
             "console=ttyS0 pci=off loglevel=7 reboot=acpi"
         );
         // ...and a caller that registered transports itself keeps its own.
         assert_eq!(
-            guest_cmdline("virtio_mmio.device=0x200@0x1000:6", true, true, false, 0),
+            guest_cmdline(
+                "virtio_mmio.device=0x200@0x1000:6",
+                true,
+                true,
+                false,
+                0,
+                false
+            ),
             "virtio_mmio.device=0x200@0x1000:6 pci=off loglevel=7 reboot=acpi"
         );
     }
@@ -735,8 +753,8 @@ mod tests {
     #[test]
     fn guest_cmdline_adds_nothing_for_the_virtio_transports() {
         assert_eq!(
-            guest_cmdline("console=ttyS0", true, true, false, 0),
-            guest_cmdline("console=ttyS0", false, false, false, 0)
+            guest_cmdline("console=ttyS0", true, true, false, 0, false),
+            guest_cmdline("console=ttyS0", false, false, false, 0, false)
         );
     }
 
@@ -978,11 +996,14 @@ mod x86_64 {
         workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
         balloon: Option<Arc<Mutex<VirtioMmioTransport>>>,
         volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
+        /// The lab topology's network device, when the VM has one.
+        net: Option<Arc<Mutex<VirtioMmioTransport>>>,
     }
 
     /// Builds and boots the VM, leaving its vCPUs running; or, with
     /// `spec.restore`, restores it from that snapshot and leaves it running.
     pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+        crate::spawner::check_net(spec)?;
         match &spec.restore {
             Some(dir) => restore_inner(spec, dir, &runtime),
             None => boot_inner(spec, &runtime),
@@ -1036,6 +1057,7 @@ mod x86_64 {
                 spec.workspace.is_some(),
                 spec.balloon.is_some(),
                 spec.volumes.len(),
+                spec.net.is_some(),
             )
             .as_str(),
             CMDLINE_MAX_SIZE,
@@ -1133,8 +1155,8 @@ mod x86_64 {
         restored: Option<&DeviceStates>,
     ) -> Result<Devices, BootError> {
         // The guest's only legacy devices: the serial console and the i8042
-        // controller (which emulates just enough to reset the machine). There is
-        // no network device by design.
+        // controller (which emulates just enough to reset the machine). The
+        // network device is a lab topology's alone, attached below.
         let serial_out = SerialOut::shared(
             Arc::clone(&runtime.serial),
             Arc::clone(&runtime.serial_ready),
@@ -1299,6 +1321,34 @@ mod x86_64 {
             volumes.push(transport);
         }
 
+        // The lab topology's network device (PLAN 22.6): a transport in the layout's net slot on its own
+        // interrupt, its guest interface on the segment's switch. A session VM has none (`check_net`).
+        let net = match &spec.net {
+            Some(attachment) => {
+                use crate::arch::x86_64::layout::{NET_GSI, NET_MMIO_START};
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, NET_GSI).map_err(BootError::Irq)?;
+                let device = crate::devices::virtio::net::attach(
+                    &attachment.switch,
+                    &attachment.segment,
+                    attachment.mac,
+                )
+                .map_err(VirtioError::from)
+                .map_err(BootError::Virtio)?;
+                let transport = Arc::new(Mutex::new(super::transport(
+                    Box::new(device),
+                    vm.guest_memory().clone(),
+                    irq,
+                    None,
+                )?));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), NET_MMIO_START, MMIO_LEN)?;
+                Some(transport)
+            }
+            None => None,
+        };
+
         // The balloon, when the caller asked for one: a third transport in the
         // next MMIO slot on the next legacy GSI. The VM is sized at
         // `memory_mib` and the balloon starts out holding everything above the
@@ -1347,6 +1397,7 @@ mod x86_64 {
             workspace,
             balloon,
             volumes,
+            net,
         })
     }
 
@@ -1368,6 +1419,7 @@ mod x86_64 {
             workspace: devices.workspace.as_ref().map(Arc::downgrade),
             balloon: devices.balloon.as_ref().map(Arc::downgrade),
             volumes: devices.volumes.iter().map(Arc::downgrade).collect(),
+            net: devices.net.as_ref().map(Arc::downgrade),
         };
         runtime.set_vm_control(Arc::new(InProcessControl::new(
             Arc::downgrade(vm),
@@ -1534,11 +1586,14 @@ mod aarch64 {
         vsock: Option<Arc<Mutex<VirtioMmioTransport>>>,
         workspace: Option<Arc<Mutex<VirtioMmioTransport>>>,
         volumes: Vec<Arc<Mutex<VirtioMmioTransport>>>,
+        /// The lab topology's network device, when the VM has one.
+        net: Option<Arc<Mutex<VirtioMmioTransport>>>,
     }
 
     /// Builds and boots the VM, leaving its vCPUs running; or, with
     /// `spec.restore`, restores it from that snapshot and leaves it running.
     pub(super) fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+        crate::spawner::check_net(spec)?;
         match &spec.restore {
             Some(dir) => restore_inner(spec, dir, &runtime),
             None => boot_inner(spec, &runtime),
@@ -1607,6 +1662,7 @@ mod aarch64 {
                 spec.workspace.is_some(),
                 spec.balloon.is_some(),
                 spec.volumes.len(),
+                spec.net.is_some(),
             )
             .as_str(),
             CMDLINE_MAX_SIZE,
@@ -1693,6 +1749,7 @@ mod aarch64 {
             spec.vsock.is_some(),
             spec.workspace.is_some(),
             spec.volumes.len(),
+            spec.net.is_some(),
         )
     }
 
@@ -1716,7 +1773,7 @@ mod aarch64 {
         restored: Option<&DeviceStates>,
     ) -> Result<Devices, BootError> {
         // The guest's only legacy device: the serial console, on the MMIO bus
-        // (there is no network device by design).
+        // (a network device is a lab topology's alone, attached below).
         let serial_out = SerialOut::shared(
             Arc::clone(&runtime.serial),
             Arc::clone(&runtime.serial_ready),
@@ -1841,6 +1898,34 @@ mod aarch64 {
             volumes.push(transport);
         }
 
+        // The lab topology's network device (PLAN 22.6): a transport in the layout's net slot on its own
+        // interrupt, its guest interface on the segment's switch. A session VM has none (`check_net`).
+        let net = match &spec.net {
+            Some(attachment) => {
+                use crate::arch::aarch64::layout::{NET_GSI, NET_MMIO_START};
+                let irq = EventFd::new(libc::EFD_NONBLOCK).map_err(BootError::EventFd)?;
+                vm.register_irq(&irq, NET_GSI).map_err(BootError::Irq)?;
+                let device = crate::devices::virtio::net::attach(
+                    &attachment.switch,
+                    &attachment.segment,
+                    attachment.mac,
+                )
+                .map_err(VirtioError::from)
+                .map_err(BootError::Virtio)?;
+                let transport = Arc::new(Mutex::new(super::transport(
+                    Box::new(device),
+                    vm.guest_memory().clone(),
+                    irq,
+                    None,
+                )?));
+                vm.common
+                    .mmio_bus
+                    .insert(transport.clone(), NET_MMIO_START, MMIO_LEN)?;
+                Some(transport)
+            }
+            None => None,
+        };
+
         // Host console input: installed before the vCPUs start, held weakly (see
         // the x86_64 backend).
         super::set_serial_input_hook(runtime, &serial);
@@ -1850,6 +1935,7 @@ mod aarch64 {
             vsock,
             workspace,
             volumes,
+            net,
         })
     }
 
@@ -1869,6 +1955,7 @@ mod aarch64 {
             workspace: devices.workspace.as_ref().map(Arc::downgrade),
             balloon: None,
             volumes: devices.volumes.iter().map(Arc::downgrade).collect(),
+            net: devices.net.as_ref().map(Arc::downgrade),
         };
         runtime.set_vm_control(Arc::new(InProcessControl::new(
             Arc::downgrade(vm),

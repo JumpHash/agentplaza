@@ -74,6 +74,7 @@ fn action_name(action: Action) -> &'static str {
         Action::Restart => "restart",
         Action::FillDisk => "fill_disk",
         Action::ClockSkew => "clock_skew",
+        Action::StopNode => "stop_node",
     }
 }
 

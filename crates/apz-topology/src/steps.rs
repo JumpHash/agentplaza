@@ -214,6 +214,7 @@ impl<H: Host, R: Runner, P: Processes> Actuator for Guest<H, R, P> {
                 let (dir, declared) = self.volume(&scenario.target, &scenario.volume)?;
                 fill_bytes(declared, used_bytes(&dir), scenario.leave_mib).map(|_| ())
             }
+            Action::StopNode => Err("a node stop runs at the hub, not in the guest".into()),
             Action::ClockSkew => {
                 if !self.host.is_linux() || !self.host.tool("date") {
                     return Err("a clock skew needs date in a Linux guest".into());
@@ -276,6 +277,7 @@ impl<H: Host, R: Runner, P: Processes> Actuator for Guest<H, R, P> {
                     }
                 }
             }
+            Action::StopNode => Err("a node stop runs at the hub, not in the guest".into()),
             Action::ClockSkew => {
                 let skew = scenario.secs.unwrap_or(0);
                 let delta = if on { skew } else { -skew };

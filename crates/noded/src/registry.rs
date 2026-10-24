@@ -1816,6 +1816,7 @@ impl Registry {
                     balloon,
                     restore: None,
                     volumes: meta.volumes.clone(),
+                    ..Default::default()
                 }
             })
             .collect();
@@ -2752,6 +2753,7 @@ impl Registry {
             balloon: vm.balloon_usable_mib,
             restore: None,
             volumes: volumes.clone(),
+            ..Default::default()
         };
         let run = self.insert(
             id,
@@ -3024,6 +3026,7 @@ impl Registry {
             balloon: meta.balloon_usable_mib,
             restore: None,
             volumes: meta.volumes.clone(),
+            ..Default::default()
         };
         let (handle, base) = boot_from(store, cid, &spec, snapshot).map_err(VmOpError::Failed)?;
         Ok((handle, spec, base))

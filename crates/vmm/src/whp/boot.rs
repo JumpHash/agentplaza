@@ -136,6 +136,7 @@ pub enum BootError {
 /// Boots the VM described by `spec` and returns once its vCPUs are running; or, with `spec.restore`,
 /// restores it from that snapshot (see `whp::snapshot`) and leaves it running.
 pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+    crate::spawner::check_net(spec)?;
     match &spec.restore {
         Some(dir) => restore_inner(spec, dir, &runtime),
         None => boot_inner(spec, &runtime),
@@ -521,6 +522,34 @@ fn run(
         )?);
     }
 
+    // The lab topology's network device (PLAN 22.6): a transport in the layout's net slot on its own I/O
+    // APIC pin, its interface on the segment's switch. A session VM has none (`check_net`).
+    let net = match &spec.net {
+        Some(attachment) => {
+            use crate::arch::x86_64::layout::{NET_GSI, NET_MMIO_START};
+            let irq = EventFd::new(EFD_NONBLOCK).map_err(BootError::Device)?;
+            irq_sources.push((
+                irq.try_clone().map_err(BootError::Device)?,
+                NET_GSI as usize,
+            ));
+            let device = crate::devices::virtio::net::attach(
+                &attachment.switch,
+                &attachment.segment,
+                attachment.mac,
+            )
+            .map_err(VirtioError::from)?;
+            let transport = Arc::new(Mutex::new(VirtioMmioTransport::new(
+                Box::new(device),
+                vm.memory.clone(),
+                irq,
+            )));
+            vm.mmio
+                .insert(transport.clone(), NET_MMIO_START, MMIO_LEN)?;
+            Some(transport)
+        }
+        None => None,
+    };
+
     // Console input, held weakly: input after the VM stopped fails.
     let input = Arc::downgrade(&serial);
     runtime.set_input_hook(move |data| match input.upgrade() {
@@ -548,6 +577,7 @@ fn run(
         vsock: vsock.as_ref().map(Arc::downgrade),
         workspace: workspace.as_ref().map(Arc::downgrade),
         volumes: volumes.iter().map(Arc::downgrade).collect(),
+        net: net.as_ref().map(Arc::downgrade),
         volume_names: spec
             .volumes
             .iter()
@@ -572,7 +602,7 @@ fn run(
     // stops the vCPUs, and owns the devices until then.
     let watcher_vm = Arc::clone(&vm);
     let watcher_runtime = Arc::clone(runtime);
-    let devices = (serial, i8042, pm1, ioapic, vsock, workspace, volumes);
+    let devices = (serial, i8042, pm1, ioapic, vsock, workspace, volumes, net);
     let watcher = thread::Builder::new()
         .name(format!("apz_vm{}_exit", runtime.id))
         .spawn(move || {
@@ -610,6 +640,14 @@ fn transports_of(spec: &VmSpec) -> Vec<MmioTransport> {
         DATA_GSI_START, DATA_MMIO_START, WORKSPACE_GSI, WORKSPACE_MMIO_START,
     };
     let mut transports = Vec::new();
+    if spec.net.is_some() {
+        use crate::arch::x86_64::layout::{NET_GSI, NET_MMIO_START};
+        transports.push(MmioTransport {
+            base: NET_MMIO_START,
+            len: MMIO_LEN,
+            irq: NET_GSI,
+        });
+    }
     if spec.vsock.is_some() {
         transports.push(MmioTransport {
             base: VSOCK_MMIO_START,
