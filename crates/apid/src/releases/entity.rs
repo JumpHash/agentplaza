@@ -125,6 +125,14 @@ pub struct ReleaseArtifact {
     pub run: String,
 }
 
+impl ReleaseArtifact {
+    /// A UI check's screenshot kept as the release's artifact (`ux/<page>/<device>/<theme>/<locale>`, lab_ux.rs): not a
+    /// build, so verify, sync and the registries leave it out.
+    pub fn is_ux(&self) -> bool {
+        self.target.starts_with("ux/")
+    }
+}
+
 /// A target a candidate did not build: no pool in service can build it, and the reason says which pool it needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct ReleaseNotRun {

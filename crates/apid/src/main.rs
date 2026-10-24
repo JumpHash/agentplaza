@@ -70,6 +70,7 @@ mod internal;
 mod journal;
 mod lab_observe;
 mod lab_performance;
+mod lab_ux;
 mod laws;
 mod library;
 mod lifecycle;

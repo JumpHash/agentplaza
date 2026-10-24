@@ -620,6 +620,39 @@ pub fn smoke(
     result
 }
 
+/// The UI checks' pages read in a test fork of `commit` with its browser started (PLAN 22.9, the qualification's UI stage):
+/// each check opens its page in the fork's browser at its size, theme and locale, and reads its screenshot, its tree and its
+/// layout. The comparison with the baseline and the findings are the lab's (lab_ux.rs).
+pub fn ux_reads(
+    app: &App,
+    project: &str,
+    commit: &str,
+    spec: &apz_ux::spec::Spec,
+    checks: &[apz_ux::spec::Check],
+) -> Result<Vec<(apz_ux::spec::Check, apz_ux::check::Report)>, String> {
+    let host = Live(app);
+    let placed = browser_fork(app, &host, project, commit)?;
+    let result = {
+        let mut dial = port_dial(
+            &app.nodes,
+            &placed.node,
+            placed.cid,
+            DEVTOOLS_PORT,
+            LOCAL_INBOUND,
+        );
+        checks
+            .iter()
+            .map(|check| {
+                let mut page = Web::attach(&mut dial, &check.url)?;
+                let report = apz_ux::check::run(&mut page, spec, check, None)?;
+                Ok((check.clone(), report))
+            })
+            .collect::<Result<Vec<_>, String>>()
+    };
+    retire_placed(placed);
+    result
+}
+
 /// Runs a smoke set on the targets `open` opens, a fresh one for each scenario. No driver and no checker is asked: a smoke
 /// scenario's expectations are read from the screen as it is, and one that does not hold fails (a step with actions, which
 /// a smoke set does not take, fails as the models refuse). The first failure is the error.

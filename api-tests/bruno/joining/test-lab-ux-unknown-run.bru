@@ -1,0 +1,28 @@
+meta {
+  name: Answer 404 for the UI checks of an unknown test-lab run
+  type: http
+  seq: 45
+}
+
+post {
+  url: {{baseUrl}}/v1/test-lab/runs/q999/ux
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "base": "http://127.0.0.1:8080",
+    "ux": "[[device]]\nname = \"desktop\"\nwidth = 800\nheight = 600\n\n[[page]]\nname = \"shop\"\npath = \"/\"\ndevices = [\"desktop\"]\n"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

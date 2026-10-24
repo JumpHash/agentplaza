@@ -83,7 +83,7 @@ fn body(rel: &Release, link_base: Option<&str>, asset_limit: u64) -> String {
     let big: Vec<_> = rel
         .artifacts
         .iter()
-        .filter(|a| a.size > asset_limit)
+        .filter(|a| a.size > asset_limit && !a.is_ux())
         .collect();
     if !big.is_empty() {
         out.push_str("\n## Assets\n\n");
@@ -137,13 +137,17 @@ pub fn sync_one(
             let remote = forge.create_release(&target.token, &target.repo, &spec)?;
             // The release's files: each artifact under the limit, its SBOM and provenance, and the sums of the artifacts.
             let mut sums = String::new();
-            for art in rel.artifacts.iter().filter(|a| a.size <= input.asset_limit) {
+            for art in rel
+                .artifacts
+                .iter()
+                .filter(|a| a.size <= input.asset_limit && !a.is_ux())
+            {
                 let bytes = (input.bytes)(&art.digest)?;
                 let name = safe(&art.target);
                 sums.push_str(&format!("{}  {name}\n", sha256_hex(&bytes)));
                 forge.attach(&target.token, &target.repo, &remote, &name, &bytes)?;
             }
-            for art in &rel.artifacts {
+            for art in rel.artifacts.iter().filter(|a| !a.is_ux()) {
                 let name = safe(&art.target);
                 if !art.sbom.is_empty() {
                     forge.attach(
