@@ -5,6 +5,7 @@
 //! |---|---|
 //! | `GET /v1/projects/{id}/upgrades` | the project's schedules (per ecosystem) and its batches, newest first |
 //! | `POST /v1/projects/{id}/upgrades/fix` `{advisory, ecosystem, package, fixed, priority}` | starts an advisory's fix now |
+//! | `POST /v1/projects/{id}/upgrades/run` | plans every ecosystem of the project now (as its schedule does) |
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
@@ -69,8 +70,28 @@ fn fix_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
+fn run_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+    let pid = p.get("id");
+    if app.projects.get(pid).is_none() {
+        return Response::error(404, "no such project");
+    }
+    let Some(hub) = app.handle().upgrade() else {
+        return Response::error(503, "the hub is stopping");
+    };
+    match super::start_all(&hub, pid) {
+        Ok(()) => Response::json(202, &json!({ "project": pid })),
+        Err(e) => Response::error(409, &e),
+    }
+}
+
 pub fn routes(router: Router<App>) -> Router<App> {
     router
+        .post("/v1/projects/{id}/upgrades/run", run_route)
+        .doc(
+            RouteDoc::new("Plans every ecosystem of the project now: each batch becomes a task, as a schedule's does")
+                .status(202)
+                .errors(&[404, 409]),
+        )
         .get("/v1/projects/{id}/upgrades", list_route)
         .doc(RouteDoc::new("A project's dependency upgrades: its schedules per ecosystem and its batches").errors(&[404]))
         .post("/v1/projects/{id}/upgrades/fix", fix_route)

@@ -1,5 +1,5 @@
 //! The upgrade flow against a real `cargo` and a local registry (a directory laid out as an index, with `.crate` files):
-//! a sample project in a temp dir, a tiny crate published into the registry at each release, and the hub's repository
+//! a sample project in a temp dir, a tiny crate published into the registry at each release, and the hub's task list
 //! played in memory. The network is never touched: the tests' fetch answers nothing, and cargo runs offline.
 
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ fn offline() -> Vec<(String, String)> {
     vec![("CARGO_NET_OFFLINE".into(), "true".into())]
 }
 
-/// A fetch that reaches nothing: a changelog is not reachable, and the test says so in the record.
+/// A fetch that reaches nothing: a changelog is not reachable, and the record says so.
 struct NoNet;
 
 impl Fetch for NoNet {
@@ -25,36 +25,25 @@ impl Fetch for NoNet {
     }
 }
 
-/// The hub's repository, in memory: its main, the changes opened on it and their queueing.
+/// The hub's repository and task list, in memory: its main, and the tasks the batches became (goal, acceptance).
 #[derive(Default)]
 struct FakeLanes {
     tree: Tree,
-    opened: Mutex<Vec<(String, Vec<(String, Option<Vec<u8>>)>, String)>>,
+    tasks: Mutex<Vec<(String, String)>>,
     records: Mutex<Vec<UpgradeBatch>>,
-    queued: Mutex<Vec<String>>,
 }
 
 impl Lanes for FakeLanes {
     fn main(&self, _project: &str) -> Result<Tree, String> {
         Ok(self.tree.clone())
     }
-    fn open(
-        &self,
-        _project: &str,
-        title: &str,
-        files: &[(String, Option<Vec<u8>>)],
-        summary: &str,
-    ) -> Result<String, String> {
-        let mut opened = self.opened.lock().unwrap();
-        opened.push((title.to_string(), files.to_vec(), summary.to_string()));
-        Ok(format!("c{}", opened.len()))
+    fn task(&self, _project: &str, goal: &str, acceptance: &str) -> Result<String, String> {
+        let mut tasks = self.tasks.lock().unwrap();
+        tasks.push((goal.to_string(), acceptance.to_string()));
+        Ok(format!("t{}", tasks.len()))
     }
     fn record(&self, _project: &str, batch: &UpgradeBatch) -> Result<(), String> {
         self.records.lock().unwrap().push(batch.clone());
-        Ok(())
-    }
-    fn queue(&self, _project: &str, change: &str) -> Result<(), String> {
-        self.queued.lock().unwrap().push(change.to_string());
         Ok(())
     }
 }
@@ -188,7 +177,7 @@ fn ports<'a>(
 }
 
 /// A project with tiny 1.0.0 locked, and the registry offering 1.1.0, 1.2.0 (minor) and 2.0.0 (major) of it.
-fn scenario(scratch: &Scratch) -> (Tree, PathBuf) {
+fn scenario(scratch: &Scratch) -> Tree {
     let registry_dir = scratch.0.join("registry");
     let registry = Registry::new(&scratch.0, "registry");
     registry.publish("tiny", "1.0.0");
@@ -197,15 +186,14 @@ fn scenario(scratch: &Scratch) -> (Tree, PathBuf) {
     registry.publish("tiny", "1.1.0");
     registry.publish("tiny", "1.2.0");
     registry.publish("tiny", "2.0.0");
-    (tree, registry_dir)
+    tree
 }
 
 #[test]
-fn a_scheduled_run_lands_a_passing_minor_batch_through_the_queue() {
+fn a_scheduled_run_makes_a_task_per_batch_with_the_commands_that_apply_it() {
     let scratch = Scratch::new("minor");
-    let (tree, _) = scenario(&scratch);
     let lanes = FakeLanes {
-        tree,
+        tree: scenario(&scratch),
         ..FakeLanes::default()
     };
     let report = process(
@@ -221,59 +209,63 @@ fn a_scheduled_run_lands_a_passing_minor_batch_through_the_queue() {
         .iter()
         .find(|b| b.kind == "minor")
         .expect("a minor batch");
-    assert_eq!(minor.state, "queued", "{minor:?}");
-    assert!(!minor.hold);
+    assert_eq!(minor.state, "task", "{minor:?}");
+    assert!(!minor.hold, "auto-land on: it lands when its review passes");
     assert_eq!(minor.tests, "selected: sample");
     assert!(
         minor.summary.contains("tiny 1.0.0 -> 1.2.0"),
         "{}",
         minor.summary
     );
-    // The change: the lockfile only, and it is the batch's; the queue has it.
-    let opened = lanes.opened.lock().unwrap();
-    let (title, files, summary) = opened
-        .iter()
-        .find(|(t, _, _)| t.contains("patch and minor"))
-        .unwrap();
-    assert!(title.contains("cargo"), "{title}");
-    let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-    assert_eq!(paths, ["Cargo.lock"]);
-    let lock = String::from_utf8(files[0].1.clone().unwrap()).unwrap();
+    // The task: its spec names the commands the builder runs and the tests that judge them.
+    let tasks = lanes.tasks.lock().unwrap();
+    let (goal, acceptance) = &tasks[0];
+    assert!(goal.contains("patch and minor"), "{goal}");
     assert!(
-        lock.contains("name = \"tiny\"\nversion = \"1.2.0\""),
-        "{lock}"
+        acceptance.contains("cargo update -p tiny --precise 1.2.0"),
+        "{acceptance}"
     );
+    assert!(acceptance.contains("cargo test -p sample"), "{acceptance}");
+    assert!(acceptance.contains("lockfile only"), "{acceptance}");
     assert!(
-        summary.contains("tiny 1.0.0 -> 1.2.0: no changelog reachable"),
-        "{summary}"
+        acceptance.contains("tiny 1.0.0 -> 1.2.0: no changelog reachable"),
+        "{acceptance}"
     );
-    // Every batch's change is queued: the major's hold is the queue's to honour, as the minor's is when it waits.
-    let queued = lanes.queued.lock().unwrap().clone();
-    let changes: Vec<String> = report.batches.iter().map(|b| b.change.clone()).collect();
-    assert_eq!(queued, changes);
-    // The major is its own change, with the whole suite and the manifest moved to the new requirement.
+    // The major: its own task, its manifest moved, the whole suite, and it waits for the owner.
     let major = report
         .batches
         .iter()
         .find(|b| b.kind == "major")
         .expect("a major batch");
-    assert_eq!(major.state, "waiting");
+    assert_eq!(major.state, "task");
     assert!(major.hold, "a major always waits for the owner");
     assert_eq!(major.tests, "full");
-    let (_, files, _) = opened
-        .iter()
-        .find(|(t, _, _)| t.contains("(major)"))
-        .unwrap();
-    let paths: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
-    assert_eq!(paths, ["Cargo.lock", "Cargo.toml"]);
+    let (goal, acceptance) = &tasks[1];
+    assert!(goal.contains("tiny to 2.0.0 (major)"), "{goal}");
+    assert!(
+        acceptance.contains("edit Cargo.toml: tiny = \"2\""),
+        "{acceptance}"
+    );
+    assert!(
+        acceptance.contains("cargo update -p tiny --precise 2.0.0"),
+        "{acceptance}"
+    );
+    assert!(
+        acceptance.contains("cargo test --workspace"),
+        "{acceptance}"
+    );
+    assert_eq!(
+        lanes.records.lock().unwrap().len(),
+        2,
+        "each batch is kept with its task"
+    );
 }
 
 #[test]
 fn with_auto_land_off_the_minor_batch_waits_for_the_owner() {
     let scratch = Scratch::new("waits");
-    let (tree, _) = scenario(&scratch);
     let lanes = FakeLanes {
-        tree,
+        tree: scenario(&scratch),
         ..FakeLanes::default()
     };
     let report = process(
@@ -283,19 +275,19 @@ fn with_auto_land_off_the_minor_batch_waits_for_the_owner() {
         &Request::Schedule,
     );
     let minor = report.batches.iter().find(|b| b.kind == "minor").unwrap();
-    assert_eq!(minor.state, "waiting");
-    assert!(minor.hold, "held: the landing queue asks the owner first");
-    // The record is what the queue reads for the hold.
+    assert_eq!(minor.state, "task");
+    assert!(minor.hold, "held: the queue asks the owner before it lands");
+    // The record finds the batch by its task, which is how the queue reads the hold.
     let store = Store::default();
     store.record("p1", minor.clone());
-    assert_eq!(store.holds(&minor.change), Some(true));
-    assert_eq!(store.holds("not-a-batch"), None);
-    // The change is still queued: the hold is the queue's to honour.
-    assert_eq!(lanes.queued.lock().unwrap().len(), report.batches.len());
+    let (project, found) = store.of_task(&minor.task).expect("the batch by its task");
+    assert_eq!((project.as_str(), found.hold), ("p1", true));
+    assert!(store.of_task("no-such-task").is_none());
+    assert!(store.of_task("").is_none());
 }
 
 #[test]
-fn a_cve_fix_moves_its_crate_to_the_fixed_release() {
+fn a_cve_fix_becomes_a_task_that_moves_its_crate_to_the_fixed_release() {
     let scratch = Scratch::new("cve");
     let registry = Registry::new(&scratch.0, "registry");
     let registry_dir = scratch.0.join("registry");
@@ -323,27 +315,24 @@ fn a_cve_fix_moves_its_crate_to_the_fixed_release() {
     assert_eq!(report.batches.len(), 1, "{report:?}");
     let fix = &report.batches[0];
     assert_eq!(fix.kind, "fix");
-    assert_eq!(fix.state, "queued", "{fix:?}");
+    assert_eq!(fix.state, "task", "{fix:?}");
     assert!(
         fix.reason.contains("ADV-1") && fix.reason.contains("high"),
         "{}",
         fix.reason
     );
-    let opened = lanes.opened.lock().unwrap();
-    let lock = String::from_utf8(opened[0].1[0].1.clone().unwrap()).unwrap();
-    assert!(
-        lock.contains("name = \"tiny\"\nversion = \"1.0.1\""),
-        "{lock}"
-    );
-
+    {
+        let tasks = lanes.tasks.lock().unwrap();
+        assert!(
+            tasks[0].1.contains("cargo update -p tiny --precise 1.0.1"),
+            "{}",
+            tasks[0].1
+        );
+    }
     // A fix the lockfile already has is no batch at all.
     let done = Advisory {
         fixed: "1.0.0".into(),
         ..advisory
-    };
-    let lanes = FakeLanes {
-        tree: lanes.tree.clone(),
-        ..FakeLanes::default()
     };
     let report = process(
         &ports(&lanes, &Local, &NoNet, true),
@@ -357,9 +346,8 @@ fn a_cve_fix_moves_its_crate_to_the_fixed_release() {
 #[test]
 fn an_ecosystem_whose_tool_is_missing_is_skipped_with_the_reason() {
     let scratch = Scratch::new("skip");
-    let (tree, _) = scenario(&scratch);
     let lanes = FakeLanes {
-        tree,
+        tree: scenario(&scratch),
         ..FakeLanes::default()
     };
     let mut p = ports(&lanes, &Local, &NoNet, true);
@@ -372,7 +360,56 @@ fn an_ecosystem_whose_tool_is_missing_is_skipped_with_the_reason() {
             .unwrap()
             .contains("`cargo` is not on the hub's PATH")
     );
-    assert!(lanes.opened.lock().unwrap().is_empty());
+    assert!(lanes.tasks.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_gate_holds_a_batch_whose_change_touches_more_than_its_lockfile() {
+    let lock_only = vec!["Cargo.lock".to_string()];
+    assert!(gate_paths(Ecosystem::Cargo, false, &lock_only).is_ok());
+    let stray = vec!["Cargo.lock".to_string(), "src/lib.rs".to_string()];
+    let why = gate_paths(Ecosystem::Cargo, false, &stray).unwrap_err();
+    assert!(why.contains("src/lib.rs"), "{why}");
+    // A minor may not touch the manifest; a major may.
+    let manifest = vec!["Cargo.toml".to_string(), "Cargo.lock".to_string()];
+    assert!(gate_paths(Ecosystem::Cargo, false, &manifest).is_err());
+    assert!(gate_paths(Ecosystem::Cargo, true, &manifest).is_ok());
+    // An empty change is not a batch's change.
+    assert!(gate_paths(Ecosystem::Cargo, false, &[]).is_err());
+    // Gradle keeps its versions in its build files, which its batches change.
+    assert!(gate_paths(Ecosystem::Gradle, false, &["build.gradle".to_string()]).is_ok());
+}
+
+#[test]
+fn the_spec_names_the_commands_each_ecosystem_runs() {
+    let go = Update {
+        name: "example.com/c/v2".into(),
+        from: "v1.2.0".into(),
+        to: "v2.1.0".into(),
+        bump: version::Bump::Major,
+        req: None,
+    };
+    let (_, text) = spec(Ecosystem::Go, Kind::Major, &[go], "go test ./...", "");
+    assert!(
+        text.contains("edit the imports and go.mod to example.com/c/v2 v2.1.0"),
+        "{text}"
+    );
+    assert!(text.contains("go mod tidy"), "{text}");
+    let minor = Update {
+        name: "left-pad".into(),
+        from: "1.0.0".into(),
+        to: "1.2.0".into(),
+        bump: version::Bump::Minor,
+        req: None,
+    };
+    assert_eq!(
+        commands(Ecosystem::Npm, Kind::Minor, std::slice::from_ref(&minor)),
+        ["npm update"]
+    );
+    assert_eq!(
+        commands(Ecosystem::Gradle, Kind::Minor, std::slice::from_ref(&minor)),
+        ["edit the build files: left-pad:1.0.0 -> left-pad:1.2.0"]
+    );
 }
 
 #[test]
@@ -457,20 +494,19 @@ fn a_changed_tree_names_what_a_batch_wrote_and_skips_the_build_output() {
 }
 
 #[test]
-fn the_store_keeps_the_batches_its_hold_and_the_due_schedules() {
+fn the_store_keeps_the_batches_follows_their_tasks_and_knows_the_due_schedules() {
     let store = Store::default();
     let batch = UpgradeBatch {
         id: "cargo-minor-1".into(),
-        change: "c7".into(),
+        task: "t7".into(),
+        state: "task".into(),
         hold: true,
-        state: "waiting".into(),
         ..UpgradeBatch::default()
     };
     store.record("p1", batch.clone());
     store.record(
         "p1",
         UpgradeBatch {
-            state: "queued".into(),
             hold: false,
             ..batch.clone()
         },
@@ -480,7 +516,20 @@ fn the_store_keeps_the_batches_its_hold_and_the_due_schedules() {
         1,
         "a batch is kept once, by its id"
     );
-    assert_eq!(store.holds("c7"), Some(false));
+    assert_eq!(
+        store.tasks_to_follow(),
+        vec![(
+            "p1".to_string(),
+            "cargo-minor-1".to_string(),
+            "t7".to_string()
+        )]
+    );
+    store.follow("p1", "cargo-minor-1", "running", "c7");
+    let (_, followed) = store.of_task("t7").unwrap();
+    assert_eq!(
+        (followed.task_state.as_str(), followed.change.as_str()),
+        ("running", "c7")
+    );
     store.set_schedules(
         "p1",
         vec![

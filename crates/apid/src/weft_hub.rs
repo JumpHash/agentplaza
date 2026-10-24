@@ -1165,9 +1165,17 @@ pub fn land_queues(app: &App) {
 /// project is the change's task's.
 fn queue_policy(app: &App, change: &str) -> (usize, bool) {
     let (batch, approval) = queue_settings(app, change);
-    // A dependency upgrade's batch waits for the owner when its record says so (upgrades/, PLAN 24.2).
-    let upgrade_hold = crate::upgrades::holds(app, change).unwrap_or(false);
-    (batch, approval || upgrade_hold)
+    // An upgrade's change waits for the owner when its batch says so, or its file gate fails (upgrades/, PLAN 24.2).
+    let task = app
+        .weft
+        .get(&format!("/changes/{change}"))
+        .ok()
+        .and_then(|d| d["task"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    (
+        batch,
+        approval || crate::upgrades::queue_hold(app, change, &task),
+    )
 }
 
 /// The batch size of the queue whose head is `change`, and whether its project's owner approves its landings.
