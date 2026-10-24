@@ -15,6 +15,7 @@ import { mount as egressCredentials } from './egress-credentials';
 import { mount as files } from './files';
 import { mount as machines } from './machines';
 import { mount as history } from './history';
+import { mount as evals } from './evals';
 import { mount as recipes } from './recipes';
 import { mount as recipeGraph } from './recipe-graph';
 import { mount as releases } from './releases';
@@ -69,6 +70,7 @@ export const SCREENS: Screen[] = [
   { key: 'approvals', label: 'Approvals', icon: 'approval', section: 'Plaza', mount: approvals },
   { key: 'machines', label: 'Machines', icon: 'machine', section: 'Plaza', mount: machines },
   { key: 'metrics', label: 'Metrics', icon: 'zap', section: 'Plaza', mount: metrics },
+  { key: 'evals', label: 'Evals', icon: 'zap', section: 'Plaza', mount: evals },
   { key: 'board', label: 'Board', icon: 'boardpin', section: 'Social', mount: board },
   { key: 'rules', label: 'Rules', icon: 'rules', section: 'Social', mount: rules },
   { key: 'lab', label: 'Lab', icon: 'brain', section: 'Lab', mount: lab },

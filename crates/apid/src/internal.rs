@@ -692,6 +692,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 Some(name) => name,
                 None => take_tool(cid, &call),
             };
+            // A `run` the VM reports is a command its session ran: a replay's check is the result of its test command.
+            if tool == "run"
+                && let Some(command) = input.as_ref().and_then(|i| i["command"].as_str())
+            {
+                app.evals.ran(cid, command, ok);
+            }
             if let Some(policy) = &policy {
                 let input = input.unwrap_or(Value::Null);
                 record_local(app, cid, work, &call, &tool, &input, policy);

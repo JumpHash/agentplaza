@@ -99,6 +99,16 @@ pub struct RepoCreate {
     pub description: String,
 }
 
+/// `ref.create`: a branch of a repo, starting at a landed revision (`at`: `root` for an empty one). A branch's landings are
+/// its own: nothing moves another branch's head.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RefCreate {
+    pub repo: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub at: RevId,
+}
+
 /// `lane.open`: a task's lane, on `base` (a landed revision of `ref`) or stacked on another change.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LaneOpen {

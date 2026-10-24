@@ -1,0 +1,24 @@
+meta {
+  name: Replay an archived case as a task in its project
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/evals/bench/{{caseId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 201
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the replay is a task, and its benchmark record is running until the task ends", function () {
+    const b = res.getBody();
+    expect(b.task).to.be.a("string");
+    expect(b.bench).to.be.a("number");
+  });
+}

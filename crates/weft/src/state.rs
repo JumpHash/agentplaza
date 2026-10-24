@@ -245,6 +245,7 @@ pub struct State {
 /// Kinds only the owner may sign (or the hub, marked, with `rule-for-owner`).
 const OWNER_KINDS: &[&str] = &[
     "repo.create",
+    "ref.create",
     "path.rule",
     "connection.add",
     "connection.remove",
@@ -521,6 +522,32 @@ impl State {
                     );
                 }
                 format!("repo {} created", r.repo)
+            }
+            "ref.create" => {
+                let r: RefCreate = parse(&stmt.body, kind)?;
+                if r.reference.is_empty()
+                    || !r
+                        .reference
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+                {
+                    return Err(format!("bad ref name {:?}", r.reference));
+                }
+                if r.at != "root" && !self.revisions.contains_key(&r.at) {
+                    return Err(format!("no revision {}", r.at));
+                }
+                if self.repo(&r.repo)?.refs.contains_key(&r.reference) {
+                    return Err(format!("ref {} exists in {}", r.reference, r.repo));
+                }
+                if !dry && let Some(repo) = self.repos.get_mut(&r.repo) {
+                    let landed = if r.at == "root" {
+                        Vec::new()
+                    } else {
+                        vec![r.at.clone()]
+                    };
+                    repo.refs.insert(r.reference.clone(), landed);
+                }
+                format!("ref {} created at {} in {}", r.reference, r.at, r.repo)
             }
             "lane.open" => {
                 let l: LaneOpen = parse(&stmt.body, kind)?;

@@ -134,6 +134,16 @@ impl Weft {
         self.lanes.lock().ok()?.get(task).cloned()
     }
 
+    /// The task whose lane is `change`, when one is bound (the inverse of [`Weft::lane_of`]).
+    pub fn task_of_lane(&self, change: &str) -> Option<String> {
+        self.lanes
+            .lock()
+            .ok()?
+            .iter()
+            .find(|(_, lane)| lane.as_str() == change)
+            .map(|(task, _)| task.clone())
+    }
+
     /// Binds `task` to `change`, the lane that carries its work when the lane was opened outside `open_lane` (a backport
     /// opened on a release line).
     pub fn bind_lane(&self, task: &str, change: &str) {
@@ -884,7 +894,12 @@ pub fn open_lane(
         .chars()
         .take(100)
         .collect();
-    let r = app.weft.post("/lanes", &json!({ "repo": repo, "task": task, "title": title, "author": { "kind": "agent", "cid": worker }, "stacked_on": stacked }));
+    // A replay's lane is on its own branch, which starts at the case's commit; every other lane is on main.
+    let reference = app
+        .evals
+        .replay_reference(task)
+        .unwrap_or_else(|| "main".to_string());
+    let r = app.weft.post("/lanes", &json!({ "repo": repo, "ref": reference, "task": task, "title": title, "author": { "kind": "agent", "cid": worker }, "stacked_on": stacked }));
     match r {
         Ok(v) => {
             let change = v["change"].as_str()?.to_string();

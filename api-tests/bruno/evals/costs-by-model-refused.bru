@@ -1,0 +1,15 @@
+meta {
+  name: A cost report refuses a grouping it does not know
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/evals/costs?by=seat
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+}

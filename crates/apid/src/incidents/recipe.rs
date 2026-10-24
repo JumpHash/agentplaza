@@ -86,6 +86,16 @@ pub fn run_with(
     let run = run.as_deref();
 
     let triaged = triage(app, &incident, logs);
+    // The incident traces back to a landing's task: that task's eval records count it (25.1).
+    if let Some((landing, _)) = &triaged.landing
+        && !landing.task.is_empty()
+        && let Err(err) = app.evals.incident(&landing.task)
+    {
+        eprintln!(
+            "apid: evals: incident {id} was not recorded for {}: {err}",
+            landing.task
+        );
+    }
     let suspect = triaged
         .suspect
         .as_ref()

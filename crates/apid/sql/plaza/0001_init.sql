@@ -7,7 +7,6 @@
 -- (store/saver.rs), so a search reads what is saved and a restart finds the same index.
 CREATE VIRTUAL TABLE "journal_note_search" USING fts5("task" UNINDEXED, "seq" UNINDEXED, "text", "reason");
 CREATE VIRTUAL TABLE "memory_entry_search" USING fts5("key" UNINDEXED, "title", "body");
-
 -- component tasks
 CREATE TABLE "task_ledger" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
@@ -4619,6 +4618,14 @@ CREATE TABLE "eval_run" (
     "landed" INTEGER CHECK ("landed" IN (0, 1)),
     "reverted" INTEGER CHECK ("reverted" IN (0, 1)),
     "ended_ms" INTEGER NOT NULL CHECK ("ended_ms" >= 0),
+    "recipe_version" INTEGER NOT NULL CHECK ("recipe_version" >= 0),
+    "harness_version" TEXT NOT NULL,
+    "gate" TEXT NOT NULL,
+    "later_findings" INTEGER NOT NULL CHECK ("later_findings" >= 0),
+    "incidents" INTEGER NOT NULL CHECK ("incidents" >= 0),
+    "memory_cites" INTEGER NOT NULL CHECK ("memory_cites" >= 0),
+    "qual_stages" INTEGER NOT NULL CHECK ("qual_stages" >= 0),
+    "lab_minutes" INTEGER NOT NULL CHECK ("lab_minutes" >= 0),
     PRIMARY KEY ("id")
 ) STRICT;
 CREATE INDEX "eval_run_project" ON "eval_run" ("project");
@@ -4626,6 +4633,74 @@ CREATE INDEX "eval_run_task" ON "eval_run" ("task");
 CREATE INDEX "eval_run_seat" ON "eval_run" ("seat");
 CREATE INDEX "eval_run_model" ON "eval_run" ("model");
 CREATE INDEX "eval_run_ended_ms" ON "eval_run" ("ended_ms");
+
+-- eval findings (written through)
+CREATE TABLE "eval_finding" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "task" TEXT,
+    "review" TEXT NOT NULL,
+    "finding" TEXT NOT NULL,
+    "reviewer" TEXT NOT NULL,
+    "reviewer_seat" TEXT NOT NULL,
+    "verifier" TEXT NOT NULL,
+    "verdict" TEXT NOT NULL,
+    "severity" TEXT NOT NULL,
+    "ruled_ms" INTEGER NOT NULL CHECK ("ruled_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "eval_finding_project" ON "eval_finding" ("project");
+CREATE INDEX "eval_finding_task" ON "eval_finding" ("task");
+CREATE INDEX "eval_finding_reviewer" ON "eval_finding" ("reviewer");
+CREATE INDEX "eval_finding_ruled_ms" ON "eval_finding" ("ruled_ms");
+
+-- eval archive (written through)
+CREATE TABLE "eval_archive" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "task" TEXT NOT NULL,
+    "start" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "check" TEXT NOT NULL,
+    "command" TEXT NOT NULL,
+    "outcome" TEXT NOT NULL,
+    "archived_ms" INTEGER NOT NULL CHECK ("archived_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "eval_archive_project" ON "eval_archive" ("project");
+
+-- eval bench (written through)
+CREATE TABLE "eval_bench" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "archive" INTEGER NOT NULL CHECK ("archive" >= 0),
+    "task" TEXT,
+    "reference" TEXT NOT NULL,
+    "command" TEXT NOT NULL,
+    "check" INTEGER CHECK ("check" IN (0, 1)),
+    "outcome" TEXT NOT NULL,
+    "known" TEXT NOT NULL,
+    "matched" INTEGER NOT NULL CHECK ("matched" IN (0, 1)),
+    "cost_micros" INTEGER NOT NULL CHECK ("cost_micros" >= 0),
+    "wall_ms" INTEGER NOT NULL CHECK ("wall_ms" >= 0),
+    "replayed_ms" INTEGER NOT NULL CHECK ("replayed_ms" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "eval_bench_archive" ON "eval_bench" ("archive");
+CREATE INDEX "eval_bench_task" ON "eval_bench" ("task");
+
+-- eval qualifications (written through)
+CREATE TABLE "eval_qualification" (
+    "id" INTEGER NOT NULL CHECK ("id" >= 0),
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "task" TEXT NOT NULL,
+    "stages" INTEGER NOT NULL CHECK ("stages" >= 0),
+    "lab_minutes" INTEGER NOT NULL CHECK ("lab_minutes" >= 0),
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE INDEX "eval_qualification_task" ON "eval_qualification" ("task");
 
 -- unfurl cache (written through)
 CREATE TABLE "unfurl_cache" (

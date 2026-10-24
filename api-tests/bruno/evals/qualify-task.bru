@@ -1,0 +1,30 @@
+meta {
+  name: Record a task's qualification stages and lab minutes
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/evals/qualified
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "run": "q1",
+    "task": "{{taskId}}",
+    "stages": 2,
+    "lab_minutes": 45
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("the qualification is recorded once, keyed by its lab run", function () {
+    expect(res.getBody().recorded).to.be.a("boolean");
+  });
+}
