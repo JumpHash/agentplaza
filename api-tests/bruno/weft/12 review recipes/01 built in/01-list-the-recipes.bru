@@ -16,10 +16,10 @@ assert {
 }
 
 tests {
-  test("code is at version 3, docs and research at 1, and proposals is a list", function () {
+  test("code is at version 4, docs and research at 1, and proposals is a list", function () {
     const body = res.getBody();
     const at = (id, v) => body.recipes.some((r) => r.id === id && r.version === v);
-    expect(at("code", 3)).to.equal(true);
+    expect(at("code", 4)).to.equal(true);
     expect(at("docs", 1)).to.equal(true);
     expect(at("research", 1)).to.equal(true);
     expect(body.proposals).to.be.an("array");
