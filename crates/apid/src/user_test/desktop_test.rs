@@ -9,8 +9,17 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use serde_json::{Value, json};
 
+use std::io::BufReader;
+use std::net::{TcpListener, TcpStream};
+use std::thread;
+use std::time::Duration;
+
+use apz_gui_agent::script::{Script, ScriptDesk, shop as agent_shop};
+use apz_gui_agent::{Agent, serve, share};
+use apz_link::inbound::Duplex;
+
 use super::Ruling;
-use super::desktop::{Calls, Gui, LINUX, WINDOWS, kind_of};
+use super::desktop::{Calls, FORK_STATION, Forked, Gui, LINUX, WINDOWS, kind_of};
 use super::target::{Action, Element, Link, Screen, StandIn, Target, Tree, render};
 use super::targets_test::{pay_scenario, press_pay, run};
 use crate::recipes::model::{DesktopTarget, UserTest, WebTarget};
@@ -405,8 +414,80 @@ fn the_lease_is_released_when_the_target_goes() {
     assert_eq!(station.released.get(), 1);
 }
 
+/// A desktop agent serving `script` on a loopback port, as the lane's fork serves its agent: one connection after another.
+fn agent_port(script: Script) -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let desk = share(Box::new(ScriptDesk::new(script)));
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let Ok(reader) = stream.try_clone() else {
+                continue;
+            };
+            let desk = desk.clone();
+            thread::spawn(move || {
+                let mut agent = Agent::new(desk);
+                let _ = serve(&mut agent, BufReader::new(reader), stream);
+            });
+        }
+    });
+    port
+}
+
+/// The Linux desktop target over the fork agent on `port`.
+fn fork_gui<'a>(port: u16) -> Result<Gui<'a>, String> {
+    let dial = move || -> Result<Box<dyn Duplex>, String> {
+        let stream = TcpStream::connect(("127.0.0.1", port))
+            .map_err(|why| format!("the fork's agent: {why}"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .map_err(|why| format!("the fork's agent: {why}"))?;
+        Ok(Box::new(stream))
+    };
+    Gui::open(Box::new(Forked::new(dial)), FORK_STATION, LINUX)
+}
+
 #[test]
-fn a_step_names_one_target_and_a_desktop_names_linux_or_windows() {
+fn a_seeded_bug_fails_the_scenario_through_the_linux_fork_agent_and_the_fix_passes() {
+    let buggy = agent_port(agent_shop(true));
+    let bug = run(
+        pay_scenario(),
+        press_pay,
+        || -> Result<Box<dyn Target>, String> { Ok(Box::new(fork_gui(buggy)?)) },
+    );
+    assert_eq!(bug.target, kind_of(LINUX).unwrap());
+    assert_eq!(
+        bug.found.len(),
+        1,
+        "the seeded bug is a finding: {}",
+        bug.summary()
+    );
+    assert!(matches!(bug.found[0].ruling, Ruling::Confirmed { .. }));
+    let fixed = agent_port(agent_shop(false));
+    let pass = run(
+        pay_scenario(),
+        press_pay,
+        || -> Result<Box<dyn Target>, String> { Ok(Box::new(fork_gui(fixed)?)) },
+    );
+    assert!(
+        pass.found.is_empty(),
+        "the fixed agent passes: {}",
+        pass.summary()
+    );
+}
+
+#[test]
+fn a_fork_without_an_agent_is_refused_by_name() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let why = fork_gui(port).err().unwrap();
+    assert!(why.contains("the fork's agent"), "{why}");
+}
+
+#[test]
+fn a_step_names_one_target_and_a_desktop_names_its_os_and_station() {
     let base = UserTest {
         planner: "mock/script".into(),
         driver: "mock/script".into(),
@@ -421,25 +502,39 @@ fn a_step_names_one_target_and_a_desktop_names_linux_or_windows() {
         actions: 8,
         exploratory: 0,
     };
-    let linux = UserTest {
+    let desktop = |station: Option<&str>, os: &str| UserTest {
         desktop: Some(DesktopTarget {
-            station: "ws-1".into(),
-            os: "linux".into(),
+            station: station.map(str::to_string),
+            os: os.into(),
         }),
         ..base.clone()
     };
-    assert!(linux.check().is_ok());
-    let macos = UserTest {
-        desktop: Some(DesktopTarget {
-            station: "ws-1".into(),
-            os: "macos".into(),
-        }),
-        ..base.clone()
-    };
-    assert!(macos.check().unwrap_err().contains("linux or windows"));
+    assert!(
+        desktop(None, "linux").check().is_ok(),
+        "the fork names no station"
+    );
+    assert!(desktop(Some("ws-1"), "windows").check().is_ok());
+    assert!(
+        desktop(Some("ws-1"), "macos")
+            .check()
+            .unwrap_err()
+            .contains("linux or windows")
+    );
+    assert!(
+        desktop(Some("ws-1"), "linux")
+            .check()
+            .unwrap_err()
+            .contains("names no station")
+    );
+    assert!(
+        desktop(None, "windows")
+            .check()
+            .unwrap_err()
+            .contains("names its station")
+    );
     let both = UserTest {
         web: Some(WebTarget::default()),
-        ..linux.clone()
+        ..desktop(None, "linux")
     };
     assert!(both.check().unwrap_err().contains("one target"));
 }

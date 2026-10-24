@@ -205,10 +205,15 @@ impl UserTest {
             return Err("a test:user step names one target: stand_in, web, tui or desktop".into());
         }
         if let Some(desk) = &self.desktop {
-            if desk.station.trim().is_empty() {
-                return Err("a desktop target names its station".into());
-            }
             crate::user_test::desktop::kind_of(&desk.os)?;
+            match (desk.os.as_str(), &desk.station) {
+                (crate::user_test::desktop::LINUX, None) => {}
+                (crate::user_test::desktop::LINUX, Some(_)) => {
+                    return Err("a Linux desktop is the lane's fork, and names no station".into());
+                }
+                (_, Some(station)) if !station.trim().is_empty() => {}
+                _ => return Err("a Windows desktop names its station".into()),
+            }
         }
         if let Some(web) = &self.web
             && web.path.contains("://")
@@ -261,7 +266,9 @@ fn rows() -> u16 {
 /// system that desktop runs, `linux` or `windows`. The station must be online and report that OS in its facts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopTarget {
-    pub station: String,
+    /// The station that runs a Windows desktop (its id). A Linux desktop is the lane's fork, and names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub station: Option<String>,
     pub os: String,
 }
 

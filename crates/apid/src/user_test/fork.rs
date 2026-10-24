@@ -51,6 +51,26 @@ pub fn command(label: &str, argv: Vec<String>, timeout_s: u64) -> Command {
     }
 }
 
+/// The port the desktop agent of a Linux desktop target serves on, in the fork: fixed, so the hub knows where to dial.
+pub const AGENT_PORT: u16 = 9330;
+
+/// The desktop agent's command in the fork (`apz-gui-agent`, on the image's PATH): on a session bus of its own, with
+/// AT-SPI started on that bus, serving [`AGENT_PORT`]. Background: it runs until the fork is retired.
+pub fn agent_command() -> Command {
+    let launch = format!(
+        "/usr/libexec/at-spi-bus-launcher --launch-immediately & exec apz-gui-agent --listen {AGENT_PORT}"
+    );
+    let mut agent = command(
+        "the desktop agent",
+        ["dbus-run-session", "--", "sh", "-c", launch.as_str()]
+            .map(str::to_string)
+            .to_vec(),
+        0,
+    );
+    agent.listen = Some(AGENT_PORT);
+    agent
+}
+
 /// The browser's command in the fork: headless, on a fresh profile, serving its DevTools protocol on [`DEVTOOLS_PORT`].
 /// Background: it runs until the fork is retired, and the guest announces the port once it listens.
 pub fn browser_command() -> Command {

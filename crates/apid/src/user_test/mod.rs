@@ -48,8 +48,8 @@ use crate::recipes::{Move, Report};
 use crate::review_graph::user::by;
 use crate::review_graph::{Finding, Verdict};
 use crate::state::App;
-use desktop::{Gui, Hub};
-use fork::{Channel, DEVTOOLS_PORT, browser_command, port_dial};
+use desktop::{FORK_STATION, Forked, Gui, Hub, LINUX};
+use fork::{AGENT_PORT, Channel, DEVTOOLS_PORT, agent_command, browser_command, port_dial};
 use models::{GatewayModels, Models, PlanRequest, Roles};
 use run::{Ctx, Failure, Timed, run_scenario};
 use scenario::{Origin, Scenario, accessibility};
@@ -429,10 +429,11 @@ fn placed_for<'h>(
     project: &str,
     change: &str,
 ) -> Result<Option<Placed<'h>>, String> {
-    if config.stand_in.is_some() || config.desktop.is_some() {
+    let fork_gui = config.desktop.as_ref().is_some_and(|desk| desk.os == LINUX);
+    if config.stand_in.is_some() || (config.desktop.is_some() && !fork_gui) {
         return Ok(None);
     }
-    if config.web.is_none() && config.tui.is_none() {
+    if config.web.is_none() && config.tui.is_none() && !fork_gui {
         return Err("the step names no target (stand_in, web, tui or desktop)".into());
     }
     let rev = project_memory::landed_revision(app, change)?;
@@ -496,6 +497,10 @@ fn placed_for<'h>(
         retire_placed(placed);
         return Err(why);
     }
+    if fork_gui && let Err(why) = start_agent(host, &placed) {
+        retire_placed(placed);
+        return Err(why);
+    }
     Ok(Some(placed))
 }
 
@@ -512,6 +517,18 @@ fn start_browser(host: &Live<'_>, placed: &Placed<'_>) -> Result<(), String> {
     publish_port(host, &placed.node, &placed.run, placed.cid, DEVTOOLS_PORT)
 }
 
+/// Starts the desktop agent in a Linux desktop target's fork and makes its port reachable, as the browser's is.
+fn start_agent(host: &Live<'_>, placed: &Placed<'_>) -> Result<(), String> {
+    let answer = placed.fork.borrow_mut().background(&agent_command())?;
+    if !answer.ok {
+        return Err(format!(
+            "the desktop agent did not start in the fork: {}",
+            answer.output.trim_end()
+        ));
+    }
+    publish_port(host, &placed.node, &placed.run, placed.cid, AGENT_PORT)
+}
+
 /// Retires a placed fork: its VM is stopped.
 fn retire_placed(placed: Placed<'_>) {
     if let Err(why) = placed.fork.into_inner().retire() {
@@ -525,6 +542,7 @@ fn opener<'a, 'h>(
     app: &'a App,
     config: &'a UserTest,
     placed: Option<&'a Placed<'h>>,
+    actor: Option<u64>,
 ) -> Result<Opener<'a>, String> {
     if let Some(stand) = &config.stand_in {
         let stand = stand.clone();
@@ -534,9 +552,38 @@ fn opener<'a, 'h>(
         return Ok(open);
     }
     if let Some(desk) = &config.desktop {
-        let (station, os) = (desk.station.clone(), desk.os.clone());
+        if desk.os == LINUX {
+            let placed = placed.ok_or("the Linux desktop's fork is not placed")?;
+            let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+                let dial = port_dial(
+                    &app.nodes,
+                    &placed.node,
+                    placed.cid,
+                    AGENT_PORT,
+                    LOCAL_INBOUND,
+                );
+                Ok(Box::new(Gui::open(
+                    Box::new(Forked::new(dial)),
+                    FORK_STATION,
+                    LINUX,
+                )?))
+            });
+            return Ok(open);
+        }
+        let station = desk
+            .station
+            .clone()
+            .ok_or("a Windows desktop names its station")?;
+        let cid = actor.ok_or(
+            "the run has no agent on the station: a test step acts as its own session, and none is attached to this run",
+        )?;
+        let os = desk.os.clone();
         let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
-            Ok(Box::new(Gui::open(Box::new(Hub { app }), &station, &os)?))
+            Ok(Box::new(Gui::open(
+                Box::new(Hub { app, cid }),
+                &station,
+                &os,
+            )?))
         });
         return Ok(open);
     }
@@ -577,6 +624,15 @@ enum Ran {
     Done(Execution),
 }
 
+/// The agent a step's station calls act as: the one attached to the run, so the laws and the audit name the session that
+/// runs the step. `None` when no agent is attached; the calls then refuse rather than act as anyone else.
+fn run_session(app: &App, run: &str) -> Option<u64> {
+    app.agents
+        .select(|agent| (agent.run.as_deref() == Some(run)).then_some(agent.cid))
+        .into_iter()
+        .min()
+}
+
 /// Runs the step's scenarios on its target, with the gateway's models and the project's regressions.
 fn run_scenarios(
     app: &App,
@@ -585,8 +641,9 @@ fn run_scenarios(
     change: &str,
     roles: &Roles,
     placed: Option<&Placed<'_>>,
+    actor: Option<u64>,
 ) -> Ran {
-    let mut open = match opener(app, config, placed) {
+    let mut open = match opener(app, config, placed, actor) {
         Ok(open) => open,
         Err(why) => return Ran::NoTarget(why),
     };
@@ -657,7 +714,8 @@ fn run_step(
         Ok(placed) => placed,
         Err(why) => return Ok(no_target(why)),
     };
-    let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref());
+    let actor = run_session(app, run);
+    let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref(), actor);
     if let Some(placed) = placed {
         retire_placed(placed);
     }

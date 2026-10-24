@@ -11,9 +11,12 @@
 //! The Linux target runs on a Linux station, whose daemon starts its own Xvfb. A `gui` fork with an agent inside it is
 //! not built: a fork has no daemon to answer the tools.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::time::Instant;
+use std::io::{ErrorKind, Read};
+use std::time::{Duration, Instant};
 
+use apz_link::inbound::Duplex;
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -22,11 +25,13 @@ use super::target::{Action, Element, Screenshot, Target, Tree};
 use crate::state::App;
 use crate::stations::tools;
 
-/// The owner's MCP client (cid 0): a user test is a run the owner fired, so it acts as the owner does.
-pub const OWNER: u64 = 0;
 /// The operating systems a desktop target can run on: the station's facts name them.
 pub const LINUX: &str = "linux";
 pub const WINDOWS: &str = "windows";
+/// The one station a Linux desktop target names: the lane's test fork, whose agent answers as a station would.
+pub const FORK_STATION: &str = "lane-fork";
+/// How long one request to the fork's agent may take (a screenshot of a large session included).
+const CALL: Duration = Duration::from_secs(60);
 /// The depth of the tree the driver reads (the daemon clamps a depth to 8).
 const DEPTH: u8 = 8;
 /// The most elements one tree carries.
@@ -44,14 +49,123 @@ impl<T: Calls + ?Sized> Calls for &T {
     }
 }
 
-/// The station tools as the owner's client, through the choke point.
+/// The station tools as the run's own session (its agent `cid`), through the choke point: the laws and the audit see
+/// the session that runs the step.
 pub struct Hub<'a> {
     pub app: &'a App,
+    pub cid: u64,
 }
 
 impl Calls for Hub<'_> {
     fn call(&self, tool: &str, input: &Value) -> Result<Value, String> {
-        tools::call(self.app, OWNER, tool, input)
+        tools::call(self.app, self.cid, tool, input)
+    }
+}
+
+/// The agent in a lane's test fork, as the Linux desktop target's one station. It holds one connection to the fork's port
+/// stream (`dial` makes it), and sends a request per line and reads a reply per line (the agent's wire, `apz-gui-agent`).
+/// `station_list` answers from the agent's `hello`: the fork is online and runs the OS the agent reports.
+pub struct Forked<'a> {
+    dial: RefCell<Box<dyn FnMut() -> Result<Box<dyn Duplex>, String> + 'a>>,
+    conn: RefCell<Option<Box<dyn Duplex>>>,
+    pending: RefCell<Vec<u8>>,
+}
+
+impl<'a> Forked<'a> {
+    pub fn new(dial: impl FnMut() -> Result<Box<dyn Duplex>, String> + 'a) -> Forked<'a> {
+        Forked {
+            dial: RefCell::new(Box::new(dial)),
+            conn: RefCell::new(None),
+            pending: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// One request and its reply. A connection that fails is dropped, and the next request dials a new one.
+    fn send(&self, request: &Value) -> Result<Value, String> {
+        let mut slot = self.conn.borrow_mut();
+        if slot.is_none() {
+            *slot = Some((self.dial.borrow_mut())()?);
+        }
+        let Some(conn) = slot.as_mut() else {
+            return Err("the desktop agent has no connection".into());
+        };
+        let outcome = exchange(conn.as_mut(), &mut self.pending.borrow_mut(), request);
+        if outcome.is_err() {
+            *slot = None;
+            self.pending.borrow_mut().clear();
+        }
+        outcome
+    }
+}
+
+impl Calls for Forked<'_> {
+    fn call(&self, tool: &str, input: &Value) -> Result<Value, String> {
+        if tool == "station_list" {
+            let hello = self.send(&json!({"tool": "hello", "input": {}}))?;
+            let os = hello["os"].as_str().unwrap_or_default();
+            return Ok(json!([{
+                "id": FORK_STATION,
+                "online": true,
+                "facts": {"os": os},
+            }]));
+        }
+        self.send(&json!({"tool": tool, "input": input}))
+    }
+}
+
+/// Writes `request` and reads its reply from `conn`.
+fn exchange(
+    conn: &mut dyn Duplex,
+    pending: &mut Vec<u8>,
+    request: &Value,
+) -> Result<Value, String> {
+    let mut line = request.to_string();
+    line.push('\n');
+    conn.write_all(line.as_bytes())
+        .and_then(|()| conn.flush())
+        .map_err(|why| format!("the desktop agent: {why}"))?;
+    let reply = read_line(conn, pending, Instant::now() + CALL)?;
+    let reply: Value =
+        serde_json::from_str(&reply).map_err(|why| format!("the desktop agent's reply: {why}"))?;
+    if reply["ok"] == true {
+        Ok(reply["value"].clone())
+    } else {
+        Err(reply["error"]
+            .as_str()
+            .unwrap_or("the desktop agent refused the call")
+            .to_string())
+    }
+}
+
+/// The next line of the connection, read through the poll interval of a port stream until `deadline`. Bytes past the
+/// line stay in `pending` for the next reply.
+fn read_line(
+    conn: &mut dyn Read,
+    pending: &mut Vec<u8>,
+    deadline: Instant,
+) -> Result<String, String> {
+    loop {
+        if let Some(end) = pending.iter().position(|b| *b == b'\n') {
+            let rest = pending.split_off(end + 1);
+            let mut line = std::mem::replace(pending, rest);
+            line.truncate(end);
+            return String::from_utf8(line)
+                .map_err(|why| format!("the desktop agent's reply: {why}"));
+        }
+        if Instant::now() >= deadline {
+            return Err("the desktop agent did not answer in time".into());
+        }
+        let mut chunk = vec![0u8; 64 * 1024];
+        match conn.read(&mut chunk) {
+            Ok(0) => return Err("the desktop agent closed the connection".into()),
+            Ok(n) => pending.extend_from_slice(&chunk[..n]),
+            Err(why)
+                if matches!(
+                    why.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) => {}
+            Err(why) => return Err(format!("the desktop agent: {why}")),
+        }
     }
 }
 
