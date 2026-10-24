@@ -45,8 +45,8 @@ impl<'a> NodeAdb<'a> {
         ))
     }
 
-    /// The node adb over `calls` (a script in a test).
-    #[cfg(test)]
+    /// The node adb over `calls` (a script in a test; those tests are Unix only).
+    #[cfg(all(test, unix))]
     pub fn over(calls: Box<dyn Calls + 'a>, station: &str) -> Self {
         Self(StationRunner::over_program(calls, station, adb::ADB))
     }

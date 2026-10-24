@@ -12,9 +12,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::{
-    APPLY, Client, MERGE, Ports, Progress, STRATEGIC, Settings, Tools, manifests, private_name,
-    progress, roll, share,
+    APPLY, Client, MERGE, Ports, Progress, STRATEGIC, Settings, Tools, manifests, progress, roll,
+    share,
 };
+// The Helm and kubectl tests run fake tools written as shell scripts: their helpers are Unix only.
+#[cfg(unix)]
+use super::private_name;
 use crate::deploy::health::{self, Health};
 use crate::deploy::tests::Gauge;
 use crate::deploy::{Artifacts, Checks, Incidents, Rolled};
@@ -22,6 +25,7 @@ use crate::environments::Environment;
 use crate::platforms::http::{Http, Ureq};
 use crate::recipes::runs::Runs;
 use crate::releases::entity::{Release, ReleaseState, ReleaseSync};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 /// The digest the release's OCI registry row pins its pushed image by (a sha256 of the image's manifest).
@@ -760,6 +764,7 @@ cat "$DIR/rendered.yaml"
 }
 
 /// A Helm chart's settings: the chart is named, the timeout is short, and the release's image is the override's.
+#[cfg(unix)]
 fn helm_settings() -> Settings {
     let env = environment(&[
         ("KUBERNETES_DEPLOYMENT", "web"),
