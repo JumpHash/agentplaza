@@ -2722,6 +2722,18 @@ CREATE TABLE "release_sync" (
     PRIMARY KEY ("release_id", "sync_pos"),
     FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "release_store_step" (
+    "release_id" TEXT NOT NULL,
+    "store_steps_pos" INTEGER NOT NULL CHECK ("store_steps_pos" >= 0),
+    "track" TEXT NOT NULL,
+    "step" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "reference" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("release_id", "store_steps_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 
 -- component budgets
 CREATE TABLE "budget" (
