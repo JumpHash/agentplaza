@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use super::entity::{Release, ReleaseState, ReleaseSync};
 use super::flow::Ledger;
+use super::registries;
 use super::signing::sha256_hex;
 use crate::platforms::forge::{Forge, Repo, Spec, Verdict};
 use crate::platforms::http::Http;
@@ -342,10 +343,11 @@ pub fn tick(app: &crate::state::App) {
                 continue;
             }
             let last = rel.sync.iter().map(|s| s.at_ms).max().unwrap_or(0);
-            let failed = rel
-                .sync
-                .iter()
-                .any(|s| s.state.starts_with("failed") && s.at_ms + 300_000 < now);
+            let failed = rel.sync.iter().any(|s| {
+                !registries::is_registry(&s.platform)
+                    && s.state.starts_with("failed")
+                    && s.at_ms + 300_000 < now
+            });
             if (rel.updated_ms > last || failed)
                 && let Err(e) = sync_release(app, &rel.id)
             {

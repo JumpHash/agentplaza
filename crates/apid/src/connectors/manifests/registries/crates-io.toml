@@ -1,0 +1,11 @@
+id = "crates-io"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["crates.io"]
+secrets = ["CRATES_IO_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "${SECRET}"

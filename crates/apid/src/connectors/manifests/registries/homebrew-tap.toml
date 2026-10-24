@@ -1,0 +1,11 @@
+id = "homebrew-tap"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["api.github.com"]
+secrets = ["HOMEBREW_TAP_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

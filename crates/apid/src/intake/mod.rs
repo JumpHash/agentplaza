@@ -817,6 +817,7 @@ impl Api<'_> {
             secret: self.secret.as_ref(),
             outbound: self.outbound,
             loopback_http: true,
+            body_cap: glue::BODY_CAP,
         };
         let reply = mediator.send(method, url, &headers, &text)?;
         let value: Value = if reply.body.trim().is_empty() {

@@ -20,6 +20,7 @@ use super::entity::{
     ReleaseVerdict, Store,
 };
 use super::lanes;
+use super::registries;
 use super::sbom;
 use super::signing::{self, Signing};
 use super::versions::{self, Bump, Note};
@@ -611,6 +612,32 @@ pub fn qualify(d: &Deps, id: &str) -> Result<Release, String> {
 pub fn publish(d: &Deps, id: &str) -> Result<Release, String> {
     verify(d, id)?;
     move_with(d, id, "release.publish", json!({}))
+}
+
+/// Publishes a release and runs its publish step (9.5): the release is published in Weft (`publish`), then each of its
+/// artifacts goes to its ecosystem's package registry (`registries::publish_release`). A published release that has a
+/// registry artifact still to send (its secret was not in the vault, or its send failed) is published again to send the
+/// rest: the Weft statement is not repeated. The registry rows are the release's sync rows.
+pub fn publish_all(d: &Deps, id: &str, step: &registries::Step) -> Result<Release, String> {
+    if !matches!(
+        get(d, id)?.state,
+        ReleaseState::Published | ReleaseState::Promoted
+    ) {
+        publish(d, id)?;
+    }
+    let rel = get(d, id)?;
+    let rows = registries::publish_release(step, &rel, &|digest: &str| {
+        let hash = digest.parse::<Hash>().map_err(|e| e.to_string())?;
+        d.weft.blob(&hash)
+    });
+    let stamp = now();
+    d.releases
+        .update(id, |r| {
+            r.sync.retain(|s| !registries::is_registry(&s.platform));
+            r.sync.extend(rows.clone());
+            r.updated_ms = stamp;
+        })
+        .ok_or_else(|| "no such release".to_string())
 }
 
 /// Checks every artifact of the release against its bytes in Weft and the signing keys: the signature, the provenance

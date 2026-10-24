@@ -19556,7 +19556,7 @@
         "tags": [
           "releases"
         ],
-        "summary": "Publish a release whose checks passed or that was qualified",
+        "summary": "Publish a release whose checks passed or that was qualified, then publish its artifacts to their package registries",
         "parameters": [
           {
             "name": "id",

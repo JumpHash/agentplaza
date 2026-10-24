@@ -28,8 +28,21 @@ const BUILTIN: [&str; 13] = [
     include_str!("manifests/magnific.toml"),
 ];
 
+/// The package registries' publish connectors (9.5), one manifest each. They are not catalog connectors: the release's
+/// publish step reads them (`releases::registries`), and the owner's approval of a registry is its vault secret.
+const REGISTRIES: [&str; 8] = [
+    include_str!("manifests/registries/crates-io.toml"),
+    include_str!("manifests/registries/npm.toml"),
+    include_str!("manifests/registries/pypi.toml"),
+    include_str!("manifests/registries/maven-central.toml"),
+    include_str!("manifests/registries/nuget.toml"),
+    include_str!("manifests/registries/oci-registry.toml"),
+    include_str!("manifests/registries/go-proxy.toml"),
+    include_str!("manifests/registries/homebrew-tap.toml"),
+];
+
 /// The kinds a manifest may name: what the connector does for the plaza.
-const KINDS: [&str; 3] = ["tool", "intake", "notify"];
+const KINDS: [&str; 4] = ["tool", "intake", "notify", "publish"];
 /// The scopes a manifest may name: the risk classes of connector actions.
 const SCOPES: [&str; 3] = ["read", "write", "irreversible"];
 
@@ -63,6 +76,18 @@ pub struct Manifest {
     pub checks: Vec<String>,
     #[serde(skip_deserializing)]
     pub created_ms: u64,
+}
+
+/// The package registries' manifests, approved as shipped (9.5). Each file parses and passes [`check`] (a test holds that).
+pub fn registries() -> Vec<Manifest> {
+    REGISTRIES
+        .iter()
+        .map(|text| {
+            let mut m = parse(text).expect("a shipped registry manifest parses");
+            m.state = "approved".into();
+            m
+        })
+        .collect()
 }
 
 /// Parses a manifest's TOML. The state is the hub's to set, so it comes out empty.
@@ -418,5 +443,46 @@ mod tests {
         assert_eq!(m.state, "", "the state is the hub's to set");
         assert!(check(&m).is_empty());
         assert!(parse("id = ").is_err());
+    }
+
+    #[test]
+    fn every_registry_connector_has_a_publish_manifest_that_passes_the_checks() {
+        let expected = [
+            ("crates-io", "crates.io", Some("CRATES_IO_TOKEN")),
+            ("npm", "registry.npmjs.org", Some("NPM_TOKEN")),
+            ("pypi", "upload.pypi.org", Some("PYPI_TOKEN")),
+            (
+                "maven-central",
+                "central.sonatype.com",
+                Some("MAVEN_CREDENTIALS"),
+            ),
+            ("nuget", "www.nuget.org", Some("NUGET_API_KEY")),
+            ("oci-registry", "ghcr.io", Some("OCI_TOKEN")),
+            ("go-proxy", "proxy.golang.org", None),
+            ("homebrew-tap", "api.github.com", Some("HOMEBREW_TAP_TOKEN")),
+        ];
+        let manifests = registries();
+        assert_eq!(manifests.len(), expected.len());
+        for (id, host, secret) in expected {
+            let m = manifests
+                .iter()
+                .find(|m| m.id == id)
+                .unwrap_or_else(|| panic!("{id} has no manifest"));
+            assert_eq!(m.state, "approved");
+            assert!(check(m).is_empty(), "{id}: {:?}", check(m));
+            assert_eq!(m.kind, ["publish"], "{id}");
+            assert_eq!(m.egress, [host], "{id} reaches one host");
+            assert!(m.actions.is_empty(), "{id}: publishing is not an action");
+            assert_eq!(
+                m.secrets,
+                secret.map(str::to_string).into_iter().collect::<Vec<_>>(),
+                "{id}"
+            );
+            assert!(!widens(m, m), "{id}");
+        }
+        // A registry's manifest that names a second host is a widening the owner must approve.
+        let mut wider = manifests[0].clone();
+        wider.egress.push("index.crates.io".into());
+        assert!(widens(&manifests[0], &wider));
     }
 }

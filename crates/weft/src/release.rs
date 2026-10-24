@@ -153,6 +153,22 @@ pub fn targets(store: &Store, rev: &str) -> Result<Vec<Target>, String> {
                     });
                 }
             }
+            csproj if csproj.ends_with(".csproj") => {
+                // A .NET project that names its package id is a NuGet package (9.5); one that does not is not published.
+                let id = read(path).and_then(|t| {
+                    t.split_once("<PackageId>")
+                        .and_then(|(_, rest)| rest.split_once("</PackageId>"))
+                        .map(|(id, _)| id.trim().to_string())
+                });
+                let Some(id) = id.filter(|id| !id.is_empty()) else {
+                    continue;
+                };
+                out.push(Target {
+                    name: format!("nuget:{id}"),
+                    file: path.clone(),
+                    platforms: vec!["any".into()],
+                });
+            }
             "pyproject.toml" => {
                 let name = read(path)
                     .and_then(|t| t.parse::<toml::Table>().ok())

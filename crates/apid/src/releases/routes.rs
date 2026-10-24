@@ -31,7 +31,9 @@ use super::channels;
 use super::entity::Release;
 use super::flow::{self, Builder, Cut, Deps};
 use super::lanes::{self, Agents, Chain};
+use super::registries;
 use super::signing::{Notary, Signing, StandInNotary};
+use crate::glue::HttpsOutbound;
 use crate::state::App;
 
 pub(crate) fn deps(app: &App) -> Deps<'_> {
@@ -266,10 +268,19 @@ pub fn routes(router: Router<App>) -> Router<App> {
         })
         .doc(RouteDoc::new("Send a candidate to qualification").errors(&[404, 409]))
         .post("/v1/releases/{id}/publish", |app, _, p: &Params<'_>| {
-            answer(flow::publish(&deps(app), p.get("id")))
+            let outbound = HttpsOutbound;
+            let public = app.config.public_url.trim_end_matches('/');
+            let link_base = (!public.is_empty()).then(|| format!("{public}/v1/weft/artifacts"));
+            let step = registries::Step {
+                outbound: &outbound,
+                vault: &*app.vault,
+                link_base: link_base.as_deref(),
+                at_ms: apz_plaza::now_ms(),
+            };
+            answer(flow::publish_all(&deps(app), p.get("id"), &step))
         })
         .doc(
-            RouteDoc::new("Publish a release whose checks passed or that was qualified")
+            RouteDoc::new("Publish a release whose checks passed or that was qualified, then publish its artifacts to their package registries")
                 .errors(&[404, 409]),
         )
         .post(
