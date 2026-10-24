@@ -199,6 +199,8 @@ mod tests {
     /// A bashism: `${1,,}` is bash's. sh and dash refuse it.
     const BASHISM: &str =
         "tool() {\n  if [ \"${1,,}\" = \"--version\" ]; then echo \"tool 1.2.0\"; fi\n}\n";
+    /// The pool this machine is, under the name the tests give it.
+    const LOCAL: &str = "this-machine";
 
     fn release_of(change: &str) -> Release {
         Release {
@@ -249,8 +251,18 @@ mod tests {
             .collect()
     }
 
-    fn mac() -> Pool {
-        compat::local_pool("this-mac")
+    /// This machine's pool, under the name the tests give it.
+    fn local() -> Pool {
+        compat::local_pool(LOCAL)
+    }
+
+    /// The other system than this machine's: its cells have no pool here.
+    fn other_system() -> &'static str {
+        compat::SYSTEMS
+            .iter()
+            .copied()
+            .find(|name| *name != compat::local_system())
+            .expect("the matrix names more than one system")
     }
 
     fn has(pool: &Pool, shell: &str) -> bool {
@@ -263,24 +275,39 @@ mod tests {
         let reviews = reviews_in(&dir);
         reviews.put_run(review_of("c1"));
         let matrix = compat::parse(CLI).unwrap();
-        let pools = [mac()];
+        let pools = [local()];
         let outcomes = run_cli(dir.path(), &matrix, &pools, GOOD);
         let cells = assess(&reviews, &release_of("c1"), &matrix, &pools, &outcomes, &[]);
+        let system = compat::local_system();
         for shell in ["bash", "zsh", "sh", "dash"] {
             if has(&pools[0], shell) {
                 let cell = cells
                     .iter()
-                    .find(|c| c.cell == format!("cli:{shell}:macos"))
+                    .find(|c| c.cell == format!("cli:{shell}:{system}"))
                     .unwrap();
                 assert_eq!(cell.state, "passed", "{shell}: {}", cell.evidence);
-                assert_eq!(cell.pool, "this-mac");
+                assert_eq!(cell.pool, LOCAL);
             }
         }
-        let fish = cells.iter().find(|c| c.cell == "cli:fish:macos").unwrap();
-        assert_eq!(fish.state, "not_run");
-        assert_eq!(fish.reason, "no pool has shell:fish");
-        let linux = cells.iter().find(|c| c.cell == "cli:bash:linux").unwrap();
-        assert_eq!(linux.reason, "no pool has os:linux");
+        if !has(&pools[0], "fish") {
+            let fish = cells
+                .iter()
+                .find(|c| c.cell == format!("cli:fish:{system}"))
+                .unwrap();
+            assert_eq!(fish.state, "not_run");
+            assert_eq!(fish.reason, "no pool has shell:fish");
+        }
+        let other = other_system();
+        let elsewhere = cells
+            .iter()
+            .find(|c| c.cell == format!("cli:bash:{other}"))
+            .unwrap();
+        assert_eq!(elsewhere.state, "not_run");
+        assert!(
+            elsewhere.reason.contains(&format!("os:{other}")),
+            "{}",
+            elsewhere.reason
+        );
         assert!(cells.iter().all(|c| c.state != "failed"), "{cells:?}");
         if has(&pools[0], "bash") {
             assert_eq!(verdict(&cells), "passed");
@@ -298,17 +325,18 @@ mod tests {
         let reviews = reviews_in(&dir);
         reviews.put_run(review_of("c1"));
         let matrix = compat::parse(CLI).unwrap();
-        let pools = [mac()];
+        let pools = [local()];
         let outcomes = run_cli(dir.path(), &matrix, &pools, BASHISM);
         let release = release_of("c1");
         let cells = assess(&reviews, &release, &matrix, &pools, &outcomes, &[]);
+        let system = compat::local_system();
         for shell in ["sh", "dash"] {
             if !has(&pools[0], shell) {
                 continue;
             }
             let cell = cells
                 .iter()
-                .find(|c| c.cell == format!("cli:{shell}:macos"))
+                .find(|c| c.cell == format!("cli:{shell}:{system}"))
                 .unwrap();
             assert_eq!(cell.state, "failed", "{shell}: {}", cell.evidence);
             let (review, id) = cell.finding.split_once('/').expect("the failure is filed");
@@ -328,7 +356,10 @@ mod tests {
             );
         }
         if has(&pools[0], "bash") {
-            let bash = cells.iter().find(|c| c.cell == "cli:bash:macos").unwrap();
+            let bash = cells
+                .iter()
+                .find(|c| c.cell == format!("cli:bash:{system}"))
+                .unwrap();
             assert_eq!(
                 bash.state, "passed",
                 "bash runs the bashism: {}",
@@ -347,11 +378,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reviews = reviews_in(&dir);
         reviews.put_run(review_of("c1"));
-        let matrix = compat::parse(
-            "[library]\n[web]\nbrowsers = [\"chromium\"]\n[desktop]\nplatforms = [\"macos\"]\n[mobile]\nplatforms = [\"ios\"]\n",
-        )
+        let system = compat::local_system();
+        let matrix = compat::parse(&format!(
+            "[library]\n[web]\nbrowsers = [\"chromium\"]\n[desktop]\nplatforms = [\"{system}\"]\n[mobile]\nplatforms = [\"ios\"]\n",
+        ))
         .unwrap();
-        let pools = [mac()];
+        let pools = [local()];
         // No runner reports anything: each cell is placed or not, and none passes.
         let cells = assess(&reviews, &release_of("c1"), &matrix, &pools, &[], &[]);
         let api = cells
@@ -363,9 +395,9 @@ mod tests {
         assert_eq!(chromium.reason, "no pool has browser:chromium");
         let install = cells
             .iter()
-            .find(|c| c.cell == "desktop:macos:install")
+            .find(|c| c.cell == format!("desktop:{}:install", compat::local_system()))
             .unwrap();
-        assert_eq!(install.pool, "this-mac");
+        assert_eq!(install.pool, LOCAL);
         assert!(
             install.reason.starts_with("no runner for desktop cells"),
             "{}",
@@ -384,7 +416,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reviews = reviews_in(&dir);
         let matrix = compat::parse(CLI).unwrap();
-        let pools = [mac()];
+        let pools = [local()];
         let outcomes = run_cli(dir.path(), &matrix, &pools, BASHISM);
         let mut release = release_of("c1");
         release.changes.clear();

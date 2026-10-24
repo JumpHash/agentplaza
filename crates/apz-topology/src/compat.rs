@@ -448,11 +448,16 @@ pub fn run_api(cell: &Cell, dir: &Path, baseline: &str) -> Outcome {
     }
 }
 
+/// The system this machine is, as the matrix names it (`macos`, `linux`, `windows`): the `os:` capability it has.
+pub fn local_system() -> &'static str {
+    std::env::consts::OS
+}
+
 /// The pool this machine is, as far as its shells, OS and tools go (the tests' pool, and a probe a node can report).
 /// It looks only: PATH and the OS, nothing is run.
 pub fn local_pool(name: &str) -> Pool {
     let mut capabilities = BTreeSet::new();
-    capabilities.insert(format!("os:{}", std::env::consts::OS));
+    capabilities.insert(format!("os:{}", local_system()));
     for shell in SHELLS {
         if on_path(shell) {
             capabilities.insert(format!("shell:{shell}"));

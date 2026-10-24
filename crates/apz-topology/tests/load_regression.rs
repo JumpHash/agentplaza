@@ -6,6 +6,13 @@ use apz_topology::compare::{self, Limit, Metric};
 use apz_topology::load::{self, Summary, Tool};
 use apz_topology::slowserve::SlowServer;
 
+/// The latency the server answers with before the seeded slowdown. A percentile of a loaded runner carries tens of
+/// milliseconds of scheduling noise: against a 100 ms answer a 20 % slowdown (20 ms) hides in it at p95, so the answer is
+/// a second, and the slowdown (20 % of it) stands well clear of that noise.
+const LATENCY_MS: u64 = 1_000;
+/// The profile's length: 20 requests a second for five seconds, so the percentiles are over a hundred samples.
+const PROFILE_MS: u64 = 5_000;
+
 /// The metrics of a summary, as the comparison reads them.
 fn metrics_of(summary: &Summary) -> Vec<Metric> {
     load::metric_points(summary)
@@ -19,7 +26,7 @@ fn metrics_of(summary: &Summary) -> Vec<Metric> {
 
 /// A short steady profile against `server`, its summary.
 fn short_run(server: &SlowServer, scratch: &std::path::Path) -> Summary {
-    let profile = load::parse("steady-20rps", Some(3_000)).unwrap();
+    let profile = load::parse("steady-20rps", Some(PROFILE_MS)).unwrap();
     load::run_with(&Tool::Builtin, &server.url(), &profile, scratch)
         .expect("the built-in generator runs")
 }
@@ -27,7 +34,7 @@ fn short_run(server: &SlowServer, scratch: &std::path::Path) -> Summary {
 #[test]
 fn a_seeded_twenty_percent_slowdown_fails_against_the_previous_release() {
     let scratch = tempfile::tempdir().unwrap();
-    let server = SlowServer::start(100).unwrap();
+    let server = SlowServer::start(LATENCY_MS).unwrap();
 
     // The previous release, measured at its own latency.
     let baseline = short_run(&server, scratch.path());
@@ -35,12 +42,12 @@ fn a_seeded_twenty_percent_slowdown_fails_against_the_previous_release() {
     assert!(baseline.requests >= 50, "{baseline:?}");
     assert_eq!(baseline.errors, 0, "{baseline:?}");
     assert!(
-        baseline.p50_ms >= 100.0,
+        baseline.p50_ms >= LATENCY_MS as f64,
         "the stand-in answers after its delay: {baseline:?}"
     );
 
     // The candidate, seeded 20 % slower.
-    server.set_delay(120);
+    server.set_delay(LATENCY_MS * 6 / 5);
     let candidate = short_run(&server, scratch.path());
     let comparisons = compare::compare(&metrics_of(&baseline), &metrics_of(&candidate), &[]);
     let failed: Vec<&str> = compare::failures(&comparisons)
@@ -59,7 +66,7 @@ fn a_seeded_twenty_percent_slowdown_fails_against_the_previous_release() {
 #[test]
 fn an_unchanged_latency_passes_against_the_previous_release() {
     let scratch = tempfile::tempdir().unwrap();
-    let server = SlowServer::start(100).unwrap();
+    let server = SlowServer::start(LATENCY_MS).unwrap();
     let baseline = short_run(&server, scratch.path());
     let candidate = short_run(&server, scratch.path());
     let comparisons = compare::compare(&metrics_of(&baseline), &metrics_of(&candidate), &[]);
@@ -76,9 +83,9 @@ fn an_unchanged_latency_passes_against_the_previous_release() {
 #[test]
 fn a_project_limit_can_let_the_slowdown_through() {
     let scratch = tempfile::tempdir().unwrap();
-    let server = SlowServer::start(100).unwrap();
+    let server = SlowServer::start(LATENCY_MS).unwrap();
     let baseline = short_run(&server, scratch.path());
-    server.set_delay(120);
+    server.set_delay(LATENCY_MS * 6 / 5);
     let candidate = short_run(&server, scratch.path());
     let generous = [Limit {
         metric: "load.latency.*".into(),

@@ -418,6 +418,16 @@ fn a_ci_project_lands_a_lane_only_once_github_merges_its_pull_request_after_its_
     eventually(&hub, "the merged lane did not land", || {
         state_of(&hub, &change) == "landed"
     });
+    // The landing is recorded before GitHub's merge commit is recorded as the connection's head (a call after the
+    // landing): the head is waited for, not read as soon as the lane reads landed.
+    eventually(
+        &hub,
+        "GitHub's merge commit was not recorded as the head",
+        || {
+            let (_, repo) = hub.call("GET", &format!("/v1/weft/repos/{weft_repo}"), None);
+            repo["connections"][0]["head"] == merged.as_str()
+        },
+    );
     let (_, repo) = hub.call("GET", &format!("/v1/weft/repos/{weft_repo}"), None);
     assert_eq!(repo["connections"][0]["head"], merged.as_str(), "{repo}");
     assert_eq!(

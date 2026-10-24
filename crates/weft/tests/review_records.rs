@@ -18,10 +18,16 @@ use weft::landing::{Lander, Options, Step};
 use weft::record::{Actor, Statement};
 use weft::store::Store;
 
+/// Runs git in `dir`. The commits it makes carry this test's own identity: a machine's git identity (a developer's
+/// global config) is not something the test may assume, and CI has none.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "Plaza test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Plaza test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
         .output()
         .expect("git runs");
     assert!(

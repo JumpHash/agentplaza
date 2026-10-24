@@ -637,8 +637,10 @@ pub fn declared_op(
             stmt.execute(rusqlite::params_from_iter(bound.iter().take(n)))?;
             Ok(())
         });
-        match result {
-            Ok(()) => conn.execute_batch("COMMIT"),
+        // A commit that fails leaves its transaction open, holding the write lock for every writer after it: the
+        // operation is rolled back instead, so a failure is one failed operation and no more.
+        match result.and_then(|()| conn.execute_batch("COMMIT")) {
+            Ok(()) => Ok(()),
             Err(why) => {
                 let _ = conn.execute_batch("ROLLBACK");
                 Err(why)
@@ -647,8 +649,31 @@ pub fn declared_op(
     }
 }
 
-/// Runs `writers` threads, each performing `ops` calls of `op` on its own connection to `db` (with a busy timeout), and
-/// returns how many calls failed. The operation decides what is correct: [`declared_op`] for the project's statements.
+/// How long a writer waits for the write lock before its operation fails: ten seconds on a developer's machine, scaled
+/// by the time budgets' slack (`APZ_PERF_SLACK`, else 4 under CI, as the other budgets read it). On a shared runner every
+/// writer's commit is an fsync queued behind the others', and a writer that gives up after a fixed ten seconds fails for
+/// the runner, not for the project's invariants.
+pub fn busy_timeout() -> Duration {
+    Duration::from_secs(10).mul_f64(slack())
+}
+
+fn slack() -> f64 {
+    match std::env::var("APZ_PERF_SLACK")
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
+    {
+        Some(text) => match text.parse::<f64>() {
+            Ok(slack) if slack.is_finite() && slack > 0.0 => slack,
+            _ => 1.0,
+        },
+        None if std::env::var_os("CI").is_some() => 4.0,
+        None => 1.0,
+    }
+}
+
+/// Runs `writers` threads, each performing `ops` calls of `op` on its own connection to `db` (with the [`busy_timeout`]),
+/// and returns how many calls failed. The operation decides what is correct: [`declared_op`] for the project's statements.
 pub fn drive(
     db: &Path,
     writers: u32,
@@ -662,7 +687,7 @@ pub fn drive(
                     let Ok(conn) = Connection::open(db) else {
                         return u64::from(ops);
                     };
-                    let _ = conn.busy_timeout(Duration::from_secs(10));
+                    let _ = conn.busy_timeout(busy_timeout());
                     (0..ops)
                         .filter(|&seq| op(&conn, writer, seq).is_err())
                         .count() as u64
