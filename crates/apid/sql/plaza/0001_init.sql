@@ -180,6 +180,14 @@ CREATE TABLE "project_setting_intake" (
     PRIMARY KEY ("project_setting_project", "intake_pos"),
     FOREIGN KEY ("project_setting_project") REFERENCES "project_setting" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "project_setting_performance_limits" (
+    "project_setting_project" TEXT NOT NULL,
+    "performance_limits_pos" INTEGER NOT NULL CHECK ("performance_limits_pos" >= 0),
+    "metric" TEXT NOT NULL,
+    "max_tenths" INTEGER NOT NULL CHECK ("max_tenths" >= 0),
+    PRIMARY KEY ("project_setting_project", "performance_limits_pos"),
+    FOREIGN KEY ("project_setting_project") REFERENCES "project_setting" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 
 -- component maintenance
 CREATE TABLE "maintenance_book" (
@@ -1641,6 +1649,7 @@ CREATE TABLE "test_lab_run" (
     "outcome" TEXT,
     "change" TEXT NOT NULL,
     "topology" TEXT NOT NULL,
+    "release" TEXT NOT NULL,
     "token_sha" TEXT NOT NULL,
     "observed" INTEGER NOT NULL CHECK ("observed" >= 0),
     "dropped" INTEGER NOT NULL CHECK ("dropped" >= 0),
@@ -2896,6 +2905,14 @@ CREATE TABLE "chat_draft_settings_intake" (
     "started" TEXT NOT NULL,
     "done" TEXT NOT NULL,
     PRIMARY KEY ("chat_id", "intake_pos"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft_settings" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_settings_performance_limits" (
+    "chat_id" TEXT NOT NULL,
+    "performance_limits_pos" INTEGER NOT NULL CHECK ("performance_limits_pos" >= 0),
+    "metric" TEXT NOT NULL,
+    "max_tenths" INTEGER NOT NULL CHECK ("max_tenths" >= 0),
+    PRIMARY KEY ("chat_id", "performance_limits_pos"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft_settings" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "chat_works" (
