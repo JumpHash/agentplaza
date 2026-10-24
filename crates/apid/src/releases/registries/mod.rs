@@ -15,7 +15,7 @@
 //! tests fake each registry's publish endpoints (`tests.rs`).
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 pub mod wire;
 
 use std::collections::BTreeMap;

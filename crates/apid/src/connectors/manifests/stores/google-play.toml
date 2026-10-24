@@ -1,0 +1,11 @@
+id = "google-play"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["oauth2.googleapis.com", "androidpublisher.googleapis.com"]
+secrets = ["GOOGLE_PLAY_SERVICE_ACCOUNT", "GOOGLE_PLAY_PACKAGE_NAME"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

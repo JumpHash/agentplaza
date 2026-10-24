@@ -9,7 +9,7 @@
 //! | `POST /v1/releases/{id}/candidate` | builds every target and cuts the candidate (a draft) |
 //! | `POST /v1/releases/{id}/checks` | the hub's check result for the release's commit (`passed`, `reason`) |
 //! | `POST /v1/releases/{id}/qualify`, `/publish` | the next move of the life |
-//! | `POST /v1/releases/{id}/promote` | `{environment}`: promotes a published release |
+//! | `POST /v1/releases/{id}/promote` | `{environment}`: promotes a published release; a store track (`play/production`, `app-store`, …) submits its build first (9.6) |
 //! | `POST /v1/releases/{id}/yank` | `{reason}`: withdraws a published release |
 //! | `GET /v1/releases/{id}/report` | the release, its run and its life as Weft holds it |
 //! | `GET /v1/releases/{id}/artifacts/{target}` | one target's artifact, with Weft's record of it |
@@ -33,6 +33,7 @@ use super::flow::{self, Builder, Cut, Deps};
 use super::lanes::{self, Agents, Chain};
 use super::registries;
 use super::signing::{Notary, Signing, StandInNotary};
+use super::stores;
 use crate::glue::HttpsOutbound;
 use crate::state::App;
 
@@ -302,12 +303,35 @@ pub fn routes(router: Router<App>) -> Router<App> {
                         "a promotion names its environment or store track",
                     );
                 };
+                // A store track submits the release's build there first (9.6); a deploy environment is only recorded.
+                if let Some(track) = stores::Track::of(environment) {
+                    let options = match stores::Options::of(&v, track) {
+                        Ok(options) => options,
+                        Err(e) => return Response::error(400, &e),
+                    };
+                    let outbound = HttpsOutbound;
+                    let step = stores::Step {
+                        outbound: &outbound,
+                        vault: &*app.vault,
+                        at_ms: apz_plaza::now_ms(),
+                        pace: stores::Pace::PRODUCTION,
+                    };
+                    return answer(stores::promote(
+                        &deps(app),
+                        p.get("id"),
+                        track,
+                        &options,
+                        &step,
+                    ));
+                }
                 answer(flow::promote(&deps(app), p.get("id"), environment))
             },
         )
         .doc(
-            RouteDoc::new("Promote a published release to an environment or store track")
-                .errors(&[400, 404, 409]),
+            RouteDoc::new(
+                "Promote a published release to an environment, or to a store track (testflight/internal, testflight/external, app-store, play/internal, play/closed, play/open, play/production): a store track submits the build there, each step recorded on the release, and a retry resumes from a failed step. Body: `phased` (App Store, default true), `rollout` (a fraction above 0 and below 1 for play/production)",
+            )
+            .errors(&[400, 404, 409]),
         )
         .post(
             "/v1/releases/{id}/yank",

@@ -80,6 +80,10 @@ pub struct Release {
     /// Its tag and release on each git platform and registry (22.4; empty until 9.4).
     #[table(child = "release_sync")]
     pub sync: Vec<ReleaseSync>,
+    /// The steps of its store submissions, per store track, as each finished (9.6; `stores`).
+    #[serde(default)]
+    #[table(child = "release_store_step")]
+    pub store_steps: Vec<ReleaseStoreStep>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -159,6 +163,21 @@ pub struct ReleaseSync {
     pub state: String,
     #[serde(default)]
     pub url: Option<String>,
+    pub at_ms: u64,
+}
+
+/// One step of a store submission (9.6): `done` (with the reference the step produced, such as the build's or the edit's
+/// id) or `failed` (with the reason). A done step is not sent again; a retry resumes from the failed one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct ReleaseStoreStep {
+    /// The track's name (`testflight/internal`, `play/production`, …).
+    pub track: String,
+    pub step: String,
+    pub state: String,
+    #[serde(default)]
+    pub reference: String,
+    #[serde(default)]
+    pub reason: String,
     pub at_ms: u64,
 }
 

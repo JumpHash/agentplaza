@@ -13,6 +13,7 @@
 //! - `sbom.rs`, `attest.rs`, `signing.rs`: each artifact's CycloneDX SBOM, its in-toto provenance in a DSSE envelope,
 //!   and its platform signatures (9.3); publish verifies them all first.
 //! - `registries/`: each artifact published to its ecosystem's package registry after the release is published (9.5).
+//! - `stores/`: a release promoted to a store track submits its build there: TestFlight, the App Store, Google Play (9.6).
 
 pub mod attest;
 pub mod builder;
@@ -26,6 +27,7 @@ pub mod sbom;
 #[cfg(test)]
 mod sign_tests;
 pub mod signing;
+pub mod stores;
 pub mod sync;
 #[cfg(test)]
 mod sync_tests;

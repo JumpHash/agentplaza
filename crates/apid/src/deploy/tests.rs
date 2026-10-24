@@ -238,6 +238,7 @@ fn release(version: &str, state: ReleaseState) -> Release {
         verdicts: Vec::new(),
         promotions: Vec::new(),
         sync: Vec::new(),
+        store_steps: Vec::new(),
         created_ms: 0,
         updated_ms: 0,
     }
