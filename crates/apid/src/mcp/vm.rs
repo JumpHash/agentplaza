@@ -326,13 +326,16 @@ impl Guest<'_> {
     }
 }
 
-/// `base` with `rest` appended (as a guest path, with `/`).
+/// `base` with `rest` appended as a guest path: its parts joined with `/`, whatever the host's separator is.
 fn join(base: &str, rest: &Path) -> String {
-    let rest = rest.to_string_lossy();
-    if rest.is_empty() {
+    let parts: Vec<_> = rest
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if parts.is_empty() {
         base.to_string()
     } else {
-        format!("{base}/{rest}")
+        format!("{base}/{}", parts.join("/"))
     }
 }
 

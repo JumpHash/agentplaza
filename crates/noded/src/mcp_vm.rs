@@ -200,17 +200,22 @@ fn checked_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// Whether `path` is an absolute guest path. The guest is Linux, so this checks for a leading `/` on any host.
+fn is_guest_absolute(path: &Path) -> bool {
+    path.to_string_lossy().starts_with('/')
+}
+
 /// Why a create request is malformed, if it is.
 fn checked(request: &McpRunRequest) -> Result<(), String> {
     checked_name(&request.id)?;
     checked_name(&request.server)?;
-    if !request.program.is_absolute() {
+    if !is_guest_absolute(&request.program) {
         return Err(format!(
             "the program is an absolute path: {}",
             request.program.display()
         ));
     }
-    if !request.cwd.is_absolute() {
+    if !is_guest_absolute(&request.cwd) {
         return Err(format!(
             "the working directory is an absolute path: {}",
             request.cwd.display()

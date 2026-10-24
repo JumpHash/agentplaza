@@ -926,10 +926,14 @@ mod tests {
         };
         let dir = Path::new("/state/foundry/jobs/tj-test");
         let doc = plan_document(&gpu_plan(Mode::Loose, 2), &spec(1.0), &[ds], dir);
-        let on = |path: &str| json!(dir.join(path).display().to_string());
-        assert_eq!(doc["datasets"]["ds-1"], on("data/ds-1.jsonl"));
-        assert_eq!(doc["frozen"], on("data/ds-1.frozen.jsonl"));
-        assert_eq!(doc["output_dir"], on("out"));
+        // The trainer opens these host paths as they are, so the expected ones use the host's separator too.
+        let on = |parts: &[&str]| {
+            let path = parts.iter().fold(dir.to_path_buf(), |p, part| p.join(part));
+            json!(path.display().to_string())
+        };
+        assert_eq!(doc["datasets"]["ds-1"], on(&["data", "ds-1.jsonl"]));
+        assert_eq!(doc["frozen"], on(&["data", "ds-1.frozen.jsonl"]));
+        assert_eq!(doc["output_dir"], on(&["out"]));
         assert_eq!(doc["rounds"], 2);
     }
 

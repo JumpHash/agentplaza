@@ -320,6 +320,8 @@ mod tests {
         dir: PathBuf,
         stdio: UnixListener,
         stderr: UnixListener,
+        // Only the Unix-only tunnel test reads the proxy socket.
+        #[cfg_attr(not(unix), allow(dead_code))]
         proxy: UnixListener,
     }
 
@@ -378,7 +380,9 @@ mod tests {
         assert!(read_spec(&mut Cursor::new(b"not json\n".to_vec())).is_err());
     }
 
+    // These run the guest's /bin/sh, /bin/cat or env, so they are Unix-only. The bridge only runs in the Linux guest.
     #[test]
+    #[cfg(unix)]
     fn mcp_server_env_is_exactly_the_spec() {
         let host = Host::new("env");
         let (bridge, _) = host.start();
@@ -396,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mcp_stdin_round_trips_and_its_end_ends_the_server() {
         let host = Host::new("stdin");
         let (bridge, _) = host.start();
@@ -410,6 +415,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mcp_stderr_lines_reach_port_5201() {
         let host = Host::new("stderr");
         let (bridge, _) = host.start();
@@ -427,6 +433,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mcp_proxy_connections_tunnel_to_port_5202_both_ways() {
         let host = Host::new("tunnel");
         let (bridge, addr) = host.start();
@@ -464,6 +471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mcp_exit_code_is_the_servers() {
         let host = Host::new("exit");
         let (bridge, _) = host.start();
@@ -478,6 +486,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn mcp_server_killed_by_a_signal_exits_1() {
         let host = Host::new("signal");
         let (bridge, _) = host.start();
