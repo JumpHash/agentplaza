@@ -50,17 +50,20 @@ impl RouteNodes<'_> {
 impl NodeStop for RouteNodes<'_> {
     fn stop(&mut self, machine: &str) -> Result<(), String> {
         let node = self.node(machine)?;
+        // The dependants are down from the moment the node is lost, not from the route's answer: on a loaded runner
+        // the answer took longer than the scenario's hold, and the probe never saw the loss.
+        self.down.store(true, Ordering::SeqCst);
         let (status, body) =
             self.hub
                 .call("POST", &format!("/v1/nodes/{node}/stop"), Some(json!({})));
         if status != 200 {
+            self.down.store(false, Ordering::SeqCst);
             return Err(format!(
                 "the route refused the stop of {node}: {status} {body}"
             ));
         }
         self.answered
             .push(body["state"].as_str().unwrap_or_default().to_owned());
-        self.down.store(true, Ordering::SeqCst);
         Ok(())
     }
 
