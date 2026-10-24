@@ -1,0 +1,21 @@
+meta {
+  name: A manual run of an unknown project's workflow is not found
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/no-such-project/workflows/ship/runs
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "change": "no-such-change"
+  }
+}
+
+assert {
+  res.status: eq 404
+}

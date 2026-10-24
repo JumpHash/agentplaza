@@ -778,6 +778,7 @@ pub(crate) fn decide_approval(
     let applied = match item.kind.as_str() {
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),
+        "workflow" => crate::workflows::decided(app, &item, approve),
         "land" => crate::weft_hub::landing_decided(app, &item, approve),
         "artifact.share" => crate::shares::request::on_decided(app, &item),
         _ => {

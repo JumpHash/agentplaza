@@ -159,6 +159,7 @@ mod vm_snapshots;
 mod weft_hub;
 mod work_loop;
 mod work_routes;
+mod workflows;
 
 use std::process::ExitCode;
 

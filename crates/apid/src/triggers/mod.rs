@@ -487,6 +487,8 @@ pub fn emit(app: &App, event: &Event) -> usize {
 /// A Weft event from the feed `weft_hub.rs` reads (`/v1/events`): a lane opened (`lane.opened`), a change landed
 /// (`change.landed`), a release proposed (`release.proposed`). Its identity is the feed's sequence number.
 pub fn weft_event(app: &App, seq: u64, kind: &str, body: &Value) -> usize {
+    // A workflow with a `land`, `push` or `release.candidate` trigger starts its run (PLAN 21, workflows/).
+    crate::workflows::on_weft(app, kind, body);
     let repo = body["repo"].as_str().unwrap_or("");
     let (event, item) = match kind {
         "lane.open" => (
@@ -551,6 +553,10 @@ pub fn maintenance_signal(app: &App, project: &str, signal_id: &str, kind: &str)
 pub fn tick(app: &Arc<App>, now: u64) {
     for row in app.triggers.due(now) {
         let started = match row.action {
+            Action::Run if row.recipe.starts_with(crate::workflows::PREFIX) => {
+                crate::workflows::fire_schedule(app, &row);
+                true
+            }
             Action::Run => {
                 app.triggers.queue_schedule(&row, now);
                 true

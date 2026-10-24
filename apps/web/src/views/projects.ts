@@ -17,6 +17,7 @@ import { environmentsTab } from './project-environments';
 import { previewsTab } from './project-previews';
 import { cvesTab } from './project-cves';
 import { trendsTab } from './project-trends';
+import { workflowsTab } from './project-workflows';
 import { recipeRunsOf } from './recipe-graph';
 import { projectsApi, type ModeDef, type ProjectMode } from '../api-projects';
 import { dropZone, pickFiles, uploadToProject, type PickedFile } from '../ui/file-drop';
@@ -49,7 +50,7 @@ const TASK_TONE: Record<WorkState, Tone> = {
 };
 const APPROVABLE: ProjectStage[] = ['critique', 'approval'];
 /** The tabs of a project's page that are drawn here; the others (Work, Tasks, Weft) are the console's own screens. */
-const OWN_TABS = ['plan', 'maintenance', 'environments', 'previews', 'cves', 'trends', 'settings'];
+const OWN_TABS = ['plan', 'maintenance', 'environments', 'workflows', 'previews', 'cves', 'trends', 'settings'];
 const TAB_LINKS: [string, string][] = [
   ['plan', 'Plan'],
   ['work', 'Work'],
@@ -57,6 +58,7 @@ const TAB_LINKS: [string, string][] = [
   ['history', 'Weft'],
   ['maintenance', 'Maintenance'],
   ['environments', 'Environments'],
+  ['workflows', 'Workflows'],
   ['previews', 'Previews'],
   ['cves', 'CVE report'],
   ['trends', 'Trends'],
@@ -545,6 +547,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
           ? [keep(`maintenance:${p.id}:${modeOf(p)}`, () => maintenanceTab(p, refresh))]
           : tab === 'environments'
             ? [keep(`environments:${p.id}:${p.archived ? 'archived' : 'live'}`, () => environmentsTab(p))]
+            : tab === 'workflows'
+              ? [keep(`workflows:${p.id}:${p.archived ? 'archived' : 'live'}`, () => workflowsTab(p))]
             : tab === 'previews'
               ? [keep(`previews:${p.id}:${p.archived ? 'archived' : 'live'}`, () => previewsTab(p))]
               : tab === 'cves'

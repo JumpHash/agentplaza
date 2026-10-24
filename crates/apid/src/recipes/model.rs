@@ -122,6 +122,9 @@ pub struct Step {
     /// A `test:user` step's configuration (PLAN 19): its three roles' models, the target and the budgets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<UserTest>,
+    /// A workflow step's work (PLAN 21, 23): the job it belongs to and what the step does. Its engine is `workflow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::workflows::model::Work>,
 }
 
 /// The engine of a step that runs user tests of a change (PLAN 19.1).
