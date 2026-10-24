@@ -629,6 +629,15 @@ impl Reviews {
         f(&mut book)
     }
 
+    /// Puts a run restored from a carried review in the book, or replaces the one it restored before (a later
+    /// review of the same run and round is its newer state). Returns true.
+    fn carry(&self, run: Run) -> bool {
+        self.with(|b| {
+            b.runs.insert(run.id.clone(), run);
+            true
+        })
+    }
+
     /// Edits run `id` under the book's lock: what `f` refuses leaves the run as it was.
     fn edit<T>(
         &self,
@@ -2250,7 +2259,14 @@ pub fn seat_settled(app: &App, task: &str, moves: &[crate::recipes::Move]) {
     let (Some(state), Some(run)) = (state, app.reviews.seat_run(task)) else {
         return;
     };
-    app.reviews.update(&run.id, |r| r.state = state);
+    let decision = match state {
+        RunState::Passed => "pass",
+        RunState::Rework => "rework",
+        _ => "fail",
+    };
+    if let Some(updated) = app.reviews.update(&run.id, |r| r.state = state) {
+        record_outcome(app, &updated, decision, &[]);
+    }
 }
 
 /// The confirmed findings of the seat round's current round: the count the verifier's step reports to the walk.
@@ -2585,6 +2601,7 @@ fn gate(app: &App, run_id: &str) {
         r.outcome = Some(outcome.clone());
     });
     let Some(run) = updated else { return };
+    record_outcome(app, &run, &outcome.decision, &outcome.reasons);
     app.recipe_runs.finish_subject(
         "review",
         &run.id,
@@ -2804,6 +2821,7 @@ pub fn owner_ruled(
         });
     });
     let run = updated.ok_or("no such review run")?;
+    record_outcome(app, &run, decision, std::slice::from_ref(&notes));
     app.recipe_runs.finish_subject(
         "review",
         &run.id,
@@ -2823,6 +2841,194 @@ pub fn owner_ruled(
         &json!({ "run": run.id, "task": run.task, "state": decision, "by": "owner" }),
     );
     Ok(())
+}
+
+/// The `review.outcome` body of a run that ended with `decision` (PLAN 8.4): its confirmed and dropped findings, with
+/// their scenario, the seats that raised and verified them, and the models that filled the run's seats. A pending
+/// finding is not a record yet, so it is left out.
+pub fn outcome_body(run: &Run, decision: &str, reasons: &[String]) -> Value {
+    let seat = |b: &By| json!({ "seat": b.seat, "model": b.model, "session": b.session });
+    let findings: Vec<Value> = run
+        .findings()
+        .filter(|f| f.verdict != Verdict::Pending)
+        .map(|f| {
+            json!({
+                "id": f.id, "symbol": f.symbol, "lineage": f.lineage, "severity": f.severity, "round": f.round,
+                "scenario": f.scenario, "kind": f.kind,
+                "verdict": if f.verdict == Verdict::Confirmed { "confirmed" } else { "dropped" },
+                "proof": f.proof, "reason": f.reason,
+                "by": f.by.as_ref().map(seat), "verified_by": f.verified_by.as_ref().map(seat),
+            })
+        })
+        .collect();
+    let models: Vec<Value> = run
+        .models
+        .iter()
+        .map(|m| json!({ "seat": m.node, "model": m.model, "session": m.session }))
+        .collect();
+    json!({
+        "change": run.change, "run": run.id, "revision": run.revision, "round": run.round, "recipe": run.recipe,
+        "decision": decision, "reasons": reasons, "models": models, "findings": findings,
+    })
+}
+
+/// Writes a run's outcome to Weft as a `review.outcome` the hub signs. Best effort: the run has ended whether or not
+/// Weft takes the record; the book stays the working copy, and the record is what travels with the change.
+pub fn record_outcome(app: &App, run: &Run, decision: &str, reasons: &[String]) {
+    if run.change.is_empty() {
+        return;
+    }
+    if let Err(e) = app
+        .weft
+        .hub("review.outcome", outcome_body(run, decision, reasons))
+    {
+        eprintln!("apid: review {} is not recorded in Weft: {e}", run.id);
+    }
+}
+
+/// The run a carried review restores (a review another hub wrote into this repository's history, PLAN 8.4). Its id
+/// names the repository and the round, so it never meets a run of this hub's. Reviews this hub wrote carry no origin
+/// and are the book's own: they are not read back.
+fn carried_run(project: &str, repo: &str, entry: &Value) -> Option<Run> {
+    let o = &entry["outcome"];
+    if o["origin"].is_null() {
+        return None;
+    }
+    let run = o["run"].as_str()?;
+    let round = o["round"].as_u64().unwrap_or(0) as u32;
+    let change = entry["change"].as_str()?.to_string();
+    let at_ms = entry["at_ms"].as_u64().unwrap_or(0);
+    let state = match o["decision"].as_str()? {
+        "pass" => RunState::Passed,
+        "rework" => RunState::Rework,
+        "owner" => RunState::Owner,
+        _ => RunState::Failed,
+    };
+    let mut nodes: Vec<NodeRun> = Vec::new();
+    let node_of = |nodes: &mut Vec<NodeRun>, seat: &str| -> usize {
+        if let Some(i) = nodes.iter().position(|n| n.def.id == seat) {
+            return i;
+        }
+        nodes.push(NodeRun {
+            def: NodeDef {
+                id: seat.into(),
+                kind: "agent".into(),
+                ..Default::default()
+            },
+            parent: None,
+            state: NodeState::Passed,
+            assignee: None,
+            work: None,
+            tries: 0,
+            scores: vec![],
+            findings: vec![],
+            touches: vec![],
+            notes: String::new(),
+            record: None,
+            started_ms: at_ms,
+            ended_ms: at_ms,
+            spawned: 0,
+        });
+        nodes.len() - 1
+    };
+    let models: Vec<ModelUse> = o["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let seat = m["seat"].as_str()?;
+            node_of(&mut nodes, seat);
+            Some(ModelUse {
+                node: seat.into(),
+                cid: 0,
+                model: m["model"].as_str().unwrap_or("").into(),
+                session: m["session"].as_str().unwrap_or("").into(),
+            })
+        })
+        .collect();
+    for f in o["findings"].as_array().into_iter().flatten() {
+        let mut fj = f.clone();
+        let seat = f["by"]["seat"].as_str().unwrap_or("reviewer").to_string();
+        fj["text"] = f["scenario"].clone();
+        fj["node"] = json!(seat);
+        let Ok(finding) = serde_json::from_value::<Finding>(fj) else {
+            continue;
+        };
+        let i = node_of(&mut nodes, &seat);
+        nodes[i].findings.push(finding);
+    }
+    Some(Run {
+        id: format!("{repo}/{run}#{round}"),
+        task: String::new(),
+        project: project.into(),
+        worker: 0,
+        change,
+        revision: o["revision"].as_str().unwrap_or("").into(),
+        recipe: o["recipe"].as_str().unwrap_or("").into(),
+        round,
+        rounds: round,
+        kind: "carried".into(),
+        state,
+        nodes,
+        rules: vec![],
+        owner_asked: state == RunState::Owner,
+        outcome: Some(Outcome {
+            decision: o["decision"].as_str().unwrap_or("").into(),
+            reasons: o["reasons"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.as_str().map(str::to_string))
+                .collect(),
+            replan: vec![],
+            at_ms,
+            by: "carried".into(),
+        }),
+        tree_blob: None,
+        summary: String::new(),
+        purpose: review_purpose(),
+        repo: repo.into(),
+        models,
+        created_ms: at_ms,
+        updated_ms: at_ms,
+    })
+}
+
+/// Rebuilds the book's runs from the reviews carried in a repository's history (`entries` are Weft's
+/// `GET /repos/{repo}/reviews`). Later entries are newer states of a run, so they replace earlier ones. Returns how
+/// many runs were restored.
+pub fn restore_outcomes(reviews: &Reviews, project: &str, repo: &str, entries: &[Value]) -> usize {
+    let mut restored = 0;
+    for run in entries.iter().filter_map(|e| carried_run(project, repo, e)) {
+        reviews.carry(run);
+        restored += 1;
+    }
+    restored
+}
+
+/// After a repository was imported or adopted: its carried reviews become runs in the book. With no reviews in its
+/// history the book is left as it is. The statements are a record the book reads back, never a condition for it:
+/// the live path writes them best-effort and reads nothing back (PLAN 28.1 point 5 is open; this takes 8.4).
+pub fn restore_carried(app: &App, repo: &str) -> usize {
+    let project = app
+        .weft
+        .get(&format!("/repos/{repo}"))
+        .ok()
+        .and_then(|d| d["project"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let listing = match app.weft.get(&format!("/repos/{repo}/reviews")) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("apid: the reviews of {repo} are not read from Weft: {e}");
+            return 0;
+        }
+    };
+    let entries = listing["reviews"].as_array().cloned().unwrap_or_default();
+    let restored = restore_outcomes(&app.reviews, &project, repo, &entries);
+    if restored > 0 {
+        crate::store::saver::save_now(app, "review_graph");
+    }
+    restored
 }
 
 /// Saves the book now: an owner's answer (a ruling, a recipe, a proposal) returns once it is committed. A failed save
@@ -3543,5 +3749,367 @@ mod tests {
         confirmed("rv2", "p1");
         assert_eq!(reviews.confirmed_of_kind("p1", "tst"), 2);
         assert_eq!(reviews.confirmed_of_kind("p2", "tst"), 0);
+    }
+}
+
+#[cfg(test)]
+mod carried_tests {
+    //! The review as a Weft statement (PLAN 8.4): what a run writes, and what an import of a repository rebuilds in
+    //! the book from the reviews its history carries.
+
+    use super::*;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git_available() -> bool {
+        Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    fn reviews_in(dir: &Path) -> Reviews {
+        let blobs = Blobs::open(&dir.join("blobs")).expect("the object store opens");
+        Reviews::new(Arc::new(blobs))
+    }
+
+    fn finding(symbol: &str, scenario: &str, verdict: Verdict) -> Finding {
+        Finding {
+            symbol: symbol.into(),
+            lineage: None,
+            text: scenario.into(),
+            severity: "major".into(),
+            node: "function".into(),
+            round: 1,
+            id: String::new(),
+            scenario: scenario.into(),
+            kind: "panic".into(),
+            verdict,
+            proof: String::new(),
+            reason: String::new(),
+            by: None,
+            verified_by: None,
+            contest: String::new(),
+            ruling: String::new(),
+            ruling_reason: String::new(),
+        }
+    }
+
+    fn seat(name: &str) -> By {
+        By {
+            seat: name.into(),
+            model: format!("mock/{name}"),
+            session: format!("s-{name}"),
+        }
+    }
+
+    /// A review of `change`'s first revision: one confirmed finding raised by `Nell` and verified by `Ada`, one
+    /// dropped finding with its reason.
+    fn review_body(change: &str) -> Value {
+        json!({
+            "change": change, "run": "review-1", "revision": format!("{change}.r1"), "round": 1, "recipe": "code@1",
+            "decision": "pass", "reasons": ["the confirmed finding was fixed"],
+            "models": [
+                { "seat": "builder", "model": "mock/builder", "session": "s-builder" },
+                { "seat": "Nell", "model": "mock/Nell", "session": "s-Nell" },
+                { "seat": "Ada", "model": "mock/Ada", "session": "s-Ada" }
+            ],
+            "findings": [
+                { "id": "f1", "symbol": "src/main.rs::greet", "severity": "major", "round": 1,
+                  "scenario": "an empty name panics", "kind": "panic", "verdict": "confirmed",
+                  "proof": "test empty_name_panics fails", "by": { "seat": "Nell", "model": "mock/Nell", "session": "s-Nell" },
+                  "verified_by": { "seat": "Ada", "model": "mock/Ada", "session": "s-Ada" } },
+                { "id": "f2", "symbol": "src/main.rs::greet", "severity": "minor", "round": 1,
+                  "scenario": "a name with spaces", "kind": "logic", "verdict": "dropped",
+                  "reason": "the shell splits the arguments", "by": { "seat": "Nell", "model": "mock/Nell", "session": "s-Nell" },
+                  "verified_by": { "seat": "Ada", "model": "mock/Ada", "session": "s-Ada" } }
+            ]
+        })
+    }
+
+    /// A carried review entry, as Weft's `GET /repos/{repo}/reviews` lists it.
+    fn carried(change: &str, run: &str, decision: &str, seq: u64) -> Value {
+        json!({
+            "change": change, "seq": seq, "at_ms": seq, "key": "hubkey",
+            "outcome": {
+                "change": change, "run": run, "revision": format!("{change}.r1"), "round": 1, "recipe": "code@1",
+                "decision": decision, "reasons": [], "models": [],
+                "findings": [
+                    { "id": "f1", "symbol": "src/main.rs::greet", "severity": "major", "round": 1, "scenario": "an empty name panics",
+                      "kind": "panic", "verdict": "confirmed", "proof": "test empty_name_panics fails",
+                      "by": { "seat": "Nell", "model": "mock/Nell", "session": "s" }, "verified_by": null }
+                ],
+                "origin": { "owner": null, "certs": [], "signed": {} }
+            }
+        })
+    }
+
+    #[test]
+    fn the_outcome_a_run_writes_holds_its_confirmed_and_dropped_findings_and_weft_accepts_it() {
+        let mut run = Run {
+            id: "rv9".into(),
+            task: "t70".into(),
+            project: "pr5".into(),
+            worker: 107,
+            change: "w-7".into(),
+            revision: "w-7.r1".into(),
+            recipe: "code@1".into(),
+            round: 1,
+            rounds: 3,
+            kind: "code".into(),
+            state: RunState::Passed,
+            nodes: vec![],
+            rules: vec![],
+            owner_asked: false,
+            outcome: None,
+            tree_blob: None,
+            summary: String::new(),
+            purpose: "review".into(),
+            repo: "app".into(),
+            models: vec![ModelUse {
+                node: "Nell".into(),
+                cid: 110,
+                model: "mock/Nell".into(),
+                session: "s-Nell".into(),
+            }],
+            created_ms: 0,
+            updated_ms: 0,
+        };
+        let node = |id: &str| NodeRun {
+            def: NodeDef {
+                id: id.into(),
+                kind: "agent".into(),
+                ..Default::default()
+            },
+            parent: None,
+            state: NodeState::Passed,
+            assignee: None,
+            work: None,
+            tries: 0,
+            scores: vec![],
+            findings: vec![],
+            touches: vec![],
+            notes: String::new(),
+            record: None,
+            started_ms: 0,
+            ended_ms: 0,
+            spawned: 0,
+        };
+        run.nodes = vec![node("Nell")];
+        let mut confirmed = finding(
+            "src/main.rs::greet",
+            "an empty name panics",
+            Verdict::Confirmed,
+        );
+        confirmed.proof = "test empty_name_panics fails".into();
+        confirmed.by = Some(seat("Nell"));
+        confirmed.verified_by = Some(seat("Ada"));
+        let mut dropped = finding("src/main.rs::greet", "a name with spaces", Verdict::Dropped);
+        dropped.reason = "the shell splits the arguments".into();
+        dropped.by = Some(seat("Nell"));
+        let mut pending = finding("src/main.rs::greet", "not yet ruled", Verdict::Pending);
+        pending.by = Some(seat("Nell"));
+        for (i, f) in [&mut confirmed, &mut dropped, &mut pending]
+            .into_iter()
+            .enumerate()
+        {
+            f.id = format!("f{}", i + 1);
+        }
+        run.nodes[0].findings = vec![confirmed, dropped, pending];
+
+        let body = outcome_body(&run, "pass", &["fixed".into()]);
+        let parsed: weft::model::ReviewOutcome =
+            serde_json::from_value(body).expect("Weft reads the record");
+        parsed.check().expect("Weft accepts the record");
+        assert_eq!(
+            parsed.findings.len(),
+            2,
+            "a pending finding is not a record"
+        );
+        assert_eq!(parsed.findings[0].verdict, "confirmed");
+        assert_eq!(parsed.findings[0].verified_by.as_ref().unwrap().seat, "Ada");
+        assert_eq!(parsed.findings[1].reason, "the shell splits the arguments");
+        assert_eq!(parsed.models[0].model, "mock/Nell");
+    }
+
+    #[test]
+    fn a_carried_review_rebuilds_the_book_and_the_rebuild_is_idempotent() {
+        if !git_available() {
+            eprintln!("git is not installed: skipped");
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        // The source repository: a change reviewed, landed and exported to a bare remote.
+        let owner = weft::keys::KeyPair::generate();
+        let src = weft::store::Store::init(
+            &root.join("src"),
+            "source",
+            &owner,
+            weft::keys::KeyPair::generate(),
+            &["certify-agents", "rule-for-owner"],
+        )
+        .unwrap();
+        let say = |store: &weft::store::Store,
+                   kind: &str,
+                   body: Value,
+                   by: weft::record::Actor,
+                   key: &weft::keys::KeyPair| {
+            store
+                .append(weft::record::Statement::new(kind, by, body).sign(key))
+                .unwrap()
+        };
+        say(
+            &src,
+            "repo.create",
+            json!({ "repo": "app", "project": "pr5", "description": "" }),
+            weft::record::Actor::Owner,
+            &owner,
+        );
+        let remote = root.join("remote.git");
+        std::fs::create_dir_all(&remote).unwrap();
+        Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .current_dir(&remote)
+            .status()
+            .unwrap();
+        let url = format!("file://{}", remote.display());
+        say(
+            &src,
+            "connection.add",
+            weft::connect::connection_body(
+                "app",
+                "origin",
+                &url,
+                "git",
+                "main",
+                "Irfan Saric",
+                "owner@example.com",
+                None,
+            ),
+            weft::record::Actor::Owner,
+            &owner,
+        );
+        let change = src
+            .open_lane(
+                "app",
+                "main",
+                Some("t70"),
+                "Greet by name",
+                weft::record::Actor::Agent { cid: 107 },
+                None,
+                "normal",
+            )
+            .unwrap();
+        let readme = src.blobs.put(b"# app\n\nGreets you.\n").unwrap();
+        let deltas = vec![weft::model::Delta {
+            path: "README.md".into(),
+            after: Some(readme),
+            mode: 0o100644,
+        }];
+        src.hub_append("intent.set", json!({ "change": change, "n": 1, "intents": [{ "title": "Document greeting", "kind": "docs", "covers": ["README.md"] }] })).unwrap();
+        src.hub_append(
+            "revision.seal",
+            json!({ "change": change, "n": 1, "deltas": deltas, "model": "mock/builder" }),
+        )
+        .unwrap();
+        src.hub_append("review.outcome", review_body(&change))
+            .unwrap();
+        src.hub_append(
+            "queue.add",
+            json!({ "repo": "app", "ref": "main", "change": change, "n": 1 }),
+        )
+        .unwrap();
+        let expected = src.state().repos["app"].head("main");
+        src.hub_append("land", json!({ "repo": "app", "ref": "main", "change": change, "n": 1, "expected": expected, "deltas": deltas })).unwrap();
+        let derived = weft::derived::Derived::new(root.join("derived"));
+        let exported = weft::export::Exporter::default()
+            .export(
+                &src,
+                &derived,
+                "app",
+                "origin",
+                weft::export::Keys {
+                    token: None,
+                    signing: None,
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(exported.state, "pushed", "{exported:?}");
+
+        // A fresh repository imports the remote: its book is rebuilt from the review the history carries.
+        let fresh = weft::store::Store::init(
+            &root.join("fresh"),
+            "fresh",
+            &owner,
+            weft::keys::KeyPair::generate(),
+            &["certify-agents", "rule-for-owner"],
+        )
+        .unwrap();
+        say(
+            &fresh,
+            "repo.create",
+            json!({ "repo": "app", "project": "pr5", "description": "" }),
+            weft::record::Actor::Owner,
+            &owner,
+        );
+        let report = weft::import::import(
+            &fresh,
+            "app",
+            &weft::import::Source::open(&url, None, "main").unwrap(),
+            "main",
+            "main",
+        )
+        .unwrap();
+        assert_eq!((report.reviews, report.refused.len()), (1, 0), "{report:?}");
+        let entries = weft::server::reviews_view(&fresh.state(), "app");
+        let book = reviews_in(root);
+        assert_eq!(restore_outcomes(&book, "pr5", "app", &entries), 1);
+        let run = book
+            .run("app/review-1#1")
+            .expect("the run is back in the book");
+        assert_eq!(
+            (run.state, run.change.as_str(), run.project.as_str()),
+            (RunState::Passed, "w-1", "pr5")
+        );
+        assert_eq!(run.findings().count(), 2);
+        let nell = run.node("Nell").expect("the reviewer's seat");
+        assert_eq!(nell.findings[0].scenario, "an empty name panics");
+        assert_eq!(nell.findings[0].verdict, Verdict::Confirmed);
+        assert_eq!(nell.findings[0].verified_by.as_ref().unwrap().seat, "Ada");
+        assert_eq!(run.models.len(), 3);
+        // Rebuilding again does not make a second run.
+        restore_outcomes(&book, "pr5", "app", &entries);
+        assert_eq!(book.runs_of("").len(), 1);
+    }
+
+    #[test]
+    fn the_book_works_without_any_review_statement() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let book = reviews_in(dir.path());
+        // No history carries a review: nothing is restored, and the book's own tables answer as before.
+        assert_eq!(restore_outcomes(&book, "pr5", "app", &[]), 0);
+        assert!(book.runs_of("").is_empty());
+        assert!(!book.recipes().is_empty(), "the built-in recipes are there");
+        assert!(book.run("app/review-1#1").is_none());
+        // A review this hub wrote is the book's own: a listing of it restores nothing.
+        let own = json!({ "change": "w-1", "seq": 5, "at_ms": 5, "key": "hub", "outcome": { "change": "w-1", "run": "rv3", "revision": "w-1.r1", "round": 1, "recipe": "code@1", "decision": "pass", "reasons": [], "models": [], "findings": [], "origin": null } });
+        assert_eq!(restore_outcomes(&book, "pr5", "app", &[own]), 0);
+    }
+
+    #[test]
+    fn a_later_statement_of_a_carried_run_is_its_newer_state() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let book = reviews_in(dir.path());
+        // The owner's ruling comes after the gate's pending outcome: the run ends where the owner put it.
+        let entries = [
+            carried("w-1", "review-1", "owner", 10),
+            carried("w-1", "review-1", "pass", 11),
+        ];
+        assert_eq!(restore_outcomes(&book, "pr5", "app", &entries), 2);
+        let run = book.run("app/review-1#1").unwrap();
+        assert_eq!(run.state, RunState::Passed);
+        assert_eq!(book.runs_of("").len(), 1);
     }
 }

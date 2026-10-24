@@ -200,7 +200,10 @@ fn adopt_route(app: &App, req: &Request, _: &apz_http::Params<'_>) -> Response {
                     &format!("/repos/{repo}/import"),
                     &json!({ "source": url, "branch": branch, "platform": "git" }),
                 ) {
-                    Ok(v) => v,
+                    Ok(v) => {
+                        crate::review_graph::restore_carried(app, &repo);
+                        v
+                    }
                     Err(e) => {
                         problems.push(format!("importing {url}: {e}"));
                         Value::Null
