@@ -330,6 +330,71 @@ fn a_remote_commit_that_arrives_later_is_imported_again() {
     assert_eq!(landings[2]["imported"], true);
 }
 
+/// GitHub merges a lane before Weft lands it: the import brings the merge commit in as a change of its own, the lane
+/// lands on top of it and records the merge as its export. A commit that arrives later must still import from there.
+#[test]
+fn a_lane_merged_on_the_remote_before_it_lands_still_lets_the_next_commit_import() {
+    if !have_git() {
+        eprintln!("git is not installed: skipped");
+        return;
+    }
+    let p = plaza("history-merge-order", &[]);
+    p.add_packs(&["rust", "markdown"]);
+    let derived = Derived::new(p.dir.join("derived"));
+    let lander = Lander::default();
+    let (remote, url) = connected(&p);
+    let change = one_lane(&p, "t1", 107, "Add a note", "src/note.rs", "fn note() {}\n");
+    let work = p.dir.join("work");
+    git(
+        &p.dir,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            work.to_str().unwrap(),
+        ],
+    );
+    git(&work, &["config", "user.name", "Irfan Saric"]);
+    git(&work, &["config", "user.email", "owner@example.com"]);
+    let source = || weft::import::Source::open(&url, None, "main").unwrap();
+
+    // GitHub merges the lane's branch (a fast-forward of main onto it), and the import brings the merge in.
+    std::fs::create_dir_all(work.join("src")).unwrap();
+    std::fs::write(work.join("src/note.rs"), "fn note() {}\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "Add a note"]);
+    git(&work, &["push", "-q", "origin", "main"]);
+    let merged = git(&work, &["rev-parse", "HEAD"]);
+    let report = weft::import::import(&p.store, "app", &source(), "main", "main").unwrap();
+    assert_eq!(report.commits, 1, "the merge comes in once");
+
+    // Weft lands the lane on top of that import and records GitHub's merge as its export (apid's `land`).
+    land_all(&p, &derived, &lander);
+    assert!(
+        p.store.state().change(&change).unwrap().landed.is_some(),
+        "the lane lands"
+    );
+    p.hub_says(
+        "export",
+        json!({
+            "repo": "app", "connection": "origin", "change": change,
+            "commits": [{ "intent": "Add a note", "git": merged }], "head": merged,
+        }),
+    )
+    .unwrap();
+
+    // GitHub's main moves on by one commit that is not a lane: the import resumes from the landed merge.
+    std::fs::write(work.join("outside.md"), "Written on GitHub.\n").unwrap();
+    git(&work, &["add", "-A"]);
+    git(&work, &["commit", "-q", "-m", "Written on GitHub"]);
+    git(&work, &["push", "-q", "origin", "main"]);
+    let outside = git(&work, &["rev-parse", "HEAD"]);
+    let report = weft::import::import(&p.store, "app", &source(), "main", "main")
+        .expect("the import resumes from the landed merge");
+    assert_eq!(report.commits, 1, "only GitHub's own commit comes in");
+    assert_eq!(report.head.as_deref(), Some(outside.as_str()));
+}
+
 #[test]
 fn the_history_reads_each_landing_as_a_commit() {
     if !have_git() {

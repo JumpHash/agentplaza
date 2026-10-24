@@ -688,6 +688,9 @@ pub fn drive(
                         return u64::from(ops);
                     };
                     let _ = conn.busy_timeout(busy_timeout());
+                    // Each commit's fsyncs queue behind every other writer's on a shared runner's disk, and that queue
+                    // outlasts the budget; the invariants judged are about what the writers wrote, not its durability.
+                    let _ = conn.pragma_update(None, "synchronous", "OFF");
                     (0..ops)
                         .filter(|&seq| op(&conn, writer, seq).is_err())
                         .count() as u64

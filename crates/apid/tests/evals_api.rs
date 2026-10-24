@@ -8,14 +8,6 @@ use apz_store::rusqlite::{Connection, params};
 use common::{Hub, Scratch};
 use serde_json::{Value, json};
 
-/// The hub's `plaza.db`, opened beside it (WAL: the hub's own connection sees what this one commits).
-fn seed_db(hub: &Hub) -> Connection {
-    let conn = Connection::open(hub.state_dir().join("plaza.db")).expect("the hub's plaza.db");
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    conn
-}
-
 /// One step session's record: `id` is its number (and its position), its task, step, seat, model, cost, wall time,
 /// its reviewer's verdict (None: no reviewer), whether it succeeded, when it ended and its later findings.
 #[allow(clippy::too_many_arguments)]
@@ -55,7 +47,7 @@ fn ruling(conn: &Connection, id: i64, reviewer: &str, verifier: &str, verdict: &
 /// (it fails, and a later finding is confirmed on it) and is reviewed by mock/echo, which passed it at 1400 ms. Then
 /// mock/echo's finding is dropped at 1500, and mock/third's finding is confirmed at 5000, after echo's pass.
 fn seed(hub: &Hub) {
-    let conn = seed_db(hub);
+    let conn = hub.seed_connection();
     run(
         &conn,
         1,
