@@ -22,7 +22,6 @@ body:json {
     "deliverables": [
       "A list of sources"
     ],
-    "budget": 300,
     "collaboration": "Works with the scouts.",
     "boundaries": [
       "No publishing"
@@ -40,7 +39,6 @@ assert {
   res.body.id: eq "t-agents-lead"
   res.body.title: eq "Lead, équipe"
   res.body.created_by: eq "owner"
-  res.body.budget: eq 300
 }
 
 tests {

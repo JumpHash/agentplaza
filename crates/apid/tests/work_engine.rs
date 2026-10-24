@@ -482,12 +482,19 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         "{:?}",
         sessions(&hub, &tid)
     );
-    let (_, budget) = hub.call("GET", &format!("/v1/tasks/{tid}/budget"), None);
+    // The task reads done as its landing sets the state; its budget is released and its closing notice is posted just
+    // after that, so both are waited for rather than read at once.
+    let budget = hub.wait_for(&format!("/v1/tasks/{tid}/budget"), WAIT, |b| {
+        b["reserved"] == 0
+    });
     assert_eq!(budget["reserved"], 0, "{budget}");
-    let (_, messages) = hub.call(
-        "GET",
+    let messages = hub.wait_for(
         &format!("/v1/chats/{chat}/messages?after=0&limit=50"),
-        None,
+        WAIT,
+        |m| {
+            m.as_array()
+                .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("is done")))
+        },
     );
     assert!(
         messages

@@ -1,0 +1,32 @@
+meta {
+  name: Start a loop for an agent with no project: refused
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 9101,
+    "prompt": "Check the build queue",
+    "every_minutes": 1,
+    "max_runs": 0
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+
+tests {
+  test("the refusal says the agent has no project", function () {
+    expect(res.getBody().error).to.include("has no project");
+  });
+}

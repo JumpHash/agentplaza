@@ -32,10 +32,10 @@ script:post-response {
 }
 
 tests {
-  test("the post is the agent's and is on its project", function () {
+  test("the post is the agent's, and with no session it is on no project", function () {
   const p = res.getBody();
     expect(p.agent_cid).to.equal(8601);
     expect(p.posted_by).to.equal("driver");
-    expect(p.project).to.equal(bru.getVar("boardProject"));
+    expect(p.project).to.be.null;
   });
 }

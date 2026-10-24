@@ -17,7 +17,7 @@ assert {
 }
 
 script:post-response {
-  bru.setVar("lifeRefSha", res.getBody().files[0].sha256);
+  bru.setVar("lifeRefHash", res.getBody().files[0].hash);
 }
 
 tests {

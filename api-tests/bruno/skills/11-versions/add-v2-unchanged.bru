@@ -1,5 +1,5 @@
 meta {
-  name: Send the same version again: nothing new, the file by its sha256
+  name: Send the same version again: nothing new, the file by its hash
   type: http
   seq: 2
 }
@@ -20,7 +20,7 @@ body:json {
     "files": [
       {
         "path": "reference.md",
-        "sha256": "{{lifeRefSha}}"
+        "hash": "{{lifeRefHash}}"
       }
     ],
     "note": "more",
