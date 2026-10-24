@@ -18,6 +18,11 @@
 //! staging stage, and its deploy waits for the owner in Approvals as any protected deploy does. The deploy's status and
 //! the environment's version follow the outcome, and the project's chat is told at each step.
 //!
+//! A Kubernetes environment (`KUBERNETES_DEPLOYMENT` set) takes the same path: its release's manifests are applied and its
+//! rollout watched in [`kubernetes`] (11.2), with a canary (`KUBERNETES_CANARY`) sharing each stage's replicas with the
+//! stable Deployment. Its address, CA and token are the `kubernetes` connector's. The stages and the health watch are read
+//! the same way for both platforms ([`Settings::watch_of`]).
+//!
 //! Environment variables (not secret): `CLOUDFLARE_WORKER`, `CLOUDFLARE_PAGES`, `ROLLOUT_STAGES` (`10,50,100`),
 //! `DEPLOY_WINDOW_SECS` (300), `DEPLOY_MAX_ERRORS` (0), `DEPLOY_ARTIFACT` (`web`), `HEALTH_MAX_ERROR_RATE` (0.05),
 //! `HEALTH_MAX_P95_MS` (2000), `HEALTH_ERROR_QUERY`, `HEALTH_LATENCY_QUERY` (the monitoring queries, see [`health`]). The
@@ -26,6 +31,7 @@
 
 pub mod cloudflare;
 pub mod health;
+pub mod kubernetes;
 #[cfg(test)]
 mod tests;
 
@@ -79,22 +85,26 @@ pub struct Settings {
 impl Settings {
     /// The settings of an environment, or None when it names no Cloudflare target (it keeps its deploy hook).
     pub fn of(env: &Environment) -> Result<Option<Settings>, String> {
-        let var = |key: &str| {
-            env.variables
-                .get(key)
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty())
-        };
         let mut targets = Vec::new();
-        if let Some(name) = var("CLOUDFLARE_WORKER") {
+        if let Some(name) = variable(env, "CLOUDFLARE_WORKER") {
             targets.push(Target::Workers(name));
         }
-        if let Some(name) = var("CLOUDFLARE_PAGES") {
+        if let Some(name) = variable(env, "CLOUDFLARE_PAGES") {
             targets.push(Target::Pages(name));
         }
         if targets.is_empty() {
             return Ok(None);
         }
+        Ok(Some(Settings {
+            targets,
+            ..Settings::watch_of(env)?
+        }))
+    }
+
+    /// The stages and the health watch an environment's variables set (`ROLLOUT_STAGES`, `DEPLOY_WINDOW_SECS`, the
+    /// thresholds and the queries). Every platform reads them; the targets are the platform's own.
+    pub fn watch_of(env: &Environment) -> Result<Settings, String> {
+        let var = |key: &str| variable(env, key);
         let stages = match var("ROLLOUT_STAGES") {
             Some(text) => parse_stages(&text)?,
             None => DEFAULT_STAGES.to_vec(),
@@ -131,8 +141,8 @@ impl Settings {
                 .ok_or("HEALTH_MAX_P95_MS is a number of milliseconds")?,
             None => health::DEFAULT_MAX_P95_MS,
         };
-        Ok(Some(Settings {
-            targets,
+        Ok(Settings {
+            targets: Vec::new(),
             stages,
             window: Duration::from_secs(window),
             max_errors,
@@ -143,8 +153,16 @@ impl Settings {
                 .unwrap_or_else(|| health::ERROR_QUERY.to_string()),
             latency_query: var("HEALTH_LATENCY_QUERY")
                 .unwrap_or_else(|| health::LATENCY_QUERY.to_string()),
-        }))
+        })
     }
+}
+
+/// An environment variable's value, trimmed, when it is set and not empty.
+fn variable(env: &Environment, key: &str) -> Option<String> {
+    env.variables
+        .get(key)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// `10,50,100`: increasing percentages from 1 to 100, ending at 100.
@@ -201,9 +219,27 @@ fn staging_passed(envs: &[Environment], version: &str) -> bool {
     })
 }
 
-/// The gate a deploy of `version` to `env` passes before it is recorded or waits for approval: the release is
-/// qualified and published, and a protected Cloudflare environment has a passing staging deploy of it. Returns the
-/// environment's settings, or None when it is not a Cloudflare environment (no gate here).
+/// The gate every platform's deploy of `version` to `env` passes before it is recorded or waits for approval: the release
+/// is qualified and published, and a protected environment has a passing staging deploy of it.
+fn gate_common(
+    releases: &entity::Store,
+    envs: &[Environment],
+    project: &str,
+    env: &Environment,
+    version: &str,
+) -> Result<(), String> {
+    eligible(releases, project, version)?;
+    if env.protected && !staging_passed(envs, version) {
+        return Err(format!(
+            "{} is protected: it deploys {version} only after a staging environment passed that version",
+            env.name
+        ));
+    }
+    Ok(())
+}
+
+/// The gate of a Cloudflare deploy: [`gate_common`], and the environment's settings (None when it is not a Cloudflare
+/// environment: no gate here).
 pub fn check_gate(
     releases: &entity::Store,
     envs: &[Environment],
@@ -214,30 +250,58 @@ pub fn check_gate(
     let Some(settings) = Settings::of(env)? else {
         return Ok(None);
     };
-    eligible(releases, project, version)?;
-    if env.protected && !staging_passed(envs, version) {
-        return Err(format!(
-            "{} is protected: it deploys {version} only after a staging environment passed that version",
-            env.name
-        ));
-    }
+    gate_common(releases, envs, project, env, version)?;
     Ok(Some(settings))
 }
 
-/// [`check_gate`] over the hub's stores.
-pub fn gate(
-    app: &App,
-    project: &str,
-    env: &Environment,
-    version: &str,
-) -> Result<Option<Settings>, String> {
-    check_gate(
-        &app.releases,
-        &app.environments.of(project),
-        project,
-        env,
-        version,
-    )
+/// The gate a deploy of `version` to `env` passes, on whichever platform the environment names (none: no gate).
+pub fn gate(app: &App, project: &str, env: &Environment, version: &str) -> Result<(), String> {
+    let envs = app.environments.of(project);
+    match Plan::of(env)? {
+        None => Ok(()),
+        Some(Plan::Cloudflare(_)) => {
+            check_gate(&app.releases, &envs, project, env, version).map(|_| ())
+        }
+        Some(Plan::Kubernetes(_)) => gate_common(&app.releases, &envs, project, env, version),
+    }
+}
+
+/// The platform an environment's deploys run on (23): Cloudflare's Workers or Pages, or a Kubernetes cluster.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Plan {
+    Cloudflare(Settings),
+    Kubernetes(kubernetes::Settings),
+}
+
+impl Plan {
+    /// The plan of an environment, or None when it names no platform (it keeps its deploy hook).
+    pub fn of(env: &Environment) -> Result<Option<Plan>, String> {
+        match (Settings::of(env)?, kubernetes::Settings::of(env)?) {
+            (Some(_), Some(_)) => Err(format!(
+                "{} names both Cloudflare and Kubernetes targets: an environment deploys to one platform",
+                env.name
+            )),
+            (Some(settings), None) => Ok(Some(Plan::Cloudflare(settings))),
+            (None, Some(settings)) => Ok(Some(Plan::Kubernetes(settings))),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// The stages and the health watch of the rollout.
+    pub fn watch(&self) -> &Settings {
+        match self {
+            Plan::Cloudflare(settings) => settings,
+            Plan::Kubernetes(settings) => &settings.watch,
+        }
+    }
+
+    /// The items of the recipe run's rollout step: one per Cloudflare target, one for a Kubernetes Deployment.
+    fn items(&self) -> u32 {
+        match self {
+            Plan::Cloudflare(settings) => settings.targets.len().max(1) as u32,
+            Plan::Kubernetes(_) => 1,
+        }
+    }
 }
 
 // ---- Rollouts -------------------------------------------------------------------------------------------------------
@@ -414,7 +478,7 @@ fn rollout_all(
                 .api
                 .split(target, &versions)
                 .map_err(|e| Stop::Check(format!("{label} at {pct}%: {e}")))?;
-            checks(ports, project, env, settings, release)
+            checks(ports.checks, project, env, settings, release)
                 .map_err(|stop| stop.at(&format!("{label} at {pct}%")))?;
         }
     }
@@ -423,19 +487,17 @@ fn rollout_all(
 
 /// The checks after a stage: the smoke set, then the environment's health over the window.
 fn checks(
-    ports: &Ports,
+    checks: &dyn Checks,
     project: &str,
     env: &Environment,
     settings: &Settings,
     release: &Release,
 ) -> Result<(), Stop> {
     let since = now();
-    ports
-        .checks
+    checks
         .smoke(project, env, release)
         .map_err(|e| Stop::Check(format!("smoke: {e}")))?;
-    let health = ports
-        .checks
+    let health = checks
         .health(project, env, since, settings)
         .map_err(Stop::Check)?;
     match breach(&health, settings) {
@@ -499,20 +561,20 @@ fn now() -> u64 {
 
 // ---- Starting them -------------------------------------------------------------------------------------------------
 
-/// Deploys `version` to a Cloudflare environment now: the gate passes, the deploy is recorded, and its rollout starts in
-/// the background. The deploy comes back with status `recorded` (its outcome follows).
+/// Deploys `version` to an environment now: the gate passes, the deploy is recorded, and its rollout starts in the
+/// background. The deploy comes back with status `recorded` (its outcome follows).
 pub fn start(
     app: &Arc<App>,
     project: &str,
     env: &Environment,
     version: &str,
     by: &str,
-    settings: Settings,
+    plan: Plan,
 ) -> Result<Deploy, String> {
     let release = eligible(&app.releases, project, version)?;
     let prior = env.version.clone();
     let deploy = environments::record(app, project, &env.name, version, by, None)?;
-    spawn(app, project, env, settings, release, &deploy, prior);
+    spawn(app, project, env, plan, release, &deploy, prior);
     Ok(deploy)
 }
 
@@ -521,19 +583,19 @@ pub fn approved(
     app: &Arc<App>,
     project: &str,
     env: &Environment,
-    settings: Settings,
+    plan: Plan,
     deploy: &Deploy,
     prior: Option<String>,
 ) {
     match eligible(&app.releases, project, &deploy.version) {
-        Ok(release) => spawn(app, project, env, settings, release, deploy, prior),
+        Ok(release) => spawn(app, project, env, plan, release, deploy, prior),
         Err(why) => {
             environments::settle_deploy(app, project, &env.name, &deploy.id, "failed", &why, None)
         }
     }
 }
 
-/// After a release is published: each environment on the `releases` track that deploys to Cloudflare deploys the newest
+/// After a release is published: each environment on the `releases` track that deploys to a platform deploys the newest
 /// published release (a protected one asks the owner first, as any protected deploy does).
 pub fn published(app: &Arc<App>, project: &str) {
     let Some(release) = newest(app, project) else {
@@ -543,7 +605,7 @@ pub fn published(app: &Arc<App>, project: &str) {
         if env.track != "releases" || env.version.as_deref() == Some(release.version.as_str()) {
             continue;
         }
-        if !matches!(Settings::of(&env), Ok(Some(_))) {
+        if !matches!(Plan::of(&env), Ok(Some(_))) {
             continue;
         }
         if let Err(why) = environments::request(
@@ -563,25 +625,39 @@ pub fn published(app: &Arc<App>, project: &str) {
     }
 }
 
+/// The platform's client, read from its connector on the hub, with the settings the rollout runs on.
+enum Connected {
+    Cloudflare(cloudflare::Client, Settings),
+    Kubernetes(kubernetes::Client, kubernetes::Settings),
+}
+
+fn connect(app: &App, plan: Plan) -> Result<Connected, String> {
+    Ok(match plan {
+        Plan::Cloudflare(settings) => Connected::Cloudflare(cloudflare_client(app)?, settings),
+        Plan::Kubernetes(settings) => Connected::Kubernetes(kubernetes_client(app)?, settings),
+    })
+}
+
 /// Starts the rollout of `release` as deploy `deploy` in the background. The recipe run is started here, so its step
 /// shows at once; the deploy's status and the environment's version follow the outcome, and the chat is told.
 fn spawn(
     app: &Arc<App>,
     project: &str,
     env: &Environment,
-    settings: Settings,
+    plan: Plan,
     release: Release,
     deploy: &Deploy,
     prior: Option<String>,
 ) {
-    let client = match cloudflare_client(app) {
-        Ok(client) => client,
+    let items = BTreeMap::from([(STEP.to_string(), plan.items())]);
+    let said = starting(&env.name, &deploy.version, plan.watch());
+    let connected = match connect(app, plan) {
+        Ok(connected) => connected,
         Err(why) => {
             environments::settle_deploy(app, project, &env.name, &deploy.id, "failed", &why, None);
             return;
         }
     };
-    let items = BTreeMap::from([(STEP.to_string(), settings.targets.len().max(1) as u32)]);
     let subject = format!("{}@{}", env.name, deploy.version);
     let run = app
         .recipe_runs
@@ -604,11 +680,7 @@ fn spawn(
         "the rollout started",
         None,
     );
-    tell(
-        app,
-        project,
-        &starting(&env.name, &deploy.version, &settings),
-    );
+    tell(app, project, &said);
     let (app, project, env, deploy_id, version) = (
         Arc::clone(app),
         project.to_string(),
@@ -626,14 +698,28 @@ fn spawn(
         let incidents = AppIncidents {
             app: Arc::clone(&app),
         };
-        let ports = Ports {
-            api: &client,
-            artifacts: &artifacts,
-            checks: &checks,
-            incidents: &incidents,
-            runs: &app.recipe_runs,
+        let rolled = match connected {
+            Connected::Cloudflare(client, settings) => {
+                let ports = Ports {
+                    api: &client,
+                    artifacts: &artifacts,
+                    checks: &checks,
+                    incidents: &incidents,
+                    runs: &app.recipe_runs,
+                };
+                roll(&ports, &project, &env, &settings, &release, &run)
+            }
+            Connected::Kubernetes(client, settings) => {
+                let ports = kubernetes::Ports {
+                    client: &client,
+                    artifacts: &artifacts,
+                    checks: &checks,
+                    incidents: &incidents,
+                    runs: &app.recipe_runs,
+                };
+                kubernetes::roll(&ports, &project, &env, &settings, &release, &run)
+            }
         };
-        let rolled = roll(&ports, &project, &env, &settings, &release, &run);
         let running = match rolled.status {
             "passed" => Some(Some(version.clone())),
             "rolled_back" => Some(prior.clone()),
@@ -686,6 +772,19 @@ fn cloudflare_client(app: &App) -> Result<cloudflare::Client, String> {
         account,
         token,
     )
+}
+
+/// The Kubernetes client for the environment's cluster: its address, CA and token from the connector, read on the hub.
+fn kubernetes_client(app: &App) -> Result<kubernetes::Client, String> {
+    let values = crate::connectors::hub_values(app, "kubernetes")?;
+    let url = values.get("url").map(String::as_str).unwrap_or("");
+    let token = values.get("token").map(String::as_str).unwrap_or("");
+    let http: Arc<dyn crate::platforms::http::Http> =
+        match values.get("ca").map(|c| c.trim()).filter(|c| !c.is_empty()) {
+            Some(pem) => Arc::new(crate::platforms::http::PrivateCa(pem.to_string())),
+            None => Arc::new(crate::platforms::http::Ureq),
+        };
+    kubernetes::Client::new(http, url, token)
 }
 
 /// Writes one notice to the project's chat (the loop's notice path).
