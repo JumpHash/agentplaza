@@ -660,6 +660,10 @@ fn env_block(env: &[(String, String)]) -> Vec<u16> {
         block.extend(format!("{key}={value}").encode_utf16());
         block.push(0);
     }
+    // The block ends with an extra NUL, so an empty block needs one more before it.
+    if block.is_empty() {
+        block.push(0);
+    }
     block.push(0);
     block
 }
@@ -690,4 +694,20 @@ fn hresult_error(call: &str, hr: i32) -> SandboxError {
         "{call} failed: HRESULT 0x{:08x}",
         hr as u32
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_environment_block_ends_with_two_nuls_even_when_empty() {
+        assert_eq!(env_block(&[]), [0, 0]);
+        let env = [
+            ("B".to_owned(), "2".to_owned()),
+            ("A".to_owned(), "1".to_owned()),
+        ];
+        let expected: Vec<u16> = "A=1\0B=2\0\0".encode_utf16().collect();
+        assert_eq!(env_block(&env), expected);
+    }
 }

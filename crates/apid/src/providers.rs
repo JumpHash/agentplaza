@@ -1627,7 +1627,9 @@ mod tests {
             redact(format!("bad key {SENTINEL}"), Some(SENTINEL)),
             "bad key •••"
         );
-        // Nothing on disk carries the value: the vault stores ciphertext only.
+        // Nothing on disk carries the value: the vault stores ciphertext only. The store is closed first, since
+        // Windows locks the bytes of an open database.
+        drop(store);
         assert!(!dir.join("secrets.json").exists());
         for file in files_under(&dir) {
             let bytes = std::fs::read(&file).unwrap();

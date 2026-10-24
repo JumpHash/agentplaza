@@ -900,6 +900,16 @@ fn no_value_appears_in_any_route_response_event_or_file() {
     keep(routes::unseal(&ctx, &empty));
     keep(routes::rekey(&ctx, &empty));
     keep(routes::delete(&ctx, &id));
+    assert!(
+        store
+            .audit_page(0, 1000)
+            .expect("audit")
+            .iter()
+            .any(|line| line["event"] == "create"),
+        "the audit did record the create"
+    );
+    // The store is closed before the folder is read: Windows locks the bytes of an open database.
+    drop(store);
 
     let mut seen: Vec<String> = Vec::new();
     while let Ok(frame) = events.try_recv() {
@@ -950,14 +960,6 @@ fn no_value_appears_in_any_route_response_event_or_file() {
             "the hint's characters leaked in event or file {i}"
         );
     }
-    assert!(
-        store
-            .audit_page(0, 1000)
-            .expect("audit")
-            .iter()
-            .any(|line| line["event"] == "create"),
-        "the audit did record the create"
-    );
 }
 
 /// Writes every version's hint the way an older build kept it: in clear, under `hint`, re-signed.
