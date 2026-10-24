@@ -16,7 +16,9 @@ const APID: &str = env!("CARGO_BIN_EXE_apid");
 const OWNER_PORTS: [u16; 3] = [7700, 8899, 19080];
 /// A fake value only. apid imports it into the scratch vault, and it must not reach the log either.
 const FAKE_ENV_LINE: &str = "APZ_OWNER_TOKEN_LOG_TEST_KEY=fake-not-a-secret-0123";
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// apid's start, to its listening line: as generous as the shared harness's (a cold coverage run takes about thirty
+/// seconds).
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const ATTEMPTS: u32 = 3;
 
 /// A temp directory removed on drop.
