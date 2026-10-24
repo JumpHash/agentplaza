@@ -188,7 +188,7 @@ fn operation_id(route: &RouteInfo<'_>) -> String {
 
 /// The group a route is listed under by default: its first segment after `/v1/`, else its first
 /// segment (`internal`, `e2b`, `mcp`); the console's own files are `console`.
-fn tag_of(pattern: &'static str) -> &'static str {
+pub(crate) fn tag_of(pattern: &'static str) -> &'static str {
     let mut segments = pattern.split('/').filter(|s| !s.is_empty());
     match (segments.next(), segments.next()) {
         (Some("v1"), Some(first)) if !first.starts_with('{') => first,

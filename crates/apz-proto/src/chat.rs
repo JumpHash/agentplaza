@@ -270,6 +270,48 @@ pub enum Delta {
     },
 }
 
+/// The in-VM tools the tool library names by path: `code.read` is the guest tool `read`. The harness rewrites a
+/// `tools_call` for one of these into the tool itself, so the call runs under the policy like a call of its own.
+pub const GUEST_TOOL_PATHS: &[(&str, &str)] = &[
+    ("code.read", "read"),
+    ("code.edit", "edit"),
+    ("code.find", "find"),
+    ("code.search", "search"),
+    ("code.run_tests", "run_tests"),
+    ("code.symbols", "symbols"),
+    ("code.definition", "definition"),
+    ("code.references", "references"),
+    ("code.diagnostics", "diagnostics"),
+    ("code.outline", "outline"),
+    ("code.engine", "code_engine"),
+    ("shell.run", "run"),
+    ("shell.script", "run_script"),
+    ("helpers.spawn", "spawn_helper"),
+    ("helpers.await", "await_helper"),
+    ("files.share", "share_file"),
+    ("files.deliver", "deliver_file"),
+    ("web.fetch", "fetch_url"),
+    ("web.download", "download"),
+    ("packages.install", "install_packages"),
+    ("todo.write", "todo_write"),
+    ("artifacts.create", "artifact_create"),
+    ("artifacts.update", "artifact_update"),
+    ("artifacts.attach_data", "artifact_attach_data"),
+    ("artifacts.share_request", "artifact_share_request"),
+    ("tools.package", "tool_package"),
+    ("checkpoints.list", "checkpoint_list"),
+    ("checkpoints.diff", "checkpoint_diff"),
+    ("checkpoints.restore", "checkpoint_restore"),
+];
+
+/// The guest tool a library path names, if it names one.
+pub fn guest_tool_of(path: &str) -> Option<&'static str> {
+    GUEST_TOOL_PATHS
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, tool)| *tool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,26 @@
+meta {
+  name: The tool library's top-level groups, and the route groups it leaves out
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/tool-library
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the root lists groups with their counts, and names what it leaves out", function () {
+    const b = res.getBody();
+    expect(b.path).to.equal("");
+    expect(b.children).to.be.an("array");
+    expect(b.children.map((c) => c.path)).to.include("deploy");
+    expect(b.internal.map((i) => i.group)).to.include("vault");
+  });
+}

@@ -11072,6 +11072,96 @@
         }
       }
     },
+    "/v1/tool-library": {
+      "get": {
+        "operationId": "get_v1_tool_library",
+        "tags": [
+          "tool-library"
+        ],
+        "summary": "Browse the tool library: a group's children, or an entry's detail (path)",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tool-library/search": {
+      "get": {
+        "operationId": "get_v1_tool_library_search",
+        "tags": [
+          "tool-library"
+        ],
+        "summary": "Search the tool library by words (q, optionally under a group)",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/tool-library/entry": {
+      "get": {
+        "operationId": "get_v1_tool_library_entry",
+        "tags": [
+          "tool-library"
+        ],
+        "summary": "One tool library entry with its schema, and which seats may use it (path)",
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/adopt": {
       "post": {
         "operationId": "post_v1_projects_adopt",

@@ -34,6 +34,10 @@ pub enum Runs {
 /// Tools every agent is offered: host tools, plus the guest internet tools,
 /// which run in the agent's VM and reach the internet through the hub's egress proxy.
 const ALWAYS: &[&str] = &[
+    "tools_list",
+    "tools_describe",
+    "tools_search",
+    "tools_call",
     "plaza_toolbox",
     "plaza_toolbox_share",
     "plaza_projects",
@@ -111,6 +115,10 @@ const ALWAYS: &[&str] = &[
 /// The tools a seat uses on most steps: offered with their schemas. Every other tool is deferred: the model sees its name
 /// and one line, and fetches its schema through `tool_search` before it calls the tool.
 const CORE: &[&str] = &[
+    "tools_list",
+    "tools_describe",
+    "tools_search",
+    "tools_call",
     "run",
     "run_tests",
     "run_script",
@@ -246,6 +254,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
+        name if crate::tool_library::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::connectors::by_tool(name).is_some() => Some(Runs::Host),
         name if name.starts_with(crate::mcp::PREFIX) => Some(Runs::Host),
         name if name.starts_with(crate::library::PREFIX) => Some(Runs::Guest),
@@ -653,7 +662,7 @@ static SPECS: LazyLock<Mutex<HashMap<String, Option<ToolSpec>>>> =
 
 /// The spec for `name`: a one-line description and a JSON Schema input. Built once per name; later calls
 /// return a clone from the cache.
-fn spec(name: &str) -> Option<ToolSpec> {
+pub(crate) fn spec(name: &str) -> Option<ToolSpec> {
     if let Some(hit) = SPECS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -706,13 +715,53 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::test_select::spec(name))
         .or_else(|| crate::skills::agent_tools::spec(name))
         .or_else(|| crate::stations::tools::spec(name))
-        .or_else(|| crate::planning::spec(name))?;
+        .or_else(|| crate::planning::spec(name))
+        .or_else(|| crate::tool_library::spec(name))?;
     Some(ToolSpec {
         deferred: false,
         name: name.to_string(),
         description: description.to_string(),
         input_schema,
     })
+}
+
+/// Every name the hub runs itself as a host tool, from its registries (the tables above and each module's `TOOLS`).
+#[cfg(test)]
+pub(crate) fn host_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = ALWAYS
+        .iter()
+        .chain(GATED.iter())
+        .chain(CORE.iter())
+        .chain(IN_VM.iter())
+        .copied()
+        .collect();
+    for list in [
+        crate::skills::agent_tools::TOOLS,
+        crate::toolbox::TOOLS,
+        crate::projects::TOOLS,
+        crate::maintenance::TOOLS,
+        crate::environments::TOOLS,
+        crate::harness_control::TOOLS,
+        crate::agent_proposals::TOOLS,
+        crate::project_memory::TOOLS,
+        crate::curator::TOOLS,
+        crate::verifier::TOOLS,
+        crate::drafts::TOOLS,
+        crate::review_graph::tools::TOOLS,
+        crate::test_select::TOOLS,
+        crate::lab_observe::TOOLS,
+        crate::journal::TOOLS,
+        crate::planning::TOOLS,
+        crate::stations::tools::TOOLS,
+        crate::foundry::breeder::TOOLS,
+        crate::tool_library::TOOLS,
+    ] {
+        names.extend(list.iter().copied());
+    }
+    names.retain(|name| runs(name) == Some(Runs::Host));
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// Plaza task tools (posting, assignment, results); `None` when `name` is not one of them.
@@ -984,6 +1033,9 @@ fn host_call(
     name: &str,
     input: &Value,
 ) -> Result<String, String> {
+    if crate::tool_library::TOOLS.contains(&name) {
+        return crate::tool_library::run(app, agent, work, name, input);
+    }
     let me = agents::connected_agent(agent);
     if let Some(result) = host_tasks(app, agent, name, input) {
         return result;
