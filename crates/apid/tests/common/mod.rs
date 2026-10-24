@@ -148,6 +148,11 @@ impl Hub {
         &self.token
     }
 
+    /// The hub's state directory (its database, its blobs and its lab run directories).
+    pub fn state_dir(&self) -> PathBuf {
+        self.dir.join("state")
+    }
+
     pub fn log(&self) -> String {
         self.output
             .lock()

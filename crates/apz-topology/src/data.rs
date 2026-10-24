@@ -38,8 +38,14 @@ const MAX_OPS: u32 = 100_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataStage {
-    /// The previous release's schema and data: SQL files of the repo, run in order.
+    /// The previous release's schema and data: SQL files of the repo, run in order. Empty when `production` names a
+    /// source: the scrubbed copy of production data is the previous release's data, schema included.
+    #[serde(default)]
     pub previous: Vec<String>,
+    /// The production source the stage runs over (PLAN 22.5, W59): a label naming a read-only source the project's
+    /// scrubber copies. The run starts from that scrubbed copy, which the runner hands in ([`run_from`]).
+    #[serde(default)]
+    pub production: Option<String>,
     /// The new release's migrations: SQL files of the repo, run in order after `previous`.
     #[serde(default)]
     pub migrations: Vec<String>,
@@ -108,8 +114,17 @@ impl DataStage {
     /// What TOML cannot say: the files are repo paths, the ids are labels and unique, the SQL is not empty, the writers
     /// are bounded, and the commands use only their placeholders.
     pub fn check(&self) -> Result<(), String> {
-        if self.previous.is_empty() {
-            return Err("data declares no previous schema (the previous release's SQL)".into());
+        match &self.production {
+            Some(source) if !crate::spec::is_label(source) => {
+                return Err(format!("data production {source:?} is not a label"));
+            }
+            Some(_) if !self.previous.is_empty() => {
+                return Err("data declares both production and previous: the scrubbed copy is the previous release's data".into());
+            }
+            None if self.previous.is_empty() => {
+                return Err("data declares no previous schema (the previous release's SQL)".into());
+            }
+            _ => {}
         }
         for path in self
             .previous
@@ -257,12 +272,29 @@ impl Run {
 
 /// Runs the stage in `dir` (created if missing) over the repo at `root`: the normal run.
 pub fn run(stage: &DataStage, root: &Path, dir: &Path) -> Run {
-    run_with(stage, root, dir, &|_| {})
+    run_inner(stage, root, dir, None, &|_| {})
+}
+
+/// Runs the stage over `copy`, the scrubbed copy of the production source the stage names (PLAN 22.5): the database
+/// starts as that copy, and the stage's `previous` SQL is not run. A stage that names a production source without its
+/// copy does not start (its numbers are unreadable: not run), and a copy handed to a stage with no source is not used.
+pub fn run_from(stage: &DataStage, root: &Path, dir: &Path, copy: Option<&Path>) -> Run {
+    run_inner(stage, root, dir, copy, &|_| {})
 }
 
 /// Runs the stage, calling `between` once after the backup and before the restore, with the work directory: the place a
 /// fault can be put (a backup changed in transit, a disk that fills). A test corrupts the backup here.
 pub fn run_with(stage: &DataStage, root: &Path, dir: &Path, between: &dyn Fn(&Path)) -> Run {
+    run_inner(stage, root, dir, None, between)
+}
+
+fn run_inner(
+    stage: &DataStage,
+    root: &Path,
+    dir: &Path,
+    copy: Option<&Path>,
+    between: &dyn Fn(&Path),
+) -> Run {
     let mut run = Run::default();
     if let Err(why) = std::fs::create_dir_all(dir) {
         run.notes.push(format!(
@@ -275,6 +307,19 @@ pub fn run_with(stage: &DataStage, root: &Path, dir: &Path, between: &dyn Fn(&Pa
     for stale in [DB_FILE, DOWN_FILE, BACKUP_FILE, SIDECAR_FILE, RESTORED_FILE] {
         let _ = std::fs::remove_file(dir.join(stale));
     }
+    if let Some(source) = &stage.production {
+        let Some(copy) = copy else {
+            run.notes.push(format!(
+                "the scrubbed copy of production source {source} was not given: the stage does not start"
+            ));
+            return unreadable(stage, run);
+        };
+        if let Err(why) = std::fs::copy(copy, &db) {
+            run.notes
+                .push(format!("the scrubbed copy was not read: {why}"));
+            return unreadable(stage, run);
+        }
+    }
     let conn = match Connection::open(&db) {
         Ok(conn) => conn,
         Err(why) => {
@@ -283,7 +328,11 @@ pub fn run_with(stage: &DataStage, root: &Path, dir: &Path, between: &dyn Fn(&Pa
         }
     };
     // The previous release's schema and data, then the new release's migrations, then the reads its code runs.
-    let previous = exec_files(&conn, root, &stage.previous, &mut run.notes);
+    let previous = if stage.production.is_some() {
+        0
+    } else {
+        exec_files(&conn, root, &stage.previous, &mut run.notes)
+    };
     run.set("data.previous.failed", previous as f64);
     let migrations = if previous == 0 {
         exec_files(&conn, root, &stage.migrations, &mut run.notes)

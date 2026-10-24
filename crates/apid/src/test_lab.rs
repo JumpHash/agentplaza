@@ -98,6 +98,39 @@ pub struct LabRun {
     pub dropped: u64,
 }
 
+/// A scrubbed copy a run asked for (PLAN 22.5): its outcome and the scan's counts. Never a value: the findings are
+/// [`LabScrubFinding`] rows, by table, column and kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct LabScrub {
+    /// The run the copy was made for.
+    pub run: String,
+    /// The copy's place among the run's copies.
+    pub seq: u64,
+    /// The source's label (its vault connector).
+    pub source: String,
+    /// copied | refused (the scan found personal data) | failed (the source or the rules did not work).
+    pub state: String,
+    pub tables: u64,
+    pub cells: u64,
+    pub cut_documents: u64,
+    /// Why no copy was made, for a failed copy; empty otherwise.
+    #[serde(default)]
+    pub reason: String,
+    pub at_ms: u64,
+}
+
+/// One place the scan found personal data: its table, column, kind and sample count (never the value).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct LabScrubFinding {
+    pub run: String,
+    /// The copy this finding belongs to (a [`LabScrub`]'s `seq`).
+    pub scrub: u64,
+    pub table: String,
+    pub column: String,
+    pub kind: String,
+    pub samples: u64,
+}
+
 /// The lab's state of record: its runs, and what each run observed (its logs, spans and verdicts, child rows keyed by
 /// their run).
 #[derive(Default, apz_store::Table)]
@@ -105,6 +138,10 @@ pub struct LabRun {
 pub(crate) struct Persisted {
     #[table(child = "test_lab_run")]
     pub(crate) runs: Vec<LabRun>,
+    #[table(child = "test_lab_scrub")]
+    pub(crate) scrubs: Vec<LabScrub>,
+    #[table(child = "test_lab_scrub_finding")]
+    pub(crate) scrub_findings: Vec<LabScrubFinding>,
     #[table(child = "test_lab_log")]
     pub(crate) logs: Vec<LabLog>,
     #[table(child = "test_lab_span")]
@@ -431,6 +468,8 @@ pub fn finish(app: &App, id: &str, outcome: &str) -> Result<LabRun, String> {
     run.outcome = Some(outcome.to_string());
     let done = run.clone();
     schedule(&mut p.runs, &nodes, now);
+    // The run's scrubbed copies go with it: production data stays only as long as the run that holds it.
+    crate::lab_scrub::discard(app, id);
     Ok(done)
 }
 

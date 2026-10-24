@@ -16,6 +16,8 @@
 //! - [`fault`], [`resilience`], [`netem`], [`steps`] and [`scenarios`]: the fault proxy in front of a dependency, the
 //!   resilience scenarios that set its faults and kill or skew the guest's services (PLAN 22.8), the traffic shaping and
 //!   the guest's actions where the node can, and the run of a topology's scenarios in the lab VM.
+//! - [`scrub`] and [`source`]: the scrubber (PLAN 22.5): rules per table, column, document field and log pattern, a
+//!   read-only SQLite or Postgres source, and the copy of production data the lab receives after its personal data scan.
 //! - [`data`], [`cache`] and [`messaging`], with [`stage`] for what they share: the data stage's migrations, backup and
 //!   restore, concurrent writers and invariants; the cache's hit rate, invalidation and stampede; and the messaging
 //!   stage's delivery, ordering, retries, dead letters and duplicates (PLAN 22.8). Each runs where the guest is and
@@ -45,8 +47,10 @@ pub mod resilience;
 pub mod resolver;
 pub mod run;
 pub mod scenarios;
+pub mod scrub;
 pub mod security;
 pub mod slowserve;
+pub mod source;
 pub mod spec;
 pub mod stage;
 pub mod steps;
