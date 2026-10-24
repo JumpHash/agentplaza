@@ -74,7 +74,9 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
 }
 
 /// The mock's script for `task`: one entry per seat, answering the conversation whose prompt names the task's goal and
-/// the seat (the prompts say "this task's builder" and "this task's reviewer").
+/// the seat. The seats' prompts are apid's (`work_loop.rs`, `review_graph`): "this task's builder", "one of this task's
+/// sceptic reviewers" and "You are this task's verifier". The verifier proves findings, and the scripted change has none,
+/// so it passes with the reviewers' turns.
 pub fn script_for(task: &Task) -> Value {
     json!([
         {
@@ -82,7 +84,11 @@ pub fn script_for(task: &Task) -> Value {
             "turns": task.builder,
         },
         {
-            "when": [task.goal, "this task's reviewer"],
+            "when": [task.goal, "this task's sceptic reviewers"],
+            "turns": task.reviewer,
+        },
+        {
+            "when": [task.goal, "You are this task's verifier"],
             "turns": task.reviewer,
         },
     ])
@@ -139,7 +145,15 @@ mod tests {
         let script = script_for(&task);
         assert_eq!(script[0]["when"], json!(["Do it.", "this task's builder"]));
         assert_eq!(script[0]["turns"], json!([{"text": "built"}]));
-        assert_eq!(script[1]["when"], json!(["Do it.", "this task's reviewer"]));
+        assert_eq!(
+            script[1]["when"],
+            json!(["Do it.", "this task's sceptic reviewers"])
+        );
         assert_eq!(script[1]["turns"], json!([{"text": "reviewed"}]));
+        assert_eq!(
+            script[2]["when"],
+            json!(["Do it.", "You are this task's verifier"])
+        );
+        assert_eq!(script[2]["turns"], json!([{"text": "reviewed"}]));
     }
 }

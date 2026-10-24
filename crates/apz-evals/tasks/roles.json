@@ -15,6 +15,14 @@
         "read",
         "plaza_verdict"
       ]
+    },
+    "verifier": {
+      "tools": [
+        "run",
+        "run_tests",
+        "read",
+        "plaza_verdict"
+      ]
     }
   }
 }
