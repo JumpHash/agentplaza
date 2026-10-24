@@ -23,6 +23,6 @@ tests {
     expect(b.author).to.equal("owner");
     expect(b.author_cid).to.equal(0);
     expect(b.content_type).to.equal("text/markdown");
-    expect(b.sha256).to.match(/^[0-9a-f]{64}$/);
+    expect(b.hash).to.match(/^[0-9a-f]{64}$/);
   });
 }

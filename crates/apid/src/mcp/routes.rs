@@ -128,7 +128,24 @@ fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
     }
 }
 
+/// The field a body names when it gives a stdio server a container image: the image is refused, and the refusal
+/// names `transport.image` (a parse error would not name a field).
+fn refused_image(body: &Value) -> Option<&'static str> {
+    let transport = body.get("transport")?;
+    let stdio = transport.get("kind").and_then(Value::as_str) == Some("stdio");
+    (stdio && transport.get("image").is_some()).then_some("transport.image")
+}
+
 fn create_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
+    if let Ok(body) = req.json::<Value>()
+        && let Some(field) = refused_image(&body)
+    {
+        return error(
+            400,
+            &format!("bad config: {}", config::IMAGE_REFUSED),
+            Some(field),
+        );
+    }
     let mut server: McpServer = match req.json() {
         Ok(server) => server,
         Err(e) => return error(400, &format!("bad config: {e}"), None),
@@ -170,6 +187,13 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
                 merged[key.as_str()] = value;
             }
         }
+    }
+    if let Some(field) = refused_image(&merged) {
+        return error(
+            400,
+            &format!("bad config: {}", config::IMAGE_REFUSED),
+            Some(field),
+        );
     }
     let mut next: McpServer = match serde_json::from_value(merged) {
         Ok(server) => server,
@@ -390,5 +414,21 @@ fn store_error(err: StoreError) -> Response {
             &format!("at most {} MCP servers", config::MAX_SERVERS),
             None,
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stdio_server_with_an_image_is_refused_at_transport_image() {
+        let stdio_image = json!({"transport": {"kind": "stdio", "image": "bad image"}});
+        assert_eq!(refused_image(&stdio_image), Some("transport.image"));
+        let http = json!({"transport": {"kind": "http", "url": "https://example.com/mcp"}});
+        assert_eq!(refused_image(&http), None);
+        let package = json!({"transport": {"kind": "stdio", "package": {"kind": "npm"}}});
+        assert_eq!(refused_image(&package), None);
+        assert_eq!(refused_image(&json!({"id": "x"})), None);
     }
 }

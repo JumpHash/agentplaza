@@ -53,10 +53,20 @@ pub struct Agent {
     pub caps: Vec<String>,
 }
 
+/// The label of an agent with `role` and `cid` (see [`Agent::label`]).
+fn label_of(role: &str, cid: u64) -> String {
+    if role.is_empty() {
+        format!("agent {cid}")
+    } else {
+        format!("{role} #{cid}")
+    }
+}
+
 impl Agent {
-    /// The agent's label in logs and notices: its role and CID (agents have no names).
+    /// The agent's label in logs and notices: its role and CID (agents have no names). An agent with no role is
+    /// `agent <cid>`, not a label with a blank in front.
     pub fn label(&self) -> String {
-        format!("{} #{}", self.role, self.cid)
+        label_of(&self.role, self.cid)
     }
 }
 
@@ -1331,6 +1341,12 @@ fn transcript(app: &App, req: &Request, params: &Params<'_>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_agent_without_a_role_is_labelled_by_its_cid() {
+        assert_eq!(label_of("", 5), "agent 5");
+        assert_eq!(label_of("architect", 5), "architect #5");
+    }
 
     #[test]
     fn model_source_prefers_agent_then_role_then_default() {

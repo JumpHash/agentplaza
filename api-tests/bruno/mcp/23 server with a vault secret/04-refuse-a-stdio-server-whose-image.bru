@@ -1,5 +1,5 @@
 meta {
-  name: Refuse a stdio server whose image name has spaces
+  name: Refuse a stdio server given a container image
   type: http
   seq: 4
 }
@@ -16,7 +16,7 @@ body:json {
     "name": "Bad image",
     "transport": {
       "kind": "stdio",
-      "image": "bad image"
+      "image": "ghcr.io/example/server:1.0"
     }
   }
 }

@@ -19,10 +19,10 @@ tests {
   test("the agent reads back as idle", function () {
     expect(res.getBody().status).to.equal("idle");
   });
-  test("the agent is on its project", function () {
-    expect(res.getBody().project).to.equal(bru.getVar("int_proj_pau"));
+  test("no session, so no project", function () {
+    expect(res.getBody().project).to.be.null;
   });
-  test("the hold names its reason", function () {
-    expect(res.getBody().held).to.include("paused");
+  test("no session, so the pause holds nothing", function () {
+    expect(res.getBody().held).to.be.null;
   });
 }
