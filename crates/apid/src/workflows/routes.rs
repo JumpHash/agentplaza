@@ -7,6 +7,7 @@
 //! | `POST /v1/projects/{id}/workflows/import` `{file, save}` | one of them: its conversion, or with `save` a change that writes `.plaza/workflows/<name>.toml` |
 //! | `GET /v1/projects/{id}/workflows/{name}` | one workflow: its triggers, its jobs and their steps |
 //! | `GET /v1/projects/{id}/workflows/{name}/runs` | its runs, newest first (the recipe runs, as `/v1/recipe-runs` lists them) |
+//! | `GET /v1/projects/{id}/changes/{change}/workflow-runs` | the workflow runs of one change, newest first |
 //! | `POST /v1/projects/{id}/workflows/{name}/runs` `{change?, release?}` | starts a manual run, for a change or a release |
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
@@ -179,6 +180,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
             Response::json(200, &json!({ "runs": runs }))
         })
         .doc(RouteDoc::new("List a workflow's runs, newest first").errors(&[]))
+        .get("/v1/projects/{id}/changes/{change}/workflow-runs", |app, _, p: &Params<'_>| {
+            let project = p.get("id");
+            if app.projects.get(project).is_none() {
+                return Response::error(404, "no such project");
+            }
+            Response::json(200, &json!({ "runs": super::runs_of_change(app, project, p.get("change")) }))
+        })
+        .doc(RouteDoc::new("The workflow runs of one change, newest first").errors(&[404]))
         .post("/v1/projects/{id}/workflows/{name}/runs", |app, req: &Request, p: &Params<'_>| {
             let project = p.get("id");
             let name = p.get("name");

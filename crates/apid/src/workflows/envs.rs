@@ -1,72 +1,68 @@
-//! The ephemeral environments a workflow calls (PLAN 23): an instance a `deploy` step makes short-lived, the checks an
-//! `against` step runs against its URL, and its teardown.
+//! The ephemeral environments a workflow calls (PLAN 21, 23): an instance a `deploy` step makes short-lived, the checks an
+//! `against` step runs against its address, and its teardown. The instances are the hub's ephemeral environments
+//! (`crate::ephemeral`), kept in plaza.db: a run finds its instances there, so a teardown after a restart still finds them.
 //!
-//! The calls go through [`Envs`], so the walker's tests give a fake. The production implementation, [`HubEnvs`], is the
-//! hub's ephemeral environments; until those land on the hub, its calls refuse with a message that says so. The types
-//! here mirror the ephemeral module's (`crate::ephemeral`) field for field, so that the calls can be made by the hub's
-//! functions without a conversion.
+//! [`Hub`] is the one implementation. Production gives it the hub's store and its production ports (the platforms, the
+//! connectors and the builds); the tests give it the same store with fake ports, so a run's deploy, check and teardown go
+//! through the same code the hub runs.
 
-use serde::{Deserialize, Serialize};
-
-/// What an ephemeral instance is for: a change's lane, or a release.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Subject {
-    Lane(String),
-    Release(String),
-}
-
-/// A request to bring up an ephemeral instance of a project's environment.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpRequest {
-    pub project: String,
-    pub environment: String,
-    pub subject: Subject,
-    pub ttl_minutes: Option<u32>,
-}
-
-/// An ephemeral instance: what it is, where it serves, and when it expires.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Instance {
-    pub id: String,
-    pub project: String,
-    pub environment: String,
-    pub subject: Subject,
-    pub target: String,
-    pub url: Option<String>,
-    pub state: String,
-    pub created_ms: u64,
-    pub expires_ms: u64,
-}
+use crate::ephemeral::against::{self, Verdict};
+use crate::ephemeral::{Instance, Ports, Store, UpRequest, down_with, up_with};
 
 /// The calls a workflow makes to ephemeral environments.
 pub trait Envs: Sync {
-    /// Brings an instance up.
+    /// Brings an instance up (the request names the run that holds it and whether the run keeps it).
     fn up(&self, req: &UpRequest) -> Result<Instance, String>;
-    /// Takes an instance down.
-    fn down(&self, instance: &Instance) -> Result<(), String>;
-    /// Runs `command` against the instance's URL (its checks and tests); the output on success, the reason on failure.
-    fn against(&self, instance: &Instance, command: &str) -> Result<String, String>;
+    /// Every instance a run brought up, oldest first (torn down or not).
+    fn held(&self, run: &str) -> Vec<Instance>;
+    /// Takes an instance down by its id.
+    fn down(&self, instance: &str) -> Result<(), String>;
+    /// Runs `tests` against the instance's address (the environment's paths are probed first, and the tests are called
+    /// with the address). The instance is left up: its run takes it down.
+    fn against(
+        &self,
+        instance: &Instance,
+        tests: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Verdict;
 }
 
-/// The hub's ephemeral environments. Not wired yet: each call refuses, and says so.
-pub struct HubEnvs;
+/// The hub's ephemeral environments over a store and ports. Production: `Hub::of(app)`.
+pub struct Hub<'a> {
+    pub store: &'a Store,
+    pub ports: &'a dyn Ports,
+}
 
-/// Why the hub's ephemeral environments are not there yet.
-pub const NOT_WIRED: &str = "not yet wired: ephemeral environments land on their own branch";
-
-impl Envs for HubEnvs {
+impl Envs for Hub<'_> {
     fn up(&self, req: &UpRequest) -> Result<Instance, String> {
-        let _ = req;
-        Err(NOT_WIRED.to_string())
+        up_with(self.store, self.ports, req.clone())
     }
 
-    fn down(&self, instance: &Instance) -> Result<(), String> {
-        let _ = instance;
-        Err(NOT_WIRED.to_string())
+    fn held(&self, run: &str) -> Vec<Instance> {
+        self.store.for_run(run)
     }
 
-    fn against(&self, instance: &Instance, command: &str) -> Result<String, String> {
-        let _ = (instance, command);
-        Err(NOT_WIRED.to_string())
+    fn down(&self, instance: &str) -> Result<(), String> {
+        down_with(self.store, self.ports, instance)
+    }
+
+    fn against(
+        &self,
+        instance: &Instance,
+        tests: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Verdict {
+        let paths = self
+            .ports
+            .environment(&instance.project, &instance.environment)
+            .map(|env| against::paths_of(&env))
+            .unwrap_or_else(|_| vec!["/".to_string()]);
+        let req = against::Request {
+            project: instance.project.clone(),
+            environment: instance.environment.clone(),
+            subject: instance.subject.clone(),
+            paths,
+            keep: true,
+            ttl_minutes: None,
+        };
+        against::run(self.store, self.ports, &req, Ok(instance.clone()), tests)
     }
 }

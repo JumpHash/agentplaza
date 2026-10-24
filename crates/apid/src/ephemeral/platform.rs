@@ -2,6 +2,8 @@
 //! through the same platform code a deploy uses ([`deploy`]), and removed ([`teardown`]). The production ports
 //! ([`Production`]) read the connectors and the artifacts on the hub; a test gives fakes ([`super::Ports`]).
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use super::{EPHEMERAL, Ports, Subject, Target};
@@ -236,6 +238,7 @@ pub fn deploy(
     project: &str,
     subject: &Subject,
     id: &str,
+    built: &BTreeMap<String, String>,
     target: &mut Target,
 ) -> Result<Option<String>, String> {
     let names = Names::new(env, project, subject, id);
@@ -247,7 +250,7 @@ pub fn deploy(
                 .kubernetes()
                 .cloned()
                 .ok_or_else(|| format!("{} names no Kubernetes Deployment", env.name))?;
-            let host = kube_deploy(ports, env, project, subject, &namespace, &kube)?;
+            let host = kube_deploy(ports, env, project, subject, &namespace, &kube, built)?;
             address(env, &names, &namespace, host)
         }
         Target::CloudflarePages {
@@ -256,7 +259,7 @@ pub fn deploy(
             ..
         } => {
             let client = ports.cloudflare()?;
-            let bytes = ports.artifact(project, subject, &artifact_name(env))?;
+            let bytes = artifact_bytes(ports, project, subject, &artifact_name(env), built)?;
             let (deployment, url) = client.pages_preview(&pages, &branch, &bytes)?;
             *target = Target::CloudflarePages {
                 project: pages,
@@ -267,17 +270,37 @@ pub fn deploy(
         }
         Target::CloudflareWorker { script } => {
             let client = ports.cloudflare()?;
-            let bytes = ports.artifact(project, subject, &artifact_name(env))?;
+            let bytes = artifact_bytes(ports, project, subject, &artifact_name(env), built)?;
             client.script_put(&script, &bytes)?;
             address(env, &names, &script, None)
         }
         Target::AwsStack { stack, region } => {
             let client = ports.aws(region.as_deref())?;
-            let bytes = ports.artifact(project, subject, &artifact_name(env))?;
+            let bytes = artifact_bytes(ports, project, subject, &artifact_name(env), built)?;
             client.stack_apply(&stack, &bytes)?;
             let url = client.stack_output(&stack, URL_OUTPUT)?;
             address(env, &names, &stack, url)
         }
+    }
+}
+
+/// The bytes an instance deploys for artifact `name`: the run's build when it recorded one for the name, else the
+/// subject's artifact built now.
+fn artifact_bytes(
+    ports: &dyn Ports,
+    project: &str,
+    subject: &Subject,
+    name: &str,
+    built: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, String> {
+    // A run's build is keyed by its target (`name@platform`): the first platform's build of the name.
+    let digest = built
+        .iter()
+        .find(|(target, _)| target.split('@').next() == Some(name))
+        .map(|(_, digest)| digest);
+    match digest {
+        Some(digest) => ports.blob(digest),
+        None => ports.artifact(project, subject, name),
     }
 }
 
@@ -304,6 +327,7 @@ fn kube_deploy(
     subject: &Subject,
     namespace: &str,
     kube: &kubernetes::Settings,
+    built: &BTreeMap<String, String>,
 ) -> Result<Option<String>, String> {
     let client = ports.kubernetes()?;
     client.create_namespace(namespace)?;
@@ -327,7 +351,7 @@ fn kube_deploy(
             "stringData": data,
         }));
     }
-    let bytes = ports.artifact(project, subject, &kube.artifact)?;
+    let bytes = artifact_bytes(ports, project, subject, &kube.artifact, built)?;
     let tools = ports.tools();
     let mut manifests = kubernetes::manifests_of(&bytes, &tools)?;
     let image = match ports.release(project, subject)? {
@@ -417,6 +441,13 @@ impl Ports for Production<'_> {
                 .map(Some)
                 .ok_or_else(|| format!("no release {id} in {project}")),
         }
+    }
+
+    fn blob(&self, digest: &str) -> Result<Vec<u8>, String> {
+        let hash = digest
+            .parse::<weft::hash::Hash>()
+            .map_err(|e| format!("the build's digest {digest} is not a hash: {e}"))?;
+        self.app.weft.blob(&hash)
     }
 
     fn artifact(

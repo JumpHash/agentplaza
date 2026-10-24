@@ -2,13 +2,17 @@
 //! rows in memory and the saver writes what changed, the way the environments do. A row keeps its subject and its target
 //! as JSON; [`super::Instance`] is the form the API and the callers read.
 
+use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
 use apz_store::rusqlite::Connection;
 use apz_store::{RowSet, StoreError, Table, TableDef};
 use serde::{Deserialize, Serialize};
 
-use super::{Instance, State, Subject, Target};
+use super::{Instance, State, Subject, TEARDOWN_WAIT_CAP_MS, Target};
+
+/// The first wait after a failed removal (one tick).
+const FIRST_WAIT_MS: u64 = 60_000;
 
 /// How many instances a project keeps (its newest ones; a torn-down one is only a record).
 const KEEP: usize = 50;
@@ -33,6 +37,19 @@ pub struct Row {
     pub url: Option<String>,
     pub created_ms: u64,
     pub expires_ms: u64,
+    /// The workflow run that brought the instance up, else empty.
+    pub run: Option<String>,
+    /// Whether that run keeps the instance.
+    pub keep: bool,
+    /// The build's blobs by artifact name, as JSON (`{}` when the instance builds its own).
+    pub built: String,
+}
+
+/// The ticker's retries of one instance's removal: how many tries failed, and when the next one is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Retry {
+    pub attempts: u32,
+    pub next_ms: u64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -43,6 +60,8 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Default)]
 pub struct Store {
     rows: Mutex<Vec<Row>>,
+    /// The removals that failed and are retried, by instance (in memory: a restart starts the count again).
+    retries: Mutex<BTreeMap<String, Retry>>,
 }
 
 /// The table of the instances: `ephemeral_instance`.
@@ -68,6 +87,43 @@ impl Store {
             .collect();
         out.sort_by_key(|i| std::cmp::Reverse(i.created_ms));
         out
+    }
+
+    /// The instances a workflow run brought up, oldest first (torn down or not).
+    pub fn for_run(&self, run: &str) -> Vec<Instance> {
+        let mut out: Vec<Instance> = lock(&self.rows)
+            .iter()
+            .filter(|r| r.run.as_deref() == Some(run))
+            .filter_map(|r| to_instance(r).ok())
+            .collect();
+        out.sort_by_key(|i| i.created_ms);
+        out
+    }
+
+    /// The retries of an instance's removal, if any failed.
+    pub fn retry_of(&self, id: &str) -> Option<Retry> {
+        lock(&self.retries).get(id).copied()
+    }
+
+    /// Records a failed removal of `id` at `now`: the next try is due after a wait that doubles, up to the cap.
+    pub fn failed_teardown(&self, id: &str, now: u64) -> Retry {
+        let mut retries = lock(&self.retries);
+        let attempts = retries.get(id).map_or(0, |r| r.attempts) + 1;
+        let wait = FIRST_WAIT_MS
+            .checked_shl(attempts - 1)
+            .unwrap_or(u64::MAX)
+            .min(TEARDOWN_WAIT_CAP_MS);
+        let retry = Retry {
+            attempts,
+            next_ms: now.saturating_add(wait),
+        };
+        retries.insert(id.to_string(), retry);
+        retry
+    }
+
+    /// Forgets an instance's failed removals (it came down, or it is gone).
+    pub fn clear_retry(&self, id: &str) {
+        lock(&self.retries).remove(id);
     }
 
     /// Every instance whose row is not torn down, for the ticker.
@@ -184,7 +240,11 @@ fn state_columns(state: &State) -> (&'static str, String) {
 /// An instance as its row.
 pub fn from_instance(instance: &Instance) -> Result<Row, String> {
     let (state, reason) = state_columns(&instance.state);
+    let built = serde_json::to_string(&instance.built).map_err(|e| e.to_string())?;
     Ok(Row {
+        run: instance.run.clone(),
+        keep: instance.keep,
+        built,
         id: instance.id.clone(),
         project: instance.project.clone(),
         environment: instance.environment.clone(),
@@ -217,5 +277,8 @@ pub fn to_instance(row: &Row) -> Result<Instance, String> {
         state,
         created_ms: row.created_ms,
         expires_ms: row.expires_ms,
+        run: row.run.clone(),
+        keep: row.keep,
+        built: serde_json::from_str(&row.built).map_err(|e| e.to_string())?,
     })
 }

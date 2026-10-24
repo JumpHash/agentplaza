@@ -8,7 +8,10 @@
 //! The CI step runs its tests in the change's test fork (`checks::Exec`), so the address is reached from the fork; the
 //! checks and scenarios are the hub's.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
+
+use serde::Serialize;
 
 use crate::base_recipe::Command;
 use crate::checks::Exec;
@@ -42,7 +45,7 @@ pub struct Request {
 
 /// The stage's result: whether it passed, its evidence lines, and the instance as it is after the stage (None when it
 /// never came up).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Verdict {
     pub passed: bool,
     pub lines: Vec<String>,
@@ -134,7 +137,7 @@ fn probe(base: &str, path: &str) -> Result<u16, String> {
 }
 
 /// The paths an environment's instances are probed on.
-fn paths_of(env: &environments::Environment) -> Vec<String> {
+pub fn paths_of(env: &environments::Environment) -> Vec<String> {
     let paths: Vec<String> = crate::deploy::variable(env, CHECK_PATHS)
         .unwrap_or_else(|| "/".to_string())
         .split(',')
@@ -181,6 +184,9 @@ pub fn ci(
             environment: env.name.clone(),
             subject,
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     );
     let commit = project_memory::landed_revision(app, change)?;
@@ -223,6 +229,57 @@ pub fn ci(
     } else {
         Err(summary)
     }
+}
+
+/// The owner's route (`POST /v1/projects/{id}/ephemeral/against`): deploys an instance of the request, probes its paths and
+/// runs the project's confirmed user-test scenarios against its address, then tears it down unless the request keeps it.
+/// Empty `paths` probe the environment's own. A lane's scenarios run at its landed revision, a release's at its own.
+pub fn check(app: &Arc<App>, req: &Request) -> Result<Verdict, String> {
+    let env = environments::list(app, &req.project)
+        .into_iter()
+        .find(|e| e.name == req.environment)
+        .ok_or_else(|| format!("no environment {}", req.environment))?;
+    let paths = if req.paths.is_empty() {
+        paths_of(&env)
+    } else {
+        req.paths.clone()
+    };
+    let commit = match &req.subject {
+        Subject::Lane(change) => project_memory::landed_revision(app, change)?,
+        Subject::Release(id) => app
+            .releases
+            .list(&req.project)
+            .into_iter()
+            .find(|r| &r.id == id)
+            .map(|r| r.from)
+            .ok_or_else(|| format!("no release {id} in {}", req.project))?,
+    };
+    let deployed = super::up(
+        app,
+        UpRequest {
+            project: req.project.clone(),
+            environment: req.environment.clone(),
+            subject: req.subject.clone(),
+            ttl_minutes: req.ttl_minutes,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
+        },
+    );
+    let req = Request {
+        paths,
+        ..req.clone()
+    };
+    let ports = Production { app };
+    let verdict = run(&app.ephemeral, &ports, &req, deployed, &mut |url| {
+        let scenarios = confirmed_scenarios(app, &req.project);
+        if scenarios.is_empty() {
+            return Ok("no user-test scenarios to run".to_string());
+        }
+        crate::user_test::smoke(app, &req.project, url, &commit, &scenarios)?;
+        Ok(format!("{} user-test scenario(s) passed", scenarios.len()))
+    });
+    Ok(verdict)
 }
 
 /// The project's confirmed user-test scenarios, each once (the smoke set a deploy runs).

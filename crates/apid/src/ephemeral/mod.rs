@@ -34,8 +34,9 @@ pub mod against;
 pub mod platform;
 pub mod store;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,6 +62,10 @@ const MINUTE_MS: u64 = 60_000;
 pub const EPHEMERAL: &str = "EPHEMERAL";
 const TTL_VAR: &str = "EPHEMERAL_TTL_MINUTES";
 const URL_VAR: &str = "EPHEMERAL_URL";
+/// How many times the ticker tries to remove an expired instance whose platform is unreachable, and the longest it waits
+/// between two tries (the first retry comes one tick after the failure, then the wait doubles up to this cap).
+pub const MAX_TEARDOWN_ATTEMPTS: u32 = 12;
+pub const TEARDOWN_WAIT_CAP_MS: u64 = 60 * MINUTE_MS;
 
 /// What an instance is an instance of: a lane's change (its build), or a release candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,15 +125,33 @@ pub struct Instance {
     pub created_ms: u64,
     /// When the ticker tears it down.
     pub expires_ms: u64,
+    /// The workflow run that brought the instance up: its teardown is the run's (a run's end takes down what it did not
+    /// keep). None for an instance a caller started by hand or through the CI recipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    /// Whether the run keeps the instance past its end.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub keep: bool,
+    /// The build's blobs the instance deploys, by artifact name (a run's build). Empty: the instance builds its own.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub built: BTreeMap<String, String>,
 }
 
-/// What a caller asks for: an environment of a project, the subject to put in it, and how long it may live.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// What a caller asks for: an environment of a project, the subject to put in it, and how long it may live. A run that
+/// brings an instance up names itself (`run`) and whether it keeps the instance; `built` names a run's build artifacts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpRequest {
     pub project: String,
     pub environment: String,
     pub subject: Subject,
     pub ttl_minutes: Option<u32>,
+    pub run: Option<String>,
+    pub keep: bool,
+    pub built: BTreeMap<String, String>,
 }
 
 /// The hub's ports of an instance: the clock, the environments and releases of the project, the subject's artifacts,
@@ -143,6 +166,8 @@ pub trait Ports: Send + Sync {
     /// The bytes of the subject's artifact `artifact`: the lane's build, or the release's own artifact.
     fn artifact(&self, project: &str, subject: &Subject, artifact: &str)
     -> Result<Vec<u8>, String>;
+    /// The bytes of a blob by its digest (a build a workflow run made and recorded in Weft).
+    fn blob(&self, digest: &str) -> Result<Vec<u8>, String>;
     /// The Kubernetes client of the environment's cluster (the `kubernetes` connector).
     fn kubernetes(&self) -> Result<kubernetes::Client, String>;
     /// The hub's tools for a Kubernetes overlay (kustomize, helm).
@@ -222,6 +247,9 @@ pub fn reserve(store: &Store, ports: &dyn Ports, req: &UpRequest) -> Result<Inst
         state: State::Creating,
         created_ms: now,
         expires_ms: now + u64::from(ttl) * MINUTE_MS,
+        run: req.run.clone(),
+        keep: req.keep,
+        built: req.built.clone(),
     };
     store.insert(&instance)?;
     Ok(instance)
@@ -247,6 +275,7 @@ pub fn execute(store: &Store, ports: &dyn Ports, instance: &Instance) -> Result<
             &instance.project,
             &instance.subject,
             &instance.id,
+            &instance.built,
             &mut target,
         ),
         Err(why) => Err(why),
@@ -321,6 +350,7 @@ pub fn down_with(store: &Store, ports: &dyn Ports, instance: &str) -> Result<(),
         return Ok(());
     }
     platform::teardown(ports, &found.target)?;
+    store.clear_retry(instance);
     store.set_state(instance, &State::TornDown, None)
 }
 
@@ -334,17 +364,41 @@ pub fn list(app: &App, project: &str) -> Vec<Instance> {
     app.ephemeral.list(project)
 }
 
-/// One pass of the ticker over `store`: every instance whose time is up (not creating, not torn down) is torn down. The
-/// notes say what was torn down and what could not be.
+/// One pass of the ticker over `store`: every instance whose time is up (not creating, not torn down) is torn down. A
+/// removal that fails (its platform unreachable) is retried on a backoff: one tick after the failure, the wait doubling
+/// up to [`TEARDOWN_WAIT_CAP_MS`], and at most [`MAX_TEARDOWN_ATTEMPTS`] tries, after which the ticker leaves it for the
+/// owner's `DELETE`. The notes say what was torn down, what could not be, and when it is tried again.
 pub fn sweep(store: &Store, ports: &dyn Ports, now: u64) -> Vec<String> {
     let mut notes = Vec::new();
     for instance in store.live() {
         if instance.expires_ms > now || instance.state == State::Creating {
             continue;
         }
+        let waiting = store
+            .retry_of(&instance.id)
+            .is_some_and(|r| r.attempts >= MAX_TEARDOWN_ATTEMPTS || now < r.next_ms);
+        if waiting {
+            continue;
+        }
         match down_with(store, ports, &instance.id) {
-            Ok(()) => notes.push(format!("ephemeral {}: torn down at its time", instance.id)),
-            Err(why) => notes.push(format!("ephemeral {}: not torn down: {why}", instance.id)),
+            Ok(()) => {
+                store.clear_retry(&instance.id);
+                notes.push(format!("ephemeral {}: torn down at its time", instance.id));
+            }
+            Err(why) => {
+                let retry = store.failed_teardown(&instance.id, now);
+                if retry.attempts >= MAX_TEARDOWN_ATTEMPTS {
+                    notes.push(format!(
+                        "ephemeral {}: gave up after {} tries, not torn down: {why} (DELETE the instance to try again)",
+                        instance.id, retry.attempts
+                    ));
+                } else {
+                    notes.push(format!(
+                        "ephemeral {}: not torn down (try {} of {}), again at {}: {why}",
+                        instance.id, retry.attempts, MAX_TEARDOWN_ATTEMPTS, retry.next_ms
+                    ));
+                }
+            }
         }
     }
     notes
@@ -404,6 +458,9 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     environment: environment.to_string(),
                     subject,
                     ttl_minutes,
+                    run: None,
+                    keep: false,
+                    built: BTreeMap::new(),
                 };
                 match start(&arc, req) {
                     Ok(instance) => Response::json(202, &instance),
@@ -414,6 +471,51 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(
             RouteDoc::new("Start an ephemeral instance of a lane or a release")
                 .errors(&[400, 404, 409, 503]),
+        )
+        .post("/v1/projects/{id}/ephemeral/against", |app, req, p| {
+            with_project(app, p, |app, id| {
+                let Some(arc) = app.handle().upgrade() else {
+                    return Response::error(503, "the hub is not ready");
+                };
+                let body: Value = match serde_json::from_slice(&req.body) {
+                    Ok(body) => body,
+                    Err(e) => return Response::error(400, &format!("bad body: {e}")),
+                };
+                let Some(environment) = body.get("environment").and_then(Value::as_str) else {
+                    return Response::error(400, "name the environment");
+                };
+                let subject = match body.get("subject").map(parse_subject) {
+                    Some(Ok(subject)) => subject,
+                    Some(Err(e)) => return Response::error(400, &e),
+                    None => return Response::error(400, "name the subject"),
+                };
+                let paths = body
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default();
+                let request = against::Request {
+                    project: id.to_string(),
+                    environment: environment.to_string(),
+                    subject,
+                    paths,
+                    keep: body.get("keep").and_then(Value::as_bool).unwrap_or(false),
+                    ttl_minutes: body
+                        .get("ttl_minutes")
+                        .and_then(Value::as_u64)
+                        .and_then(|m| u32::try_from(m).ok()),
+                };
+                match against::check(&arc, &request) {
+                    Ok(verdict) => Response::json(200, &verdict),
+                    Err(e) => Response::error(409, &e),
+                }
+            })
+        })
+        .doc(
+            RouteDoc::new(
+                "Deploy an ephemeral instance, probe its paths and run the project's user-test scenarios against it, then tear it down unless kept",
+            )
+            .errors(&[400, 404, 409, 503]),
         )
         .get("/v1/projects/{id}/ephemeral", |app, _, p| {
             with_project(app, p, |app, id| Response::json(200, &list(app, id)))

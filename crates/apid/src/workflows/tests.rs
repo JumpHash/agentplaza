@@ -1,81 +1,64 @@
-//! The workflows' tests (PLAN 21, 23): the file's checks, the compile to a recipe, and the runs through the recipe engine with a
-//! fake plant (the commands, the deploys, the approvals) and fake ephemeral environments.
+//! The workflows' tests (PLAN 21, 23): the file's checks, the compile to a recipe, and the runs through the recipe engine
+//! with a fake plant (the commands, the builds, the deploys, the approvals). The ephemeral environments are the hub's own
+//! (`crate::ephemeral`) over its store and the ephemeral tests' fake platforms: a run's deploy, check and teardown go
+//! through the code the hub runs, and the Kubernetes calls are recorded by the fake API server in order.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::drive::{self, Plant, RunInfo};
-use super::envs::{Envs, Instance, Subject, UpRequest};
+use apz_store::rusqlite::Connection;
+
+use super::drive::{self, Artifact, Plant, RunInfo, artifacts_of};
+use super::envs::{Envs, Hub};
 use super::model::{Known, Work, Workflow};
 use crate::base_recipe::{Command, WORKSPACE};
 use crate::base_vm::Answer;
+use crate::ephemeral::against::Verdict;
+use crate::ephemeral::tests::{
+    FakeKube, Fakes, MANIFESTS, Site, healthy, kube_env, kube_up_trail, lane,
+};
+use crate::ephemeral::{Instance, State, Store, UpRequest};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
 
-/// The fake ephemeral environments: what was brought up, taken down and checked.
-#[derive(Default)]
-struct FakeEnvs {
-    ups: Mutex<Vec<UpRequest>>,
-    downs: Mutex<Vec<String>>,
-    checks: Mutex<Vec<String>>,
-    check_fails: bool,
-    down_fails: bool,
-}
-
-impl Envs for FakeEnvs {
-    fn up(&self, req: &UpRequest) -> Result<Instance, String> {
-        let mut ups = self.ups.lock().unwrap_or_else(|e| e.into_inner());
-        ups.push(req.clone());
-        Ok(Instance {
-            id: format!("eph-{}", ups.len()),
-            project: req.project.clone(),
-            environment: req.environment.clone(),
-            subject: req.subject.clone(),
-            target: "fake".into(),
-            url: Some("https://preview.test".into()),
-            state: "up".into(),
-            created_ms: 1,
-            expires_ms: 2,
-        })
-    }
-
-    fn down(&self, instance: &Instance) -> Result<(), String> {
-        if self.down_fails {
-            return Err("the environment would not go down".into());
-        }
-        self.downs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(instance.id.clone());
-        Ok(())
-    }
-
-    fn against(&self, _instance: &Instance, command: &str) -> Result<String, String> {
-        self.checks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(command.to_string());
-        if self.check_fails {
-            Err("the checks failed at the preview".into())
-        } else {
-            Ok("checks passed".into())
-        }
-    }
-}
+/// The digest of the build the fake plant makes for `manifests@linux-x86_64`.
+const BUILT_DIGEST: &str =
+    "sha256:0101010101010101010101010101010101010101010101010101010101010101";
 
 /// The fake plant: its commands run in memory (a failing command is one whose argv names `fail_on`), its deploys and
-/// approvals are recorded, and its concurrency is measured.
-#[derive(Default)]
-struct FakePlant {
+/// approvals are recorded, and its concurrency is measured. Its ephemeral environments are the hub's over `store` and
+/// the fake platforms in `ports`; `events` is the order of the calls the run made (the Kubernetes calls and the checks).
+pub struct FakePlant {
     info: RunInfo,
     fail_on: Option<&'static str>,
+    build_fails: bool,
     execs: Mutex<Vec<Vec<String>>>,
     active: AtomicUsize,
     peak: AtomicUsize,
     deploys: Mutex<Vec<(String, Option<String>)>>,
     approvals: Mutex<Vec<String>>,
-    envs: FakeEnvs,
+    store: Store,
+    ports: Fakes,
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl Default for FakePlant {
+    fn default() -> FakePlant {
+        FakePlant {
+            info: RunInfo::default(),
+            fail_on: None,
+            build_fails: false,
+            execs: Mutex::default(),
+            active: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            deploys: Mutex::default(),
+            approvals: Mutex::default(),
+            store: Store::default(),
+            ports: Fakes::new(kube_env(&[])),
+            events: Arc::default(),
+        }
+    }
 }
 
 impl FakePlant {
@@ -90,8 +73,48 @@ impl FakePlant {
         }
     }
 
+    /// A change's plant whose ephemeral environment is a Kubernetes instance on `cluster`, whose address is `site`.
+    fn with_kube(change: &str, cluster: &FakeKube, site: &Site) -> FakePlant {
+        let mut plant = FakePlant::for_change(change);
+        plant.ports = Fakes::new(kube_env(&[("EPHEMERAL_URL", site.base.as_str())]));
+        plant.ports.kube = Some(cluster.base.clone());
+        plant.ports.blobs = vec![(BUILT_DIGEST.into(), MANIFESTS.as_bytes().to_vec())];
+        // The build's blob is what deploys: the instance's own artifact is not used when the run built one.
+        plant.ports.artifact = b"not the build".to_vec();
+        plant
+    }
+
     fn ran(&self) -> Vec<Vec<String>> {
         self.execs.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn hub(&self) -> Hub<'_> {
+        Hub {
+            store: &self.store,
+            ports: &self.ports,
+        }
+    }
+}
+
+impl Envs for FakePlant {
+    fn up(&self, req: &UpRequest) -> Result<Instance, String> {
+        self.hub().up(req)
+    }
+
+    fn held(&self, run: &str) -> Vec<Instance> {
+        self.hub().held(run)
+    }
+
+    fn down(&self, instance: &str) -> Result<(), String> {
+        self.hub().down(instance)
+    }
+
+    fn against(
+        &self,
+        instance: &Instance,
+        tests: &mut dyn FnMut(&str) -> Result<String, String>,
+    ) -> Verdict {
+        self.hub().against(instance, tests)
     }
 }
 
@@ -120,6 +143,18 @@ impl Plant for FakePlant {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(command.argv.clone());
+        if command.label == "against" {
+            let target = command
+                .argv
+                .iter()
+                .find(|a| a.starts_with("APZ_TARGET_URL="))
+                .cloned()
+                .unwrap_or_default();
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("against {target}"));
+        }
         let fails = self
             .fail_on
             .is_some_and(|needle| command.argv.iter().any(|a| a.contains(needle)));
@@ -136,6 +171,16 @@ impl Plant for FakePlant {
 
     fn build(&self) -> Result<Vec<Command>, String> {
         Ok(vec![command("build", "cargo build")])
+    }
+
+    fn artifacts(&self) -> Result<Vec<Artifact>, String> {
+        if self.build_fails {
+            return Err("manifests@linux-x86_64 was not built: no pool has room".into());
+        }
+        Ok(vec![Artifact {
+            target: "manifests@linux-x86_64".into(),
+            digest: BUILT_DIGEST.into(),
+        }])
     }
 
     fn deploy(&self, environment: &str, version: Option<&str>) -> Result<String, String> {
@@ -163,22 +208,16 @@ impl Plant for FakePlant {
     }
 
     fn envs(&self) -> &dyn Envs {
-        &self.envs
+        self
     }
 
     fn retire(&self) {}
 }
 
-/// The walks of these tests share the process's ephemeral-instance table, so they run one at a time.
-static SERIAL: Mutex<()> = Mutex::new(());
-
-/// Starts a run of `text` for the plant's change and walks it, then ends it as the production driver does.
-fn run_to_end(text: &str, plant: &FakePlant, change: &str) -> (Runs, String) {
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    drive::forget_all();
+/// Starts a run of `text` for `change`: its recipe's runs, and the steps it starts with.
+fn start_run(text: &str, change: &str, runs: &Runs) -> (String, Vec<String>) {
     let workflow = Workflow::parse("ship", text).expect("the workflow parses");
     let recipe = workflow.compile().expect("the workflow compiles");
-    let runs = Runs::default();
     let info = RunInfo::of("web", Some(&format!("change:{change}")));
     let (run, moves) = runs.start(
         &recipe,
@@ -196,8 +235,15 @@ fn run_to_end(text: &str, plant: &FakePlant, change: &str) -> (Runs, String) {
             _ => None,
         })
         .collect();
+    (run, ready)
+}
+
+/// Starts a run of `text` for the plant's change and walks it, then ends it as the production driver does.
+fn run_to_end(text: &str, plant: &FakePlant, change: &str) -> (Runs, String) {
+    let runs = Runs::default();
+    let (run, ready) = start_run(text, change, &runs);
     drive::walk(&runs, plant, &run, ready).expect("the run walks");
-    drive::finish(&runs, &plant.envs, &run, 2);
+    drive::finish(&runs, plant, &run, 2);
     (runs, run)
 }
 
@@ -232,7 +278,7 @@ id = "preview"
 needs = ["test"]
 [[jobs.steps]]
 kind = "deploy"
-environment = "preview"
+environment = "pr"
 ephemeral = true
 ttl_minutes = 30
 [[jobs.steps]]
@@ -391,9 +437,16 @@ run = "echo released"
 
 #[test]
 fn a_land_runs_build_test_deploy_against_teardown_in_order_and_takes_the_instance_down() {
-    let plant = FakePlant::for_change("c7");
+    let cluster = FakeKube::start(healthy);
+    let site = Site::start();
+    let plant = FakePlant::with_kube("c7", &cluster, &site);
     let (runs, run) = run_to_end(SHIP, &plant, "c7");
-    assert_eq!(runs.view(&run).unwrap().run.state, RunState::Passed);
+    assert_eq!(
+        runs.view(&run).unwrap().run.state,
+        RunState::Passed,
+        "{:?}",
+        runs.view(&run).unwrap().run.checks
+    );
     // Each step is a check of the run, in the order it ran.
     let order: Vec<String> = steps_checked(&runs, &run)
         .into_iter()
@@ -403,23 +456,33 @@ fn a_land_runs_build_test_deploy_against_teardown_in_order_and_takes_the_instanc
         order,
         ["build:1", "test:1", "preview:1", "preview:2", "preview:3"]
     );
-    // The ephemeral instance is for the change, the check ran against its URL, and the teardown took it down once.
-    let ups = plant.envs.ups.lock().unwrap().clone();
-    assert_eq!(ups.len(), 1);
-    assert_eq!(ups[0].subject, Subject::Lane("c7".into()));
-    assert_eq!(ups[0].ttl_minutes, Some(30));
-    let checks = plant.envs.checks.lock().unwrap().clone();
-    assert_eq!(
-        checks,
-        vec!["curl -fsS https://preview.test/health".to_string()]
+    // The instance is the change's, kept in the hub's store for the run, and it was torn down once by the teardown step.
+    let held = plant.store.for_run(&run);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].subject, lane("c7"));
+    assert_eq!(held[0].expires_ms - held[0].created_ms, 30 * 60_000);
+    assert_eq!(held[0].state, State::TornDown);
+    // The check ran against the instance's address.
+    let checks: Vec<String> = plant
+        .ran()
+        .into_iter()
+        .filter(|argv| argv.iter().any(|a| a == "sh"))
+        .map(|argv| argv.join(" "))
+        .collect();
+    assert!(
+        checks
+            .iter()
+            .any(|c| c.contains(&format!("{}/health", site.base))),
+        "{checks:?}"
     );
-    assert_eq!(plant.envs.downs.lock().unwrap().len(), 1);
 }
 
 #[test]
 fn a_failing_against_fails_the_run_and_still_takes_the_instance_down() {
-    let mut plant = FakePlant::for_change("c8");
-    plant.envs.check_fails = true;
+    let cluster = FakeKube::start(healthy);
+    let site = Site::start();
+    let mut plant = FakePlant::with_kube("c8", &cluster, &site);
+    plant.fail_on = Some("curl");
     let (runs, run) = run_to_end(SHIP, &plant, "c8");
     let view = runs.view(&run).unwrap();
     assert_eq!(view.run.state, RunState::Failed);
@@ -430,9 +493,162 @@ fn a_failing_against_fails_the_run_and_still_takes_the_instance_down() {
     );
     // The teardown step after it never ran, and the run's end took the instance down anyway.
     assert!(!steps.iter().any(|(step, _)| step == "preview:3"));
-    assert_eq!(plant.envs.downs.lock().unwrap().len(), 1);
+    let held = plant.store.for_run(&run);
+    assert_eq!(held[0].state, State::TornDown);
+    assert!(
+        cluster
+            .trail()
+            .last()
+            .is_some_and(|t| t == &format!("DELETE /api/v1/namespaces/{}", "apz-web-lane-c8")),
+        "{:?}",
+        cluster.trail()
+    );
     let teardown = view.run.checks.iter().find(|c| c.step == "teardown");
-    assert!(teardown.is_some_and(|c| c.passed && c.summary.contains("eph-1")));
+    assert!(teardown.is_some_and(|c| c.passed && c.summary.contains(&held[0].id)));
+}
+
+#[test]
+fn a_land_builds_deploys_to_kubernetes_checks_the_instance_and_tears_it_down_in_order() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&events);
+    let cluster = FakeKube::start(move |r| {
+        log.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!("{} {}", r.method, r.path));
+        healthy(r)
+    });
+    let site = Site::start();
+    let mut plant = FakePlant::with_kube("c20", &cluster, &site);
+    plant.events = Arc::clone(&events);
+    plant.ports.secrets = vec![("API_KEY".into(), "s3cr3t-value".into())];
+    let (runs, run) = run_to_end(SHIP, &plant, "c20");
+    assert_eq!(
+        runs.view(&run).unwrap().run.state,
+        RunState::Passed,
+        "{:?}",
+        runs.view(&run).unwrap().run.checks
+    );
+
+    // The build recorded its artifact on the run, and the deploy used that blob (the instance's own artifact would fail).
+    let built = artifacts_of(&runs, &run);
+    assert_eq!(
+        built.get("manifests@linux-x86_64").map(String::as_str),
+        Some(BUILT_DIGEST)
+    );
+
+    // The namespace is created, applied and rolled out; the check runs against the instance; the namespace is deleted.
+    let ns = "apz-web-lane-c20";
+    let mut expected = kube_up_trail(ns);
+    expected.push(format!("against APZ_TARGET_URL={}", site.base));
+    expected.push(format!("DELETE /api/v1/namespaces/{ns}"));
+    let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(got, expected);
+}
+
+#[test]
+fn a_build_that_cannot_be_made_fails_the_build_step_with_its_reason() {
+    let mut plant = FakePlant::for_change("c30");
+    plant.build_fails = true;
+    let (runs, run) = run_to_end(SHIP, &plant, "c30");
+    assert_eq!(runs.view(&run).unwrap().run.state, RunState::Failed);
+    let build = runs
+        .view(&run)
+        .unwrap()
+        .run
+        .checks
+        .into_iter()
+        .find(|c| c.step == "build:1");
+    assert!(build.is_some_and(|c| !c.passed && c.summary.contains("no pool has room")));
+}
+
+#[test]
+fn a_teardown_after_a_restart_finds_the_instance_in_plat_db_and_takes_it_down() {
+    let cluster = FakeKube::start(healthy);
+    let site = Site::start();
+    let gated = r#"
+name = "ship"
+triggers = ["land"]
+[[jobs]]
+id = "build"
+[[jobs.steps]]
+kind = "build"
+[[jobs]]
+id = "preview"
+needs = ["build"]
+[[jobs.steps]]
+kind = "deploy"
+environment = "pr"
+ephemeral = true
+[[jobs.steps]]
+kind = "approval"
+message = "check the preview?"
+[[jobs.steps]]
+kind = "against"
+run = "curl -fsS ${{ env.url }}/health"
+[[jobs.steps]]
+kind = "teardown"
+"#;
+    let runs = Runs::default();
+    // The first hub: the run deploys, then waits for the owner.
+    let first = FakePlant::with_kube("c40", &cluster, &site);
+    let (run, ready) = start_run(gated, "c40", &runs);
+    drive::walk(&runs, &first, &run, ready).expect("the run walks to the approval");
+    let approval = first.approvals.lock().unwrap().clone();
+    assert_eq!(approval.len(), 1, "{approval:?}");
+    assert_eq!(first.store.for_run(&run).len(), 1, "the instance is up");
+
+    // The hub stops and starts again: its ephemeral store is read back from plaza.db.
+    let conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(&crate::ephemeral::store::def().ddl())
+        .unwrap();
+    apz_store::table::replace(
+        &conn,
+        crate::ephemeral::store::def(),
+        &first.store.rows().unwrap(),
+    )
+    .unwrap();
+    let reloaded = Store::default();
+    reloaded.load(&conn).unwrap();
+    let mut second = FakePlant::with_kube("c40", &cluster, &site);
+    second.store = reloaded;
+
+    // The owner approves; the run walks on on the new hub, and its teardown finds the instance.
+    let now = 3;
+    let moves = runs.settle(
+        &run,
+        &approval[0],
+        &Report {
+            passed: true,
+            owner: Some(true),
+            ..Report::default()
+        },
+        now,
+    );
+    let ready = moves
+        .into_iter()
+        .filter_map(|m| match m {
+            crate::recipes::graph::Move::Ready(step) => Some(step),
+            _ => None,
+        })
+        .collect();
+    drive::walk(&runs, &second, &run, ready).expect("the run walks on");
+    drive::finish(&runs, &second, &run, now);
+
+    assert_eq!(runs.view(&run).unwrap().run.state, RunState::Passed);
+    let held = second.store.for_run(&run);
+    assert_eq!(
+        held[0].state,
+        State::TornDown,
+        "the teardown found the instance"
+    );
+    assert!(
+        cluster
+            .trail()
+            .last()
+            .is_some_and(|t| t.starts_with("DELETE /api/v1/namespaces/")),
+        "{:?}",
+        cluster.trail()
+    );
 }
 
 #[test]
@@ -445,7 +661,7 @@ fn a_failed_step_fails_its_job_and_the_jobs_that_need_it() {
     let steps = steps_checked(&runs, &run);
     assert_eq!(steps, vec![("build:1".to_string(), false)]);
     // Nothing after the failure ran: no deploy was brought up.
-    assert!(plant.envs.ups.lock().unwrap().is_empty());
+    assert!(plant.store.for_run(&run).is_empty());
     assert!(
         !view
             .run
@@ -484,8 +700,6 @@ run = "echo shipped"
         },
         ..FakePlant::default()
     };
-    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    drive::forget_all();
     let runs = Runs::default();
     let (run, moves) = runs.start(&recipe, "workflow", "manual", None, Some("web"), None, 1);
     let ready = |moves: Vec<crate::recipes::graph::Move>| -> Vec<String> {
@@ -623,18 +837,6 @@ version = "${{ release.version }}"
             ("staging".to_string(), Some("1.4.0".to_string())),
         ]
     );
-}
-
-#[test]
-fn the_production_envs_refuse_until_the_hub_wires_them() {
-    use super::envs::{HubEnvs, NOT_WIRED};
-    let req = UpRequest {
-        project: "web".into(),
-        environment: "preview".into(),
-        subject: Subject::Lane("c1".into()),
-        ttl_minutes: None,
-    };
-    assert_eq!(HubEnvs.up(&req).unwrap_err(), NOT_WIRED);
 }
 
 #[test]

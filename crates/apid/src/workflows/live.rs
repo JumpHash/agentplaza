@@ -17,21 +17,26 @@ use crate::base_vm::{Answer, Fork, Live};
 use crate::checks;
 use crate::deploy;
 use crate::environments;
+use crate::ephemeral::platform::Production;
 use crate::placement;
 use crate::project_memory;
 use crate::project_stack::{self, Stack, Toolchain};
+use crate::releases::builder;
+use crate::releases::flow::{Ledger, Outcome};
 use crate::state::App;
+use crate::targets;
 use crate::test_select;
 use crate::vault::{Consumer, OnBehalf};
 
-use super::drive::{Plant, RunInfo};
-use super::envs::{Envs, HubEnvs};
+use super::drive::{Artifact, Plant, RunInfo};
+use super::envs::{Envs, Hub};
 use super::model::Work;
 
 /// How long a deploy to a platform may roll out before the step gives up on it.
 const DEPLOY_WAIT_S: u64 = 1800;
 
-/// The production effects of one session of a run.
+/// The production effects of one session of a run. Its ephemeral environments are the hub's: `envs` is the hub's store
+/// with the production ports.
 pub struct LivePlant<'a> {
     pub app: &'a Arc<App>,
     pub info: RunInfo,
@@ -40,9 +45,8 @@ pub struct LivePlant<'a> {
     pub rev: String,
     pub host: &'a Live<'a>,
     pub forks: &'a Mutex<BTreeMap<String, Fork<'a, Live<'a>>>>,
+    pub envs: Hub<'a>,
 }
-
-static HUB: HubEnvs = HubEnvs;
 
 impl<'a> LivePlant<'a> {
     fn start_fork(&self, runs_on: &str) -> Result<Fork<'a, Live<'a>>, String> {
@@ -220,7 +224,42 @@ impl<'a> Plant for LivePlant<'a> {
     }
 
     fn envs(&self) -> &dyn Envs {
-        &HUB
+        &self.envs
+    }
+
+    fn artifacts(&self) -> Result<Vec<Artifact>, String> {
+        let project = self.info.project.as_str();
+        let placements = targets::build_plan(self.app, project)?;
+        let mut out = Vec::new();
+        for declared in self.stack.targets.iter().filter(|t| t.platform.is_some()) {
+            let Some(platform) = declared.platform else {
+                continue;
+            };
+            let target = format!(
+                "{}@{}",
+                declared.name,
+                platform.name().replace("arm64", "aarch64")
+            );
+            match builder::build_target(
+                self.host,
+                project,
+                &self.repo,
+                &self.rev,
+                &self.stack,
+                &placements,
+                &target,
+            )? {
+                Outcome::Built(built) => {
+                    let hash = self.app.weft.upload(&built.bytes)?;
+                    out.push(Artifact {
+                        target,
+                        digest: hash.to_string(),
+                    });
+                }
+                Outcome::NotRun(why) => return Err(format!("{target} was not built: {why}")),
+            }
+        }
+        Ok(out)
     }
 
     fn retire(&self) {
@@ -243,6 +282,11 @@ pub fn run_live(app: &Arc<App>, run: &str, ready: Vec<String>) {
         view.run.project.as_deref().unwrap_or_default(),
         view.run.subject.as_deref(),
     );
+    let ports = Production { app };
+    let envs = Hub {
+        store: &app.ephemeral,
+        ports: &ports,
+    };
     match setup(app, &info) {
         Err(why) => {
             app.recipe_runs
@@ -259,15 +303,21 @@ pub fn run_live(app: &Arc<App>, run: &str, ready: Vec<String>) {
                 rev,
                 host: &host,
                 forks: &forks,
+                envs,
             };
             if let Err(why) = super::drive::walk(&app.recipe_runs, &plant, run, ready) {
                 eprintln!("apid: workflow run {run}: {why}");
             }
             plant.retire();
+            super::drive::finish(&app.recipe_runs, &plant.envs, run, apz_plaza::now_ms());
+            app.bus.publish("recipe_run", &json!({ "run": run }));
+            super::report_finished(app, run);
+            return;
         }
     }
-    super::drive::finish(&app.recipe_runs, &HUB, run, apz_plaza::now_ms());
+    super::drive::finish(&app.recipe_runs, &envs, run, apz_plaza::now_ms());
     app.bus.publish("recipe_run", &json!({ "run": run }));
+    super::report_finished(app, run);
 }
 
 /// What a run's steps read from the repo: the project's stack, its repo and the revision its checks run at (the landed

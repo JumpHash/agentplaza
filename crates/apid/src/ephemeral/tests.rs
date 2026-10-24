@@ -2,6 +2,7 @@
 //! Cloudflare and AWS calls answered by [`Fake`], and a local HTTP server standing in for an instance's address. The
 //! fakes sit behind the real clients, so each request is the ordinary HTTP request the platform code makes.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +28,7 @@ const ROLE: &str = "arn:aws:iam::123456789012:role/deployer";
 const DIGEST: &str = "sha256:abababababababababababababababababababababababababababababababab";
 
 /// The manifests a lane or a release is: a Deployment, a Service and an Ingress naming the instance's host.
-const MANIFESTS: &str = "\
+pub(crate) const MANIFESTS: &str = "\
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,7 +67,7 @@ spec:
 ";
 
 /// The environment's variables for a Kubernetes instance.
-fn kube_env(extra: &[(&str, &str)]) -> Environment {
+pub(crate) fn kube_env(extra: &[(&str, &str)]) -> Environment {
     let mut vars = vec![("EPHEMERAL", "true"), ("KUBERNETES_DEPLOYMENT", "web")];
     vars.extend_from_slice(extra);
     environment("pr", &vars)
@@ -126,24 +127,26 @@ fn release(id: &str) -> Release {
     }
 }
 
-fn lane(id: &str) -> Subject {
+pub(crate) fn lane(id: &str) -> Subject {
     Subject::Lane(id.into())
 }
 
 /// The fakes behind the ports: the clock, the environment, the subject's artifact, the platforms' fakes and the secrets.
-struct Fakes {
-    now: AtomicU64,
-    env: Environment,
-    release: Option<Release>,
-    artifact: Vec<u8>,
-    kube: Option<String>,
-    cloudflare: Option<Arc<Fake>>,
-    aws: Option<Arc<Fake>>,
-    secrets: Vec<(String, String)>,
+pub(crate) struct Fakes {
+    pub(crate) now: AtomicU64,
+    pub(crate) env: Environment,
+    pub(crate) release: Option<Release>,
+    pub(crate) artifact: Vec<u8>,
+    pub(crate) kube: Option<String>,
+    pub(crate) cloudflare: Option<Arc<Fake>>,
+    pub(crate) aws: Option<Arc<Fake>>,
+    pub(crate) secrets: Vec<(String, String)>,
+    /// The blobs a build recorded, by digest (a run's artifacts).
+    pub(crate) blobs: Vec<(String, Vec<u8>)>,
 }
 
 impl Fakes {
-    fn new(env: Environment) -> Fakes {
+    pub(crate) fn new(env: Environment) -> Fakes {
         Fakes {
             now: AtomicU64::new(1_792_843_200_000),
             env,
@@ -153,10 +156,11 @@ impl Fakes {
             cloudflare: None,
             aws: None,
             secrets: Vec::new(),
+            blobs: Vec::new(),
         }
     }
 
-    fn advance(&self, minutes: u64) {
+    pub(crate) fn advance(&self, minutes: u64) {
         self.now.fetch_add(minutes * 60_000, Ordering::SeqCst);
     }
 }
@@ -193,6 +197,14 @@ impl Ports for Fakes {
         _artifact: &str,
     ) -> Result<Vec<u8>, String> {
         Ok(self.artifact.clone())
+    }
+
+    fn blob(&self, digest: &str) -> Result<Vec<u8>, String> {
+        self.blobs
+            .iter()
+            .find(|(d, _)| d == digest)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| format!("no blob {digest}"))
     }
 
     fn kubernetes(&self) -> Result<kubernetes::Client, String> {
@@ -242,22 +254,22 @@ impl Ports for Fakes {
 
 /// One request the fake API server received.
 #[derive(Debug, Clone)]
-struct Seen {
-    method: String,
-    path: String,
-    auth: Option<String>,
-    body: Value,
+pub(crate) struct Seen {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) auth: Option<String>,
+    pub(crate) body: Value,
 }
 
 /// A loopback server standing in for the API server: each request is recorded, then answered by `answer`.
-struct FakeKube {
-    base: String,
-    seen: Arc<Mutex<Vec<Seen>>>,
-    stop: Arc<AtomicBool>,
+pub(crate) struct FakeKube {
+    pub(crate) base: String,
+    pub(crate) seen: Arc<Mutex<Vec<Seen>>>,
+    pub(crate) stop: Arc<AtomicBool>,
 }
 
 impl FakeKube {
-    fn start(answer: impl Fn(&Seen) -> (u16, Value) + Send + 'static) -> FakeKube {
+    pub(crate) fn start(answer: impl Fn(&Seen) -> (u16, Value) + Send + 'static) -> FakeKube {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         listener.set_nonblocking(true).expect("a listener");
         let base = format!("http://{}", listener.local_addr().expect("an address"));
@@ -275,12 +287,12 @@ impl FakeKube {
         FakeKube { base, seen, stop }
     }
 
-    fn requests(&self) -> Vec<Seen> {
+    pub(crate) fn requests(&self) -> Vec<Seen> {
         self.seen.lock().unwrap().clone()
     }
 
     /// The requests as `METHOD path`, in order.
-    fn trail(&self) -> Vec<String> {
+    pub(crate) fn trail(&self) -> Vec<String> {
         self.requests()
             .iter()
             .map(|r| format!("{} {}", r.method, r.path))
@@ -353,7 +365,7 @@ fn serve(stream: TcpStream, answer: &dyn Fn(&Seen) -> (u16, Value), log: &Mutex<
 }
 
 /// A healthy cluster: it wants the hub's token, every apply succeeds, and a Deployment's rollout is complete.
-fn healthy(r: &Seen) -> (u16, Value) {
+pub(crate) fn healthy(r: &Seen) -> (u16, Value) {
     if r.auth.as_deref() != Some(&format!("Bearer {TOKEN}")) {
         return (401, json!({ "message": "unauthorized" }));
     }
@@ -376,7 +388,7 @@ fn complete_deployment(path: &str) -> Value {
 }
 
 /// The trail of a lane's Kubernetes instance in namespace `ns`, from its create to its teardown.
-fn kube_up_trail(ns: &str) -> Vec<String> {
+pub(crate) fn kube_up_trail(ns: &str) -> Vec<String> {
     vec![
         "POST /api/v1/namespaces".to_string(),
         format!("PATCH /api/v1/namespaces/{ns}/configmaps/apz-ephemeral-env"),
@@ -447,13 +459,13 @@ fn form_action(bytes: &[u8]) -> String {
 // ---- A local HTTP server standing in for an instance's address ------------------------------------------------------
 
 /// Answers every request with 200 and "ok" until dropped. Its address is what an instance's URL is set to.
-struct Site {
-    base: String,
+pub(crate) struct Site {
+    pub(crate) base: String,
     stop: Arc<AtomicBool>,
 }
 
 impl Site {
-    fn start() -> Site {
+    pub(crate) fn start() -> Site {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
         listener.set_nonblocking(true).expect("a listener");
         let base = format!("http://{}", listener.local_addr().expect("an address"));
@@ -507,6 +519,9 @@ fn a_lane_comes_up_in_its_own_namespace_and_is_torn_down_last() {
             environment: "pr".into(),
             subject: lane("ch-1"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the instance comes up");
@@ -580,6 +595,9 @@ fn a_release_is_deployed_with_its_pushed_image_pinned_by_digest() {
             environment: "pr".into(),
             subject: Subject::Release("rel-7".into()),
             ttl_minutes: Some(30),
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the release comes up");
@@ -628,6 +646,9 @@ fn a_rollout_that_fails_removes_its_namespace_and_the_instance_says_why() {
             environment: "pr".into(),
             subject: lane("ch-2"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect_err("the rollout fails");
@@ -665,6 +686,9 @@ fn a_pages_preview_is_deployed_on_its_own_branch_and_its_deployment_removed() {
             environment: "pr".into(),
             subject: lane("ch-3"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the preview comes up");
@@ -715,6 +739,9 @@ fn a_worker_script_of_its_own_is_put_under_its_name_and_deleted() {
             environment: "pr".into(),
             subject: lane("ch-4"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the script comes up");
@@ -758,6 +785,9 @@ fn a_cloudformation_stack_instance_is_applied_reads_its_url_and_is_deleted() {
             environment: "pr".into(),
             subject: lane("ch-5"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the stack comes up");
@@ -813,6 +843,9 @@ fn the_ticker_tears_down_an_instance_whose_time_is_up_and_leaves_the_others() {
             environment: "pr".into(),
             subject: lane("short"),
             ttl_minutes: Some(5),
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the short one comes up");
@@ -824,6 +857,9 @@ fn the_ticker_tears_down_an_instance_whose_time_is_up_and_leaves_the_others() {
             environment: "pr".into(),
             subject: lane("long"),
             ttl_minutes: Some(120),
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect("the long one comes up");
@@ -863,6 +899,9 @@ fn an_environment_that_is_not_ephemeral_or_a_subject_not_a_name_is_refused_befor
             environment: "pr".into(),
             subject: lane("ch-6"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect_err("not ephemeral");
@@ -877,6 +916,9 @@ fn an_environment_that_is_not_ephemeral_or_a_subject_not_a_name_is_refused_befor
             environment: "pr".into(),
             subject: lane("ch 6/../x"),
             ttl_minutes: None,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     )
     .expect_err("a subject with a slash");
@@ -976,6 +1018,9 @@ fn an_against_stage_runs_a_test_command_and_a_web_check_then_tears_the_instance_
                 environment: "pr".into(),
                 subject: lane("ch-9"),
                 ttl_minutes: None,
+                run: None,
+                keep: false,
+                built: BTreeMap::new(),
             },
         ),
         &mut |url| {
@@ -1045,6 +1090,9 @@ fn an_against_stage_keeps_its_instance_when_the_run_asks_and_fails_when_a_check_
             environment: "pr".into(),
             subject: lane("ch-10"),
             ttl_minutes: Some(20),
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         },
     );
     let verdict = against::run(&store, &fakes, &req, up, &mut |_| Ok("unused".into()));
@@ -1079,6 +1127,9 @@ fn the_store_rows_round_trip_and_a_project_keeps_its_newest_instances() {
         state: State::Failed("why".into()),
         created_ms: 5,
         expires_ms: 9,
+        run: None,
+        keep: false,
+        built: BTreeMap::new(),
     };
     store.insert(&instance).expect("inserted");
     assert_eq!(store.get(&instance.id), Some(instance.clone()));
@@ -1126,6 +1177,9 @@ fn a_deploy_the_hub_stopped_in_the_middle_of_is_failed_on_load_and_an_instance_n
             state: State::Creating,
             created_ms: 1,
             expires_ms: 2,
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
         })
         .unwrap(),
     ];
@@ -1156,4 +1210,60 @@ fn a_deploy_the_hub_stopped_in_the_middle_of_is_failed_on_load_and_an_instance_n
         platform::plan(&pages, "shop", &lane("ch-13"), "eph-1").is_err(),
         "the production branch is not an instance's"
     );
+}
+
+#[test]
+fn a_failed_teardown_is_retried_on_a_backoff_and_the_ticker_gives_up_at_the_cap() {
+    let cluster = FakeKube::start(healthy);
+    let mut fakes = Fakes::new(kube_env(&[]));
+    fakes.kube = Some(cluster.base.clone());
+    let store = Store::default();
+    let stuck = up_with(
+        &store,
+        &fakes,
+        UpRequest {
+            project: "shop".into(),
+            environment: "pr".into(),
+            subject: lane("stuck"),
+            ttl_minutes: Some(5),
+            run: None,
+            keep: false,
+            built: BTreeMap::new(),
+        },
+    )
+    .expect("the instance comes up");
+
+    // The platform becomes unreachable: nothing listens where the removal calls go. The time is up, and the ticker runs
+    // every minute for twelve hours (a fake clock; each pass advances it one minute).
+    fakes.kube = Some("http://127.0.0.1:1".into());
+    fakes.advance(10);
+    let start = fakes.now();
+    let mut tried = Vec::new();
+    for _ in 0..720 {
+        let notes = sweep(&store, &fakes, fakes.now());
+        if notes
+            .iter()
+            .any(|n| n.contains(&stuck.id) && n.contains("not torn down"))
+        {
+            tried.push((fakes.now() - start) / 60_000);
+        }
+        if notes.iter().any(|n| n.contains("gave up")) {
+            assert_eq!(tried.len(), 12, "the twelfth try is the last");
+        }
+        fakes.advance(1);
+    }
+    // The waits double from one minute to the hour's cap, and the twelfth try ends the retries.
+    assert_eq!(tried, vec![0, 1, 3, 7, 15, 31, 63, 123, 183, 243, 303, 363]);
+    assert_eq!(store.retry_of(&stuck.id).unwrap().attempts, 12);
+    assert_eq!(
+        store.get(&stuck.id).unwrap().state,
+        State::Ready,
+        "the instance is left for the owner, not torn down"
+    );
+
+    // The owner's DELETE tries again, and once the platform answers the instance is gone and its retries forgotten.
+    fakes.kube = Some(cluster.base.clone());
+    down_with(&store, &fakes, &stuck.id).expect("the owner's teardown works");
+    assert_eq!(store.get(&stuck.id).unwrap().state, State::TornDown);
+    assert!(store.retry_of(&stuck.id).is_none());
 }

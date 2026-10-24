@@ -221,8 +221,24 @@ pub const GROUPS: &[Group] = &[
         summary: "A project's environments: where its versions run.",
     },
     Group {
+        path: "environments.ephemeral",
+        summary: "Ephemeral environments: short-lived instances of a version, up for a test and torn down at their TTL.",
+    },
+    Group {
         path: "deploy",
         summary: "Deploys and rollbacks: put a version in an environment, or take it back.",
+    },
+    Group {
+        path: "workflows",
+        summary: "Workflows: the CI/CD pipelines a project defines in .plaza/workflows, their runs, and imports from GitHub Actions.",
+    },
+    Group {
+        path: "workflows.changes",
+        summary: "The workflow runs of a change: its pipelines' test and build results.",
+    },
+    Group {
+        path: "workflows.import",
+        summary: "Import a GitHub Actions workflow as one of the project's workflows, through a change.",
     },
     Group {
         path: "releases",

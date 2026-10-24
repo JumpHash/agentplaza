@@ -311,3 +311,99 @@ fn the_prompt_map_is_stable_and_names_every_top_level_group() {
         first.len()
     );
 }
+
+#[test]
+fn search_finds_the_ephemeral_environments_and_the_workflows() {
+    let ephemeral: Vec<String> = search(None, None, "ephemeral", "")
+        .into_iter()
+        .map(|(entry, _)| entry.path)
+        .collect();
+    assert!(
+        ephemeral.contains(&"environments.ephemeral.up".to_string()),
+        "{ephemeral:?}"
+    );
+    assert!(
+        ephemeral.contains(&"environments.ephemeral.against".to_string()),
+        "{ephemeral:?}"
+    );
+    let workflows: Vec<String> = search(None, None, "workflow", "workflows")
+        .into_iter()
+        .map(|(entry, _)| entry.path)
+        .collect();
+    for path in [
+        "workflows.list",
+        "workflows.run",
+        "workflows.runs",
+        "workflows.changes.runs",
+        "workflows.import.preview",
+        "workflows.import.save",
+    ] {
+        assert!(
+            workflows.contains(&path.to_string()),
+            "{path}: {workflows:?}"
+        );
+    }
+    let by_word: Vec<String> = search(None, None, "pipeline", "")
+        .into_iter()
+        .map(|(entry, _)| entry.path)
+        .collect();
+    assert!(
+        by_word.contains(&"workflows.run".to_string()),
+        "{by_word:?}"
+    );
+}
+
+#[test]
+fn every_ephemeral_and_workflow_route_has_an_entry() {
+    let router = crate::api::router();
+    let covered: BTreeSet<(String, &str)> = sources::CAPABILITIES
+        .iter()
+        .map(|c| (c.method.to_string(), c.pattern))
+        .collect();
+    let mut missing = Vec::new();
+    for route in router.routes() {
+        let pattern = route.pattern;
+        let related = pattern.contains("/ephemeral")
+            || pattern.contains("/workflows")
+            || pattern.contains("workflow-runs");
+        if related && !covered.contains(&(route.method.to_string(), pattern)) {
+            missing.push(format!("{} {pattern}", route.method));
+        }
+    }
+    assert!(missing.is_empty(), "no entry for: {missing:#?}");
+}
+
+#[test]
+fn ephemeral_deploys_and_workflow_runs_are_the_orchestrator_s_and_reads_are_open() {
+    let catalog = catalog();
+    let operator = [
+        "environments.ephemeral.up",
+        "environments.ephemeral.down",
+        "environments.ephemeral.against",
+        "workflows.run",
+    ];
+    for path in operator {
+        let entry = catalog.entry(path).expect(path);
+        assert_eq!(entry.access, Access::Operator, "{path}");
+        assert!(visible(None, "builder", entry).is_err(), "{path}");
+        assert!(
+            visible(None, crate::settings::ORCHESTRATOR_ROLE, entry).is_ok(),
+            "{path}"
+        );
+    }
+    let open = [
+        "environments.ephemeral.list",
+        "environments.ephemeral.get",
+        "workflows.list",
+        "workflows.describe",
+        "workflows.runs",
+        "workflows.changes.runs",
+        "workflows.import.preview",
+        "workflows.import.save",
+    ];
+    for path in open {
+        let entry = catalog.entry(path).expect(path);
+        assert_eq!(entry.access, Access::Any, "{path}");
+        assert!(visible(None, "builder", entry).is_ok(), "{path}");
+    }
+}

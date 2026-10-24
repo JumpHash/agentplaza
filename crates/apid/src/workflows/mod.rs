@@ -24,6 +24,7 @@ use apz_blobs::Hash;
 use serde_json::{Value, json};
 
 use crate::approvals::Approval;
+use crate::github_modes::{self, RunPhase};
 use crate::recipes::graph::{Move, Report};
 use crate::recipes::runs::{CheckRow, RunState};
 use crate::state::App;
@@ -196,8 +197,65 @@ pub fn start(
         subject.as_deref(),
         apz_plaza::now_ms(),
     );
+    report_started(app, &run);
     spawn_run(app, run.clone(), ready_of(moves));
     Ok(run)
+}
+
+/// The GitHub side of a run's start and end (4.7): in `ci` or `mirror` mode the run is a check run on its commit. A
+/// failure to reach GitHub is printed; it does not fail the run.
+fn report_started(app: &App, run: &str) {
+    report(app, run, None);
+}
+
+/// The end of a run, reported as [`report_started`] reports its start.
+pub fn report_finished(app: &App, run: &str) {
+    report(app, run, Some(()));
+}
+
+fn report(app: &App, run: &str, finished: Option<()>) {
+    let Some(view) = app.recipe_runs.view(run) else {
+        return;
+    };
+    let Some(project) = view.run.project.clone() else {
+        return;
+    };
+    let workflow = view
+        .run
+        .recipe
+        .strip_prefix(PREFIX)
+        .unwrap_or(&view.run.recipe);
+    let outcome = view.run.outcome.clone().unwrap_or_default();
+    let phase = match finished {
+        None => RunPhase::Started,
+        Some(()) => RunPhase::Finished {
+            passed: view.run.state == RunState::Passed,
+            summary: &outcome,
+        },
+    };
+    if let Err(why) = github_modes::report_run(
+        app,
+        &project,
+        view.run.subject.as_deref(),
+        run,
+        workflow,
+        phase,
+    ) {
+        eprintln!("apid: workflow {workflow} of {project} on GitHub: {why}");
+    }
+}
+
+/// The workflow runs of one change, newest first (the lane's view of them, as the CI runs are its view).
+pub fn runs_of_change(app: &App, project: &str, change: &str) -> Vec<Value> {
+    let subject = format!("change:{change}");
+    app.recipe_runs
+        .list(None, Some(project))
+        .iter()
+        .filter(|v| {
+            v.run.recipe.starts_with(PREFIX) && v.run.subject.as_deref() == Some(subject.as_str())
+        })
+        .map(crate::recipes::routes::summary)
+        .collect()
 }
 
 fn ready_of(moves: Vec<Move>) -> Vec<String> {

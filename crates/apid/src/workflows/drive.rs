@@ -3,21 +3,25 @@
 //! commands and its log) and settled through the walker, which starts what it opens. An `approval` step waits for the
 //! owner: it is left running, and the owner's decision settles it and walks on (`mod.rs`).
 //!
-//! The effects of a step go through [`Plant`]: the production one (`live.rs`) runs commands in the job's fork, deploys
-//! through the deploy path and asks the owner through Approvals; the tests give a fake. Ephemeral instances are kept here
-//! per run, so a later step (`against`, `teardown`) and the end of the run find them, and the run's end takes down the
-//! ones it did not keep.
+//! The effects of a step go through [`Plant`]: the production one (`live.rs`) runs commands in the job's fork, builds the
+//! platform artifacts through the release builder, deploys through the deploy path and asks the owner through Approvals;
+//! the tests give a fake. Ephemeral instances belong to their run in the ephemeral store (`envs`), so a later step
+//! (`against`, `teardown`) and the end of the run find them after a restart too, and the run's end takes down the ones it
+//! did not keep. A build's artifacts are recorded on the run as checks (`artifact <target>`, the blob's digest), where a
+//! later deploy finds them.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::mpsc;
 
 use crate::base_recipe::{Command, WORKSPACE};
 use crate::base_vm::Answer;
+use crate::ephemeral::against::TARGET_ENV;
+use crate::ephemeral::{Instance, Subject, UpRequest};
 use crate::recipes::graph::{Move, Report};
 use crate::recipes::model::Recipe;
 use crate::recipes::runs::{CheckRow, RunState, Runs};
 
-use super::envs::{Envs, Instance, Subject, UpRequest};
+use super::envs::Envs;
 use super::model::{StepKind, Work};
 
 /// What a run is for: its project, the change it lands (a `land`, `push` or manual run), the release it is for (a
@@ -63,6 +67,9 @@ pub trait Plant: Sync {
     fn tests(&self, select: &str) -> Result<Vec<Command>, String>;
     /// The commands of a `build` step: the project's build commands.
     fn build(&self) -> Result<Vec<Command>, String>;
+    /// The platform artifacts of a `build` step: each declared target built through the release builder, its blob's
+    /// digest. A target that cannot be built is an error (the step fails with the reason).
+    fn artifacts(&self) -> Result<Vec<Artifact>, String>;
     /// Deploys `version` (or the environment's default) to a named environment: the summary, or why it failed.
     fn deploy(&self, environment: &str, version: Option<&str>) -> Result<String, String>;
     /// The value of a vault secret, for an env value (`${{ secrets.NAME }}`).
@@ -75,53 +82,48 @@ pub trait Plant: Sync {
     fn retire(&self);
 }
 
-/// An ephemeral instance a run holds: whether the run keeps it past its end, and whether it was taken down.
-#[derive(Debug, Clone)]
-pub struct Held {
-    pub instance: Instance,
-    pub keep: bool,
-    pub down: bool,
+/// A platform artifact a build step made: its target (`web@linux-x86_64`) and the digest of its blob in Weft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub target: String,
+    pub digest: String,
 }
 
-/// The instances of each run, kept for the run's life in the process (a restart does not forget their TTL: the
-/// ephemeral environments expire on their own).
-static HELD: std::sync::Mutex<BTreeMap<String, Vec<Held>>> = std::sync::Mutex::new(BTreeMap::new());
+/// The check name prefix of a build's artifact row (its commands), and the artifacts a run recorded so far.
+pub const ARTIFACT: &str = "artifact ";
 
-fn held() -> std::sync::MutexGuard<'static, BTreeMap<String, Vec<Held>>> {
-    HELD.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// The live instance of a run: its latest one that is not torn down and did not fail.
+pub fn live_instance(envs: &dyn Envs, run: &str) -> Option<Instance> {
+    envs.held(run).into_iter().rev().find(|i| {
+        !matches!(
+            i.state,
+            crate::ephemeral::State::TornDown | crate::ephemeral::State::Failed(_)
+        )
+    })
 }
 
-/// Keeps an instance a run brought up.
-pub fn hold(run: &str, instance: Instance, keep: bool) {
-    held().entry(run.to_string()).or_default().push(Held {
-        instance,
-        keep,
-        down: false,
-    });
-}
-
-/// The latest instance of a run that is still up.
-pub fn live_instance(run: &str) -> Option<Instance> {
-    held()
-        .get(run)?
+/// The artifacts a run's builds recorded (target to digest), from its checks: the later build of a target wins.
+pub fn artifacts_of(runs: &Runs, run: &str) -> BTreeMap<String, String> {
+    let Some(view) = runs.view(run) else {
+        return BTreeMap::new();
+    };
+    view.run
+        .checks
         .iter()
-        .rev()
-        .find(|h| !h.down)
-        .map(|h| h.instance.clone())
-}
-
-/// Forgets every run's instances: the tests' start (a store numbers its runs from one, so two tests' runs share ids).
-#[cfg(test)]
-pub fn forget_all() {
-    held().clear();
+        .filter(|c| c.passed)
+        .filter_map(|c| {
+            c.commands
+                .strip_prefix(ARTIFACT)
+                .map(|target| (target.to_string(), c.summary.clone()))
+        })
+        .collect()
 }
 
 /// Walks the run from `ready` until nothing is left to start. Returns when every started step has settled.
 pub fn walk(runs: &Runs, plant: &dyn Plant, run: &str, ready: Vec<String>) -> Result<(), String> {
     let view = runs.view(run).ok_or_else(|| format!("no run {run}"))?;
     let works = works_of(&view.recipe);
-    let (tx, rx) = mpsc::channel::<(String, Report, CheckRow)>();
+    let (tx, rx) = mpsc::channel::<(String, Report, CheckRow, Vec<CheckRow>)>();
     let mut queue: VecDeque<String> = ready.into();
     let mut inflight = 0usize;
     std::thread::scope(|scope| {
@@ -153,19 +155,22 @@ pub fn walk(runs: &Runs, plant: &dyn Plant, run: &str, ready: Vec<String>) -> Re
                 let tx = tx.clone();
                 let tests = matches!(work.step, StepKind::Test { .. });
                 scope.spawn(move || {
-                    let (report, row) = execute(plant, run, &step, work, tests);
-                    let _ = tx.send((step, report, row));
+                    let (report, row, artifacts) = execute(plant, runs, run, &step, work, tests);
+                    let _ = tx.send((step, report, row, artifacts));
                 });
             }
             if inflight == 0 {
                 break;
             }
-            let Ok((step, report, row)) = rx.recv() else {
+            let Ok((step, report, row, artifacts)) = rx.recv() else {
                 break;
             };
             inflight -= 1;
             let now = apz_plaza::now_ms();
             runs.record_check(run, row, now);
+            for artifact in artifacts {
+                runs.record_check(run, artifact, now);
+            }
             for m in runs.settle(run, &step, &report, now) {
                 if let Move::Ready(next) = m {
                     queue.push_back(next);
@@ -177,20 +182,34 @@ pub fn walk(runs: &Runs, plant: &dyn Plant, run: &str, ready: Vec<String>) -> Re
 }
 
 /// What a step did, shown on its check: the commands it ran (as the file wrote them, secrets never shown) and its log.
+/// A build's artifacts ride along, each recorded as a check of its own.
 struct Shown {
     commands: String,
     summary: String,
+    artifacts: Vec<Artifact>,
 }
 
-/// Runs one step and reads its result as the report the walk settles with, and the check it records.
+impl Shown {
+    fn of(commands: impl Into<String>, summary: impl Into<String>) -> Shown {
+        Shown {
+            commands: commands.into(),
+            summary: summary.into(),
+            artifacts: Vec::new(),
+        }
+    }
+}
+
+/// Runs one step and reads its result as the report the walk settles with, the check it records, and the artifact checks
+/// a build recorded.
 fn execute(
     plant: &dyn Plant,
+    runs: &Runs,
     run: &str,
     step: &str,
     work: &Work,
     tests: bool,
-) -> (Report, CheckRow) {
-    let (passed, shown) = match perform(plant, run, work) {
+) -> (Report, CheckRow, Vec<CheckRow>) {
+    let (passed, shown) = match perform(plant, runs, run, work) {
         Ok(shown) => (true, shown),
         Err(shown) => (false, shown),
     };
@@ -199,20 +218,27 @@ fn execute(
         tests: tests.then_some(passed),
         ..Report::default()
     };
+    let artifacts = shown
+        .artifacts
+        .iter()
+        .map(|a| CheckRow {
+            step: step.to_string(),
+            passed: true,
+            commands: format!("{ARTIFACT}{}", a.target),
+            summary: a.digest.clone(),
+        })
+        .collect();
     let row = CheckRow {
         step: step.to_string(),
         passed,
         commands: shown.commands,
         summary: shown.summary,
     };
-    (report, row)
+    (report, row, artifacts)
 }
 
-fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
-    let fail = |why: &str| Shown {
-        commands: work.step.name().into(),
-        summary: why.to_string(),
-    };
+fn perform(plant: &dyn Plant, runs: &Runs, run: &str, work: &Work) -> Result<Shown, Shown> {
+    let fail = |why: &str| Shown::of(work.step.name(), why);
     match &work.step {
         StepKind::Run { run: line, env, .. } => {
             let text = expand(plant, run, work, line, false).map_err(|e| fail(&e))?;
@@ -225,10 +251,7 @@ fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
             } else {
                 format!("{}: {log}", exit_of(&answer))
             };
-            let shown = Shown {
-                commands: line.clone(),
-                summary,
-            };
+            let shown = Shown::of(line.clone(), summary);
             if answer.ok { Ok(shown) } else { Err(shown) }
         }
         StepKind::Test { select } => {
@@ -237,7 +260,19 @@ fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
         }
         StepKind::Build {} => {
             let commands = plant.build().map_err(|e| fail(&e))?;
-            run_all(plant, work, "build", commands)
+            let mut shown = run_all(plant, work, "build", commands)?;
+            let artifacts = plant
+                .artifacts()
+                .map_err(|e| Shown::of("build artifacts", e))?;
+            let lines: Vec<String> = artifacts
+                .iter()
+                .map(|a| format!("artifact {} = {}", a.target, a.digest))
+                .collect();
+            if !lines.is_empty() {
+                shown.summary = format!("{}\n{}", shown.summary, lines.join("\n"));
+            }
+            shown.artifacts = artifacts;
+            Ok(shown)
         }
         StepKind::Deploy {
             environment,
@@ -260,17 +295,19 @@ fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
                     environment: environment.clone(),
                     subject,
                     ttl_minutes: *ttl_minutes,
+                    run: Some(run.to_string()),
+                    keep: *keep,
+                    built: artifacts_of(runs, run),
                 };
                 let instance = plant.envs().up(&req).map_err(|e| fail(&e))?;
                 let summary = match &instance.url {
                     Some(url) => format!("instance {} is up at {url}", instance.id),
                     None => format!("instance {} is up (no address yet)", instance.id),
                 };
-                hold(run, instance, *keep);
-                Ok(Shown {
-                    commands: format!("deploy {environment} (ephemeral)"),
+                Ok(Shown::of(
+                    format!("deploy {environment} (ephemeral)"),
                     summary,
-                })
+                ))
             } else {
                 let version = match version {
                     Some(v) => Some(expand(plant, run, work, v, false).map_err(|e| fail(&e))?),
@@ -279,10 +316,7 @@ fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
                 let summary = plant
                     .deploy(environment, version.as_deref())
                     .map_err(|e| fail(&e))?;
-                Ok(Shown {
-                    commands: format!("deploy {environment}"),
-                    summary,
-                })
+                Ok(Shown::of(format!("deploy {environment}"), summary))
             }
         }
         StepKind::Promote {
@@ -299,34 +333,38 @@ fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
             let summary = plant
                 .deploy(environment, version.as_deref())
                 .map_err(|e| fail(&e))?;
-            Ok(Shown {
-                commands: format!("promote {environment}"),
-                summary,
-            })
+            Ok(Shown::of(format!("promote {environment}"), summary))
         }
         StepKind::Against { run: line, env, .. } => {
-            let instance = live_instance(run)
+            let envs = plant.envs();
+            let instance = live_instance(envs, run)
                 .ok_or_else(|| fail("no ephemeral instance is up to test against"))?;
             let text = expand(plant, run, work, line, false).map_err(|e| fail(&e))?;
-            let mut exports = String::new();
+            let mut vars = BTreeMap::new();
             for (name, value) in env {
                 let value = expand(plant, run, work, value, true).map_err(|e| fail(&e))?;
-                exports.push_str(&format!("export {name}={}; ", shell_quote(&value)));
+                vars.insert(name.clone(), value);
             }
-            let command = format!("{exports}{text}");
-            let shown = Shown {
-                commands: line.clone(),
-                summary: String::new(),
+            // The tests run in the job's fork, with the instance's address in APZ_TARGET_URL.
+            let mut tests = |url: &str| {
+                let mut vars = vars.clone();
+                vars.insert(TARGET_ENV.to_string(), url.to_string());
+                let argv = shell_argv(&vars, &text);
+                let answer =
+                    plant.exec(work, &command_of("against", argv, work.step.timeout_s()))?;
+                if answer.ok {
+                    Ok(tail(&answer.output))
+                } else {
+                    Err(format!("{}: {}", exit_of(&answer), tail(&answer.output)))
+                }
             };
-            match plant.envs().against(&instance, &command) {
-                Ok(output) => Ok(Shown {
-                    summary: tail(&output),
-                    ..shown
-                }),
-                Err(why) => Err(Shown {
-                    summary: tail(&why),
-                    ..shown
-                }),
+            let verdict = envs.against(&instance, &mut tests);
+            let summary = verdict.lines.join("; ");
+            let shown = Shown::of(line.clone(), summary.clone());
+            if verdict.passed {
+                Ok(shown)
+            } else {
+                Err(shown)
             }
         }
         StepKind::Teardown {} => {
@@ -343,23 +381,15 @@ fn perform(plant: &dyn Plant, run: &str, work: &Work) -> Result<Shown, Shown> {
             } else {
                 format!("took down {}; {}", list_or_none(&done), failed.join("; "))
             };
+            let shown = Shown::of("teardown", summary);
             if failed.is_empty() {
-                Ok(Shown {
-                    commands: "teardown".into(),
-                    summary,
-                })
+                Ok(shown)
             } else {
-                Err(Shown {
-                    commands: "teardown".into(),
-                    summary,
-                })
+                Err(shown)
             }
         }
         // An approval never reaches here: the walk leaves it to the owner.
-        StepKind::Approval { message } => Ok(Shown {
-            commands: "approval".into(),
-            summary: message.clone(),
-        }),
+        StepKind::Approval { message } => Ok(Shown::of("approval", message.clone())),
     }
 }
 
@@ -373,16 +403,12 @@ fn run_all(
     let names: Vec<String> = commands.iter().map(|c| c.argv.join(" ")).collect();
     let shown_commands = names.join(" && ");
     if commands.is_empty() {
-        return Ok(Shown {
-            commands: label.into(),
-            summary: "nothing to run".into(),
-        });
+        return Ok(Shown::of(label, "nothing to run"));
     }
     let mut log = String::new();
     for command in &commands {
-        let answer = plant.exec(work, command).map_err(|why| Shown {
-            commands: shown_commands.clone(),
-            summary: format!("{}: {why}", command.label),
+        let answer = plant.exec(work, command).map_err(|why| {
+            Shown::of(shown_commands.clone(), format!("{}: {why}", command.label))
         })?;
         log.push_str(&format!(
             "$ {}\n{}",
@@ -391,36 +417,26 @@ fn run_all(
         ));
         log.push('\n');
         if !answer.ok {
-            return Err(Shown {
-                commands: shown_commands,
-                summary: format!("{} {}: {}", command.label, exit_of(&answer), tail(&log)),
-            });
+            return Err(Shown::of(
+                shown_commands,
+                format!("{} {}: {}", command.label, exit_of(&answer), tail(&log)),
+            ));
         }
     }
-    Ok(Shown {
-        commands: shown_commands,
-        summary: tail(&log),
-    })
+    Ok(Shown::of(shown_commands, tail(&log)))
 }
 
 /// Takes down the run's instances that are up and not kept (or all of them, for an explicit teardown). Each result is the
 /// instance's id, or why it could not come down.
 pub fn take_down(run: &str, envs: &dyn Envs, all: bool) -> Vec<Result<String, String>> {
-    let mut out = Vec::new();
-    let mut guard = held();
-    let Some(list) = guard.get_mut(run) else {
-        return out;
-    };
-    for h in list.iter_mut().filter(|h| !h.down && (all || !h.keep)) {
-        match envs.down(&h.instance) {
-            Ok(()) => {
-                h.down = true;
-                out.push(Ok(h.instance.id.clone()));
-            }
-            Err(why) => out.push(Err(format!("{}: {why}", h.instance.id))),
-        }
-    }
-    out
+    envs.held(run)
+        .into_iter()
+        .filter(|i| !matches!(i.state, crate::ephemeral::State::TornDown) && (all || !i.keep))
+        .map(|i| match envs.down(&i.id) {
+            Ok(()) => Ok(i.id),
+            Err(why) => Err(format!("{}: {why}", i.id)),
+        })
+        .collect()
 }
 
 /// The end of a run: the instances it did not keep come down, whatever the run's outcome. Returns the teardown's check,
@@ -475,7 +491,7 @@ fn expand(
             .ok_or_else(|| format!("`{text}` has an expression that does not close"))?;
         let expr = after[..end].trim();
         let value = match expr {
-            "env.url" => live_instance(run)
+            "env.url" => live_instance(plant.envs(), run)
                 .and_then(|i| i.url)
                 .ok_or("no ephemeral environment has an address yet: a deploy with ephemeral = true comes first")?,
             "release.version" => plant
@@ -507,7 +523,19 @@ fn expand(
 }
 
 /// The argument vector of a shell line with its env: `sh -c line`, behind `env K=V` when there are values (never a
-/// shell, so the values are not parsed). Also the secret values it resolved, which a log never shows.
+/// shell, so the values are not parsed).
+fn shell_argv(vars: &BTreeMap<String, String>, line: &str) -> Vec<String> {
+    let mut argv = Vec::new();
+    if !vars.is_empty() {
+        argv.push("env".to_string());
+        argv.extend(vars.iter().map(|(name, value)| format!("{name}={value}")));
+    }
+    argv.extend(["sh".to_string(), "-c".to_string(), line.to_string()]);
+    argv
+}
+
+/// The argument vector of a `run` step's line with its env expanded, and the secret values it resolved (which a log
+/// never shows).
 fn argv_for(
     plant: &dyn Plant,
     run: &str,
@@ -515,20 +543,16 @@ fn argv_for(
     env: &BTreeMap<String, String>,
     line: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    let mut argv = Vec::new();
+    let mut vars = BTreeMap::new();
     let mut secrets = Vec::new();
-    if !env.is_empty() {
-        argv.push("env".to_string());
-        for (name, raw) in env {
-            let value = expand(plant, run, work, raw, true)?;
-            if raw.contains("secrets.") {
-                secrets.push(value.clone());
-            }
-            argv.push(format!("{name}={value}"));
+    for (name, raw) in env {
+        let value = expand(plant, run, work, raw, true)?;
+        if raw.contains("secrets.") {
+            secrets.push(value.clone());
         }
+        vars.insert(name.clone(), value);
     }
-    argv.extend(["sh".to_string(), "-c".to_string(), line.to_string()]);
-    Ok((argv, secrets))
+    Ok((shell_argv(&vars, line), secrets))
 }
 
 /// The text with each secret value replaced: a log never shows what the vault holds.
@@ -565,11 +589,6 @@ fn list_or_none(ids: &[String]) -> String {
     } else {
         ids.join(", ")
     }
-}
-
-/// Quotes a value for a POSIX shell.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// The last 1200 characters of `text`: where a failing command says what went wrong.
