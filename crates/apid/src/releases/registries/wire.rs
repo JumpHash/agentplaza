@@ -59,8 +59,8 @@ pub struct Artifact<'a> {
     pub bytes: &'a [u8],
     /// The SHA-256 of `bytes`, in hex.
     pub sha256: String,
-    /// The artifact's download address (the hub's artifact route), when the hub has a public address: a formula's url.
-    pub link: Option<String>,
+    /// The owner's own Maven repository, when one is set: its Maven 2 layout takes the files, not the Portal's bundle.
+    pub repository: Option<&'a str>,
 }
 
 /// The planner of a registry connector.
@@ -73,7 +73,6 @@ pub fn plan(connector: &str, a: &Artifact) -> Result<Plan, String> {
         "nuget" => nuget(a),
         "oci-registry" => oci(a),
         "go-proxy" => go(a),
-        "homebrew-tap" => brew(a),
         other => Err(format!("{other} is not a publish connector")),
     }
 }
@@ -218,8 +217,11 @@ pub fn pypi(a: &Artifact) -> Result<Plan, String> {
     })
 }
 
-/// Maven's deploy in the Maven 2 layout: the jar and a pom, `PUT` under `group/artifact/version/`. The coordinates
-/// come from the jar's own `pom.properties`. Checksum files are left to the repository manager, which writes them.
+/// Maven's publish of one jar and its pom, with a checksum file for each (`.md5` and `.sha1`). With the Central Portal
+/// (the default) the files go in one bundle zip under `group/artifact/version/`, uploaded as the Portal's `bundle`. With
+/// the owner's own repository, the files are `PUT` in the Maven 2 layout under its address. The coordinates come from the
+/// jar's own `pom.properties`. The bundle carries no `.asc` signatures: the Portal requires them, and the owner's key
+/// signs nothing here (named as not run).
 pub fn maven(a: &Artifact) -> Result<Plan, String> {
     let props = zip_entry(a.bytes, |p| {
         p.starts_with("META-INF/maven/") && p.ends_with("/pom.properties")
@@ -229,32 +231,90 @@ pub fn maven(a: &Artifact) -> Result<Plan, String> {
     let artifact = property(&text, "artifactId").ok_or("pom.properties has no artifactId")?;
     let version = property(&text, "version").ok_or("pom.properties has no version")?;
     check_version(a, &version)?;
-    let dir = format!(
-        "https://central.sonatype.com/repository/maven-releases/{}/{artifact}/{version}",
-        group.replace('.', "/")
-    );
     let pom = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\">\n  \
          <modelVersion>4.0.0</modelVersion>\n  <groupId>{group}</groupId>\n  <artifactId>{artifact}</artifactId>\n  \
          <version>{version}</version>\n  <packaging>jar</packaging>\n</project>\n"
     );
-    Ok(Plan {
-        page: format!("https://central.sonatype.com/artifact/{group}/{artifact}/{version}"),
-        requests: vec![
-            Request::new(
-                "PUT",
-                format!("{dir}/{artifact}-{version}.jar"),
-                &[("content-type", "application/java-archive")],
-                a.bytes.to_vec(),
-            ),
-            Request::new(
-                "PUT",
-                format!("{dir}/{artifact}-{version}.pom"),
-                &[("content-type", "application/xml")],
-                pom.into_bytes(),
-            ),
-        ],
-    })
+    let dir = format!("{}/{artifact}/{version}", group.replace('.', "/"));
+    let jar = format!("{artifact}-{version}.jar");
+    let pom_name = format!("{artifact}-{version}.pom");
+    let mut files = checksummed(&jar, a.bytes);
+    files.extend(checksummed(&pom_name, pom.as_bytes()));
+    let page = format!("https://central.sonatype.com/artifact/{group}/{artifact}/{version}");
+    let requests = match a.repository {
+        Some(base) => files
+            .iter()
+            .map(|(name, bytes)| {
+                Request::new(
+                    "PUT",
+                    format!("{}/{dir}/{name}", base.trim_end_matches('/')),
+                    &[("content-type", content_type_of(name))],
+                    bytes.clone(),
+                )
+            })
+            .collect(),
+        None => {
+            let bundle = bundle(
+                &files
+                    .iter()
+                    .map(|(name, bytes)| (format!("{dir}/{name}"), bytes.clone()))
+                    .collect::<Vec<_>>(),
+            )?;
+            let (content_type, body) = multipart(&[Field::File(
+                "bundle",
+                &format!("{artifact}-{version}-bundle.zip"),
+                &bundle,
+            )]);
+            vec![Request::new(
+                "POST",
+                "https://central.sonatype.com/api/v1/publisher/upload?publishingType=USER_MANAGED",
+                &[("content-type", content_type.as_str())],
+                body,
+            )]
+        }
+    };
+    Ok(Plan { page, requests })
+}
+
+/// A file and its `.md5` and `.sha1` checksum files, as Maven reads them.
+fn checksummed(name: &str, bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    use md5::Digest as _;
+    let md5 = weft::hash::hex(&md5::Md5::digest(bytes));
+    let sha1 = weft::hash::hex(&sha1::Sha1::digest(bytes));
+    vec![
+        (name.to_string(), bytes.to_vec()),
+        (format!("{name}.md5"), md5.into_bytes()),
+        (format!("{name}.sha1"), sha1.into_bytes()),
+    ]
+}
+
+fn content_type_of(name: &str) -> &'static str {
+    if name.ends_with(".jar") {
+        "application/java-archive"
+    } else if name.ends_with(".pom") {
+        "application/xml"
+    } else {
+        "text/plain"
+    }
+}
+
+/// A zip of `files` (each at its path), the bundle the Central Portal takes.
+fn bundle(files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (path, bytes) in files {
+        writer
+            .start_file(path, zip::write::SimpleFileOptions::default())
+            .map_err(|e| format!("the bundle: {e}"))?;
+        writer
+            .write_all(bytes)
+            .map_err(|e| format!("the bundle: {e}"))?;
+    }
+    writer
+        .finish()
+        .map(Cursor::into_inner)
+        .map_err(|e| format!("the bundle: {e}"))
 }
 
 /// NuGet's push: `PUT /api/v2/package` with the `.nupkg` as the form's `package` part. The id and version are the
@@ -362,19 +422,48 @@ pub fn go(a: &Artifact) -> Result<Plan, String> {
     })
 }
 
-/// A Homebrew tap's publish: the formula `Formula/<project>.rb` is written into the tap repository
-/// (`homebrew-<tap>`, the target's `brew:<owner>/<tap>`) with the GitHub contents API. The formula's url is the
-/// artifact's download address and its sha256 the artifact's digest.
-pub fn brew(a: &Artifact) -> Result<Plan, String> {
-    let (owner, tap) = a
-        .target
+/// One platform binary of a formula: its platform, its download address and its SHA-256 in hex.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub platform: String,
+    pub url: String,
+    pub sha256: String,
+}
+
+/// A tap's formula: `Formula/<project>.rb` in the tap repository, its content and the commit's message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Formula {
+    pub owner: String,
+    pub tap: String,
+    pub project: String,
+    pub page: String,
+    pub content: String,
+    pub message: String,
+}
+
+impl Formula {
+    /// The formula's address in the tap on the GitHub contents API: read for its sha, then written.
+    pub fn contents_url(&self) -> String {
+        format!(
+            "https://api.github.com/repos/{}/homebrew-{}/contents/Formula/{}.rb",
+            self.owner, self.tap, self.project
+        )
+    }
+}
+
+/// A release's formula (9.5, Homebrew): the formula of `brew:<owner>/<tap>` names each platform binary the release built
+/// for macOS and Linux, with its url and sha256, and installs the one for the machine. The class is the project's name in
+/// camel case, and the binary is installed under the project's name.
+pub fn formula(
+    project: &str,
+    version: &str,
+    tap_target: &str,
+    entries: &[Entry],
+) -> Result<Formula, String> {
+    let (owner, tap) = tap_target
         .strip_prefix("brew:")
         .and_then(|t| t.split_once('/'))
         .ok_or("a Homebrew target names its tap as brew:<owner>/<tap>")?;
-    let link = a.link.as_deref().ok_or(
-        "a formula's url is the artifact's download address: the hub has no public address",
-    )?;
-    let project = a.project;
     if project.is_empty()
         || !project
             .chars()
@@ -383,6 +472,9 @@ pub fn brew(a: &Artifact) -> Result<Plan, String> {
         return Err(format!(
             "{project} is not a formula name (lower-case letters, digits and -)"
         ));
+    }
+    if entries.is_empty() {
+        return Err("a formula needs at least one platform binary".into());
     }
     let class: String = project
         .split('-')
@@ -394,31 +486,62 @@ pub fn brew(a: &Artifact) -> Result<Plan, String> {
                 .unwrap_or_default()
         })
         .collect();
-    let version = a.version;
-    let formula = format!(
-        "class {class} < Formula\n  version \"{version}\"\n  url \"{link}\"\n  sha256 \"{}\"\n\n  def install\n    \
-         prefix.install Dir[\"*\"]\n  end\nend\n",
-        a.sha256
+    let mut stanzas = String::new();
+    for entry in entries {
+        let (os, cpu) = match entry.platform.as_str() {
+            "macos-aarch64" => ("on_macos", "arm?"),
+            "linux-x86_64" => ("on_linux", "intel?"),
+            "linux-aarch64" => ("on_linux", "arm?"),
+            other => return Err(format!("{other} has no Homebrew formula stanza")),
+        };
+        stanzas.push_str(&format!(
+            "  {os} do\n    if Hardware::CPU.{cpu}\n      url \"{}\"\n      sha256 \"{}\"\n    end\n  end\n",
+            entry.url, entry.sha256
+        ));
+    }
+    let content = format!(
+        "class {class} < Formula\n  version \"{version}\"\n\n{stanzas}\n  def install\n    \
+         bin.install Dir[\"*\"].first => \"{project}\"\n  end\nend\n"
     );
-    let body = serde_json::to_vec(&json!({
-        "message": format!("{project} {version}"),
-        "content": base64::engine::general_purpose::STANDARD.encode(formula),
-    }))
-    .map_err(|e| e.to_string())?;
-    Ok(Plan {
+    Ok(Formula {
+        owner: owner.to_string(),
+        tap: tap.to_string(),
+        project: project.to_string(),
         page: format!("https://github.com/{owner}/homebrew-{tap}/blob/main/Formula/{project}.rb"),
-        requests: vec![Request::new(
-            "PUT",
-            format!(
-                "https://api.github.com/repos/{owner}/homebrew-{tap}/contents/Formula/{project}.rb"
-            ),
-            &[
-                ("accept", "application/vnd.github+json"),
-                ("content-type", "application/json"),
-            ],
-            body,
-        )],
+        content,
+        message: format!("{project} {version}"),
     })
+}
+
+/// The commit of a formula to the tap: a `PUT` of its content, with the sha of the file it replaces (none for a new
+/// file: the contents API refuses an update without it).
+pub fn contents_put(formula: &Formula, existing_sha: Option<&str>) -> Result<Request, String> {
+    let mut doc = json!({
+        "message": formula.message,
+        "content": base64::engine::general_purpose::STANDARD.encode(&formula.content),
+    });
+    if let Some(sha) = existing_sha {
+        doc["sha"] = json!(sha);
+    }
+    Ok(Request::new(
+        "PUT",
+        formula.contents_url(),
+        &[
+            ("accept", "application/vnd.github+json"),
+            ("content-type", "application/json"),
+        ],
+        serde_json::to_vec(&doc).map_err(|e| e.to_string())?,
+    ))
+}
+
+/// The read of a formula's file on the contents API, for its sha.
+pub fn contents_get(formula: &Formula) -> Request {
+    Request::new(
+        "GET",
+        formula.contents_url(),
+        &[("accept", "application/vnd.github+json")],
+        Vec::new(),
+    )
 }
 
 /// The Go module proxy's escaping of a module path: each upper-case letter becomes `!` and its lower-case letter.
@@ -577,7 +700,7 @@ fn zip_entry(bytes: &[u8], wants: impl Fn(&str) -> bool) -> Result<Vec<u8>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::releases::registries::tests::{tgz, zipped};
+    use crate::releases::registries::tests::{form_file, tgz, zip_entries, zipped};
 
     fn artifact<'a>(target: &'a str, version: &'a str, bytes: &'a [u8]) -> Artifact<'a> {
         Artifact {
@@ -586,7 +709,7 @@ mod tests {
             version,
             bytes,
             sha256: sha256_hex(bytes),
-            link: Some("https://hub.example/v1/weft/artifacts/a1/content".into()),
+            repository: None,
         }
     }
 
@@ -676,18 +799,72 @@ mod tests {
     }
 
     #[test]
-    fn a_jar_is_deployed_in_the_maven_layout_with_a_pom() {
+    fn a_jar_goes_to_the_central_portal_as_a_bundle_with_its_checksums() {
         let jar = zipped(&[(
             "META-INF/maven/com.acme/app/pom.properties",
             "groupId=com.acme\nartifactId=app\nversion=0.1.0\n",
         )]);
         let plan = maven(&artifact("gradle:app", "0.1.0", &jar)).unwrap();
+        let [upload] = &plan.requests[..] else {
+            panic!("one upload: {plan:?}");
+        };
+        assert_eq!(upload.method, "POST");
+        assert_eq!(
+            upload.url,
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=USER_MANAGED"
+        );
+        let bundle = form_file(&upload.body, "bundle").expect("a bundle part");
+        let files = zip_entries(&bundle);
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "com/acme/app/0.1.0/app-0.1.0.jar",
+                "com/acme/app/0.1.0/app-0.1.0.jar.md5",
+                "com/acme/app/0.1.0/app-0.1.0.jar.sha1",
+                "com/acme/app/0.1.0/app-0.1.0.pom",
+                "com/acme/app/0.1.0/app-0.1.0.pom.md5",
+                "com/acme/app/0.1.0/app-0.1.0.pom.sha1",
+            ]
+        );
+        // Each checksum file holds the hex digest of its file.
+        use md5::Digest as _;
+        let entry = |name: &str| &files.iter().find(|(n, _)| n == name).unwrap().1;
+        let jar_bytes = entry("com/acme/app/0.1.0/app-0.1.0.jar");
+        assert_eq!(
+            entry("com/acme/app/0.1.0/app-0.1.0.jar.md5"),
+            weft::hash::hex(&md5::Md5::digest(jar_bytes)).as_bytes()
+        );
+        assert_eq!(
+            entry("com/acme/app/0.1.0/app-0.1.0.jar.sha1"),
+            weft::hash::hex(&sha1::Sha1::digest(jar_bytes)).as_bytes()
+        );
+        assert!(
+            String::from_utf8_lossy(entry("com/acme/app/0.1.0/app-0.1.0.pom"))
+                .contains("<artifactId>app</artifactId>")
+        );
+    }
+
+    #[test]
+    fn a_jar_goes_to_the_owners_maven_repository_in_the_maven2_layout_when_one_is_set() {
+        let jar = zipped(&[(
+            "META-INF/maven/com.acme/app/pom.properties",
+            "groupId=com.acme\nartifactId=app\nversion=0.1.0\n",
+        )]);
+        let mut a = artifact("gradle:app", "0.1.0", &jar);
+        a.repository = Some("https://repo.example/maven/");
+        let plan = maven(&a).unwrap();
         let urls: Vec<&str> = plan.requests.iter().map(|r| r.url.as_str()).collect();
+        let dir = "https://repo.example/maven/com/acme/app/0.1.0/app-0.1.0";
         assert_eq!(
             urls,
             [
-                "https://central.sonatype.com/repository/maven-releases/com/acme/app/0.1.0/app-0.1.0.jar",
-                "https://central.sonatype.com/repository/maven-releases/com/acme/app/0.1.0/app-0.1.0.pom",
+                format!("{dir}.jar"),
+                format!("{dir}.jar.md5"),
+                format!("{dir}.jar.sha1"),
+                format!("{dir}.pom"),
+                format!("{dir}.pom.md5"),
+                format!("{dir}.pom.sha1"),
             ]
         );
         assert!(plan.requests.iter().all(|r| r.method == "PUT"));
@@ -773,36 +950,64 @@ mod tests {
     }
 
     #[test]
-    fn a_homebrew_formula_is_written_to_its_tap_with_the_artifact_url_and_digest() {
-        let bytes = b"the tarball".to_vec();
-        let plan = brew(&Artifact {
-            target: "brew:acme/tools",
-            ..artifact("brew:acme/tools", "0.1.0", &bytes)
-        })
-        .unwrap();
-        let req = &plan.requests[0];
-        assert_eq!(req.method, "PUT");
+    fn a_formula_names_each_platform_binary_and_is_written_to_the_tap_with_its_sha() {
+        let entries = [
+            Entry {
+                platform: "macos-aarch64".into(),
+                url: "https://hub.example/a/content".into(),
+                sha256: "aa".into(),
+            },
+            Entry {
+                platform: "linux-x86_64".into(),
+                url: "https://hub.example/b/content".into(),
+                sha256: "bb".into(),
+            },
+        ];
+        let f = formula("app", "0.1.0", "brew:acme/tools", &entries).unwrap();
         assert_eq!(
-            req.url,
+            f.page,
+            "https://github.com/acme/homebrew-tools/blob/main/Formula/app.rb"
+        );
+        assert_eq!(f.message, "app 0.1.0");
+        assert!(
+            f.content
+                .starts_with("class App < Formula\n  version \"0.1.0\"\n")
+        );
+        assert!(f.content.contains(
+            "on_macos do\n    if Hardware::CPU.arm?\n      url \"https://hub.example/a/content\"\n      sha256 \"aa\""
+        ));
+        assert!(f.content.contains(
+            "on_linux do\n    if Hardware::CPU.intel?\n      url \"https://hub.example/b/content\"\n      sha256 \"bb\""
+        ));
+        // A new file is written without a sha; an existing one carries the sha it replaces.
+        let new = contents_put(&f, None).unwrap();
+        assert_eq!(new.method, "PUT");
+        assert_eq!(
+            new.url,
             "https://api.github.com/repos/acme/homebrew-tools/contents/Formula/app.rb"
         );
-        let doc: Value = serde_json::from_slice(&req.body).unwrap();
-        let formula = String::from_utf8(
-            base64::engine::general_purpose::STANDARD
-                .decode(doc["content"].as_str().unwrap())
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(formula.starts_with("class App < Formula\n"), "{formula}");
-        assert!(formula.contains("url \"https://hub.example/v1/weft/artifacts/a1/content\""));
-        assert!(formula.contains(&format!("sha256 \"{}\"", sha256_hex(&bytes))));
-        assert!(
-            brew(&Artifact {
-                link: None,
-                ..artifact("brew:acme/tools", "0.1.0", &bytes)
-            })
-            .is_err()
-        );
+        let doc: Value = serde_json::from_slice(&new.body).unwrap();
+        assert!(doc.get("sha").is_none());
+        let put = contents_put(&f, Some("old-sha")).unwrap();
+        let doc: Value = serde_json::from_slice(&put.body).unwrap();
+        assert_eq!(doc["sha"], "old-sha");
+        let written = base64::engine::general_purpose::STANDARD
+            .decode(doc["content"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(written, f.content.as_bytes());
+        assert_eq!(contents_get(&f).method, "GET");
+    }
+
+    #[test]
+    fn a_formula_refuses_a_platform_it_has_no_stanza_for_and_a_tap_without_an_owner() {
+        let windows = [Entry {
+            platform: "windows-x86_64".into(),
+            url: "https://hub.example/a/content".into(),
+            sha256: "aa".into(),
+        }];
+        assert!(formula("app", "0.1.0", "brew:acme/tools", &windows).is_err());
+        assert!(formula("app", "0.1.0", "acme/tools", &windows).is_err());
+        assert!(formula("app", "0.1.0", "brew:acme/tools", &[]).is_err());
     }
 
     #[test]

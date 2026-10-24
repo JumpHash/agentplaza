@@ -108,36 +108,54 @@ pub struct Step<'a> {
 
 /// Publishes the artifacts of `rel` to their registries and returns the sync rows of every registry artifact: the rows
 /// already `published` are carried forward, the others are sent now. `bytes_of` reads an artifact by its digest.
+///
+/// A package is the artifact built for `any` (Weft names a target `<name>@<platform>`). The exception is Homebrew: a
+/// formula names every macOS and Linux binary of its tap, so those are published together, one commit per tap.
 pub fn publish_release(
     step: &Step,
     rel: &Release,
     bytes_of: &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Vec<ReleaseSync> {
     let mut rows = Vec::new();
+    let mut taps: BTreeMap<String, Vec<&ReleaseArtifact>> = BTreeMap::new();
     for art in &rel.artifacts {
-        // A package is the artifact built for `any` (Weft names a target `<name>@<platform>`): a platform build is not one.
-        let Some((name, "any")) = art.target.rsplit_once('@') else {
+        let Some((name, platform)) = art.target.rsplit_once('@') else {
             continue;
         };
         let Some(connector) = connector_of(ecosystem_of(name)) else {
             continue;
         };
-        let platform = platform_of(connector, &art.target);
-        if let Some(done) = rel
-            .sync
-            .iter()
-            .find(|s| s.platform == platform && s.state == "published")
-        {
-            rows.push(done.clone());
+        if connector == "homebrew-tap" {
+            if platform.starts_with("macos-") || platform.starts_with("linux-") {
+                taps.entry(name.to_string()).or_default().push(art);
+            }
             continue;
         }
-        let (state, url) = match send_one(step, rel, art, name, connector, bytes_of) {
-            Ok(Sent::Published(page)) => ("published".to_string(), Some(page)),
-            Ok(Sent::Skipped(why)) => (format!("skipped: {why}"), None),
-            Err(e) => (format!("failed: {e}"), None),
-        };
+        if platform != "any" {
+            continue;
+        }
+        let key = platform_of(connector, &art.target);
+        if let Some(row) = carried(rel, &key) {
+            rows.push(row);
+            continue;
+        }
+        let (state, url) = outcome(send_one(step, rel, art, name, connector, bytes_of));
         rows.push(ReleaseSync {
-            platform,
+            platform: key,
+            state,
+            url,
+            at_ms: step.at_ms,
+        });
+    }
+    for (tap, arts) in taps {
+        let key = platform_of("homebrew-tap", &tap);
+        if let Some(row) = carried(rel, &key) {
+            rows.push(row);
+            continue;
+        }
+        let (state, url) = outcome(send_brew(step, rel, &tap, &arts, bytes_of));
+        rows.push(ReleaseSync {
+            platform: key,
             state,
             url,
             at_ms: step.at_ms,
@@ -146,13 +164,31 @@ pub fn publish_release(
     rows
 }
 
+/// The row a registry already has for a platform, when it was published.
+fn carried(rel: &Release, platform: &str) -> Option<ReleaseSync> {
+    rel.sync
+        .iter()
+        .find(|s| s.platform == platform && s.state == "published")
+        .cloned()
+}
+
+fn outcome(result: Result<Sent, String>) -> (String, Option<String>) {
+    match result {
+        Ok(Sent::Published(page)) => ("published".to_string(), Some(page)),
+        Ok(Sent::Skipped(why)) => (format!("skipped: {why}"), None),
+        Err(e) => (format!("failed: {e}"), None),
+    }
+}
+
 enum Sent {
     Published(String),
     Skipped(String),
 }
 
 /// One artifact to one registry: its secret (skipped when the vault has none), its plan, and each request through the
-/// mediator. A 409 is the version already being there, which is published as far as the registry is concerned.
+/// mediator. A 409 is the version already being there, which is published as far as the registry is concerned. The
+/// owner's own Maven repository (`MAVEN_REPOSITORY_URL`) takes the Maven 2 layout with basic auth; the Central Portal
+/// takes its bundle with the bearer token.
 fn send_one(
     step: &Step,
     rel: &Release,
@@ -162,17 +198,20 @@ fn send_one(
     bytes_of: &dyn Fn(&str) -> Result<Vec<u8>, String>,
 ) -> Result<Sent, String> {
     let manifest = manifest_of(connector)?;
+    let binding = binding_of(connector);
     let secret = match manifest.secrets.first() {
         None => None,
-        Some(name) => match step.vault.secret(name, &binding_of(connector))? {
+        Some(secret) => match step.vault.secret(secret, &binding)? {
             Some(raw) => Some(raw),
-            None => return Ok(Sent::Skipped(format!("{name} is not in the vault"))),
+            None => return Ok(Sent::Skipped(format!("{secret} is not in the vault"))),
         },
     };
+    let repository = if connector == "maven-central" {
+        step.vault.secret("MAVEN_REPOSITORY_URL", &binding)?
+    } else {
+        None
+    };
     let bytes = bytes_of(&art.digest)?;
-    let link = step
-        .link_base
-        .map(|base| format!("{base}/{}/content", art.artifact));
     let plan = wire::plan(
         connector,
         &wire::Artifact {
@@ -181,14 +220,16 @@ fn send_one(
             version: &rel.version,
             bytes: &bytes,
             sha256: sha256_hex(&bytes),
-            link,
+            repository: repository.as_deref(),
         },
     )?;
+    let format = match (connector, repository.is_some()) {
+        ("maven-central", true) => "Basic ${SECRET}".to_string(),
+        _ => manifest.auth_format.clone(),
+    };
     let secret = secret.map(|raw| Secret {
         header: manifest.auth_header.clone(),
-        value: manifest
-            .auth_format
-            .replace("${SECRET}", &encoded(connector, &raw)),
+        value: format.replace("${SECRET}", &encoded(connector, &raw)),
     });
     let mediator = Mediator {
         egress: &manifest.egress,
@@ -198,19 +239,92 @@ fn send_one(
         body_cap: BODY_CAP,
     };
     for req in &plan.requests {
-        let headers: BTreeMap<String, String> = req.headers.iter().cloned().collect();
-        let reply = mediator.send_bytes(req.method, &req.url, &headers, &req.body)?;
+        let reply = send(&mediator, req)?;
         if !((200..300).contains(&reply.status) || reply.status == 409) {
-            return Err(format!(
-                "{} {} answered {}: {}",
-                req.method,
-                req.url.split('?').next().unwrap_or(""),
-                reply.status,
-                reply.body.chars().take(200).collect::<String>()
-            ));
+            return Err(refusal(req, &reply));
         }
     }
     Ok(Sent::Published(plan.page))
+}
+
+/// One tap's formula (9.5, Homebrew): the release's macOS and Linux binaries, each with its url and sha256, written as one
+/// commit to the tap's `Formula/<project>.rb` through the GitHub contents API. The file it replaces is read first: the
+/// contents API takes an update only with its sha, and refuses a stale one.
+fn send_brew(
+    step: &Step,
+    rel: &Release,
+    tap: &str,
+    arts: &[&ReleaseArtifact],
+    bytes_of: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Sent, String> {
+    let manifest = manifest_of("homebrew-tap")?;
+    let secret = match manifest.secrets.first() {
+        None => None,
+        Some(secret) => match step.vault.secret(secret, &binding_of("homebrew-tap"))? {
+            Some(raw) => Some(raw),
+            None => return Ok(Sent::Skipped(format!("{secret} is not in the vault"))),
+        },
+    };
+    let base = step.link_base.ok_or(
+        "a formula's url is the artifact's download address: the hub has no public address",
+    )?;
+    let mut entries = Vec::new();
+    for art in arts {
+        let platform = art.target.rsplit_once('@').map_or("", |(_, p)| p);
+        let bytes = bytes_of(&art.digest)?;
+        entries.push(wire::Entry {
+            platform: platform.to_string(),
+            url: format!("{base}/{}/content", art.artifact),
+            sha256: sha256_hex(&bytes),
+        });
+    }
+    let formula = wire::formula(&rel.project, &rel.version, tap, &entries)?;
+    let secret = secret.map(|raw| Secret {
+        header: manifest.auth_header.clone(),
+        value: manifest.auth_format.replace("${SECRET}", &raw),
+    });
+    let mediator = Mediator {
+        egress: &manifest.egress,
+        secret: secret.as_ref(),
+        outbound: step.outbound,
+        loopback_http: false,
+        body_cap: BODY_CAP,
+    };
+    let get = wire::contents_get(&formula);
+    let reply = send(&mediator, &get)?;
+    let existing = match reply.status {
+        200 => Some(
+            serde_json::from_str::<serde_json::Value>(&reply.body)
+                .ok()
+                .and_then(|v| v["sha"].as_str().map(str::to_string))
+                .ok_or("the tap's formula has no sha")?,
+        ),
+        404 => None,
+        _ => return Err(refusal(&get, &reply)),
+    };
+    let put = wire::contents_put(&formula, existing.as_deref())?;
+    let reply = send(&mediator, &put)?;
+    if !(200..300).contains(&reply.status) {
+        return Err(refusal(&put, &reply));
+    }
+    Ok(Sent::Published(formula.page))
+}
+
+/// One request through the mediator, with its headers.
+fn send(mediator: &Mediator, req: &wire::Request) -> Result<crate::glue::Reply, String> {
+    let headers: BTreeMap<String, String> = req.headers.iter().cloned().collect();
+    mediator.send_bytes(req.method, &req.url, &headers, &req.body)
+}
+
+/// Why a request was refused: its method and address (without the query), its status and the start of its answer.
+fn refusal(req: &wire::Request, reply: &crate::glue::Reply) -> String {
+    format!(
+        "{} {} answered {}: {}",
+        req.method,
+        req.url.split('?').next().unwrap_or(""),
+        reply.status,
+        reply.body.chars().take(200).collect::<String>()
+    )
 }
 
 /// The credential as the registry's header carries it: a PyPI token is `__token__:<token>` in basic auth, a Maven

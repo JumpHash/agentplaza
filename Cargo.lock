@@ -373,6 +373,7 @@ dependencies = [
  "hmac",
  "jhrl",
  "libc",
+ "md-5",
  "png 0.18.1",
  "qrcode",
  "rcgen",
@@ -381,6 +382,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
  "sha2",
  "sysinfo",
  "tar",
@@ -5758,6 +5760,16 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
+]
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest 0.10.7",
 ]
 
 [[package]]

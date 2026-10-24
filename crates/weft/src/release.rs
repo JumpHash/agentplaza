@@ -106,6 +106,27 @@ pub fn targets(store: &Store, rev: &str) -> Result<Vec<Target>, String> {
                             .unwrap_or_else(|| DESKTOP.iter().map(|s| s.to_string()).collect()),
                     });
                 }
+                // A Homebrew tap named in the package (`[package.metadata.weft] homebrew = "owner/tap"`): its formula takes the
+                // package's binaries for macOS and Linux (9.5), one target per tap.
+                let tap = pkg
+                    .get("metadata")
+                    .and_then(|m| m.get("weft"))
+                    .and_then(|w| w.get("homebrew"))
+                    .and_then(|t| t.as_str())
+                    .filter(|t| {
+                        t.split_once('/')
+                            .is_some_and(|(o, r)| !o.is_empty() && !r.is_empty())
+                    });
+                if let Some(tap) = tap {
+                    out.push(Target {
+                        name: format!("brew:{tap}"),
+                        file: path.clone(),
+                        platforms: ["macos-aarch64", "linux-x86_64", "linux-aarch64"]
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    });
+                }
             }
             "package.json" if !path.contains("node_modules/") => {
                 let Some(text) = read(path) else { continue };

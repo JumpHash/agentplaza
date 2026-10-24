@@ -23,7 +23,7 @@ use crate::releases::tests::{World, cut, lab_with};
 use crate::vault::{Consumer, NewSecret, OnBehalf, Scope, Store as Vault};
 
 /// The cargo package's manifest: a crate, declared as a package (`any`) and not as binaries.
-const CARGO_ANY: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[package.metadata.weft]\ntargets = [\"any\"]\n";
+const CARGO_ANY: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[package.metadata.weft]\ntargets = [\"any\"]\nhomebrew = \"acme/tools\"\n";
 
 /// The test's files. Weft declares a target for each (`<name>@<platform>`); only the Cargo crate, the npm package, the
 /// Python project and the NuGet package are built for `any`. The rest are platform builds, not packages.
@@ -387,16 +387,110 @@ fn fake_nuget() -> (u16, Log) {
     })
 }
 
-/// The fake Maven repository: PUTs of the jar and its pom under the Maven 2 layout.
-fn fake_maven() -> (u16, Log) {
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// The bytes of a multipart form's file part named `field`, split at the form's boundary (its first line).
+pub(super) fn form_file(body: &[u8], field: &str) -> Option<Vec<u8>> {
+    let first_line = find(body, b"\r\n")?;
+    let delimiter = &body[..first_line];
+    let marker = format!("name=\"{field}\"");
+    let mut rest = &body[first_line + 2..];
+    loop {
+        let next = find(rest, delimiter)?;
+        let part = &rest[..next];
+        if let Some(head_end) = find(part, b"\r\n\r\n")
+            .filter(|&end| String::from_utf8_lossy(&part[..end]).contains(&marker))
+        {
+            let data = &part[head_end + 4..];
+            return Some(data.strip_suffix(b"\r\n").unwrap_or(data).to_vec());
+        }
+        rest = &rest[next + delimiter.len()..];
+        if rest.starts_with(b"--") {
+            return None;
+        }
+    }
+}
+
+/// The entries of a zip, by name, with their bytes.
+pub(super) fn zip_entries(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    (0..archive.len())
+        .map(|i| {
+            let mut file = archive.by_index(i).unwrap();
+            let name = file.name().unwrap().to_string();
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).unwrap();
+            (name, data)
+        })
+        .collect()
+}
+
+/// The fake Central Portal: `POST /api/v1/publisher/upload` takes a bundle, and the fake checks it is the jar and the pom
+/// of the release, each with its `.md5` and `.sha1` digest, and answers with a deployment id as the Portal does.
+fn fake_central() -> (u16, Log) {
     fake(|seen| {
-        let ok = seen.method == "PUT"
-            && (seen.path.ends_with("/com/acme/app/0.1.0/app-0.1.0.jar")
-                || seen.path.ends_with("/com/acme/app/0.1.0/app-0.1.0.pom"));
-        if ok {
-            (201, "".into())
-        } else {
-            (400, "".into())
+        if seen.method != "POST" || !seen.path.starts_with("/api/v1/publisher/upload") {
+            return (404, "".into());
+        }
+        let Some(bundle) = form_file(&seen.body, "bundle") else {
+            return (400, "no bundle".into());
+        };
+        if !bundle_is_whole(&zip_entries(&bundle)) {
+            return (
+                400,
+                "the bundle is not a jar and a pom with their checksums".into(),
+            );
+        }
+        (201, "deployment-1".into())
+    })
+}
+
+/// A bundle is six files: a jar and a pom under one path, each with a `.md5` and a `.sha1` that are its digests.
+fn bundle_is_whole(files: &[(String, Vec<u8>)]) -> bool {
+    use md5::Digest as _;
+    let get = |name: &str| {
+        files
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b.as_slice())
+    };
+    files.len() == 6
+        && [
+            "com/acme/app/0.1.0/app-0.1.0.jar",
+            "com/acme/app/0.1.0/app-0.1.0.pom",
+        ]
+        .iter()
+        .all(|file| {
+            let Some(bytes) = get(file) else {
+                return false;
+            };
+            let md5 = weft::hash::hex(&md5::Md5::digest(bytes));
+            let sha1 = weft::hash::hex(&sha1::Sha1::digest(bytes));
+            get(&format!("{file}.md5")) == Some(md5.as_bytes())
+                && get(&format!("{file}.sha1")) == Some(sha1.as_bytes())
+        })
+}
+
+/// The fake tap: the contents API for `Formula/app.rb`. The file is `existing` (its sha) or absent, and a write must carry
+/// the sha of the file it replaces, as the contents API requires.
+fn fake_tap(existing: Option<&'static str>) -> (u16, Log) {
+    fake(move |seen| {
+        if seen.path != "/repos/acme/homebrew-tools/contents/Formula/app.rb" {
+            return (404, "{}".into());
+        }
+        match (seen.method.as_str(), existing) {
+            ("GET", Some(sha)) => (200, json!({ "sha": sha }).to_string()),
+            ("GET", None) => (404, json!({ "message": "Not Found" }).to_string()),
+            ("PUT", _) => {
+                let doc: Value = serde_json::from_slice(&seen.body).unwrap();
+                if doc.get("sha").and_then(Value::as_str) != existing {
+                    return (422, json!({ "message": "sha does not match" }).to_string());
+                }
+                (201, json!({ "content": { "sha": "new" } }).to_string())
+            }
+            _ => (405, "".into()),
         }
     })
 }
@@ -475,6 +569,9 @@ fn library(name: &str) -> Library {
     assert_eq!(
         targets,
         [
+            "brew:acme/tools@linux-aarch64",
+            "brew:acme/tools@linux-x86_64",
+            "brew:acme/tools@macos-aarch64",
             "cargo:app@any",
             "go:example.com/acme@linux-aarch64",
             "go:example.com/acme@linux-x86_64",
@@ -566,11 +663,13 @@ fn a_library_release_publishes_to_each_local_registry_from_the_publish_step() {
     let (npm, npm_log) = fake_npm(None);
     let (pypi, pypi_log) = fake_pypi();
     let (nuget, nuget_log) = fake_nuget();
+    let (github, github_log) = fake_tap(None);
     let redirect = Redirect::new(vec![
         ("crates.io", crates),
         ("registry.npmjs.org", npm),
         ("upload.pypi.org", pypi),
         ("www.nuget.org", nuget),
+        ("api.github.com", github),
     ]);
     let vault = test_vault(
         "library",
@@ -579,6 +678,7 @@ fn a_library_release_publishes_to_each_local_registry_from_the_publish_step() {
             ("NPM_TOKEN", "connector:npm", "npm-token"),
             ("PYPI_TOKEN", "connector:pypi", "pypi-token"),
             ("NUGET_API_KEY", "connector:nuget", "nuget-key"),
+            ("HOMEBREW_TAP_TOKEN", "connector:homebrew-tap", "tap-token"),
         ],
     );
     let lib = library("library-publish");
@@ -596,12 +696,13 @@ fn a_library_release_publishes_to_each_local_registry_from_the_publish_step() {
 
     // Four artifacts are packages; the eight platform builds are not sent anywhere.
     let rows = rows_of(&lib.world, &lib.id);
-    assert_eq!(rows.len(), 4, "{rows:?}");
+    assert_eq!(rows.len(), 5, "{rows:?}");
     for (connector, target) in [
         ("crates-io", "cargo:app@any"),
         ("npm", "npm:@acme/web@any"),
         ("pypi", "python:acme@any"),
         ("nuget", "nuget:Acme.Lib@any"),
+        ("homebrew-tap", "brew:acme/tools"),
     ] {
         let want = (platform_of(connector, target), "published".to_string());
         assert!(rows.contains(&want), "{want:?} is not among {rows:?}");
@@ -645,6 +746,45 @@ fn a_library_release_publishes_to_each_local_registry_from_the_publish_step() {
         "NuGet takes its key in its own header"
     );
 
+    // The formula is one commit to the tap, with each macOS and Linux binary's url and digest.
+    let github_seen = github_log.lock().unwrap();
+    let put = github_seen
+        .iter()
+        .rev()
+        .find(|s| s.method == "PUT")
+        .expect("a formula commit");
+    assert_eq!(put.authorization(), Some("Bearer tap-token"));
+    let doc: Value = serde_json::from_slice(&put.body).unwrap();
+    assert!(
+        doc.get("sha").is_none(),
+        "the tap had no formula to replace"
+    );
+    let content = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(doc["content"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(content.contains("version \"0.1.0\""), "{content}");
+    let brew: Vec<_> = published
+        .artifacts
+        .iter()
+        .filter(|a| a.target.starts_with("brew:"))
+        .collect();
+    assert_eq!(brew.len(), 3, "one binary per macOS and Linux platform");
+    for art in &brew {
+        assert!(
+            content.contains(&format!(
+                "url \"https://hub.example/v1/weft/artifacts/{}/content\"",
+                art.artifact
+            )),
+            "{content}"
+        );
+    }
+    let digest = sha256_hex(&package_of("brew:acme/tools", "0.1.0"));
+    assert_eq!(content.matches(&digest).count(), 3, "{content}");
+    drop(github_seen);
+
     // Every request went to the host its manifest names, and no other.
     let sent_count = {
         let sent = redirect.sent.lock().unwrap();
@@ -660,7 +800,8 @@ fn a_library_release_publishes_to_each_local_registry_from_the_publish_step() {
                     "crates.io",
                     "registry.npmjs.org",
                     "upload.pypi.org",
-                    "www.nuget.org"
+                    "www.nuget.org",
+                    "api.github.com"
                 ]
                 .contains(&host),
                 "{host}"
@@ -677,7 +818,7 @@ fn a_library_release_publishes_to_each_local_registry_from_the_publish_step() {
 
 #[test]
 fn each_registry_publish_endpoint_takes_its_package_with_its_credential() {
-    let (maven, maven_log) = fake_maven();
+    let (maven, maven_log) = fake_central();
     let (oci, oci_log) = fake_oci();
     let (go, go_log) = fake_go();
     let redirect = Redirect::new(vec![
@@ -738,10 +879,14 @@ fn each_registry_publish_endpoint_takes_its_package_with_its_credential() {
 
     // Maven: the jar and its pom, with the credential as basic auth.
     let maven_seen = maven_log.lock().unwrap();
-    assert_eq!(maven_seen.len(), 2, "the jar and its pom");
+    assert_eq!(maven_seen.len(), 1, "one bundle to the Portal");
+    assert_eq!(
+        zip_entries(&form_file(&maven_seen[0].body, "bundle").unwrap()).len(),
+        6
+    );
     assert_eq!(
         maven_seen[0].authorization(),
-        Some(format!("Basic {}", b64("deployer:maven-pass")).as_str())
+        Some(format!("Bearer {}", b64("deployer:maven-pass")).as_str())
     );
     // OCI: two blobs, then the manifest that names them, with the bearer token.
     let oci_seen = oci_log.lock().unwrap();
@@ -959,4 +1104,63 @@ fn the_registry_keys_are_the_connectors_and_no_git_platform_is_one() {
     assert!(!is_registry("github"));
     assert!(!is_registry("github:check"));
     assert!(!is_registry("gitlab"));
+}
+
+#[test]
+fn a_formula_is_written_to_the_tap_and_an_existing_one_is_replaced_with_its_sha() {
+    let bytes = b"the tap's binary".to_vec();
+    let built = [
+        ("brew:acme/tools@macos-aarch64", bytes.clone()),
+        ("brew:acme/tools@linux-x86_64", bytes.clone()),
+    ];
+    let (rel, blobs) = release_by_hand("app", "0.1.0", &built);
+    let vault = test_vault(
+        "tap",
+        &[("HOMEBREW_TAP_TOKEN", "connector:homebrew-tap", "tap-token")],
+    );
+    let lookup = |digest: &str| {
+        blobs
+            .iter()
+            .find(|(d, _)| d == digest)
+            .map(|(_, bytes)| bytes.clone())
+            .ok_or_else(|| format!("no blob {digest}"))
+    };
+    let sha = sha256_hex(&bytes);
+    // First the tap has no formula; then it has one, whose sha the update must carry.
+    for existing in [None, Some("old-sha")] {
+        let (github, log) = fake_tap(existing);
+        let redirect = Redirect::new(vec![("api.github.com", github)]);
+        let step = Step {
+            outbound: &redirect,
+            vault: &vault,
+            link_base: Some("https://hub.example/v1/weft/artifacts"),
+            at_ms: 1,
+        };
+        let rows = publish_release(&step, &rel, &lookup);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].platform, "homebrew-tap/brew:acme/tools");
+        assert_eq!(rows[0].state, "published", "{rows:?}");
+        assert_eq!(
+            rows[0].url.as_deref(),
+            Some("https://github.com/acme/homebrew-tools/blob/main/Formula/app.rb")
+        );
+        let seen = log.lock().unwrap();
+        assert_eq!(
+            seen.iter().filter(|s| s.method == "GET").count(),
+            1,
+            "the sha is read first"
+        );
+        let put = seen.iter().rev().find(|s| s.method == "PUT").unwrap();
+        let doc: Value = serde_json::from_slice(&put.body).unwrap();
+        assert_eq!(doc.get("sha").and_then(Value::as_str), existing);
+        let content = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(doc["content"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(content.contains("url \"https://hub.example/v1/weft/artifacts/a0/content\""));
+        assert!(content.contains("url \"https://hub.example/v1/weft/artifacts/a1/content\""));
+        assert_eq!(content.matches(&sha).count(), 2, "{content}");
+    }
 }

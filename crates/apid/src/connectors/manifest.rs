@@ -447,23 +447,23 @@ mod tests {
 
     #[test]
     fn every_registry_connector_has_a_publish_manifest_that_passes_the_checks() {
-        let expected = [
-            ("crates-io", "crates.io", Some("CRATES_IO_TOKEN")),
-            ("npm", "registry.npmjs.org", Some("NPM_TOKEN")),
-            ("pypi", "upload.pypi.org", Some("PYPI_TOKEN")),
+        let expected: [(&str, &str, &[&str]); 8] = [
+            ("crates-io", "crates.io", &["CRATES_IO_TOKEN"]),
+            ("npm", "registry.npmjs.org", &["NPM_TOKEN"]),
+            ("pypi", "upload.pypi.org", &["PYPI_TOKEN"]),
             (
                 "maven-central",
                 "central.sonatype.com",
-                Some("MAVEN_CREDENTIALS"),
+                &["MAVEN_CREDENTIALS", "MAVEN_REPOSITORY_URL"],
             ),
-            ("nuget", "www.nuget.org", Some("NUGET_API_KEY")),
-            ("oci-registry", "ghcr.io", Some("OCI_TOKEN")),
-            ("go-proxy", "proxy.golang.org", None),
-            ("homebrew-tap", "api.github.com", Some("HOMEBREW_TAP_TOKEN")),
+            ("nuget", "www.nuget.org", &["NUGET_API_KEY"]),
+            ("oci-registry", "ghcr.io", &["OCI_TOKEN"]),
+            ("go-proxy", "proxy.golang.org", &[]),
+            ("homebrew-tap", "api.github.com", &["HOMEBREW_TAP_TOKEN"]),
         ];
         let manifests = registries();
         assert_eq!(manifests.len(), expected.len());
-        for (id, host, secret) in expected {
+        for (id, host, secrets) in expected {
             let m = manifests
                 .iter()
                 .find(|m| m.id == id)
@@ -475,7 +475,7 @@ mod tests {
             assert!(m.actions.is_empty(), "{id}: publishing is not an action");
             assert_eq!(
                 m.secrets,
-                secret.map(str::to_string).into_iter().collect::<Vec<_>>(),
+                secrets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                 "{id}"
             );
             assert!(!widens(m, m), "{id}");
