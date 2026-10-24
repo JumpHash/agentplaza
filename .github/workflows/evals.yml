@@ -37,11 +37,12 @@ jobs:
       - name: Build the hub, vsockd, the harness and the suite
         run: cargo build --release -p apid -p vsockd -p agent-harness -p apz-evals --bins
 
-      # The harness works in /workspace, the path it is built with; the suite runs as root, as the VMs' init would.
+      # The harness works in /workspace, the path it is built with; the suite runs as root, as the VMs' init would. sudo
+      # resets PATH, so the runner's is passed on: the tasks' checks call rustc.
       - name: Run the suite and compare with the baseline
         run: |
           sudo mkdir -p /workspace
-          sudo ./target/release/apz-evals \
+          sudo env "PATH=$PATH" ./target/release/apz-evals \
             --out evals-report.json \
             --compare crates/apz-evals/baseline.json
 
