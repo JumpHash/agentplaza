@@ -275,6 +275,10 @@ fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
+        // The folder's `store.lock` is its holder's: Windows will not read a range another handle locked.
+        if entry.file_name().to_str() == Some("store.lock") {
+            continue;
+        }
         let target = to.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
             copy_dir(&entry.path(), &target);

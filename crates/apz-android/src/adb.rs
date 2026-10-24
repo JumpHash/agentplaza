@@ -471,18 +471,16 @@ mod tests {
                 "/sdcard/shot.png"
             ])
         );
+        // The node's own path, absolute on whatever host runs the tests.
+        let local = std::env::temp_dir().join("shot.png");
+        let mut pulled = list(&["-s", "emulator-5554", "pull", "/sdcard/shot.png"]);
+        pulled.push(local.to_string_lossy().into_owned());
         assert_eq!(
             words(&Adb::Pull {
                 device_path: "/sdcard/shot.png".into(),
-                local: PathBuf::from("/tmp/shot.png"),
+                local,
             }),
-            list(&[
-                "-s",
-                "emulator-5554",
-                "pull",
-                "/sdcard/shot.png",
-                "/tmp/shot.png"
-            ])
+            pulled
         );
         assert_eq!(
             words(&Adb::Record {

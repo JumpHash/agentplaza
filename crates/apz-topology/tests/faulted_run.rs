@@ -2,6 +2,8 @@
 //! processes on 127.0.0.1. `api` answers HTTP 200 only when its call to `cache` answers 200; the call goes by name through
 //! `cache`'s fault proxy (an `apz-fault` process the runner started), so a partition of `cache` fails the probes of `api`.
 //! The scenarios kill `api` by its pid file and restart it, and fill `cache`'s declared volume.
+//! The kill is `kill -9` and the fill is a Unix file write, so the file runs on Unix only.
+#![cfg(unix)]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

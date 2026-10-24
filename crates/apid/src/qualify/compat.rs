@@ -281,10 +281,13 @@ mod tests {
     use crate::releases::flow;
     use crate::releases::tests::{FakeBuilder, World, cut, lab_with};
 
+    #[cfg(unix)]
     const GOOD: &str = "tool() {\n  case \"$1\" in\n    --version) echo \"tool 1.2.0\" ;;\n    *) return 2 ;;\n  esac\n}\n";
     /// A bashism: `${1,,}` is bash's. sh and dash refuse it.
+    #[cfg(unix)]
     const BASHISM: &str =
         "tool() {\n  if [ \"${1,,}\" = \"--version\" ]; then echo \"tool 1.2.0\"; fi\n}\n";
+    #[cfg(unix)]
     const CLI: &str =
         "[cli]\ncommand = [\"tool\", \"--version\"]\nload = \"tool.sh\"\nexpect = \"tool 1.2.0\"\n";
     const LOCAL: &str = "this-machine";
@@ -310,6 +313,8 @@ mod tests {
         compatibility_adapter(&d, release, &pools(), LOCAL, None, 1)
     }
 
+    // The cells run POSIX shells, which a Windows pool does not have.
+    #[cfg(unix)]
     #[test]
     fn a_shell_cli_whose_cells_run_here_passes_the_compatibility_part() {
         let (world, release, _handle) =
@@ -334,6 +339,8 @@ mod tests {
         assert!(part.findings.is_empty(), "{part:?}");
     }
 
+    // The cells run POSIX shells, which a Windows pool does not have.
+    #[cfg(unix)]
     #[test]
     fn a_bashism_fails_the_compatibility_part_in_sh_and_names_the_cell() {
         let (world, release, _handle) =

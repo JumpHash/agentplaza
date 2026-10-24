@@ -122,9 +122,10 @@ fn sample_tree(registry: &Path) -> Tree {
     );
     tree.insert(
         ".cargo/config.toml".into(),
+        // A TOML basic string reads `\` as an escape, so a Windows path goes in with `/` separators (cargo takes them).
         format!(
             "[source.crates-io]\nreplace-with = \"local\"\n\n[source.local]\nlocal-registry = \"{}\"\n",
-            registry.display()
+            registry.to_string_lossy().replace('\\', "/")
         )
         .into_bytes(),
     );

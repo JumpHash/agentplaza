@@ -253,10 +253,10 @@ pub enum Tool {
 
 /// The first file called `name` in the `PATH`-style list `path_var`.
 pub fn find_on(path_var: &str, name: &str) -> Option<PathBuf> {
-    path_var
-        .split(':')
-        .filter(|dir| !dir.is_empty())
-        .map(|dir| Path::new(dir).join(name))
+    let exe = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    std::env::split_paths(path_var)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .flat_map(|dir| [dir.join(name), dir.join(&exe)])
         .find(|candidate| candidate.is_file())
 }
 

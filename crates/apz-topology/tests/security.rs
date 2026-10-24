@@ -256,6 +256,8 @@ fn reflected_markup_is_found_and_escaped_markup_is_not() {
     assert!(hits.is_empty(), "{hits:?}");
 }
 
+// The payloads read `/etc/passwd`, which only a Unix host has.
+#[cfg(unix)]
 #[test]
 fn a_file_read_outside_the_directory_is_found_and_a_file_name_only_is_not() {
     let hits = dast::scan_route(

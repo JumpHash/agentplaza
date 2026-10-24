@@ -453,6 +453,17 @@ pub fn local_system() -> &'static str {
     std::env::consts::OS
 }
 
+/// The major version of the `bash` on the PATH, or None when there is none. The Mac's `/bin/bash` is 3.2, which has no
+/// bash-4 expansion such as `${1,,}`: a test that expects one to pass in bash reads the version first.
+pub fn bash_major() -> Option<u32> {
+    let out = Command::new("bash")
+        .args(["-c", "echo \"${BASH_VERSINFO[0]}\""])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 /// The pool this machine is, as far as its shells, OS and tools go (the tests' pool, and a probe a node can report).
 /// It looks only: PATH and the OS, nothing is run.
 pub fn local_pool(name: &str) -> Pool {

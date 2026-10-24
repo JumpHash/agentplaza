@@ -387,8 +387,9 @@ fn parse(args: &[String]) -> Result<Launch, String> {
             "--snapshot-root" => {
                 let root = PathBuf::from(value(args, &mut index, flag)?);
                 // Snapshot requests name directories under this root by their
-                // absolute path, so a relative root could never match one.
-                if !root.is_absolute() {
+                // absolute path, so a relative root could never match one. The
+                // paths are the Linux host's: its leading `/` is the test.
+                if !root.to_string_lossy().starts_with('/') {
                     return Err(format!("{flag} {} is not an absolute path", root.display()));
                 }
                 snapshot_root = Some(root);
@@ -767,7 +768,7 @@ fn snapshot_reply(
     // even where it would stay under the root, because the jail's view of the
     // path is the one that is written.
     let dir = Path::new(dir);
-    let inside = dir.is_absolute()
+    let inside = dir.to_string_lossy().starts_with('/')
         && dir.starts_with(root)
         && !dir.components().any(|part| part == Component::ParentDir);
     if !inside {

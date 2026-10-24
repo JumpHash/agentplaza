@@ -856,11 +856,13 @@ fn control_path(spec: &VmSpec) -> Option<PathBuf> {
 /// binds read-write already. A relative path has no absolute directory to bind, so such a VM takes
 /// no snapshots.
 fn snapshot_root(spec: &VmSpec) -> Option<PathBuf> {
-    if let Some(root) = super::snapshot_root().filter(|root| root.is_absolute()) {
+    // A Linux or macOS host's path: its leading `/` is absolute on any host that builds this.
+    let absolute = |path: &Path| path.to_string_lossy().starts_with('/');
+    if let Some(root) = super::snapshot_root().filter(|root| absolute(root)) {
         return Some(root);
     }
     let dir = spec.vsock.as_ref()?.uds_path.parent()?;
-    dir.is_absolute().then(|| dir.to_path_buf())
+    absolute(dir).then(|| dir.to_path_buf())
 }
 
 /// The word a snapshot request and reply name a [`SnapshotKind`] by.

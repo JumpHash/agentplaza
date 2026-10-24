@@ -106,10 +106,11 @@ fn name(what: &str, value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-/// A path the tool is given: absolute, so that it is never read as an option, with no control characters.
+/// A path the tool is given: absolute on the Mac (a leading `/`, whatever host checks it), so that it is never read as an
+/// option, with no control characters.
 fn absolute(what: &str, path: &Path) -> Result<String, String> {
     let text = path.to_string_lossy();
-    if !path.is_absolute() || text.chars().any(char::is_control) {
+    if !text.starts_with('/') || text.chars().any(char::is_control) {
         return Err(format!("{what} needs an absolute path, not {text:?}"));
     }
     Ok(text.into_owned())

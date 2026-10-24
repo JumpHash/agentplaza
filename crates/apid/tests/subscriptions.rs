@@ -229,6 +229,8 @@ fn rig(name: &str, reset_in_ms: u64) -> Rig {
 }
 
 /// The same hub stopped and started again on the same state (its scratch directory and its stand-ins).
+// The restart stops the hub with `kill -TERM`, the Unix stop signal (Windows has none the saver answers).
+#[cfg(unix)]
 fn restart(rig: Rig) -> Rig {
     let Rig {
         hub,
@@ -254,7 +256,8 @@ fn restart(rig: Rig) -> Rig {
     }
 }
 
-/// The session id and VM of `task`'s builder.
+/// The session id and VM of `task`'s builder (used by the restart test, which is Unix only).
+#[cfg(unix)]
 fn builder_of(hub: &Hub, task: &str) -> (String, u64) {
     let session = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |s| {
         s.as_array().is_some_and(|s| {
@@ -420,6 +423,7 @@ fn a_subscription_call_waits_while_its_allowance_is_used_up_and_runs_again_at_th
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn the_api_key_choice_moves_the_project_to_the_policys_fallback_kept_across_a_restart() {
     // The window stays used up for ten minutes: only the API-key route can get a call through.
