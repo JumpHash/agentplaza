@@ -38,13 +38,14 @@ jobs:
         run: cargo build --release -p apid -p vsockd -p agent-harness -p apz-evals --bins
 
       # The harness works in /workspace, the path it is built with; the suite runs as root, as the VMs' init would. sudo
-      # resets PATH, so the runner's is passed on: the tasks' checks call rustc.
+      # resets PATH and HOME, so the runner's toolchain is passed on: the tasks' checks call rustc.
       - name: Run the suite and compare with the baseline
         run: |
           sudo mkdir -p /workspace
-          sudo env "PATH=$PATH" ./target/release/apz-evals \
-            --out evals-report.json \
-            --compare crates/apz-evals/baseline.json
+          sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            ./target/release/apz-evals \
+              --out evals-report.json \
+              --compare crates/apz-evals/baseline.json
 
       - name: Keep the report
         if: always()
