@@ -4,9 +4,13 @@
 
 mod common;
 
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
 use common::{Hub, Scratch, text};
+
+const WAIT: Duration = Duration::from_secs(30);
 
 const TOKEN: &str = "x-apz-lab-token";
 const TOPOLOGY: &str = "name = \"fake-run\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\n[[assert]]\nkind = \"no_errors\"\n";
@@ -99,4 +103,93 @@ fn a_seeded_error_from_a_collector_fails_the_topology_step_over_the_routes() {
         Some(json!({"topology": TOPOLOGY})),
     );
     assert_eq!(status, 404);
+}
+
+/// Lands `files` on a repository's main through the hub's Weft.
+fn land(hub: &Hub, repo: &str, title: &str, files: &[(&str, &str)]) {
+    let files: Vec<Value> = files
+        .iter()
+        .map(|(path, text)| json!({ "path": path, "text": text }))
+        .collect();
+    let (status, body) = hub.call(
+        "POST",
+        &format!("/v1/weft/repos/{repo}/edits"),
+        Some(json!({ "title": title, "files": files })),
+    );
+    assert!(
+        status == 200 || status == 201,
+        "{status} {body}\n{}",
+        hub.log()
+    );
+}
+
+#[test]
+fn a_run_is_assessed_as_it_ends_so_its_verdicts_are_there_without_a_manual_assessment() {
+    let scratch = Scratch::new("lab-observe-ended");
+    let hub = Hub::start(&scratch, None, None);
+    hub.wait_for("/v1/weft", WAIT, |w| w["running"] == true);
+
+    // The project declares its topology in its repository, as a project does.
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Ended", "goal": "Its lab runs", "kind": "code" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let project = hub.wait_for(&format!("/v1/projects/{pid}"), WAIT, |p| {
+        p["repo"].is_string()
+    });
+    land(
+        &hub,
+        &text(&project["repo"]),
+        "Declare the topology",
+        &[(".plaza/topologies/fake-run.toml", TOPOLOGY)],
+    );
+
+    let (status, run) = hub.call(
+        "POST",
+        "/v1/test-lab/runs",
+        Some(
+            json!({"project": pid, "channel": "stable", "cpus": 1, "memory_mib": 512,
+            "change": "c1", "topology": "fake-run"}),
+        ),
+    );
+    assert_eq!(status, 201, "{run}");
+    let id = text(&run["id"]);
+    let token = text(&run["ingest_token"]);
+    let (status, accepted) = hub.send_with_headers(
+        "POST",
+        &format!("/v1/test-lab/runs/{id}/otlp/logs"),
+        &[(TOKEN, &token)],
+        &seeded_error(),
+    );
+    assert_eq!(status, 200, "{accepted}");
+
+    // The run ends: nothing else is asked, and its topology's verdicts are there.
+    let (status, ended) = hub.call(
+        "POST",
+        &format!("/v1/test-lab/runs/{id}/end"),
+        Some(json!({"outcome": "passed"})),
+    );
+    assert_eq!(status, 200, "{ended}");
+    let (status, shown) = hub.call("GET", &format!("/v1/test-lab/runs/{id}/observations"), None);
+    assert_eq!(status, 200, "{shown}");
+    let verdict = shown["verdicts"]
+        .as_array()
+        .and_then(|list| list.iter().find(|v| v["id"] == "no_errors"))
+        .unwrap_or_else(|| panic!("the run was not assessed at its end: {shown}"));
+    assert_eq!(verdict["passed"], json!(false), "{shown}");
+    assert!(
+        text(&verdict["cites"][0]).contains("seeded failure in the cache"),
+        "{shown}"
+    );
+
+    // An ended run is judged once: it is not ended again.
+    let (status, _) = hub.call(
+        "POST",
+        &format!("/v1/test-lab/runs/{id}/end"),
+        Some(json!({"outcome": "passed"})),
+    );
+    assert_eq!(status, 409);
 }

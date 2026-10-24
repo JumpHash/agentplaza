@@ -162,6 +162,8 @@ pub struct Store {
     /// The last cumulative total of each counter a run's collector reported (not kept: a restart counts the first total
     /// of each as an increase).
     pub(crate) totals: Mutex<std::collections::BTreeMap<String, f64>>,
+    /// The runs whose end has been assessed (an ended run is assessed once, at its end).
+    pub(crate) assessed: Mutex<BTreeSet<String>>,
 }
 
 impl Store {
@@ -188,6 +190,13 @@ impl Store {
                     .collect()
             })
             .unwrap_or_default()
+    }
+    /// Whether `run` is assessed for the first time (true once per run: the caller assesses it then).
+    pub(crate) fn first_assessment(&self, run: &str) -> bool {
+        self.assessed
+            .lock()
+            .map(|mut set| set.insert(run.to_string()))
+            .unwrap_or(false)
     }
     /// Every run, in the order they were made.
     pub fn runs(&self) -> Vec<LabRun> {
@@ -231,6 +240,9 @@ pub fn capabilities_of(machine: &Machine) -> BTreeSet<String> {
     }
     for browser in &machine.browsers {
         caps.insert(format!("browser:{browser}"));
+    }
+    if machine.backend.as_deref() == Some("kvm") {
+        caps.insert("kvm".to_string());
     }
     if machine.mac.as_ref().is_some_and(|mac| mac.simulators > 0) {
         caps.insert("simulator".to_string());
@@ -489,6 +501,11 @@ pub fn finish(app: &App, id: &str, outcome: &str) -> Result<LabRun, String> {
     schedule(&mut p.runs, &nodes, now);
     // The run's scrubbed copies go with it: production data stays only as long as the run that holds it.
     crate::lab_scrub::discard(app, id);
+    drop(p);
+    // The run is judged as it ends: the qualifications waiting on it see its verdicts at their next poll.
+    if let Err(why) = crate::lab_observe::assess_ended(app, id) {
+        eprintln!("apid: lab: the run {id} was not assessed at its end: {why}");
+    }
     Ok(done)
 }
 

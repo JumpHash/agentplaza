@@ -124,7 +124,7 @@ fn context<'a>(
         release,
         project,
         now: now(),
-        compat: &super::compat::compatibility_adapter,
+        compat: lab,
     }
 }
 

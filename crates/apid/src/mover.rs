@@ -596,7 +596,7 @@ fn drain_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 }
 
 /// Takes node `id` out of service; its agents leave on the mover's next pass.
-fn stop(app: &App, id: &str, now: bool) -> Response {
+pub(crate) fn stop(app: &App, id: &str, now: bool) -> Response {
     if let Err((status, message)) = app.nodes.set_stopped(id, true) {
         return Response::error(status, &message);
     }
@@ -614,7 +614,7 @@ fn stop(app: &App, id: &str, now: bool) -> Response {
 
 /// Puts node `id` back in service: its agents' held work goes out, and with `rebalance` the agents are
 /// spread onto it once it reports.
-fn resume(app: &App, id: &str, rebalance: bool) -> Response {
+pub(crate) fn resume(app: &App, id: &str, rebalance: bool) -> Response {
     if let Err((status, message)) = app.nodes.set_stopped(id, false) {
         return Response::error(status, &message);
     }
