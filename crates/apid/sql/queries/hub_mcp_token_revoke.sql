@@ -1,4 +1,2 @@
--- Revokes a live token (no row when it is unknown or already revoked).
--- $1 = token id, $2 = now_ms (bigint)
-UPDATE hub_mcp_tokens SET revoked_at = to_timestamp(($2::bigint / 1000.0)::double precision)
-WHERE id = $1 AND revoked_at IS NULL
+-- Revokes a live token (no row changes when it is unknown or already revoked). ?1 = the token's id, ?2 = now in ms.
+UPDATE "hub_mcp_token" SET "revoked_at_ms" = ?2 WHERE "id" = ?1 AND "revoked_at_ms" IS NULL

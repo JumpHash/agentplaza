@@ -6,14 +6,12 @@
 
 use std::sync::OnceLock;
 
-use iced::futures::channel::mpsc;
-use iced::futures::{SinkExt, StreamExt};
 use iced::widget::{Space, button, column, container, mouse_area, row, text};
 use iced::{Alignment, Border, Color, Element, Length, Padding, Task, Theme};
 use serde_json::{Value, json};
 
 use super::screens::{Id, NAV, appearance};
-use super::setup::{self, Check, Need};
+use super::setup::{self, Check};
 use super::ui::{self, Kind, Tone};
 use super::{Ctx, boot, client};
 
@@ -193,7 +191,7 @@ pub fn status_task(ctx: &Ctx) -> Task<Status> {
     )
 }
 
-/// The plaza's local requirements (Docker, Postgres, …), checked off the UI thread.
+/// The plaza's local requirements (its services, its ports, the hypervisor), checked off the UI thread.
 pub fn local_task() -> Task<Vec<Check>> {
     Task::perform(async { setup::check_all(setup::Mode::Local) }, |checks| {
         checks
@@ -243,12 +241,6 @@ pub struct State {
     pub status: Option<Status>,
     /// This machine's requirements (the dependencies step and the checks).
     pub local: Option<Vec<Check>>,
-    /// The requirement whose fix is waiting for the user's confirmation.
-    pub confirm: Option<Need>,
-    /// The fix running now, its log lines so far, and how it ended when it failed.
-    pub fixing: Option<Need>,
-    pub log: Vec<String>,
-    pub fix_error: Option<String>,
     /// "Skip for now" on the dependencies step: the wizard goes on with requirements missing.
     pub deps_skipped: bool,
 }
@@ -274,12 +266,8 @@ pub enum Msg {
     TourBack,
     /// Done, Skip tour or Escape.
     EndTour,
-    /// Dependencies: the user is asked to confirm a fix, may cancel it, runs it, and the fix reports.
-    AskFix(Need),
-    CancelFix,
-    RunFix(Need),
-    FixLog(String),
-    FixDone(Result<(), String>),
+    /// Dependencies: the requirements are read again.
+    Recheck,
     SkipDeps,
     /// The look step: Loom (`loom-clay`) or Graphite (`graphite-cobalt`) is chosen.
     Look(&'static str),
@@ -300,7 +288,6 @@ pub fn start_wizard(state: &mut State, ctx: &Ctx) -> Task<Msg> {
     state.tour = None;
     state.offer = false;
     state.deps_skipped = false;
-    state.confirm = None;
     status_task(ctx).map(Msg::Status)
 }
 
@@ -335,47 +322,12 @@ fn wizard_step_id(index: usize) -> &'static str {
 }
 
 /// Whether the wizard may go on from its current step: a dependencies step waits for every required
-/// check (or "Skip for now"), and nothing goes on while a fix runs.
+/// check (or "Skip for now").
 pub fn can_go_on(state: &State) -> bool {
-    if state.fixing.is_some() {
-        return false;
-    }
     let deps = state
         .wizard
         .is_some_and(|index| wizard_step_id(index) == "deps");
     !deps || state.deps_skipped || state.local.as_deref().is_some_and(setup::ready)
-}
-
-/// Runs a fix off the UI thread: its log lines reach the step as they are written, then its result.
-fn run_fix(need: Need) -> Task<Msg> {
-    enum Step {
-        Line(String),
-        Done(Result<(), String>),
-    }
-    Task::stream(iced::stream::channel(
-        64,
-        move |mut out: mpsc::Sender<Msg>| async move {
-            let (tx, mut rx) = mpsc::unbounded::<Step>();
-            std::thread::spawn(move || {
-                let result = {
-                    let mut log = |line: String| {
-                        let _ = tx.unbounded_send(Step::Line(line));
-                    };
-                    setup::fix(need, &mut log)
-                };
-                let _ = tx.unbounded_send(Step::Done(result));
-            });
-            while let Some(step) = rx.next().await {
-                let (msg, last) = match step {
-                    Step::Line(line) => (Msg::FixLog(line), false),
-                    Step::Done(result) => (Msg::FixDone(result), true),
-                };
-                if out.send(msg).await.is_err() || last {
-                    break;
-                }
-            }
-        },
-    ))
 }
 
 pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
@@ -394,7 +346,6 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
                 index.saturating_sub(1)
             };
             state.wizard = Some(next);
-            state.confirm = None;
             let task = if matches!(wizard_step_id(next), "deps" | "checks") {
                 local_task().map(Msg::Local)
             } else {
@@ -406,39 +357,8 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
             state.deps_skipped = true;
             update(state, Msg::Next)
         }
-        Msg::AskFix(need) => {
-            if state.fixing.is_none() {
-                state.confirm = Some(need);
-            }
-            (Task::none(), Effect::None)
-        }
-        Msg::CancelFix => {
-            state.confirm = None;
-            (Task::none(), Effect::None)
-        }
-        Msg::RunFix(need) => {
-            if state.fixing.is_some() {
-                return (Task::none(), Effect::None);
-            }
-            state.confirm = None;
-            state.fixing = Some(need);
-            state.log.clear();
-            state.fix_error = None;
-            (run_fix(need), Effect::None)
-        }
-        Msg::FixLog(line) => {
-            state.log.push(line);
-            if state.log.len() > 200 {
-                state.log.remove(0);
-            }
-            (Task::none(), Effect::None)
-        }
-        // The fix is over (it worked or not): the checks are read again.
-        Msg::FixDone(result) => {
-            state.fixing = None;
-            state.fix_error = result.err();
-            (local_task().map(Msg::Local), Effect::None)
-        }
+        // Nothing is installed here: the requirements are read again, and each one says what to do.
+        Msg::Recheck => (local_task().map(Msg::Local), Effect::None),
         Msg::Finish => {
             set_flag("setup_done");
             state.wizard = None;
@@ -453,7 +373,6 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Effect) {
         Msg::Change => (Task::none(), Effect::Chooser),
         Msg::Dismiss => {
             state.wizard = None;
-            state.confirm = None;
             (Task::none(), Effect::None)
         }
         Msg::Keep => (Task::none(), Effect::None),
@@ -510,16 +429,6 @@ fn tile<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
             border: Border::default().rounded(crate::theme::skin().radius),
             ..Default::default()
         })
-        .into()
-}
-
-/// A ruled box with the sheet-2 ground: a fix waiting for confirmation, a fix's log.
-fn ruled<'a>(content: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    let p = crate::theme::palette();
-    container(content)
-        .padding(12)
-        .width(Length::Fill)
-        .style(ui::frame(Some(p.sheet_2), p.rule))
         .into()
 }
 
@@ -652,14 +561,13 @@ fn hub_content<'a>(state: &State, hub: &str) -> Vec<Element<'a, Msg>> {
     ]
 }
 
-/// The dependencies step: each requirement with its state and, when missing, the fix that sets it up (shown
-/// first, run only once confirmed), the fix's log while it runs, and the way on ("Skip for now").
+/// The dependencies step: each requirement with its state and what to do about it. Nothing is installed here, so
+/// there is no fix to run; then the way on: "Check again", and "Skip for now" with requirements still missing.
 fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
     let p = crate::theme::palette();
     let Some(checks) = state.local.as_deref() else {
         return vec![ui::faint(t("wizard.checking")).into()];
     };
-    let busy = state.fixing.is_some();
     let mut list: Vec<Element<'a, Msg>> = Vec::new();
     for check in checks {
         let (word, tone) = match check.state {
@@ -667,23 +575,6 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
             setup::State::Missing => ("Not ready", Tone::Warn),
             setup::State::Warning => ("Warning", Tone::Warn),
             setup::State::Blocked => ("Needs you", Tone::Danger),
-        };
-        let action: Element<'a, Msg> = if state.fixing == Some(check.need) {
-            ui::faint(t("wizard.deps.running")).into()
-        } else if check.state == setup::State::Missing && check.fix.is_some() {
-            let label = if check.need == Need::Docker {
-                t("wizard.deps.install")
-            } else {
-                t("wizard.deps.setup")
-            };
-            ui::btn_sm(
-                label,
-                None,
-                Kind::Secondary,
-                (!busy).then_some(Msg::AskFix(check.need)),
-            )
-        } else {
-            Space::new().width(Length::Shrink).into()
         };
         list.push(tile(
             row![
@@ -694,55 +585,12 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
                 .spacing(3)
                 .width(Length::Fill),
                 ui::badge_dot::<Msg>(word, tone),
-                action,
             ]
             .spacing(10)
             .align_y(Alignment::Center),
         ));
-        if state.confirm == Some(check.need)
-            && let Some(fix) = &check.fix
-        {
-            list.push(ruled(
-                column![
-                    ui::prose(t("wizard.deps.confirm")),
-                    ui::prose(fix.clone()),
-                    row![
-                        ui::btn_sm(
-                            t("wizard.deps.run"),
-                            None,
-                            Kind::Primary,
-                            Some(Msg::RunFix(check.need))
-                        ),
-                        Space::new().width(Length::Fill),
-                        ui::btn_sm(
-                            t("wizard.deps.cancel"),
-                            None,
-                            Kind::Ghost,
-                            Some(Msg::CancelFix)
-                        ),
-                    ]
-                    .align_y(Alignment::Center),
-                ]
-                .spacing(10),
-            ));
-        }
     }
-    if !state.log.is_empty() {
-        let tail: Vec<Element<'a, Msg>> = state
-            .log
-            .iter()
-            .rev()
-            .take(8)
-            .rev()
-            .map(|line| ui::mono(line.clone(), 11.0, p.ink_3).into())
-            .collect();
-        list.push(ruled(column(tail).spacing(2)));
-    }
-    let mut notes: Vec<Element<'a, Msg>> = Vec::new();
-    if let Some(error) = &state.fix_error {
-        notes.push(ui::error_line(error));
-    }
-    notes.push(
+    let notes: Vec<Element<'a, Msg>> = vec![
         ui::prose(t(if setup::ready(checks) {
             "wizard.deps.ready"
         } else {
@@ -750,13 +598,23 @@ fn deps_content<'a>(state: &State) -> Vec<Element<'a, Msg>> {
         }))
         .color(p.ink_2)
         .into(),
-    );
-    notes.push(ui::btn_sm(
-        t("wizard.deps.skip"),
-        None,
-        Kind::Ghost,
-        (!busy).then_some(Msg::SkipDeps),
-    ));
+        row![
+            ui::btn_sm(
+                t("setup.check_again"),
+                None,
+                Kind::Ghost,
+                Some(Msg::Recheck)
+            ),
+            ui::btn_sm(
+                t("wizard.deps.skip"),
+                None,
+                Kind::Ghost,
+                Some(Msg::SkipDeps)
+            ),
+        ]
+        .spacing(8)
+        .into(),
+    ];
     vec![
         column(list).spacing(6).into(),
         column(notes).spacing(12).into(),

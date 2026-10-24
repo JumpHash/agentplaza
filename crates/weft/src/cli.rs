@@ -19,7 +19,7 @@ use crate::workdir::{self, Lane, Workdir};
 
 pub const USAGE: &str = "weft: AgentPlaza's version control
 
-  weft serve --state <dir> [--port N] [--token-file F] [--hub-key F | --hub-key-stdin] [--signing-key F|-] [--port-file F] [--auto-land]
+  weft serve --state <dir> [--port N] [--token-file F] [--hub-key F | --hub-key-stdin] [--signing-key F|-] [--port-file F] [--auto-land] [--exit-with-stdin]
   weft serve --cache --dir <dir> --upstream <url> [--port N] [--token-file F] [--upstream-token-file F] [--max-mb N]
   weft init --state <dir> --plaza <name> --owner-key <file> --hub-key <file>
   weft keys new <file> | keys show <file> | keys certify <public-hex> --actor agent:<cid> [--name N --role R --project P]
@@ -62,6 +62,7 @@ const SWITCHES: &[&str] = &[
     "help",
     "auto-land",
     "recheck",
+    "exit-with-stdin",
 ];
 
 impl Args {
@@ -613,6 +614,20 @@ fn serve(cx: &Ctx) -> Result<(), String> {
             Some(f) => Some(KeyPair::load(Path::new(&f))?),
             None => None,
         };
+        // Run by a hub that holds the other end of stdin: when that end closes (the hub exited, even without a chance
+        // to stop this process), this process exits too. Every OS; Linux's parent-death signal is not needed.
+        if a.has("exit-with-stdin") {
+            std::thread::Builder::new()
+                .name("weft-parent".into())
+                .spawn(|| {
+                    use std::io::Read;
+                    let mut buf = [0u8; 256];
+                    while matches!(std::io::stdin().read(&mut buf), Ok(n) if n > 0) {}
+                    eprintln!("weft: the hub that started this process is gone; exiting");
+                    std::process::exit(0);
+                })
+                .map_err(|e| e.to_string())?;
+        }
         let hub = crate::server::Hub::open_with(&state, hub_key, signing)?;
         hub.start_deriving();
         if a.has("auto-land") {

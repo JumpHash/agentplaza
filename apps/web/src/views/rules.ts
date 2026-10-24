@@ -1,11 +1,12 @@
 // Rules: the plaza's laws (JHRL), as the prototype's Rules screen. The summary strip; the strict permits
-// switch; the built-in statutes, each with its override and its recent refusals; the owner's rules, with an
-// editor (check, save, enable, delete); and the latest infractions.
+// switch; the built-in statutes, each with its override and its refusals; the owner's rules, with an
+// editor (check, save, enable, delete).
 
+import { agentLabelIn, agentName } from '../roles';
 import '../styles/proto/social.css';
-import { api, ApiError, type Diagnostic, type Infraction, type LawCheck, type LawInfo, type LawOverride, type LawRule, type WouldRefuse } from '../api';
+import { api, ApiError, type Diagnostic, type LawCheck, type LawInfo, type LawOverride, type LawRule, type WouldRefuse } from '../api';
 import { href } from '../router';
-import { on } from '../store';
+import { agents, on } from '../store';
 import { attempt, badge, button, field, input, modal, select, stat, table, tabs, toast, type Column } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import type { Cleanup } from './index';
@@ -36,11 +37,7 @@ import {
   type TierKey,
 } from './rules-model';
 
-const VIOLATION_LIMIT = 20;
 const RELOAD_MS = 1000;
-const INFRACTION_FETCH = 200;
-const LATEST_SHOWN = 20;
-const DAY_MS = 86_400_000;
 const EFFECTS: [LawFilter['effect'], string][] = [['all', 'All'], ['permit', 'Allows'], ['forbid', 'Forbids']];
 const BUILTIN_DESC = 'The laws the plaza ships with. Disabling one asks for a reason, and the reason stays with the override until the statute is enabled again.';
 const OWNER_DESC = 'Laws you write in JHRL. A rule takes effect once its source compiles; its laws stop applying when the rule is disabled or deleted.';
@@ -70,9 +67,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   let seq = 0;
   let timer = 0;
   const filter: LawFilter = { q: '', effect: 'all', sev: 'any', tier: 'all' };
-  let infractions: Infraction[] = [];
-  let infrStatus: Status = 'loading';
-  let infrError = '';
   let laws: LawInfo[] = [];
   let lawsStatus: Status = 'loading';
   let lawsError = '';
@@ -94,13 +88,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     strictFail,
   );
 
-  // The summary strip, the statutes' filters and the latest infractions.
+  // The summary strip and the statutes' filters.
   const strip = h('div.rl-strip');
   const search = input({ type: 'search', placeholder: 'Search by title, statement, id or operation', 'aria-label': 'Search statutes', autocomplete: 'off' });
   const sevSel = select([{ value: 'any', label: 'Any severity' }, ...SEVERITIES.map((s) => ({ value: s, label: cap(s) }))], 'any');
   sevSel.setAttribute('aria-label', 'Severity');
   const chipBox = h('div.rl-chips', { role: 'group', 'aria-label': 'Effect' });
-  const infrBox = h('div');
 
   // Built-in statutes.
   const tierTabs = h('div.rl-slot');
@@ -133,7 +126,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   // The banner for constitutional laws that are switched off; it stays while any is.
   const constitutionBanner = h('div.rl-banner', { role: 'status', hidden: true });
 
-  const offs = [on('violation', schedule), on('agent', schedule), on('law', schedule)];
+  const offs = [on('agent', schedule), on('law', schedule)];
 
   function renderStrict(): void {
     strictInput.checked = strict === true;
@@ -220,38 +213,11 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   function renderStrip(): void {
     const ready = lawsStatus === 'ready';
     const forbids = laws.filter((l) => l.effect === 'forbid').length;
-    const cut = Date.now() - 30 * DAY_MS;
-    const n30 = infractions.filter((i) => i.at_ms >= cut).length;
-    const n30Text = infractions.length >= INFRACTION_FETCH ? `${n30}+` : String(n30);
     replace(
       strip,
       stat('Laws', ready ? String(laws.length) : '—'),
       stat('Allows', ready ? String(laws.length - forbids) : '—'),
       stat('Forbids', ready ? String(forbids) : '—'),
-      stat('Infractions, 30 days', infrStatus === 'ready' ? n30Text : '—'),
-    );
-  }
-
-  /** One latest infraction, as the side panel lists it. */
-  function infractionRow(i: Infraction): HTMLElement {
-    return h(
-      'div.rl-infr',
-      null,
-      h('div', null, h('a', { href: href('agents', i.cid) }, i.agent_name || `agent ${i.cid}`), ' violated ', h('a', { href: href('rules', i.law) }, i.law_title || i.law)),
-      h('div.hint', null, i.tool ? h('code', null, i.tool) : null, i.tool ? ' ' : null, i.detail ? `${i.detail} · ` : null, ago(i.at_ms)),
-    );
-  }
-
-  function renderInfractions(): void {
-    if (infrStatus === 'loading') {
-      replace(infrBox, h('p.muted', null, 'Loading…'));
-      return;
-    }
-    const latest = [...infractions].sort((a, b) => b.at_ms - a.at_ms).slice(0, LATEST_SHOWN);
-    replace(
-      infrBox,
-      failure(infrStatus, infrError, 'Infractions could not be loaded'),
-      latest.length ? latest.map(infractionRow) : (infrStatus === 'ready' ? h('p.muted', null, 'No infractions yet.') : null),
     );
   }
 
@@ -270,7 +236,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     renderStrip();
     renderBuiltin();
     renderOwner();
-    renderInfractions();
   }
 
   /** The banner while any constitutional law is switched off: each one a button that brings it into view. */
@@ -302,16 +267,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
 
   async function load(): Promise<void> {
     const mine = ++seq;
-    const [l, r, i] = await Promise.allSettled([api.laws(), api.lawRules(), api.infractions(INFRACTION_FETCH)]);
+    const [l, r] = await Promise.allSettled([api.laws(), api.lawRules()]);
     if (!alive || mine !== seq) return;
-    if (i.status === 'fulfilled') {
-      infractions = i.value;
-      infrStatus = 'ready';
-      infrError = '';
-    } else {
-      infrStatus = 'error';
-      infrError = errorText(i.reason);
-    }
     if (l.status === 'fulfilled') {
       laws = l.value;
       lawsStatus = 'ready';
@@ -395,7 +352,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       ),
       refusalLine(l),
       owner ? null : overrideBlock(l),
-      recentBox(l),
       h(
         'details',
         null,
@@ -415,38 +371,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       n ? `Refused ${plural(n, 'time', 'times')}` : 'Not refused yet',
       l.last_at_ms ? ` · last ${ago(l.last_at_ms)}` : '',
       l.agents.length ? ' · by ' : '',
-      l.agents.flatMap((a, i) => [i ? ', ' : '', h('a', { href: href('agents', a.cid) }, a.name), ` (${a.count})`]),
-    );
-  }
-
-  /** The recent refusals of one law, loaded when its expander opens. */
-  function recentBox(l: LawInfo): HTMLElement {
-    const body = h('div', null, h('p.hint', null, 'Loading…'));
-    const box = h('details', null, h('summary', null, `Recent refusals (${l.refusals})`), body) as HTMLDetailsElement;
-    let loaded = false;
-    box.addEventListener('toggle', () => {
-      if (!box.open || loaded) return;
-      loaded = true;
-      replace(body, h('p.hint', null, 'Loading…'));
-      api.lawViolations(l.id, VIOLATION_LIMIT).then(
-        (rows) => {
-          if (alive) replace(body, rows.length ? h('ul', null, rows.map(violationRow)) : h('p.hint', null, 'No refusals recorded.'));
-        },
-        (err: unknown) => {
-          loaded = false;
-          if (alive) replace(body, h('p.rl-err', { role: 'alert' }, errorText(err)));
-        },
-      );
-    });
-    return box;
-  }
-
-  function violationRow(i: Infraction): HTMLElement {
-    return h(
-      'li.rl-infr',
-      null,
-      h('div', null, h('a', { href: href('agents', i.cid) }, i.agent_name || `agent ${i.cid}`), ' ', i.tool ? h('code', null, i.tool) : null),
-      h('div.hint', null, `${ago(i.at_ms)} · ${i.law_title || i.law}${i.detail ? ` · ${i.detail}` : ''}`),
+      l.agents.flatMap((a, i) => [i ? ', ' : '', h('a', { href: href('sessions', a.cid) }, agentLabelIn(agents.get(), a.cid)), ` (${a.count})`]),
     );
   }
 
@@ -710,7 +635,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     h('header.page-head', null, h('div.page-head-row', null, h('h1', null, 'Rules'), h('span.sp'), h('div.page-actions')), h('p.lede', null, 'The laws the plaza ships with, and the owner’s own JHRL rules.')),
     constitutionBanner,
     strip,
-    h('div.rl-cols', null, h('div.rl-main', null, strictSec, builtinSec, ownerSec), h('aside.rl-side', null, h('h2', null, 'Latest infractions'), infrBox)),
+    h('div.rl-main', null, strictSec, builtinSec, ownerSec),
   );
 
   search.addEventListener('input', () => {
@@ -762,7 +687,7 @@ function diagnosticList(diags: Diagnostic[], pick: (d: Diagnostic) => void): HTM
 
 const REFUSAL_COLUMNS: Column<WouldRefuse>[] = [
   { label: 'When', cell: (w) => ago(w.at_ms) },
-  { label: 'Agent', cell: (w) => h('a', { href: href('agents', w.cid) }, `agent ${w.cid}`) },
+  { label: 'Agent', cell: (w) => h('a', { href: href('sessions', w.cid) }, agentName({ cid: w.cid, role: w.role })) },
   { label: 'Role', cell: (w) => w.role },
   { label: 'Tool', cell: (w) => h('code', null, w.tool) },
   { label: 'Laws', cell: (w) => w.laws.join(', ') },

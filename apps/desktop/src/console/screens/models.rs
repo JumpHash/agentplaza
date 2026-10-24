@@ -4083,8 +4083,8 @@ fn prices_card<'a>(state: &'a State, p: &'a Policy) -> Element<'a, Msg> {
     }
     let header: Element<'a, Msg> = row(vec![
         ui::label("Model").into(),
-        ui::label("Input (credits / 1M)").into(),
-        ui::label("Output (credits / 1M)").into(),
+        ui::label("Input (USD / 1M)").into(),
+        ui::label("Output (USD / 1M)").into(),
     ])
     .spacing(8)
     .into();

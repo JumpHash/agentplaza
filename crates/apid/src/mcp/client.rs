@@ -60,13 +60,33 @@ pub struct ServerInfo {
     pub protocol: String,
 }
 
-/// One tool a server offers, as its listing describes it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One tool a server offers, as its listing describes it. Its schema is content (kept as the server sent it); its
+/// annotations are the MCP hints the hub reads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct ToolInfo {
     pub name: String,
     pub description: String,
+    #[table(content)]
     pub input_schema: Value,
-    pub annotations: Value,
+    #[table(flatten)]
+    pub annotations: ToolAnnotations,
+}
+
+/// The MCP tool annotations the hub reads (the hints of the MCP spec, camelCase on the wire). A hint a server does
+/// not send is absent: the risk then comes from the others.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolAnnotations {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
 }
 
 /// A client over one transport. Requests are answered in order; the client is used by one caller at a time.
@@ -223,8 +243,8 @@ impl Client {
                     .unwrap_or_else(|| json!({"type": "object"})),
                 annotations: item
                     .get("annotations")
-                    .cloned()
-                    .unwrap_or_else(|| json!({})),
+                    .and_then(|a| serde_json::from_value(a.clone()).ok())
+                    .unwrap_or_default(),
             });
         }
         Ok(tools)
@@ -355,7 +375,7 @@ pub(crate) mod tests {
         let tools = client.list_tools(timeout()).unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["a", "b"]);
-        assert_eq!(tools[1].annotations["readOnlyHint"], true);
+        assert_eq!(tools[1].annotations.read_only_hint, Some(true));
         assert_eq!(sent.lock().unwrap()[1]["params"]["cursor"], "1");
     }
 

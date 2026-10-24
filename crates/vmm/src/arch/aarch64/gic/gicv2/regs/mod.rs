@@ -26,7 +26,6 @@ pub fn save_state(fd: &DeviceFd, mpidrs: &[u64]) -> Result<GicState, GicError> {
     Ok(GicState {
         dist: dist_regs::get_dist_regs(fd)?,
         gic_vcpu_states: vcpu_states,
-        ..Default::default()
     })
 }
 

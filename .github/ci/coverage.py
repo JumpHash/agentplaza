@@ -52,7 +52,6 @@ SERVICES = [
     ("apz-link", "Node link (apz-link)"),
     ("dispatchd", "Fleet dispatcher (dispatchd)"),
     ("vmm", "VM monitor (vmm)"),
-    ("mcp-relay", "MCP relay (mcp-relay)"),
     ("agent-harness", "Guest agent harness (agent-harness)"),
     ("apz-workstation", "Workstation daemon (apz-workstation)"),
     ("weft", "Version control (weft)"),

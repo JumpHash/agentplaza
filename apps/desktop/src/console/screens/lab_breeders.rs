@@ -16,9 +16,9 @@ use super::Id;
 use super::lab::{self, Section};
 use super::lab_common;
 
-use crate::console::Ctx;
 use crate::console::client::{self, Client};
 use crate::console::ui::{self, Kind, Tone};
+use crate::console::{Ctx, roles};
 
 /// The per-job GPU-hour cap when the laws cannot be read: S-006c permits a breeder's job up to
 /// 8 GPU-hours (S-006d refuses more).
@@ -32,7 +32,6 @@ const KEPT: usize = 200;
 #[serde(default)]
 struct AgentRow {
     cid: u64,
-    name: String,
     role: String,
     status: String,
 }
@@ -385,15 +384,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Msg> {
     )
 }
 
-/// One breeder's card, as the web's: its name and status, its role and CID, then the GPU-hours used,
+/// One breeder's card, as the web's: its label and status, its role and CID, then the GPU-hours used,
 /// the jobs and the per-job cap; a transcript that cannot be read is noted on it.
 fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
     let a = &b.agent;
-    let name = if a.name.trim().is_empty() {
-        format!("agent {}", a.cid)
-    } else {
-        a.name.clone()
-    };
+    let label = roles::agent_label(&a.role, a.cid);
     let mut body: Vec<Element<'a, Msg>> = vec![
         row![
             ui::badge(&a.status, status_tone(&a.status)),
@@ -413,7 +408,7 @@ fn breeder_card<'a>(b: &'a Breeder) -> Element<'a, Msg> {
         body.push(lab_common::err(&b.note));
     }
     ui::card_with(
-        &name,
+        &label,
         vec![ui::btn_sm(
             "Agent page",
             None,

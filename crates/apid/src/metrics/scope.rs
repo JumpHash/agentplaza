@@ -186,7 +186,7 @@ pub fn agent(app: &App, cid: u64) -> Option<AgentInfo> {
     let model = agents::model_of(app, &agent);
     Some(AgentInfo {
         cid,
-        name: agent.name.clone(),
+        name: agent.label(),
         role: agent.role.clone(),
         run: agent.run.clone().unwrap_or_default(),
         node: fleet::node_of(app, cid),
@@ -248,8 +248,10 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
     match kind {
         EntityKind::Node => match app.nodes.get(entity) {
             Some(node) => {
-                let host = node.machine["host"]
-                    .as_str()
+                let host = node
+                    .machine
+                    .host
+                    .as_deref()
                     .filter(|host| !host.is_empty())
                     .unwrap_or(node.name.as_str());
                 format!("{entity} · {host}")
@@ -264,7 +266,7 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
             .ok()
             .and_then(|cid| app.agents.get(cid).map(|a| (cid, a)))
         {
-            Some((cid, agent)) => agent_label(&agent.name, cid),
+            Some((cid, agent)) => agent_label(&agent.role, cid),
             None => entity.to_string(),
         },
         EntityKind::Model => model_name(entity).to_string(),
@@ -272,7 +274,7 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
             Some((node, rest)) if node == fleet::LOCAL || app.nodes.get(node).is_some() => {
                 format!("{node} · {rest}")
             }
-            // The hub's own stores ("store:postgres · plaza") are named by what follows.
+            // The hub's own stores ("store:sqlite · plaza") are named by what follows.
             Some(("store", rest)) => rest.to_string(),
             _ => entity.to_string(),
         },
@@ -288,7 +290,7 @@ pub fn label(app: &App, kind: apz_metrics::EntityKind, entity: &str) -> String {
 }
 
 /// The node a volume or service lives on: the node its id starts with (`n1:/var/lib/plaza`), else the hub's own
-/// node, which runs the plaza's stores, the metrics module and the MCP clients (`store:postgres · plaza`,
+/// node, which runs the plaza's stores, the metrics module and the MCP clients (`store:sqlite · plaza`,
 /// `metrics`, `MCP: linear`).
 fn owner_node<'a>(nodes: &[String], entity: &'a str) -> &'a str {
     match entity.split_once(':') {
@@ -785,7 +787,7 @@ mod tests {
     fn the_hubs_stores_and_clients_live_on_its_own_node() {
         let nodes = vec!["n0".to_string(), "n1".to_string()];
         assert_eq!(owner_node(&nodes, "n1:/var/lib/plaza"), "n1");
-        assert_eq!(owner_node(&nodes, "store:postgres · plaza"), fleet::LOCAL);
+        assert_eq!(owner_node(&nodes, "store:sqlite · plaza"), fleet::LOCAL);
         assert_eq!(owner_node(&nodes, "MCP: linear"), fleet::LOCAL);
         assert_eq!(owner_node(&nodes, "metrics"), fleet::LOCAL);
     }

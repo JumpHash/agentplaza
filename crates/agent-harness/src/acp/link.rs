@@ -3,7 +3,7 @@
 //! A `code_engine` call runs on the tool thread while the agent loop waits for it. The engine
 //! (an ACP agent on the child's stdio) asks the harness before it acts, and the harness asks the
 //! hub: every permission request and every client method (`fs/*`, `terminal/*`) becomes a nested
-//! `tool_request` named `engine.<kind>` that the hub's laws, sanctions and approvals decide. The
+//! `tool_request` named `engine.<kind>` that the hub's laws and approvals decide. The
 //! engine's stream goes to the hub as `engine_update` lines. [`EngineLink`] is that path; the
 //! agent loop implements it over the session's shared writer and nested-call registry, and the
 //! tests implement it in memory.
@@ -18,7 +18,7 @@ use serde_json::Value;
 pub enum Verdict {
     /// The engine may go ahead, this once.
     Allow,
-    /// The engine may not; the reason is the hub's (a law, a sanction, the owner's denial, no
+    /// The engine may not; the reason is the hub's (a law, the owner's denial, no
     /// decision before the deadline).
     Deny(String),
     /// The work item was cancelled or the agent is stopping while the decision was open.

@@ -14,7 +14,6 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use apz_metrics_view::{
@@ -321,27 +320,7 @@ impl Prefs {
     }
 }
 
-/// A tab another screen asked the next opening of Metrics to show (the Treasury's "Real model cost" asks for Tokens
-/// & spend), as the web's `#/metrics?tab=tokens` link does.
-static ASKED_TAB: Mutex<Option<String>> = Mutex::new(None);
-
-/// Asks the next opening of the screen to show `tab`.
-pub fn ask_tab(tab: &str) {
-    *ASKED_TAB
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tab.to_string());
-}
-
 pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
-    if let Some(tab) = ASKED_TAB
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take()
-    {
-        state.q.tab = tab;
-        state.q.trace = None;
-        state.q.filter = None;
-    }
     // Entering the screen takes a lease even when one was sent a moment ago: the hub drops it once the screen is left.
     state.leased_at = None;
     let mut tasks = vec![reload(state, ctx)];

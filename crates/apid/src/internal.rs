@@ -143,6 +143,8 @@ fn record_compaction(app: &App, cid: u64, before: u64, after: u64) {
 /// Records one stats report of agent `cid`'s VM: its `/workspace` use and size as gauges, and its busiest
 /// processes as rows of the node's `top_processes` report, in place of the VM's previous rows.
 fn record_stats(app: &App, cid: u64, used_mib: u64, size_mib: u64, top: Vec<(String, f64, f64)>) {
+    // The project's disk counts this VM's workspace (disk.rs).
+    app.disk.report(cid, used_mib);
     let Some(agent) = app.agents.get(cid) else {
         return;
     };
@@ -277,15 +279,14 @@ pub fn routes(router: Router<App>) -> Router<App> {
                     &app.bus,
                     cid,
                     0,
-                    "egress",
-                    json!({
-                        "host": egress.host,
-                        "port": egress.port,
-                        "allowed": egress.allowed,
-                        "bytes_up": egress.bytes_up,
-                        "bytes_down": egress.bytes_down,
-                        "ms": egress.ms,
-                    }),
+                    crate::transcript::Entry::Egress {
+                        host: egress.host,
+                        port: egress.port,
+                        allowed: egress.allowed,
+                        bytes_up: egress.bytes_up,
+                        bytes_down: egress.bytes_down,
+                        ms: egress.ms,
+                    },
                 );
                 Ok(Response::json(200, &json!({})))
             })
@@ -464,7 +465,7 @@ pub(crate) fn unknown_agent_verdict() -> EgressVerdict {
 }
 
 /// The answer to the egress proxy for agent `cid` connecting to `host`. The laws are asked for
-/// every host, so a forbidden attempt is recorded as a violation even when the blocklist would
+/// every host, so a forbidden attempt is refused even when the blocklist would
 /// refuse it too. The laws only forbid here: a permit is not required (see the report on
 /// `Laws::refuse_op`).
 fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
@@ -490,11 +491,11 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
             "intercept": false,
         });
     }
-    // An agent the owner holds (on the bench, or on a paused project) does not reach the internet either.
+    // An agent the owner holds (its project is paused or over) does not reach the internet either.
     let held = app
         .agents
         .get(cid)
-        .and_then(|agent| crate::membership::held(app, &agent));
+        .and_then(|agent| crate::projects::held(app, &agent));
     if let Some(why) = held {
         return json!({
             "allow": false,
@@ -515,7 +516,7 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
         ty: "Host".into(),
         id: host.into(),
     };
-    // The host's group is not known here (the towns' host-groups document is not code), so a law
+    // The host's group is not known here (the projects' host-groups document is not code), so a law
     // that names a group sees an empty one.
     let attrs =
         std::collections::BTreeMap::from([("group".to_string(), jhrl::value::Value::str(""))]);
@@ -591,8 +592,6 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             ok,
             output,
         } => {
-            // One credit per tool report; task work is cancelled if its escrow runs out.
-            let _ = meter(app, cid, work, 1, "tool report");
             // A report carries no duration of its own, so the tool's time is recorded as 0.
             let tool = take_tool(cid, &call);
             collect::tool_call(app, cid, &tool, 0.0, ok);
@@ -606,16 +605,20 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                     &app.bus,
                     cid,
                     work,
-                    "error",
-                    json!({ "message": format!("tool_package: {err}") }),
+                    crate::transcript::Entry::Error {
+                        message: format!("tool_package: {err}"),
+                    },
                 );
             }
             app.transcripts.record(
                 &app.bus,
                 cid,
                 work,
-                "tool_result",
-                json!({ "call": call, "ok": ok, "output": cap_output(&output, REPORT_OUTPUT_BYTES) }),
+                crate::transcript::Entry::ToolResult {
+                    call,
+                    ok,
+                    output: cap_output(&output, REPORT_OUTPUT_BYTES),
+                },
             );
             None
         }
@@ -642,8 +645,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 }),
             );
             for entry in entries {
-                app.transcripts
-                    .record(&app.bus, cid, work, "engine_update", entry);
+                app.transcripts.record(
+                    &app.bus,
+                    cid,
+                    work,
+                    crate::transcript::Entry::EngineUpdate(entry),
+                );
             }
             None
         }
@@ -652,34 +659,20 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             status,
             summary,
         } => {
-            // The agent's journal: one line per finished piece of work (episodic memory, AP-062).
             if let Some(item) = app.work.current(cid).filter(|item| item.id == work) {
                 let ms = item.started_ms.map_or(0.0, |started| {
                     apz_plaza::now_ms().saturating_sub(started) as f64
                 });
                 collect::turn_end(app, cid, ms, matches!(status, WorkStatus::Done));
-                let clip = |text: &str, n: usize| -> String {
-                    let one: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if one.chars().count() > n {
-                        format!("{}…", one.chars().take(n).collect::<String>())
-                    } else {
-                        one
-                    }
-                };
-                let line = format!(
-                    "- {:?} {:?}: {} → {}",
-                    item.kind,
-                    status,
-                    clip(&item.prompt, 100),
-                    clip(&summary, 160)
-                )
-                .to_lowercase();
-                let _ = app.memory.journal(cid, &line, apz_plaza::now_ms());
             }
             // The engine calls under this work item end with it: their buffered text, plan and usage.
             for entry in app.engine_feed.finish(cid, work) {
-                app.transcripts
-                    .record(&app.bus, cid, work, "engine_update", entry);
+                app.transcripts.record(
+                    &app.bus,
+                    cid,
+                    work,
+                    crate::transcript::Entry::EngineUpdate(entry),
+                );
             }
             app.work.complete(app, cid, work, status, &summary);
             crate::harness_control::work_ended(app, cid, work, &summary);
@@ -699,8 +692,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 &app.bus,
                 cid,
                 work,
-                "compressed",
-                json!({ "before": before, "after": after, "folded": folded, "reason": reason }),
+                crate::transcript::Entry::Compressed {
+                    before,
+                    after,
+                    folded,
+                    reason,
+                },
             );
             record_compaction(app, cid, before, after);
             app.context.on_compaction(cid, work);
@@ -727,16 +724,25 @@ fn model_call(
     work: u64,
     mut request: ChatRequest,
 ) -> HostMessage {
-    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent on the bench, or on
-    // a paused project, does not think either (see `membership`).
+    // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
+    // paused or over does not think either (see `projects::held`).
+    // A held call answers `paused:`, so the harness's turn waits and asks again instead of failing.
     let held = if app.control.paused() {
-        Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
+        Some(format!(
+            "{}the plaza is held (STOP ALL); waiting for the owner to resume",
+            apz_proto::wire::MODEL_PAUSED
+        ))
     } else {
-        crate::membership::held(app, agent)
+        crate::projects::held(app, agent)
+            .map(|why| format!("{}{why}", apz_proto::wire::MODEL_PAUSED))
     };
     if let Some(e) = held {
-        app.transcripts
-            .record(&app.bus, cid, work, "error", json!({ "message": e }));
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error { message: e.clone() },
+        );
         return HostMessage::ModelResult {
             req,
             ok: false,
@@ -744,13 +750,17 @@ fn model_call(
             error: Some(e),
         };
     }
-    // A chat's own choice (one message's, or its owner conversation's) before the agent's model.
+    // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
     let model =
         crate::context_track::chat_model(app, cid, work).unwrap_or_else(|| model_of(app, agent));
     let settings = app.settings.get();
     if let Err(e) = app.settings.allowed(tier_of(&agent.role), &model) {
-        app.transcripts
-            .record(&app.bus, cid, work, "error", json!({ "message": e }));
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error { message: e.clone() },
+        );
         return HostMessage::ModelResult {
             req,
             ok: false,
@@ -772,10 +782,29 @@ fn model_call(
         &app.bus,
         cid,
         work,
-        "model_request",
         request_summary(&model, &request.messages, &tool_names),
     );
 
+    // A session's call is held on its budget first; one that does not fit pauses the session (work_loop.rs).
+    let budget_hold = match crate::work_loop::before_call(app, cid, &model, &request) {
+        Ok(held) => held,
+        Err(paused) => {
+            app.transcripts.record(
+                &app.bus,
+                cid,
+                work,
+                crate::transcript::Entry::Error {
+                    message: paused.clone(),
+                },
+            );
+            return HostMessage::ModelResult {
+                req,
+                ok: false,
+                response: None,
+                error: Some(paused),
+            };
+        }
+    };
     let gateway = app.providers.gateway();
     let caller = Caller::Agent {
         cid,
@@ -801,11 +830,20 @@ fn model_call(
     );
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     collect::agent_state(app, cid, "tools");
+    if let Some(held) = budget_hold {
+        crate::work_loop::after_call(app, cid, held, result.as_ref().ok().map(|r| &r.usage));
+    }
     match result {
         Ok(resp) => {
-            let full = serde_json::to_value(&resp).unwrap_or(Value::Null);
-            app.transcripts
-                .record(&app.bus, cid, work, "model_response", full);
+            let answer = crate::transcript::Entry::ModelResponse {
+                via: None,
+                model: resp.model.clone(),
+                content: Some(serde_json::to_value(&resp.content).unwrap_or(Value::Null)),
+                stop: Some(serde_json::to_value(&resp.stop).unwrap_or(Value::Null)),
+                usage: crate::transcript::Usage::from(&resp.usage),
+                cost_usd: None,
+            };
+            app.transcripts.record(&app.bus, cid, work, answer);
             let usage = &resp.usage;
             let task = app.work.current(cid).and_then(|item| item.origin.task);
             let tokens = crate::prices::Tokens {
@@ -856,26 +894,7 @@ fn model_call(
                     ratelimit: (None, None),
                 },
             );
-            let tokens = settings
-                .prices
-                .get(&model)
-                .map(|p| {
-                    (resp.usage.input_tokens as f64 * p.input
-                        + resp.usage.output_tokens as f64 * p.output)
-                        / 1_000_000.0
-                })
-                .unwrap_or(0.0);
-            // One credit per model call on top of the tokens, rounded up to whole credits.
-            let credits = (tokens + 1.0).ceil() as i64;
             app.agents.update(cid, |a| a.usage.add(&resp.usage));
-            if let Err(message) = meter(app, cid, work, credits, &format!("model {model}")) {
-                return HostMessage::ModelResult {
-                    req,
-                    ok: false,
-                    response: None,
-                    error: Some(message),
-                };
-            }
             HostMessage::ModelResult {
                 req,
                 ok: true,
@@ -885,8 +904,14 @@ fn model_call(
         }
         Err(e) => {
             let message = e.to_string();
-            app.transcripts
-                .record(&app.bus, cid, work, "error", json!({ "message": message }));
+            app.transcripts.record(
+                &app.bus,
+                cid,
+                work,
+                crate::transcript::Entry::Error {
+                    message: message.clone(),
+                },
+            );
             HostMessage::ModelResult {
                 req,
                 ok: false,
@@ -894,45 +919,6 @@ fn model_call(
                 error: Some(message),
             }
         }
-    }
-}
-
-/// Charges `credits` of a model call to the work's task, through the shared charge
-/// ([`crate::payments::charge_model_call`]), which honours `payments.charge_models`.
-/// Only hired work (a task) is charged: agents talking, reaching out, naming
-/// themselves or debating motions cost the plaza's budget nothing (their tokens are
-/// still counted in their usage). A shortfall is recorded and the task's work is
-/// cancelled.
-pub(crate) fn meter(
-    app: &App,
-    cid: u64,
-    work: u64,
-    credits: i64,
-    memo: &str,
-) -> Result<(), String> {
-    let Some(task) = app.work.current(cid).and_then(|item| item.origin.task) else {
-        return Ok(());
-    };
-    let charging = app.settings.get().payments.charge_models;
-    let spend = |task: &str, credits: i64| app.work.add_spend(task, credits);
-    let charge = crate::payments::charge_model_call(
-        &app.plaza.treasury,
-        charging,
-        spend,
-        cid,
-        Some(&task),
-        credits,
-        memo,
-    );
-    match charge {
-        Some(settled) if settled.charged < settled.wanted => {
-            let message = "budget exhausted";
-            app.transcripts
-                .record(&app.bus, cid, work, "error", json!({ "message": message }));
-            app.work.cancel(app, cid, message);
-            Err(message.to_string())
-        }
-        _ => Ok(()),
     }
 }
 
@@ -950,8 +936,11 @@ fn tool_request(
         &app.bus,
         cid,
         work,
-        "tool_request",
-        json!({ "call": call, "name": name, "input": input }),
+        crate::transcript::Entry::ToolRequest {
+            call: call.clone(),
+            name: name.to_string(),
+            input: input.clone(),
+        },
     );
     let granted: Vec<String> = profile(app, agent)
         .tools
@@ -959,17 +948,16 @@ fn tool_request(
         .map(|t| t.name)
         .collect();
     // STOP ALL holds every tool call, also one that was on its way when the owner stopped the plaza (its work's
-    // cancel may not have reached the VM yet). An agent on the bench, or on a paused project, runs no tool either
-    // (see `membership`). Then the plaza's laws and the grant (see `gate_call`).
+    // cancel may not have reached the VM yet). An agent whose project is paused or over runs no tool either
+    // (see `projects::held`). Then the plaza's laws and the grant (see `gate_call`).
     let hold = if app.control.paused() {
         Some("the plaza is held (STOP ALL); waiting for the owner to resume".to_string())
     } else {
-        crate::membership::held(app, agent)
+        crate::projects::held(app, agent)
     };
     let verdict = match hold {
         Some(why) => Err(why),
-        None => gate_call(app.laws, cid, &agent.role, &granted, name, input)
-            .and_then(|runs| crate::sanctions::suspended(app, cid, name).map_or(Ok(runs), Err)),
+        None => gate_call(app.laws, cid, &agent.role, &granted, name, input),
     };
     // The owner's permission mode next — only for calls that would otherwise run, so a refused
     // or ungranted call never waits in the approvals queue. An ACP engine's own request may wait
@@ -1041,12 +1029,11 @@ fn tool_request(
         &app.bus,
         cid,
         work,
-        "tool_decision",
-        json!({
-            "call": call,
-            "decision": decision,
-            "output": cap_output(&output, DECISION_OUTPUT_BYTES),
-        }),
+        crate::transcript::Entry::ToolDecision {
+            call: call.clone(),
+            decision: decision.into(),
+            output: cap_output(&output, DECISION_OUTPUT_BYTES),
+        },
     );
     // An allowed engine call on an instance the owner configured carries how to start it.
     let engine = (name == "code_engine" && matches!(decision, Decision::Allow))
@@ -1117,19 +1104,19 @@ fn decide(granted: &[String], name: &str, runs: Option<Runs>) -> Result<Runs, &'
 
 /// The bounded summary of a model request kept in the transcript: counts, tool names
 /// and the last user turn clipped to `LAST_USER_CHARS`, never the full body.
-fn request_summary(model: &str, messages: &[Message], tools: &[&str]) -> Value {
+fn request_summary(model: &str, messages: &[Message], tools: &[&str]) -> crate::transcript::Entry {
     let last_user: String = messages
         .iter()
         .rev()
         .find(|m| matches!(m.role, Role::User))
         .map(|m| m.text().chars().take(LAST_USER_CHARS).collect())
         .unwrap_or_default();
-    json!({
-        "model": model,
-        "messages": messages.len(),
-        "tools": tools,
-        "last_user": last_user,
-    })
+    crate::transcript::Entry::ModelRequest {
+        model: model.to_string(),
+        messages: messages.len(),
+        tools: json!(tools),
+        last_user,
+    }
 }
 
 #[cfg(test)]
@@ -1212,7 +1199,9 @@ mod tests {
                 Message::user_text(long),
                 Message::assistant(vec![]),
             ];
-            let summary = request_summary("m", &messages, &["read", "calc"]);
+            let summary = serde_json::to_value(request_summary("m", &messages, &["read", "calc"]))
+                .unwrap()["data"]
+                .clone();
             assert_eq!(summary["messages"], 3);
             assert_eq!(summary["tools"], json!(["read", "calc"]));
             assert_eq!(
@@ -1223,7 +1212,10 @@ mod tests {
         {
             // request_summary_is_empty_without_a_user_turn: with no user turn the last user text is
             // empty, and the message count is still kept.
-            let summary = request_summary("m", &[Message::assistant(vec![])], &[]);
+            let summary =
+                serde_json::to_value(request_summary("m", &[Message::assistant(vec![])], &[]))
+                    .unwrap()["data"]
+                    .clone();
             assert_eq!(summary["last_user"], "");
             assert_eq!(summary["messages"], 1);
         }
@@ -1398,15 +1390,12 @@ mod egress_check_tests {
     }
 
     #[test]
-    fn a_researcher_at_the_hub_git_is_refused_by_the_real_law_and_recorded() {
-        let dir = std::env::temp_dir().join(format!("apid-egress-check-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = std::fs::remove_file(dir.join("violations.json"));
+    fn a_researcher_at_the_hub_git_is_refused_by_the_real_law() {
         let files: Vec<(String, String)> = LAW_FILES
             .iter()
             .map(|(name, text)| (name.to_string(), text.to_string()))
             .collect();
-        let laws = Laws::from_files(&dir, files);
+        let laws = Laws::from_files(files);
         let resource = jhrl::authz::Entity {
             ty: "Host".into(),
             id: "git.hub.local".into(),
@@ -1433,11 +1422,6 @@ mod egress_check_tests {
                     .contains("S-013d"),
             "{verdict:?}"
         );
-        assert!(
-            laws.all_violations()
-                .iter()
-                .any(|(cid, violation)| *cid == 7 && violation.law == "S-013d")
-        );
     }
 }
 
@@ -1462,13 +1446,6 @@ mod law_gate_tests {
 }
 "#;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-gate-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let _ = std::fs::remove_file(dir.join("violations.json"));
-        dir
-    }
-
     fn compiled_in() -> Vec<(String, String)> {
         LAW_FILES
             .iter()
@@ -1479,9 +1456,8 @@ mod law_gate_tests {
     #[test]
     fn gate_call_follows_the_laws_for_each_kind_of_call() {
         {
-            // a_forbidden_call_is_refused_with_its_law_and_recorded: a forbidden call is refused
-            // with its law, and the refusal is recorded.
-            let laws = Laws::load(&scratch("forbidden"));
+            // a_forbidden_call_is_refused_with_its_law: a forbidden call is refused with its law.
+            let laws = Laws::builtin();
             let granted = crate::tools::offered_names("builder");
             let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
             let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
@@ -1489,17 +1465,11 @@ mod law_gate_tests {
                 reason.starts_with("refused by law ") && reason.contains("C-002b"),
                 "{reason}"
             );
-            assert!(
-                laws.all_violations()
-                    .iter()
-                    .any(|(cid, v)| *cid == 7 && v.law == "C-002b")
-            );
-            assert!(!laws.recent(7, apz_plaza::now_ms()).is_empty());
         }
         {
             // a_permitted_call_runs_where_its_tool_runs: a permitted call runs where its tool runs
-            // (guest or host) and records no violation.
-            let laws = Laws::load(&scratch("permitted"));
+            // (guest or host).
+            let laws = Laws::builtin();
             let granted = crate::tools::offered_names("builder");
             assert_eq!(
                 gate_call(
@@ -1516,12 +1486,10 @@ mod law_gate_tests {
                 gate_call(&laws, 7, "builder", &granted, "plaza_tasks", &json!({})),
                 Ok(Runs::Host)
             );
-            assert!(laws.all_violations().is_empty());
         }
         {
-            // an_unknown_tool_is_denied_by_default_and_not_recorded: an unknown tool is denied by
-            // default, and the denial is not recorded.
-            let laws = Laws::load(&scratch("unknown"));
+            // an_unknown_tool_is_denied_by_default: an unknown tool is denied by default.
+            let laws = Laws::builtin();
             let granted = vec!["launch_missiles".to_string()];
             let reason = gate_call(&laws, 7, "builder", &granted, "launch_missiles", &json!({}))
                 .unwrap_err();
@@ -1529,19 +1497,18 @@ mod law_gate_tests {
                 reason,
                 "refused: no law permits launch_missiles for the builder role"
             );
-            assert!(laws.all_violations().is_empty());
         }
         {
             // a_tool_the_laws_withhold_is_neither_offered_nor_run_even_if_granted: a tool the laws
             // withhold is not offered to the role, and the gate refuses it even when granted.
-            let laws = Laws::load(&scratch("withheld"));
+            let laws = Laws::builtin();
             // Posting a task is the orchestrator's (T-003): a builder is not offered it.
             assert!(
                 !crate::tools::offered_names("builder")
                     .iter()
                     .any(|name| name == "plaza_post_task")
             );
-            // The model may still call it by name; the gate refuses it by default and does not record it.
+            // The model may still call it by name; the gate refuses it by default.
             let granted = vec!["plaza_post_task".to_string()];
             let reason = gate_call(&laws, 7, "builder", &granted, "plaza_post_task", &json!({}))
                 .unwrap_err();
@@ -1549,7 +1516,6 @@ mod law_gate_tests {
                 reason.contains("no law permits plaza_post_task"),
                 "{reason}"
             );
-            assert!(laws.all_violations().is_empty());
         }
         {
             // a_rule_added_takes_effect_and_a_rule_removed_stops_applying: a rule added to the laws
@@ -1558,11 +1524,11 @@ mod law_gate_tests {
             let input = json!({"path": "notes.md"});
             let mut with_rule = compiled_in();
             with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
-            let added = Laws::from_files(&scratch("rule-added"), with_rule);
+            let added = Laws::from_files(with_rule);
             let reason =
                 gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
             assert!(reason.contains("O-001"), "{reason}");
-            let removed = Laws::from_files(&scratch("rule-removed"), compiled_in());
+            let removed = Laws::from_files(compiled_in());
             assert_eq!(
                 gate_call(&removed, 7, "builder", &granted, "read_file", &input),
                 Ok(Runs::Guest)

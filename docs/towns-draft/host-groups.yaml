@@ -1,5 +1,0 @@
-# Egress allowlist groups (0010). Towns pick groups; adding a group or host to a town needs owner ratification (0067).
-package-registries: [pypi.org, files.pythonhosted.org, crates.io, static.crates.io, registry.npmjs.org]
-hub-git: [git.hub.local]
-advisories: [osv.dev, nvd.nist.gov, github.com/advisories]
-blocked: [evil.example]      # never selectable; researchers can't reach it either (S-013a)

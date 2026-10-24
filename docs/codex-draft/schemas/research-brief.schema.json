@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentplaza.io/schemas/research-brief.schema.json",
   "title": "Research brief",
-  "description": "A researcher's findings. Always untrusted: built from external content (0028, 0113).",
+  "description": "A researcher's findings. Always untrusted: built from external content.",
   "type": "object",
   "additionalProperties": false,
   "required": [

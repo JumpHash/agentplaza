@@ -1,33 +1,29 @@
 //! Share links (docs/design/sharing.md): "anyone with the link" for an artifact or a Library file, served by this
 //! hub at `{hub}/artifact/{id}` and, through the agentplaza.io relay, at `https://agentplaza.io/artifact/{id}`.
 //!
-//! The store keeps the shares in `<state_dir>/shares.json` (rewritten atomically on every change), the events in
-//! `<state_dir>/share_events.jsonl` (appended), and the HMAC key for unlock tokens in `<state_dir>/share_secret`.
-//! Migration 0015 creates the `shares` and `share_events` tables for the Postgres-backed store that the hub's DB
-//! snapshot mirrors into. This release the file store is the source of truth, and nothing writes those tables yet.
+//! The shares live in `plaza.db` (`share`, keyed by the link token) and their events in `share_event` (keyed by seq),
+//! both as typed rows. The store keeps nothing in memory: each call reads or writes the database. The HMAC key for
+//! unlock tokens is not a record and stays in `<state_dir>/share_secret`.
 
 pub mod public;
 pub mod relay;
 pub mod request;
 pub mod routes;
 
-use std::collections::{HashMap, VecDeque};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use apz_store::rusqlite::{Connection, Params, params};
+use apz_store::table::{Changes, Loaded, Row, Value, apply};
+use apz_store::{Db, IndexDef, RowSet, StoreError, Table, TableDef};
 use argon2::Argon2;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
-/// The events kept in memory for `Store::events`. Older events stay in the file and count toward `counts`.
-const EVENTS_IN_MEMORY: usize = 10_000;
-
-/// The events file is rewritten with its last `EVENTS_IN_MEMORY` events once it holds more than this many lines.
-const EVENTS_ON_DISK_MAX: usize = 20_000;
+use crate::store::sql;
 
 /// The failed unlocks of one share allowed in `UNLOCK_WINDOW_MS`. The next attempt is refused without running argon2.
 pub const UNLOCK_LIMIT: usize = 10;
@@ -39,17 +35,20 @@ pub const UNLOCK_WINDOW_MS: u64 = 600_000;
 pub const UNLOCK_TTL_MS: u64 = 604_800_000;
 
 /// What a share points at. `kind` is "artifact" or "file"; `id` is the artifact's id or the Library file's id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Table)]
 pub struct Target {
     pub kind: String,
     pub id: String,
 }
 
-/// One share link.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// One share link (a row of `share`). Its place in the table is its creation order.
+#[derive(Clone, Debug, Serialize, Deserialize, Table)]
+#[table(name = "share")]
 pub struct Share {
     /// 32 lowercase hex characters: 128 random bits, the token in the link.
+    #[table(key)]
     pub id: String,
+    #[table(flatten)]
     pub target: Target,
     /// The artifact version the link serves. `None` serves the latest.
     pub version: Option<u32>,
@@ -65,9 +64,14 @@ pub struct Share {
     pub title: String,
 }
 
-/// One recorded use of a share.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// One recorded use of a share (a row of `share_event`). Its key is its place in the log.
+#[derive(Clone, Debug, Serialize, Deserialize, Table)]
+#[table(name = "share_event")]
 pub struct ShareEvent {
+    /// The event's place in the log, assigned when it is written.
+    #[serde(skip)]
+    #[table(key)]
+    pub seq: u64,
     pub share: String,
     pub at_ms: u64,
     /// "view", "download" or "unlock_failed".
@@ -100,65 +104,56 @@ pub enum Access {
     NeedsPassword,
 }
 
-/// The share store. The shares, the events and the counts sit behind one lock, and the files are written under it.
+/// The share store over `plaza.db`, with the unlock secret of its folder.
 pub struct Store {
-    shares_path: PathBuf,
-    events_path: PathBuf,
+    db: Arc<Db>,
     secret: [u8; 32],
-    inner: Mutex<Inner>,
-}
-
-#[derive(Default)]
-struct Inner {
-    /// Every share in creation order, so the newest is last.
-    shares: Vec<Share>,
-    /// The last `EVENTS_IN_MEMORY` events, oldest first.
-    events: VecDeque<ShareEvent>,
-    /// Views and downloads per share, counted over the whole events file.
-    counts: HashMap<String, (u64, u64)>,
-    /// The lines the events file holds, so the file is capped without counting it on every write.
-    events_on_disk: usize,
-    /// The times of the recent failed unlocks per share, oldest first. Only the last `UNLOCK_WINDOW_MS` are kept.
-    failures: HashMap<String, VecDeque<u64>>,
+    /// A store made by `for_tests` keeps its folder and its hub's store alive with it.
+    #[cfg(test)]
+    _keep: Option<(tempfile::TempDir, apz_store::Store)>,
 }
 
 impl Store {
-    /// Loads the shares and the events from `state_dir`, and the unlock secret (created on first load). A shares
-    /// file that does not parse is moved aside as `shares.json.corrupt-<unix ms>` and logged, and the store starts
-    /// empty.
-    pub fn load(state_dir: &Path) -> Store {
-        let shares_path = state_dir.join("shares.json");
-        let events_path = state_dir.join("share_events.jsonl");
-        let shares = read_shares(&shares_path);
-        let (events, counts, events_on_disk) = read_events(&events_path);
+    /// The store over `db` (the hub's `plaza.db`). The unlock secret is `<state_dir>/share_secret`, created on first
+    /// use.
+    pub fn open(db: Arc<Db>, state_dir: &Path) -> Store {
         Store {
+            db,
             secret: load_secret(&state_dir.join("share_secret")),
-            shares_path,
-            events_path,
-            inner: Mutex::new(Inner {
-                shares,
-                events,
-                counts,
-                events_on_disk,
-                failures: HashMap::new(),
-            }),
+            #[cfg(test)]
+            _keep: None,
         }
     }
 
+    /// A store in a fresh folder, kept alive with the store (the folder goes when the store drops).
+    #[cfg(test)]
+    pub fn for_tests() -> Store {
+        let dir = tempfile::Builder::new()
+            .prefix("apid-shares")
+            .tempdir()
+            .expect("a temporary folder");
+        let store = crate::store::open(dir.path()).expect("the store opens");
+        let mut shares = Store::open(Arc::clone(store.db(crate::store::PLAZA)), dir.path());
+        shares._keep = Some((dir, store));
+        shares
+    }
+
     /// Creates a share of `target`, saves it and returns it. The id is 128 random bits. A password is kept as an
-    /// argon2 hash. A failed save is named on stderr, and the share stays in memory until the next save.
-    pub fn create(&self, target: Target, title: String, opts: Options, created_by: &str) -> Share {
+    /// argon2 hash. The save waits for its commit: a failure is returned and no share exists.
+    pub fn create(
+        &self,
+        target: Target,
+        title: String,
+        opts: Options,
+        created_by: &str,
+    ) -> Result<Share, StoreError> {
         let mut bytes = [0u8; 16];
         apz_os::random::fill(&mut bytes).expect("share ids need OS randomness");
         let share = Share {
             id: hex(&bytes),
             target,
             version: opts.version,
-            password_hash: opts
-                .password
-                .as_deref()
-                .filter(|p| !p.is_empty())
-                .map(hash_password),
+            password_hash: password_hash(opts.password),
             expires_ms: opts.expires_ms,
             allow_download: opts.allow_download,
             created_by: created_by.to_string(),
@@ -166,14 +161,13 @@ impl Store {
             revoked_ms: None,
             title,
         };
-        let mut inner = self.lock();
-        inner.shares.push(share.clone());
-        self.save(&inner);
-        share
+        let stored = share.clone();
+        self.db.write(move |conn| save_share(conn, &stored))?;
+        Ok(share)
     }
 
     /// Changes the given fields of share `id` and saves it. The outer `Option` of each argument says whether the
-    /// field changes; `Some(None)` clears it. An empty password clears it. Returns `None` for an unknown id.
+    /// field changes; `Some(None)` clears it. An empty password clears it. `Ok(None)` is an unknown id.
     pub fn change(
         &self,
         id: &str,
@@ -181,77 +175,76 @@ impl Store {
         expires_ms: Option<Option<u64>>,
         allow_download: Option<bool>,
         version: Option<Option<u32>>,
-    ) -> Option<Share> {
-        let mut inner = self.lock();
-        let share = inner.shares.iter_mut().find(|s| s.id == id)?;
-        if let Some(password) = password {
-            share.password_hash = password
-                .as_deref()
-                .filter(|p| !p.is_empty())
-                .map(hash_password);
-        }
-        if let Some(expires) = expires_ms {
-            share.expires_ms = expires;
-        }
-        if let Some(allow) = allow_download {
-            share.allow_download = allow;
-        }
-        if let Some(version) = version {
-            share.version = version;
-        }
-        let changed = share.clone();
-        self.save(&inner);
-        Some(changed)
+    ) -> Result<Option<Share>, StoreError> {
+        // The hash is made before the write, so the argon2 work does not hold up the file's writer.
+        let password = password.map(password_hash);
+        let id = id.to_string();
+        self.db
+            .write(move |conn| {
+                let Some(mut share) = share_of(conn, &id)? else {
+                    return Ok(None);
+                };
+                if let Some(password) = password {
+                    share.password_hash = password;
+                }
+                if let Some(expires) = expires_ms {
+                    share.expires_ms = expires;
+                }
+                if let Some(allow) = allow_download {
+                    share.allow_download = allow;
+                }
+                if let Some(version) = version {
+                    share.version = version;
+                }
+                save_share(conn, &share)?;
+                Ok(Some(share))
+            })
+            .map(|written| written.value)
     }
 
-    /// Revokes share `id` (the first revocation time is kept) and saves it. The revocation holds in memory even when
-    /// the save fails, and the error is returned so the owner can be told to try again; a retry saves it again.
-    /// `Ok(None)` is an unknown id.
-    pub fn revoke(&self, id: &str) -> std::io::Result<Option<Share>> {
-        let mut inner = self.lock();
-        let Some(share) = inner.shares.iter_mut().find(|s| s.id == id) else {
-            return Ok(None);
-        };
-        if share.revoked_ms.is_none() {
-            share.revoked_ms = Some(unix_ms());
-        }
-        let revoked = share.clone();
-        if let Err(e) = write_atomic(&self.shares_path, &shares_bytes(&inner.shares)) {
-            eprintln!(
-                "shares: save {} failed, revocation not on disk: {e}",
-                self.shares_path.display()
-            );
-            return Err(e);
-        }
-        Ok(Some(revoked))
+    /// Revokes share `id` (the first revocation time is kept) and saves it. `Ok(None)` is an unknown id. A failed
+    /// save is returned, and nothing is revoked, so the owner can try again.
+    pub fn revoke(&self, id: &str) -> Result<Option<Share>, StoreError> {
+        let id = id.to_string();
+        let now = unix_ms();
+        self.db
+            .write(move |conn| {
+                let Some(mut share) = share_of(conn, &id)? else {
+                    return Ok(None);
+                };
+                share.revoked_ms = share.revoked_ms.or(Some(now));
+                save_share(conn, &share)?;
+                Ok(Some(share))
+            })
+            .map(|written| written.value)
     }
 
-    /// The share with `id`, whatever its state.
+    /// The share with `id`, whatever its state. A failed read is named on stderr and reads as no share.
     pub fn get(&self, id: &str) -> Option<Share> {
-        self.lock().shares.iter().find(|s| s.id == id).cloned()
+        let id = id.to_string();
+        self.read("get", None, move |conn| share_of(conn, &id))
     }
 
     /// Every share, or the shares of `target` only, newest first.
     pub fn list(&self, target: Option<&Target>) -> Vec<Share> {
-        self.lock()
-            .shares
-            .iter()
-            .rev()
-            .filter(|s| target.is_none_or(|t| s.target == *t))
-            .cloned()
-            .collect()
+        let target = target.cloned();
+        self.read("list", Vec::new(), move |conn| match target {
+            Some(target) => read_rows(
+                conn,
+                sql::SHARE_LIST_TARGET,
+                def(),
+                params![target.kind, target.id],
+            ),
+            None => read_rows(conn, sql::SHARE_LIST, def(), params![]),
+        })
     }
 
     /// The shares that are neither revoked nor expired now, newest first.
     pub fn live(&self) -> Vec<Share> {
-        let now = unix_ms();
-        self.lock()
-            .shares
-            .iter()
-            .rev()
-            .filter(|s| s.revoked_ms.is_none() && !expired(s, now))
-            .cloned()
-            .collect()
+        let now = int(unix_ms());
+        self.read("live", Vec::new(), move |conn| {
+            read_rows(conn, sql::SHARE_LIVE, def(), params![now])
+        })
     }
 
     /// Whether a request at `now_ms` may use share `id`. A password-protected share is only `Ok` when `unlocked`
@@ -310,91 +303,79 @@ impl Store {
     }
 
     /// Whether share `id` has had `UNLOCK_LIMIT` failed unlocks within the last `UNLOCK_WINDOW_MS` at `now_ms`. A
-    /// blocked attempt must not run the password check.
+    /// blocked attempt must not run the password check. A failed read blocks, so the throttle fails closed.
     pub fn unlock_blocked(&self, id: &str, now_ms: u64) -> bool {
-        let mut inner = self.lock();
-        let Some(window) = inner.failures.get_mut(id) else {
-            return false;
-        };
-        prune_failures(window, now_ms);
-        let blocked = window.len() >= UNLOCK_LIMIT;
-        if window.is_empty() {
-            inner.failures.remove(id);
-        }
-        blocked
+        let id = id.to_string();
+        let since = int(now_ms.saturating_sub(UNLOCK_WINDOW_MS));
+        self.read("unlock_blocked", true, move |conn| {
+            let failed: i64 = conn
+                .prepare_cached(sql::SHARE_EVENT_FAILURES)?
+                .query_row(params![id, since], |r| r.get(0))?;
+            Ok(usize::try_from(failed).unwrap_or(0) >= UNLOCK_LIMIT)
+        })
     }
 
-    /// Records a use of share `id`: appended to the events file, kept in memory, and counted when it is a view
-    /// or a download. A failed unlock also joins the share's failure window. Once the events file holds more than
-    /// `EVENTS_ON_DISK_MAX` lines it is rewritten with its last `EVENTS_IN_MEMORY` events.
+    /// Records a use of share `id` in `share_event`, and counts it when it is a view or a download. The write waits for
+    /// its commit, so a failed unlock counts against the next attempt at once. A failure is named on stderr.
     pub fn record(&self, share: &str, kind: &str, via: &str) {
-        let now = unix_ms();
         let event = ShareEvent {
+            seq: 0,
             share: share.to_string(),
-            at_ms: now,
+            at_ms: unix_ms(),
             kind: kind.to_string(),
             via: via.to_string(),
         };
-        let line = serde_json::to_string(&event).expect("a share event serializes");
-        let mut inner = self.lock();
-        if let Err(e) = append_line(&self.events_path, &line) {
-            eprintln!("shares: record {}: {e}", self.events_path.display());
-        }
-        inner.events_on_disk += 1;
-        if kind == "unlock_failed" {
-            let window = inner.failures.entry(share.to_string()).or_default();
-            prune_failures(window, now);
-            window.push_back(now);
-        }
-        count(&mut inner.counts, &event);
-        push_event(&mut inner.events, event);
-        if inner.events_on_disk > EVENTS_ON_DISK_MAX {
-            self.cap_events(&mut inner);
-        }
-    }
-
-    /// Rewrites the events file with the events kept in memory, which are its last `EVENTS_IN_MEMORY` lines. A
-    /// failure is named on stderr, and the next record tries again.
-    fn cap_events(&self, inner: &mut Inner) {
-        let mut text = String::new();
-        for event in &inner.events {
-            text.push_str(&serde_json::to_string(event).expect("a share event serializes"));
-            text.push('\n');
-        }
-        match write_atomic(&self.events_path, text.as_bytes()) {
-            Ok(()) => inner.events_on_disk = inner.events.len(),
-            Err(e) => eprintln!("shares: cap {}: {e}", self.events_path.display()),
+        let result = self.db.write(move |conn| {
+            let mut event = event;
+            event.seq = next_event_seq(conn)?;
+            let seq = event.seq;
+            save(conn, event_def(), &event, seq)
+        });
+        if let Err(e) = result {
+            eprintln!("shares: record: {e}");
         }
     }
 
     /// The most recent events of share `id`, newest first, at most `limit` of them.
     pub fn events(&self, share: &str, limit: usize) -> Vec<ShareEvent> {
-        self.lock()
-            .events
-            .iter()
-            .rev()
-            .filter(|e| e.share == share)
-            .take(limit)
-            .cloned()
-            .collect()
+        let share = share.to_string();
+        let limit = int(limit);
+        self.read("events", Vec::new(), move |conn| {
+            read_rows(
+                conn,
+                sql::SHARE_EVENT_PAGE,
+                event_def(),
+                params![share, limit],
+            )
+        })
     }
 
     /// The views and the downloads of share `id`, counted over all its recorded events.
     pub fn counts(&self, share: &str) -> (u64, u64) {
-        self.lock().counts.get(share).copied().unwrap_or((0, 0))
+        let share = share.to_string();
+        self.read("counts", (0, 0), move |conn| {
+            let (views, downloads): (i64, i64) = conn
+                .prepare_cached(sql::SHARE_EVENT_COUNTS)?
+                .query_row(params![share], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok((
+                u64::try_from(views).unwrap_or(0),
+                u64::try_from(downloads).unwrap_or(0),
+            ))
+        })
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Writes the shares to `shares.json`. A failure is named on stderr, and the next save tries again.
-    fn save(&self, inner: &Inner) {
-        if let Err(e) = write_atomic(&self.shares_path, &shares_bytes(&inner.shares)) {
-            eprintln!("shares: save {}: {e}", self.shares_path.display());
-        }
+    /// Reads through one read transaction. A failed read is named on stderr and gives `fallback`, the answer that
+    /// refuses (no share, no events, nothing live).
+    fn read<T>(
+        &self,
+        what: &str,
+        fallback: T,
+        look: impl FnOnce(&Connection) -> Result<T, StoreError>,
+    ) -> T {
+        self.db.read(look).unwrap_or_else(|e| {
+            eprintln!("shares: {what}: {e}");
+            fallback
+        })
     }
 
     /// HMAC-SHA256 of `message` under the store's secret.
@@ -408,108 +389,116 @@ impl Store {
     }
 }
 
+/// The table of shares (`share`), keyed by the link token and ordered by creation.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Share)
+}
+
+/// The table of share events (`share_event`), keyed by seq, with an index on (share, at_ms) for one share's events.
+pub fn event_def() -> &'static TableDef {
+    static DEF: OnceLock<TableDef> = OnceLock::new();
+    DEF.get_or_init(|| {
+        let mut def = ShareEvent::root();
+        def.indexes.push(IndexDef {
+            columns: vec!["share".to_string(), "at_ms".to_string()],
+            unique: false,
+        });
+        def
+    })
+}
+
+/// The stored form of a password: its argon2 hash, or none for an empty password.
+fn password_hash(password: Option<String>) -> Option<String> {
+    password
+        .filter(|p| !p.is_empty())
+        .map(|p| hash_password(&p))
+}
+
 /// Whether `share` has expired at `now`.
 fn expired(share: &Share, now: u64) -> bool {
     share.expires_ms.is_some_and(|at| now >= at)
 }
 
-/// The shares in `path`, or none when the file is missing. A file that does not parse is moved aside as
-/// `shares.json.corrupt-<unix ms>` and logged as an error, so the next save never replaces it unseen.
-fn read_shares(path: &Path) -> Vec<Share> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(e) => {
-            eprintln!(
-                "shares: ERROR cannot read {} ({e}); starting with no shares",
-                path.display()
-            );
-            return Vec::new();
-        }
-    };
-    match serde_json::from_slice(&bytes) {
-        Ok(shares) => shares,
-        Err(e) => {
-            let aside = path.with_file_name(format!("shares.json.corrupt-{}", unix_ms()));
-            match std::fs::rename(path, &aside) {
-                Ok(()) => eprintln!(
-                    "shares: ERROR {} is not valid share JSON ({e}); moved to {}, starting with no shares",
-                    path.display(),
-                    aside.display()
-                ),
-                Err(moved) => eprintln!(
-                    "shares: ERROR {} is not valid share JSON ({e}) and could not be moved aside ({moved}); \
-                     starting with no shares, and the next save replaces it",
-                    path.display()
-                ),
-            }
-            Vec::new()
-        }
-    }
+/// The share `id` as the row holds it, if there is one.
+fn share_of(conn: &Connection, id: &str) -> Result<Option<Share>, StoreError> {
+    Ok(
+        read_rows::<Share>(conn, sql::SHARE_GET, def(), params![id])?
+            .into_iter()
+            .next(),
+    )
 }
 
-/// The events in `path` (the last `EVENTS_IN_MEMORY` of them), the counts of all of them, and the number of lines
-/// the file holds. A line that does not parse is named on stderr and skipped.
-fn read_events(path: &Path) -> (VecDeque<ShareEvent>, HashMap<String, (u64, u64)>, usize) {
-    let mut events = VecDeque::new();
-    let mut counts = HashMap::new();
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return (events, counts, 0);
-    };
-    let mut lines = 0;
-    for line in text.lines() {
-        lines += 1;
-        match serde_json::from_str::<ShareEvent>(line) {
-            Ok(event) => {
-                count(&mut counts, &event);
-                push_event(&mut events, event);
-            }
-            Err(_) => eprintln!(
-                "shares: skipped a line of {} that is not an event",
-                path.display()
-            ),
-        }
-    }
-    (events, counts, lines)
+/// The next seq of the event log: one after the newest event (writes are one at a time, so none is taken twice).
+fn next_event_seq(conn: &Connection) -> Result<u64, StoreError> {
+    let last: i64 = conn
+        .prepare_cached(sql::SHARE_EVENT_LAST_SEQ)?
+        .query_row([], |r| r.get(0))?;
+    Ok(u64::try_from(last).unwrap_or(0) + 1)
 }
 
-/// The pretty JSON `shares.json` holds for `shares`.
-fn shares_bytes(shares: &[Share]) -> Vec<u8> {
-    serde_json::to_vec_pretty(shares).expect("shares serialize")
+/// Writes a share at its place: its own when it is stored already, else the next after the newest share.
+fn save_share(conn: &Connection, share: &Share) -> Result<(), StoreError> {
+    let pos: i64 = conn
+        .prepare_cached(sql::SHARE_POS)?
+        .query_row(params![share.id], |r| r.get(0))?;
+    save(conn, def(), share, u64::try_from(pos).unwrap_or(0))
+}
+
+/// Writes a record and its child rows as upserts: its root row at `pos` (the table's place for the row), then every
+/// child table's rows.
+fn save<T: Table>(
+    conn: &Connection,
+    def: &TableDef,
+    value: &T,
+    pos: u64,
+) -> Result<(), StoreError> {
+    let mut rows = RowSet::new();
+    value.put(def, vec![Value::Integer(int(pos))], &mut rows)?;
+    let mut changes = Changes::default();
+    for table in def.walk() {
+        for row in rows.tables.remove(&table.name).unwrap_or_default() {
+            changes.upserts.push((table.name.clone(), row));
+        }
+    }
+    apply(conn, def, &changes)
+}
+
+/// Takes the rows `query` selects as `T`. The query selects every column of `def`'s table in the table's order, as
+/// `SELECT *` does.
+fn read_rows<T: Table>(
+    conn: &Connection,
+    query: &str,
+    def: &TableDef,
+    params: impl Params,
+) -> Result<Vec<T>, StoreError> {
+    let width = def.key.len() + def.columns.len();
+    let mut stmt = conn.prepare_cached(query)?;
+    let mut rows = stmt.query(params)?;
+    let mut out = Vec::new();
+    while let Some(r) = rows.next()? {
+        let mut values = Vec::with_capacity(width);
+        for i in 0..width {
+            values.push(r.get::<_, Value>(i)?);
+        }
+        let columns = values.split_off(def.key.len());
+        let row = Row {
+            key: values,
+            columns,
+        };
+        out.push(T::take(def, &row, &Loaded::default())?);
+    }
+    Ok(out)
+}
+
+/// A count or a millisecond time as the SQL integer it is stored as (a value past `i64::MAX` is clamped).
+fn int(value: impl TryInto<i64>) -> i64 {
+    value.try_into().unwrap_or(i64::MAX)
 }
 
 /// The message an unlock token's MAC covers: the share id, its password hash and the expiry, one per line. A changed
 /// password hash or expiry gives another message, so the token stops matching.
 fn unlock_message(id: &str, password_hash: &str, expiry_hex: &str) -> String {
     format!("{id}\n{password_hash}\n{expiry_hex}")
-}
-
-/// Drops the failed unlocks that are `UNLOCK_WINDOW_MS` or older at `now_ms` from the front of `window`.
-fn prune_failures(window: &mut VecDeque<u64>, now_ms: u64) {
-    while window
-        .front()
-        .is_some_and(|&at| now_ms.saturating_sub(at) >= UNLOCK_WINDOW_MS)
-    {
-        window.pop_front();
-    }
-}
-
-/// Adds one event to the views or downloads of its share. Other kinds are not counted.
-fn count(counts: &mut HashMap<String, (u64, u64)>, event: &ShareEvent) {
-    let entry = counts.entry(event.share.clone()).or_default();
-    match event.kind.as_str() {
-        "view" => entry.0 += 1,
-        "download" => entry.1 += 1,
-        _ => {}
-    }
-}
-
-/// Keeps `event` as the newest, dropping the oldest once more than `EVENTS_IN_MEMORY` are held.
-fn push_event(events: &mut VecDeque<ShareEvent>, event: ShareEvent) {
-    events.push_back(event);
-    while events.len() > EVENTS_IN_MEMORY {
-        events.pop_front();
-    }
 }
 
 /// The unlock secret in `path`: 32 random bytes, created on first use with mode 0600. A file of another length is
@@ -534,6 +523,7 @@ fn load_secret(path: &Path) -> [u8; 32] {
 
 /// Writes `bytes` to `path` with mode 0600 on Unix.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -542,42 +532,6 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         options.mode(0o600);
     }
     options.open(path)?.write_all(bytes)
-}
-
-/// Writes `bytes` to `path` through a temp file and a rename, so a crash leaves the old file or the new one. The temp
-/// file is synced before the rename, and the folder after it, so a save that returned is on disk.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, path)?;
-    sync_parent(path)
-}
-
-/// Syncs the folder `path` is in, so a rename into it survives a crash.
-#[cfg(unix)]
-fn sync_parent(path: &Path) -> std::io::Result<()> {
-    match path.parent() {
-        Some(dir) => std::fs::File::open(dir)?.sync_all(),
-        None => Ok(()),
-    }
-}
-
-/// Folders cannot be opened and synced on this platform, so only the file itself is synced.
-#[cfg(not(unix))]
-fn sync_parent(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-/// Appends `line` and a newline to the events file, creating it.
-fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")
 }
 
 /// Hashes `password` with argon2id under a fresh random salt, as a PHC string.
@@ -623,14 +577,6 @@ pub fn unix_ms() -> u64 {
 mod tests {
     use super::*;
 
-    /// A fresh state folder for one test.
-    fn folder(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-shares-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create the test folder");
-        dir
-    }
-
     fn artifact(id: &str) -> Target {
         Target {
             kind: "artifact".into(),
@@ -638,19 +584,33 @@ mod tests {
         }
     }
 
+    /// Creates a share of `target` in `store`, which must save it.
+    fn create(store: &Store, target: Target, title: &str, opts: Options) -> Share {
+        store
+            .create(target, title.into(), opts, "cid-1")
+            .expect("the share is saved")
+    }
+
+    /// The hub's store in `dir`, and the share store over it.
+    fn open(dir: &Path) -> (apz_store::Store, Store) {
+        let store = crate::store::open(dir).expect("the store opens");
+        let shares = Store::open(Arc::clone(store.db(crate::store::PLAZA)), dir);
+        (store, shares)
+    }
+
     #[test]
     fn create_list_and_revoke() {
-        let store = Store::load(&folder("create"));
-        let a = store.create(artifact("art-1"), "A".into(), Options::default(), "cid-1");
-        let b = store.create(artifact("art-2"), "B".into(), Options::default(), "cid-1");
-        let f = store.create(
+        let store = Store::for_tests();
+        let a = create(&store, artifact("art-1"), "A", Options::default());
+        let b = create(&store, artifact("art-2"), "B", Options::default());
+        let f = create(
+            &store,
             Target {
                 kind: "file".into(),
                 id: "f-1".into(),
             },
-            "F".into(),
+            "F",
             Options::default(),
-            "cid-1",
         );
         assert_eq!(a.id.len(), 32);
         assert!(
@@ -684,13 +644,31 @@ mod tests {
     }
 
     #[test]
+    fn a_revocation_keeps_its_first_time() {
+        let store = Store::for_tests();
+        let a = create(&store, artifact("art-1"), "A", Options::default());
+        let first = store
+            .revoke(&a.id)
+            .expect("the save succeeds")
+            .expect("a known share")
+            .revoked_ms;
+        let again = store
+            .revoke(&a.id)
+            .expect("the save succeeds")
+            .expect("a known share")
+            .revoked_ms;
+        assert!(first.is_some());
+        assert_eq!(first, again);
+    }
+
+    #[test]
     fn expiry_ends_access() {
-        let store = Store::load(&folder("expiry"));
+        let store = Store::for_tests();
         let opts = Options {
             expires_ms: Some(1_000),
             ..Options::default()
         };
-        let share = store.create(artifact("art-1"), "A".into(), opts, "cid-1");
+        let share = create(&store, artifact("art-1"), "A", opts);
         assert!(matches!(store.access(&share.id, 999, false), Access::Ok(_)));
         assert!(matches!(
             store.access(&share.id, 1_000, false),
@@ -701,8 +679,8 @@ mod tests {
 
     #[test]
     fn password_set_verify_and_clear() {
-        let store = Store::load(&folder("password"));
-        let share = store.create(artifact("art-1"), "A".into(), Options::default(), "cid-1");
+        let store = Store::for_tests();
+        let share = create(&store, artifact("art-1"), "A", Options::default());
         assert!(matches!(
             store.access(&share.id, unix_ms(), false),
             Access::Ok(_)
@@ -710,6 +688,7 @@ mod tests {
 
         let changed = store
             .change(&share.id, Some(Some("hunter2".into())), None, None, None)
+            .expect("the save succeeds")
             .expect("change a known share");
         let stored = changed.password_hash.clone().unwrap_or_default();
         assert!(stored.starts_with("$argon2"), "argon2 PHC string");
@@ -727,12 +706,43 @@ mod tests {
 
         store
             .change(&share.id, Some(None), None, None, None)
+            .expect("the save succeeds")
             .expect("clear the password");
         assert!(matches!(
             store.access(&share.id, unix_ms(), false),
             Access::Ok(_)
         ));
         assert!(!store.check_password(&share.id, "hunter2"));
+    }
+
+    #[test]
+    fn change_sets_the_given_fields_only() {
+        let store = Store::for_tests();
+        let share = create(&store, artifact("art-1"), "A", Options::default());
+        let changed = store
+            .change(
+                &share.id,
+                None,
+                Some(Some(5_000)),
+                Some(true),
+                Some(Some(3)),
+            )
+            .expect("the save succeeds")
+            .expect("a known share");
+        assert_eq!(changed.expires_ms, Some(5_000));
+        assert!(changed.allow_download);
+        assert_eq!(changed.version, Some(3));
+        assert!(changed.password_hash.is_none());
+        let stored = store.get(&share.id).expect("the share is stored");
+        assert_eq!(stored.expires_ms, Some(5_000));
+        assert_eq!(stored.title, "A");
+        assert!(
+            store
+                .change("nope", None, None, None, None)
+                .expect("the save succeeds")
+                .is_none(),
+            "an unknown id is not changed"
+        );
     }
 
     /// Options for a share with `password`, for the unlock token tests.
@@ -745,28 +755,33 @@ mod tests {
 
     #[test]
     fn unlock_tokens_are_per_share_and_keyed() {
-        let dir = folder("token");
-        let store = Store::load(&dir);
+        let dir = tempfile::Builder::new()
+            .prefix("apid-shares-token")
+            .tempdir()
+            .expect("a temporary folder");
+        let (store, shares) = open(dir.path());
         let now = unix_ms();
-        let a = store.create(artifact("art-1"), "A".into(), locked("pw-one"), "cid-1");
-        let b = store.create(artifact("art-2"), "B".into(), locked("pw-two"), "cid-1");
-        let open = store.create(artifact("art-3"), "C".into(), Options::default(), "cid-1");
-        let token = store
+        let a = create(&shares, artifact("art-1"), "A", locked("pw-one"));
+        let b = create(&shares, artifact("art-2"), "B", locked("pw-two"));
+        let open_share = create(&shares, artifact("art-3"), "C", Options::default());
+        let token = shares
             .unlock_token(&a.id, now)
             .expect("a locked share has a token");
-        assert!(store.token_ok(&a.id, &token, now));
+        assert!(shares.token_ok(&a.id, &token, now));
         assert!(
-            !store.token_ok(&b.id, &token, now),
+            !shares.token_ok(&b.id, &token, now),
             "a token is for its own share"
         );
-        assert!(!store.token_ok(&a.id, "00", now));
-        assert!(!store.token_ok(&a.id, "nodot", now));
+        assert!(!shares.token_ok(&a.id, "00", now));
+        assert!(!shares.token_ok(&a.id, "nodot", now));
         assert!(
-            store.unlock_token(&open.id, now).is_none(),
+            shares.unlock_token(&open_share.id, now).is_none(),
             "an open share has no token"
         );
 
-        let reloaded = Store::load(&dir);
+        drop(shares);
+        drop(store);
+        let (_store, reloaded) = open(dir.path());
         assert_eq!(
             reloaded.unlock_token(&a.id, now),
             Some(token.clone()),
@@ -777,14 +792,15 @@ mod tests {
 
     #[test]
     fn a_password_change_or_removal_invalidates_the_token() {
-        let store = Store::load(&folder("token-rotate"));
+        let store = Store::for_tests();
         let now = unix_ms();
-        let share = store.create(artifact("art-1"), "A".into(), locked("first-pw"), "cid-1");
+        let share = create(&store, artifact("art-1"), "A", locked("first-pw"));
         let old = store.unlock_token(&share.id, now).expect("a token");
         assert!(store.token_ok(&share.id, &old, now));
 
         store
             .change(&share.id, Some(Some("second-pw".into())), None, None, None)
+            .expect("the save succeeds")
             .expect("change the password");
         assert!(
             !store.token_ok(&share.id, &old, now),
@@ -795,6 +811,7 @@ mod tests {
 
         store
             .change(&share.id, Some(None), None, None, None)
+            .expect("the save succeeds")
             .expect("clear the password");
         assert!(
             !store.token_ok(&share.id, &new, now),
@@ -804,9 +821,9 @@ mod tests {
 
     #[test]
     fn an_unlock_token_expires_after_seven_days() {
-        let store = Store::load(&folder("token-expiry"));
+        let store = Store::for_tests();
         let now = 1_000_000;
-        let share = store.create(artifact("art-1"), "A".into(), locked("pw"), "cid-1");
+        let share = create(&store, artifact("art-1"), "A", locked("pw"));
         let token = store.unlock_token(&share.id, now).expect("a token");
         assert!(store.token_ok(&share.id, &token, now + UNLOCK_TTL_MS - 1));
         assert!(
@@ -818,9 +835,9 @@ mod tests {
 
     #[test]
     fn failed_unlocks_are_limited_per_window() {
-        let store = Store::load(&folder("throttle"));
+        let store = Store::for_tests();
         let now = unix_ms();
-        let share = store.create(artifact("art-1"), "A".into(), locked("pw"), "cid-1");
+        let share = create(&store, artifact("art-1"), "A", locked("pw"));
         for _ in 0..UNLOCK_LIMIT {
             assert!(!store.unlock_blocked(&share.id, now));
             store.record(&share.id, "unlock_failed", "network");
@@ -841,46 +858,21 @@ mod tests {
     }
 
     #[test]
-    fn the_events_file_is_capped_at_its_last_ten_thousand() {
-        let dir = folder("cap");
-        let store = Store::load(&dir);
-        let share = store.create(artifact("art-1"), "A".into(), Options::default(), "cid-1");
-        for _ in 0..=EVENTS_ON_DISK_MAX {
+    fn every_event_is_kept_and_counted() {
+        let store = Store::for_tests();
+        let share = create(&store, artifact("art-1"), "A", Options::default());
+        for _ in 0..50 {
             store.record(&share.id, "view", "network");
         }
-        let text =
-            std::fs::read_to_string(dir.join("share_events.jsonl")).expect("the events file");
-        assert_eq!(text.lines().count(), EVENTS_IN_MEMORY);
-        assert_eq!(store.counts(&share.id), (EVENTS_ON_DISK_MAX as u64 + 1, 0));
-    }
-
-    #[test]
-    fn a_corrupt_shares_file_is_moved_aside_not_replaced() {
-        let dir = folder("corrupt");
-        std::fs::write(dir.join("shares.json"), b"{ not json").expect("write the file");
-        let store = Store::load(&dir);
-        assert!(store.list(None).is_empty());
-        let moved: Vec<_> = std::fs::read_dir(&dir)
-            .expect("read the folder")
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with("shares.json.corrupt-"))
-            .collect();
-        assert_eq!(
-            moved.len(),
-            1,
-            "the corrupt file is kept under a corrupt-<ms> name"
-        );
-        assert!(
-            !dir.join("shares.json").exists(),
-            "the next save writes a fresh file"
-        );
+        assert_eq!(store.counts(&share.id), (50, 0));
+        assert_eq!(store.events(&share.id, 100).len(), 50);
+        assert_eq!(store.events(&share.id, 3).len(), 3);
     }
 
     #[test]
     fn events_and_counts() {
-        let store = Store::load(&folder("events"));
-        let a = store.create(artifact("art-1"), "A".into(), Options::default(), "cid-1");
+        let store = Store::for_tests();
+        let a = create(&store, artifact("art-1"), "A", Options::default());
         store.record(&a.id, "view", "network");
         store.record(&a.id, "view", "relay");
         store.record(&a.id, "download", "network");
@@ -896,29 +888,59 @@ mod tests {
     }
 
     #[test]
+    fn the_tables_are_strict_and_pass_the_schema_lint() {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().expect("a memory database");
+        conn.execute_batch(&def().ddl()).expect("the share table");
+        conn.execute_batch(&event_def().ddl())
+            .expect("the event table");
+        let problems = apz_store::lint::schema(&conn).expect("the schema is read");
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
+    #[test]
     fn shares_and_events_survive_a_restart() {
-        let dir = folder("persist");
-        let store = Store::load(&dir);
+        let dir = tempfile::Builder::new()
+            .prefix("apid-shares-persist")
+            .tempdir()
+            .expect("a temporary folder");
+        let password = "a-long-password-for-the-test";
+        let (store, shares) = open(dir.path());
         let opts = Options {
             version: Some(2),
-            password: Some("pw".into()),
+            password: Some(password.into()),
             expires_ms: None,
             allow_download: true,
         };
-        let share = store.create(artifact("art-1"), "A".into(), opts, "cid-1");
-        store.record(&share.id, "view", "network");
+        let share = create(&shares, artifact("art-1"), "A", opts);
+        shares.record(&share.id, "view", "network");
+        drop(shares);
         drop(store);
 
-        let store = Store::load(&dir);
-        let reloaded = store.get(&share.id).expect("the share is back");
+        let (store, shares) = open(dir.path());
+        let reloaded = shares.get(&share.id).expect("the share is back");
         assert_eq!(reloaded.title, "A");
         assert_eq!(reloaded.version, Some(2));
         assert!(reloaded.allow_download);
         assert_eq!(reloaded.target, artifact("art-1"));
-        assert!(store.check_password(&share.id, "pw"));
-        assert_eq!(store.counts(&share.id), (1, 0));
-        assert_eq!(store.events(&share.id, 10).len(), 1);
-        let file = std::fs::read_to_string(dir.join("shares.json")).expect("shares.json");
-        assert!(!file.contains("\"pw\""), "the password is not written");
+        assert!(shares.check_password(&share.id, password));
+        assert_eq!(shares.counts(&share.id), (1, 0));
+        assert_eq!(shares.events(&share.id, 10).len(), 1);
+        // Windows locks the bytes of an open database, so the folder is read once both handles are closed.
+        drop(shares);
+        drop(store);
+
+        let mut bytes = Vec::new();
+        for entry in std::fs::read_dir(dir.path()).expect("read the folder") {
+            let path = entry.expect("an entry").path();
+            if path.is_file() && !path.ends_with("share_secret") {
+                bytes.extend(std::fs::read(&path).expect("read a file"));
+            }
+        }
+        assert!(
+            !bytes
+                .windows(password.len())
+                .any(|w| w == password.as_bytes()),
+            "the password is not written"
+        );
     }
 }

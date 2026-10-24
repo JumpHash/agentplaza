@@ -7,6 +7,7 @@ use crate::{BackgroundChoice, Mode, Resolved, ThemeFile, builtin, resolve, skin}
 
 /// System, light or dark.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 #[serde(rename_all = "snake_case")]
 pub enum ModeChoice {
     #[default]
@@ -29,6 +30,7 @@ impl ModeChoice {
 
 /// How dense lists and tables are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 #[serde(rename_all = "snake_case")]
 pub enum Density {
     Compact,

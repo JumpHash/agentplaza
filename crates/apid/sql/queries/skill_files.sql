@@ -1,5 +1,3 @@
--- The files of one version, by path. $1 = skill id, $2 = version
-SELECT path, encode(sha256, 'hex'), size, executable
-FROM skill_files
-WHERE skill_id = $1 AND version = $2
-ORDER BY path
+-- The files of version ?2 of skill ?1, by path.
+-- ?1 = skill id, ?2 = version
+SELECT * FROM "skill_file" WHERE "skill_id" = ?1 AND "version" = ?2 ORDER BY "path"

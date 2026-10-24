@@ -1,5 +1,5 @@
 meta {
-  name: Create a task of 200 credits: its escrow comes out of the project
+  name: Create a task with a budget of 200
   type: http
   seq: 4
 }
@@ -15,12 +15,11 @@ headers {
 }
 
 body:json {
-  {"goal": "t-life paused archive task", "budget": 200, "project": "{{life_xpid}}"}
+  {"goal": "t-life paused archive task", "project": "{{life_xpid}}"}
 }
 
 assert {
   res.status: eq 201
-  res.body.budget: eq 200
   res.responseTime: lt {{budgetMs}}
 }
 

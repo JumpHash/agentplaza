@@ -17,13 +17,16 @@
 //! - `PUT /{env}/secrets/{name} {value}`, `DELETE /{env}/secrets/{name}`: the environment's secrets, in the vault
 //!   bound to `project:<id>.<env>`
 //!
-//! Tools: `plaza_environments` (read) and `plaza_deploy`. Saved in `<state>/environments.json` (and Postgres).
+//! Tools: `plaza_environments` (read) and `plaza_deploy`. Kept in plaza.db (table `project_environment`, one row per
+//! project; its environments, deploys and variables are child tables).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use apz_cache::Generations;
 use apz_http::{Params, Response, RouteDoc, Router};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -42,7 +45,7 @@ const MAX_ENVIRONMENTS: usize = 20;
 const MAX_DEPLOYS: usize = 30;
 
 /// One deploy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Deploy {
     /// `d<n>` in the environment.
     pub id: String,
@@ -59,7 +62,7 @@ pub struct Deploy {
 }
 
 /// Where a project runs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Environment {
     /// A slug, unique in the project: production, staging, pr-42.
     pub name: String,
@@ -75,6 +78,7 @@ pub struct Environment {
     pub protected: bool,
     /// Settings that are not secret.
     #[serde(default)]
+    #[table(map_value = "environment_variable")]
     pub variables: BTreeMap<String, String>,
     #[serde(default)]
     pub notes: String,
@@ -84,6 +88,7 @@ pub struct Environment {
     #[serde(default)]
     pub deployed_ms: u64,
     #[serde(default)]
+    #[table(child = "deploy")]
     pub deploys: Vec<Deploy>,
     #[serde(default)]
     pub created_ms: u64,
@@ -91,8 +96,10 @@ pub struct Environment {
     pub updated_ms: u64,
     /// Filled on read: the names of its secrets in the vault, and whether it has a deploy hook.
     #[serde(default, skip_deserializing)]
+    #[table(skip)]
     pub secrets: Vec<String>,
     #[serde(default, skip_deserializing)]
+    #[table(skip)]
     pub hook: bool,
 }
 
@@ -100,18 +107,25 @@ fn manual() -> String {
     "manual".into()
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// One project's environments, as its row of `project_environment`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "project_environment")]
 struct ProjectEnvs {
+    #[table(key)]
     project: String,
     #[serde(default)]
+    #[table(child = "environment")]
     environments: Vec<Environment>,
     #[serde(default)]
     seq: u64,
 }
 
+/// The environments of every project.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     items: Mutex<Vec<ProjectEnvs>>,
+    /// The hub's generations: a change to a project's environments bumps its `project:<id>`.
+    gens: Arc<Generations<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -123,26 +137,10 @@ fn now_ms() -> u64 {
 }
 
 impl Store {
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("environments.json");
-        let items = std::fs::read(&path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            items: Mutex::new(items),
-        }
-    }
-
-    fn save(&self, items: &[ProjectEnvs]) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(items).map_err(|e| e.to_string())?;
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| e.to_string())
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
     }
 
     fn of(&self, project: &str) -> Vec<Environment> {
@@ -171,22 +169,27 @@ impl Store {
             }
         };
         let out = change(&mut next[at])?;
-        self.save(&next)?;
         *items = next;
+        crate::sources::bump(&self.gens, &crate::sources::project(project));
         Ok(out)
     }
 
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&*lock(&self.items)).unwrap_or_default()
+    /// The rows of every project's environments, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::list(def(), lock(&self.items).iter())
     }
 
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let next: Vec<ProjectEnvs> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut items = lock(&self.items);
-        self.save(&next)?;
-        *items = next;
+    /// Replaces the environments with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<ProjectEnvs> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.items) = stored;
         Ok(())
     }
+}
+
+/// The table of the environments: `project_environment`, one row per project.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(ProjectEnvs)
 }
 
 /// The vault binding an environment's secrets are read under.
@@ -764,10 +767,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 }
 
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
-    let project = app
-        .members
-        .project_of(agent.cid)
-        .ok_or("you are on no project")?;
+    let project = crate::projects::project_of(app, agent.cid).ok_or("you are on no project")?;
     match name {
         "plaza_environments" => {
             let envs: Vec<Value> = list(app, &project)
@@ -797,7 +797,7 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             if version.is_empty() {
                 return Err("name the version to deploy".into());
             }
-            let deploy = request(&arc, &project, env, version, agent.cid, &agent.name, why)?;
+            let deploy = request(&arc, &project, env, version, agent.cid, &agent.label(), why)?;
             Ok(match deploy.status.as_str() {
                 "waiting" => format!(
                     "{env} is protected: the deploy of {version} waits for the owner's approval"
@@ -974,9 +974,7 @@ mod tests {
 
     #[test]
     fn the_store_keeps_each_projects_environments_apart() {
-        let dir = std::env::temp_dir().join(format!("apid-envs-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let store = Store::load(&dir);
+        let store = Store::default();
         for (project, name) in [
             ("pr1", "production"),
             ("pr1", "staging"),
@@ -1006,8 +1004,44 @@ mod tests {
         }
         assert_eq!(store.of("pr1").len(), 2);
         assert_eq!(store.of("pr2").len(), 1);
+        store
+            .mutate("pr1", |p| {
+                let env = &mut p.environments[0];
+                env.variables.insert("REGION".into(), "eu".into());
+                env.deploys.push(Deploy {
+                    id: "d1".into(),
+                    version: "v1".into(),
+                    by: "owner".into(),
+                    at_ms: 2,
+                    status: "recorded".into(),
+                    detail: String::new(),
+                    approval: None,
+                });
+                Ok(())
+            })
+            .unwrap();
         assert!(store.of("pr9").is_empty());
-        let again = Store::load(&dir);
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let again = Store::default();
+        again.load(&conn).unwrap();
         assert_eq!(again.of("pr1"), store.of("pr1"));
+        assert_eq!(again.of("pr1")[0].variables["REGION"], "eu");
+    }
+
+    #[test]
+    fn a_change_to_a_projects_environments_moves_its_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::project("app");
+        store
+            .mutate("app", |_| Ok::<(), String>(()))
+            .expect("a change");
+        assert!(
+            gens.get(&key) > 0,
+            "a change to the environments moves the project"
+        );
+        assert_eq!(gens.get(&crate::sources::project("other")), 0);
     }
 }

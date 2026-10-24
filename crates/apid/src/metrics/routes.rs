@@ -369,15 +369,10 @@ fn put_settings_route(app: &App, req: &Request) -> Response {
 }
 
 fn dashboards_get_route(app: &App) -> Response {
-    let saved = app
-        .metrics
-        .store
-        .kv_get("dashboards")
-        .and_then(|text| serde_json::from_str::<Saved>(&text).ok())
-        .unwrap_or(Saved {
-            starter: true,
-            ..Saved::default()
-        });
+    let saved = app.metrics.store.dashboards().unwrap_or(Saved {
+        starter: true,
+        ..Saved::default()
+    });
     Response::json(200, &saved)
 }
 
@@ -388,8 +383,7 @@ fn dashboards_put_route(app: &App, req: &Request) -> Response {
     };
     // Once the owner saves anything, the starter pins stop being shown.
     saved.starter = false;
-    let text = serde_json::to_string(&saved).unwrap_or_default();
-    app.metrics.store.kv_put("dashboards", &text);
+    app.metrics.store.put_dashboards(&saved);
     Response::json(200, &saved)
 }
 

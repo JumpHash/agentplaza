@@ -1,0 +1,32 @@
+meta {
+  name: A loop with a unicode prompt is refused for an agent with no project
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/loops
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cid": 9101,
+    "prompt": "Prüfe Änderungen 🚀 nach dem Build",
+    "every_minutes": 1,
+    "max_runs": 3
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+}
+
+
+tests {
+  test("the valid prompt reaches the project check", function () {
+    expect(res.getBody().error).to.include("has no project");
+  });
+}

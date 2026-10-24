@@ -61,16 +61,13 @@ fn versions_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 }
 
 /// `GET /v1/artifacts/{id}/blobs/{blob}`: a data blob one of the artifact's versions references, served as the
-/// deliverables serve their files (sandboxed when it is HTML).
-fn blob_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
+/// deliverables serve their files (sandboxed when it is HTML). A Range request is answered from the chunks it covers.
+fn blob_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let blob = p.get("blob");
-    match app.artifacts.artifact_blob(p.get("id"), blob) {
-        Some((content_type, bytes)) => {
+    match app.artifacts.artifact_blob_hash(p.get("id"), blob) {
+        Some((content_type, hash)) => {
             let (content_type, headers) = served(&content_type, blob, false);
-            headers.into_iter().fold(
-                Response::new(200, &content_type, bytes),
-                |response, (name, value)| response.with_header(name, &value),
-            )
+            crate::storage::blob_response(&app.blobs, req, &hash, &content_type, headers)
         }
         None => Response::error(404, "no such blob"),
     }

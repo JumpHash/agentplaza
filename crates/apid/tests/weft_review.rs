@@ -1,13 +1,15 @@
-//! Weft and the review graph, end to end on a scratch hub, with the agents' VMs played by this test: the `weft`
-//! commands a harness runs (through the agent gateway, where apid signs with each agent's key) and the tool calls a
-//! model makes.
+//! Weft through the work engine, end to end on a scratch hub, with the sessions' VMs played by this test. A session's VM
+//! is a run noded starts for the hub: the test takes the CID noded gives it, hellos as that VM, reads the work the hub
+//! pushes to it (through the agent gateway), and plays what its harness does: the `weft` commands (through the gateway,
+//! where apid signs with the VM's key) and the tool calls its model makes.
 //!
-//! - A code task: claimed (its lane opens), two turns as drafts, intents, done (sealed, `written`), reviewed by the
-//!   code recipe; the qa step fails it, so it goes back to its worker (`rework`) with the finding; round 2 scores a
-//!   security risk, so the owner gets the review card and passes it; the change lands and is exported to a git
-//!   remote as one commit per intent, authored by the owner, with no AI credits.
-//! - A research brief (no code): the research recipe re-runs its numbers, finds them wrong (a measured accuracy
-//!   score), sends it back; the next round passes and lands.
+//! - A code task: the builder's session opens the task's lane at its hello, writes files over two turns (drafts),
+//!   describes its intents and finishes (sealed, with a `written` attestation). The reviewer's session, on another
+//!   model, sends it back with a finding (`plaza_verdict` with pass false). The builder's next session, on a VM of its
+//!   own, fixes it; the reviewer's second session passes it, and the change lands. It is exported to a git remote as
+//!   one commit per intent, authored by the owner, with no AI credits.
+//! - A research brief (no code): the reviewer's first verdict sends it back over a wrong number, the second passes it,
+//!   and it lands.
 //! - Every record verifies, from each signature to the owner's key.
 
 mod common;
@@ -21,35 +23,65 @@ use serde_json::{Value, json};
 
 use common::{FakeDaemon, Hub, Scratch, text};
 
-const AGENTS: &[(u64, &str)] = &[
-    (300, "builder"),
-    (301, "reviewer"),
-    (302, "security-reviewer"),
-    (303, "qa"),
-    (305, "researcher"),
-    (306, "reviewer"),
-    (307, "reviewer"),
-];
+/// The CID noded gives the first VM it starts; each next one gets the next.
+const FIRST_CID: u64 = 500;
+/// How long a step waits for the hub (scaled by the slack of a slow run).
+const WAIT: Duration = Duration::from_secs(40);
+/// The models a project's seats use: the reviewer's differs from the builder's.
+const BUILDER_MODEL: &str = "mock/agent";
+const REVIEWER_MODEL: &str = "mock/echo";
 
-fn daemons() -> (FakeDaemon, FakeDaemon) {
-    let noded = FakeDaemon::serve(|method, path, _| {
+const QUEUE: &str = "pub struct Queue {\n    pub items: Vec<u64>,\n}\n\nimpl Queue {\n    pub fn next(&mut self) -> Option<u64> {\n        self.items.pop()\n    }\n}\n";
+const BRIEF_WRONG: &str = "# Edge caching\n\n## Findings\n\n- 93% of reads repeat within a task.\n\n## Recommendation\n\nCache on every node.\n";
+const BRIEF_RIGHT: &str = "# Edge caching\n\n## Findings\n\n- 83% of reads repeat within a task (166 of 200, data/reads.csv).\n\n## Recommendation\n\nCache on every node.\n";
+const READS: &str = "task,reads,repeats\nt1,120,101\nt2,80,65\n";
+
+/// The VMs noded started, as (cid, role).
+type Vms = Arc<Mutex<Vec<(u64, String)>>>;
+
+/// The roles the seats run: a builder and a reviewer.
+fn roles() -> Value {
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    json!({ "roles": {
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } })
+}
+
+/// noded, which starts each session's VM (the next CID) and reports the VMs it started, and the agent gateway, which
+/// takes the work the hub pushes to them.
+fn daemons(vms: &Vms) -> (FakeDaemon, FakeDaemon) {
+    let started = Arc::clone(vms);
+    let noded = FakeDaemon::serve(move |method, path, body| {
+        let mut vms = started.lock().unwrap_or_else(|p| p.into_inner());
         if method == "GET" && path.starts_with("/v1/runs") {
-            let vms: Vec<Value> = AGENTS
+            let list: Vec<Value> = vms
                 .iter()
                 .enumerate()
                 .map(|(i, (cid, role))| json!({ "id": i, "guest_cid": cid, "role": role }))
                 .collect();
             (
                 200,
-                json!({ "runs": [{ "id": "r1", "ended_at": null, "vms": vms }] }).to_string(),
+                json!({ "runs": [{ "id": "r1", "ended_at": null, "vms": list }] }).to_string(),
             )
+        } else if method == "POST" && path == "/v1/runs" {
+            let role = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|b| b["role"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let cid = FIRST_CID + vms.iter().filter(|(cid, _)| *cid >= FIRST_CID).count() as u64;
+            vms.push((cid, role));
+            let vm = json!({ "id": vms.len() - 1, "guest_cid": cid, "state": "running" });
+            (200, json!({ "id": "r1", "vms": [vm] }).to_string())
         } else {
             (200, "{}".into())
         }
     });
-    let gateway = FakeDaemon::serve(|_, path, _| {
+    let reported = Arc::clone(vms);
+    let gateway = FakeDaemon::serve(move |_, path, _| {
         if path.starts_with("/v1/status") {
-            let agents: Vec<Value> = AGENTS
+            let vms = reported.lock().unwrap_or_else(|p| p.into_inner());
+            let agents: Vec<Value> = vms
                 .iter()
                 .map(|(cid, role)| json!({ "cid": cid, "role": role }))
                 .collect();
@@ -61,54 +93,79 @@ fn daemons() -> (FakeDaemon, FakeDaemon) {
     (noded, gateway)
 }
 
-/// The work items the hub sent to `cid`'s VM, oldest first.
-fn works(gateway: &FakeDaemon, cid: u64) -> Vec<Value> {
+/// The work items the hub pushed to `cid`'s VM, oldest first.
+fn pushed(gateway: &FakeDaemon, cid: u64) -> Vec<Value> {
     gateway
         .seen()
         .into_iter()
-        .filter(|(m, p, _)| m == "POST" && p == &format!("/v1/agents/{cid}/send"))
+        .filter(|(method, path, _)| {
+            method == "POST" && path.ends_with(&format!("/agents/{cid}/send"))
+        })
         .filter_map(|(_, _, body)| serde_json::from_str::<Value>(&body).ok())
-        .map(|v| v["message"].clone())
-        .filter(|m| m["type"] == "work")
+        .map(|sent| sent["message"].clone())
+        .filter(|message| message["type"] == "work")
         .collect()
 }
 
-/// Answers the chats the hub sends (an agent's first one asks it to pick a name), so its tasks come next.
-fn answer_chats(hub: &Hub, gateway: &FakeDaemon, cid: u64) {
-    static DONE: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-    for w in works(gateway, cid) {
-        let id = w["work"].as_u64().unwrap();
-        if w["kind"] == "chat" && !DONE.lock().unwrap().contains(&id) {
-            DONE.lock().unwrap().push(id);
-            hub.work_done(cid, id, "done", "Ada");
-        }
-    }
-}
-
-fn wait_work(hub: &Hub, gateway: &FakeDaemon, cid: u64, seen: &HashSet<u64>, what: &str) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(40);
+/// The first work item pushed to `cid`'s VM: its session's step.
+fn first_work(hub: &Hub, gateway: &FakeDaemon, cid: u64) -> Value {
+    let deadline = Instant::now() + WAIT.mul_f64(common::slack());
     loop {
-        answer_chats(hub, gateway, cid);
-        if let Some(w) = works(gateway, cid).into_iter().find(|w| {
-            w["kind"] != "chat" && w["work"].as_u64().is_some_and(|id| !seen.contains(&id))
-        }) {
-            return w;
+        if let Some(work) = pushed(gateway, cid).into_iter().next() {
+            return work;
         }
         assert!(
             Instant::now() < deadline,
-            "no new work for {cid} ({what})\n{}",
+            "no work reached agent {cid}\n{}",
             hub.log()
         );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// A VM: the agent's workspace and the `weft` commands its harness runs, through the agent gateway.
+/// The session of `seat` on `task` that runs on a VM `known` does not have, its CID set: forking, or already running
+/// when the hub moved it on before this poll saw it fork (a busy runner).
+fn next_session(hub: &Hub, task: &str, seat: &str, known: &HashSet<u64>) -> Value {
+    let fresh = |s: &Value| {
+        s["seat"] == seat
+            && (s["state"] == "forking" || s["state"] == "running")
+            && s["cid"].as_u64().is_some_and(|cid| !known.contains(&cid))
+    };
+    let list = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |list| {
+        list.as_array().is_some_and(|l| l.iter().any(&fresh))
+    });
+    list.as_array()
+        .and_then(|l| l.iter().find(|s| fresh(s)).cloned())
+        .unwrap_or_else(|| {
+            panic!(
+                "no new {seat} session for task {task}: {list}\n{}",
+                hub.log()
+            )
+        })
+}
+
+/// The VM says hello: its session runs, and its step's work goes out.
+fn hello(hub: &Hub, cid: u64, role: &str) {
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": role, "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
+}
+
+/// A session's VM: its workspace and the `weft` commands its harness runs, through the agent gateway.
 struct Vm<'a> {
     hub: &'a Hub,
     cid: u64,
     home: PathBuf,
     token: PathBuf,
+}
+
+/// The VM `cid`'s session runs in: its workspace under `home`, the gateway's token at `token`.
+fn vm_of<'a>(hub: &'a Hub, cid: u64, home: &Path, token: &Path) -> Vm<'a> {
+    Vm {
+        hub,
+        cid,
+        home: home.join(format!("vm{cid}")),
+        token: token.to_path_buf(),
+    }
 }
 
 impl Vm<'_> {
@@ -145,6 +202,16 @@ impl Vm<'_> {
         });
     }
 
+    /// Checks `change` out in this VM's own workspace, `repo` under its home.
+    fn checkout(&self, change: &str, repo: &str) -> PathBuf {
+        let ws = self.home.join(repo);
+        self.weft(
+            &self.home,
+            &["checkout", change, "--dir", ws.to_str().unwrap()],
+        );
+        ws
+    }
+
     /// A tool call the model makes in work item `work`: the hub's decision, whatever it is.
     fn tool_reply(&self, work: u64, name: &str, input: Value) -> Value {
         let message = json!({ "type": "tool_request", "work": work, "call": format!("toolu_{name}_{work}"), "name": name, "input": input });
@@ -171,148 +238,80 @@ impl Vm<'_> {
     }
 }
 
-/// How a stand-in reviewer answers one step: its scores, findings and verdict.
-struct Answer {
-    pass: bool,
-    scores: Vec<Value>,
-    findings: Vec<Value>,
-    notes: &'static str,
+/// Whether the change carries an attestation of `kind` (its `written`, its `landed`).
+fn has_record(change: &Value, kind: &str) -> bool {
+    change["records"]
+        .as_array()
+        .is_some_and(|records| records.iter().any(|r| r["type"] == kind))
 }
 
-fn pass() -> Answer {
-    Answer {
-        pass: true,
-        scores: vec![],
-        findings: vec![],
-        notes: "fine",
+/// Whether a message in `chat` says `needle`.
+fn chat_says(hub: &Hub, chat: &str, needle: &str) -> bool {
+    let (_, messages) = hub.call(
+        "GET",
+        &format!("/v1/chats/{chat}/messages?after=0&limit=50"),
+        None,
+    );
+    messages
+        .as_array()
+        .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains(needle)))
+}
+
+/// Polls `ready` until it holds, or the wait is over (a notice lands a moment after the state it reports).
+fn eventually(hub: &Hub, what: &str, ready: impl Fn() -> bool) {
+    let deadline = Instant::now() + WAIT.mul_f64(common::slack());
+    while !ready() {
+        assert!(Instant::now() < deadline, "{what}\n{}", hub.log());
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// What the reviewers of task `tid` were sent and what the hub holds for it: printed when a review stalls.
-fn review_state(
-    hub: &Hub,
-    gateway: &FakeDaemon,
-    cids: &[u64],
-    tid: &str,
-    answered: &HashSet<u64>,
-) -> String {
-    let mut out = String::new();
-    for &cid in cids {
-        let sent: Vec<String> = works(gateway, cid)
-            .iter()
-            .map(|w| {
-                let id = w["work"].as_u64().unwrap_or(0);
-                let mark = if answered.contains(&id) {
-                    "answered"
-                } else {
-                    "open"
-                };
-                format!("{id} {} {} ({mark})", text(&w["kind"]), text(&w["thread"]))
-            })
-            .collect();
-        let agent = hub.call("GET", &format!("/v1/agents/{cid}"), None).1;
-        out += &format!("agent {cid} sent {sent:?}\n  {agent}\n");
-    }
-    let task = hub.call("GET", &format!("/v1/tasks/{tid}"), None).1;
-    let runs = hub.call("GET", &format!("/v1/tasks/{tid}/reviews"), None).1;
-    out += &format!("task {tid}: {}\nreviews: {runs}\n", text(&task["state"]));
-    out
-}
-
-/// Plays the reviewers of task `tid`: every review step sent to `cids` is answered by `answer(run, node, tree)`,
-/// until `done`.
-#[allow(clippy::too_many_arguments)]
-fn review(
-    hub: &Hub,
-    gateway: &FakeDaemon,
-    cids: &[u64],
-    tid: &str,
-    token: &Path,
-    home: &Path,
-    answered: &Arc<Mutex<HashSet<u64>>>,
-    answer: &dyn Fn(&str, &str, &Value) -> Answer,
-    done: &dyn Fn() -> bool,
-) {
-    let started = Instant::now();
-    let deadline = started + Duration::from_secs(90);
-    while !done() {
-        if Instant::now() >= deadline {
-            let held = answered.lock().unwrap().clone();
-            panic!(
-                "the review of {tid} did not finish\n{}\n{}",
-                review_state(hub, gateway, cids, tid, &held),
-                hub.log()
-            );
-        }
-        for &cid in cids {
-            answer_chats(hub, gateway, cid);
-            for w in works(gateway, cid) {
-                let id = w["work"].as_u64().unwrap();
-                let thread = text(&w["thread"]);
-                let Some(rest) = thread.strip_prefix("review-") else {
-                    continue;
-                };
-                if !answered.lock().unwrap().insert(id) {
-                    continue;
-                }
-                let (run, node) = rest.split_once('-').unwrap();
-                let vm = Vm {
-                    hub,
-                    cid,
-                    home: home.join(format!("vm{cid}")),
-                    token: token.to_path_buf(),
-                };
-                let reply = vm.tool_reply(id, "review_tree", json!({}));
-                // A step whose work item ended without a verdict is handed on under a new work item (work_ended). On a
-                // slow runner the hub can count a delivery as failed while the test still holds the old item: the old
-                // item's verdict then reaches the step (an agent's tool calls go to its running step), and the new item
-                // finds no step. A reviewer with no step ends its turn, or its next work waits behind the item forever.
-                if reply["is_error"] == true && text(&reply["output"]).contains("no review step") {
-                    hub.work_done(cid, id, "done", "no review step left");
-                    continue;
-                }
-                assert_eq!(
-                    reply["is_error"], false,
-                    "review_tree for agent {cid}: {reply}"
-                );
-                let tree: Value = serde_json::from_str(&text(&reply["output"])).unwrap();
-                assert_eq!(tree["step"], node, "{tree}");
-                let a = answer(run, node, &tree);
-                if !a.scores.is_empty() || !a.findings.is_empty() {
-                    vm.tool(
-                        id,
-                        "review_score",
-                        json!({ "scores": a.scores, "findings": a.findings }),
-                    );
-                }
-                vm.tool(
-                    id,
-                    "review_verdict",
-                    json!({ "pass": a.pass, "notes": a.notes }),
-                );
-                hub.work_done(cid, id, "done", a.notes);
-            }
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    }
-    println!("review of {tid}: {:.1} s", started.elapsed().as_secs_f64());
-}
-
-fn first_symbol(tree: &Value, ends: &str) -> String {
-    tree["files"]
+/// Every record of `change` verifies, from each signature to the owner's key. Returns who signed them.
+fn verified_signers(hub: &Hub, change: &str) -> HashSet<String> {
+    let verified = hub.wait_for(
+        &format!("/v1/weft/verify?subject={change}"),
+        Duration::from_secs(5),
+        |v| v["ok"] == true,
+    );
+    assert_eq!(verified["ok"], true, "{verified}\n{}", hub.log());
+    let deep = hub.wait_for("/v1/weft/verify?deep=1", Duration::from_secs(5), |v| {
+        v["ok"] == true
+    });
+    assert_eq!(deep["ok"], true, "{deep}");
+    verified["records"]
         .as_array()
         .into_iter()
         .flatten()
-        .flat_map(|f| f["symbols"].as_array().cloned().unwrap_or_default())
-        .find(|s| text(&s["qualified"]).ends_with(ends))
-        .map(|s| text(&s["id"]))
-        .unwrap_or_else(|| panic!("no {ends} in {tree}"))
+        .map(|r| text(&r["actor"]))
+        .collect()
 }
 
-const QUEUE: &str = "pub struct Queue {\n    pub items: Vec<u64>,\n}\n\nimpl Queue {\n    pub fn next(&mut self) -> Option<u64> {\n        self.items.pop()\n    }\n}\n";
+/// What a code change does, as its builder names it: one intent per thing, with the paths each covers.
+fn code_intents(summary: &str) -> Value {
+    json!({ "intents": [
+        { "title": "The queue hands out its oldest item first", "kind": "fix", "summary": summary, "covers": ["src/**"] },
+        { "title": "Say how the queue orders work", "kind": "docs", "covers": ["README.md"] }
+    ] })
+}
 
+/// The queue after the builder's first fix: next() takes the oldest item from the front.
+fn fixed_queue() -> String {
+    QUEUE.replace(
+        "self.items.pop()",
+        "if self.items.is_empty() {\n            return None;\n        }\n        Some(self.items.remove(0))",
+    )
+}
+
+/// The queue after the builder's second session: the fix, with a test that the oldest item comes out first.
+fn tested_queue() -> String {
+    format!(
+        "{}\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn the_oldest_goes_first() {{\n        let mut q = Queue {{ items: vec![1, 2] }};\n        assert_eq!(q.next(), Some(1));\n    }}\n}}\n",
+        fixed_queue()
+    )
+}
+
+/// The project's repo has the owner's Rust pack, as the owner adds it (every store starts with Markdown).
 fn add_packs(hub: &Hub) {
-    // Every store starts with Markdown; the owner adds Rust.
     for name in ["rust"] {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../weft/packs")
@@ -346,26 +345,16 @@ fn add_packs(hub: &Hub) {
 }
 
 #[test]
-fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_graph() {
-    let (noded, gateway) = daemons();
-    let roles: Value = json!({ "roles": AGENTS.iter().map(|(_, r)| (r.to_string(), json!({ "role": r, "title": r, "tools": ["bash"] }))).collect::<serde_json::Map<String, Value>>() });
+fn a_code_task_goes_from_its_builder_through_a_review_that_sends_it_back_to_a_landed_change() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
     let scratch = Scratch::new("weft-review");
-    scratch.name_agents(&[
-        (300, "Kofi"),
-        (301, "Lena"),
-        (302, "Mira"),
-        (303, "Ruth"),
-        (305, "Omar"),
-        (306, "Ines"),
-        (307, "Taro"),
-    ]);
-    let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
-    for (cid, _) in AGENTS {
-        let a = hub.wait_for(&format!("/v1/agents/{cid}"), Duration::from_secs(30), |a| {
-            a["status"] == "idle"
-        });
-        assert_eq!(a["status"], "idle", "{a}\n{}", hub.log());
-    }
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
     let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
         w["running"] == true
     });
@@ -374,22 +363,6 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
     let token = scratch.0.join("internal.token");
     std::fs::write(&token, hub.token()).unwrap();
     let home = scratch.0.join("vms");
-
-    // ── the code task ──
-    let (_, project) = hub.call(
-        "POST",
-        "/v1/projects",
-        Some(json!({ "title": "Queues", "goal": "A work queue", "kind": "code" })),
-    );
-    let pid = text(&project["id"]);
-    for cid in [300, 301, 302, 303] {
-        let (status, m) = hub.call(
-            "POST",
-            &format!("/v1/projects/{pid}/members"),
-            Some(json!({ "cid": cid })),
-        );
-        assert_eq!(status, 200, "{m}");
-    }
     // The project's repo exports to a git remote (a bare repository standing in for GitHub).
     let remote = scratch.0.join("remote.git");
     let have_git = std::process::Command::new("git")
@@ -397,39 +370,63 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
         .arg(&remote)
         .status()
         .is_ok_and(|s| s.success());
-    let (status, task) = hub.call("POST", "/v1/tasks", Some(json!({ "goal": "Give the queue a fair next()", "acceptance": "next() takes the oldest item; tested", "project": pid, "role": "builder" })));
+
+    // A code project, its builder and reviewer on two models, and the task.
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Queues", "goal": "A work queue", "kind": "code" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL } })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Give the queue a fair next()", "acceptance": "next() takes the oldest item; tested", "project": pid })),
+    );
     assert_eq!(status, 201, "{task}");
     let tid = text(&task["id"]);
-    let mut seen300 = HashSet::new();
-    let w1 = wait_work(&hub, &gateway, 300, &seen300, "the task");
-    seen300.insert(w1["work"].as_u64().unwrap());
-    let lane = w1["lane"].clone();
-    let change = text(&lane["change"]);
-    let repo = text(&lane["repo"]);
+
+    // The builder's session: its VM hellos, and its step's work carries the task's lane.
+    let mut known = HashSet::new();
+    let b1 = next_session(&hub, &tid, "builder", &known);
+    let b1_cid = b1["cid"].as_u64().expect("its VM");
+    known.insert(b1_cid);
+    assert_eq!(b1["model"], BUILDER_MODEL, "{b1}");
+    hello(&hub, b1_cid, "builder");
+    let w1 = first_work(&hub, &gateway, b1_cid);
+    let w1_id = w1["work"].as_u64().expect("the work item");
+    let change = text(&w1["lane"]["change"]);
+    let repo = text(&w1["lane"]["repo"]);
     assert!(
         change.starts_with("w-") && text(&w1["prompt"]).contains(&change),
         "{w1}"
     );
+    assert!(
+        text(&w1["prompt"]).contains("Give the queue a fair next()"),
+        "{w1}"
+    );
     if have_git {
-        let (status, body) = hub.call("POST", "/v1/weft/console", Some(json!({ "kind": "connection.add", "body": { "repo": repo, "id": "origin", "remote": format!("file://{}", remote.display()), "platform": "git", "branch": "main", "author_name": "Irfan Saric", "author_email": "owner@example.com" } })));
+        let (status, body) = hub.call(
+            "POST",
+            "/v1/weft/console",
+            Some(json!({ "kind": "connection.add", "body": { "repo": repo, "id": "origin", "remote": format!("file://{}", remote.display()), "platform": "git", "branch": "main", "author_name": "Irfan Saric", "author_email": "owner@example.com" } })),
+        );
         assert_eq!(status, 200, "{body}");
     }
 
-    // The builder's VM: checkout, two turns, intents, done.
-    let vm = Vm {
-        hub: &hub,
-        cid: 300,
-        home: home.join("vm300"),
-        token: token.clone(),
-    };
-    let ws = vm.home.join(&repo);
-    vm.weft(
-        &vm.home,
-        &["checkout", &change, "--dir", ws.to_str().unwrap()],
-    );
-    vm.write(&format!("{repo}/src/queue.rs"), QUEUE);
-    vm.weft(
-        &ws,
+    // The builder's first session: a checkout in its workspace, two turns (drafts), its intents, and its done.
+    let b1_vm = vm_of(&hub, b1_cid, &home, &token);
+    let ws1 = b1_vm.checkout(&change, &repo);
+    b1_vm.write(&format!("{repo}/src/queue.rs"), QUEUE);
+    b1_vm.weft(
+        &ws1,
         &[
             "snapshot",
             "--turn",
@@ -440,13 +437,13 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
             "claude-opus-5-5",
         ],
     );
-    vm.write(&format!("{repo}/src/queue.rs"), &QUEUE.replace("self.items.pop()", "if self.items.is_empty() {\n            return None;\n        }\n        Some(self.items.remove(0))"));
-    vm.write(
+    b1_vm.write(&format!("{repo}/src/queue.rs"), &fixed_queue());
+    b1_vm.write(
         &format!("{repo}/README.md"),
         "# Queues\n\nnext() takes the oldest item.\n",
     );
-    vm.weft(
-        &ws,
+    b1_vm.weft(
+        &ws1,
         &[
             "snapshot",
             "--turn",
@@ -457,76 +454,74 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
             "claude-opus-5-5",
         ],
     );
-    let work = w1["work"].as_u64().unwrap();
-    vm.tool(work, "weft_describe", json!({ "intents": [
-        { "title": "The queue hands out its oldest item first", "kind": "fix", "summary": "next() takes from the front.", "covers": ["src/**"] },
-        { "title": "Say how the queue orders work", "kind": "docs", "covers": ["README.md"] }
-    ] }));
-    let status = vm.tool(work, "weft_status", json!({}));
+    b1_vm.tool(
+        w1_id,
+        "weft_describe",
+        code_intents("next() takes from the front."),
+    );
+    let status = b1_vm.tool(w1_id, "weft_status", json!({}));
     assert!(text(&status["output"]).contains("src/queue.rs"), "{status}");
-    hub.work_done(300, work, "done", "next() now takes the oldest item");
+    hub.work_done(b1_cid, w1_id, "done", "next() now takes the oldest item");
+    // Sealed for review, with the builder's `written` attestation.
     let sealed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(20),
-        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 1),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 1) && has_record(c, "written"),
     );
     assert_eq!(
-        sealed["rounds"].as_array().map(|r| r.len()),
+        sealed["rounds"].as_array().map(Vec::len),
         Some(1),
         "{sealed}\n{}",
         hub.log()
     );
+    assert!(has_record(&sealed, "written"), "{sealed}");
 
-    // Round 1: the qa step finds the fix untested and fails it; everything else passes.
-    let answered = Arc::new(Mutex::new(HashSet::new()));
-    let reviewers = [301, 302, 303];
-    let rework_seen = || hub.call("GET", &format!("/v1/tasks/{tid}"), None).1["state"] == "rework";
-    review(
-        &hub,
-        &gateway,
-        &reviewers,
-        &tid,
-        &token,
-        &home,
-        &answered,
-        &|_, node, tree| match node {
-            "quality" => {
-                let next = first_symbol(tree, "fn next");
-                Answer {
-                    pass: false,
-                    scores: vec![
-                        json!({ "symbol": next, "axis": "tst", "level": -3, "confidence": 0.9, "basis": "measured", "evidence": "no test calls next()" }),
-                    ],
-                    findings: vec![
-                        json!({ "symbol": next, "text": "next() has no test", "severity": "major" }),
-                    ],
-                    notes: "untested",
-                }
-            }
-            "checks" => Answer {
-                pass: true,
-                scores: vec![
-                    json!({ "symbol": "src/queue.rs", "axis": "tst", "level": 0, "basis": "measured", "evidence": "cargo test: 0 tests" }),
-                ],
-                findings: vec![],
-                notes: "it builds",
-            },
-            _ => pass(),
-        },
-        &rework_seen,
+    // The reviewer's session, on another model: its first read is the builder's handover. Its verdict sends it back.
+    let r1 = next_session(&hub, &tid, "reviewer", &known);
+    let r1_cid = r1["cid"].as_u64().expect("its VM");
+    known.insert(r1_cid);
+    assert_eq!(
+        r1["model"], REVIEWER_MODEL,
+        "a model other than the builder's: {r1}"
     );
-    let (_, runs) = hub.call("GET", &format!("/v1/tasks/{tid}/reviews"), None);
-    let rv1 = text(&runs["runs"][0]["run"]);
-    assert_eq!(runs["runs"][0]["state"], "rework", "{runs}");
-    assert_eq!(runs["runs"][0]["recipe"], "code@3");
-    // The worker gets it back, with the finding.
-    let w2 = wait_work(&hub, &gateway, 300, &seen300, "the rework");
-    seen300.insert(w2["work"].as_u64().unwrap());
+    hello(&hub, r1_cid, "reviewer");
+    let rw1 = first_work(&hub, &gateway, r1_cid);
+    let rw1_id = rw1["work"].as_u64().expect("the work item");
+    assert!(
+        text(&rw1["prompt"]).contains("The builder's handover"),
+        "{rw1}"
+    );
+    let r1_vm = vm_of(&hub, r1_cid, &home, &token);
+    let verdict = r1_vm.tool(
+        rw1_id,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": false, "notes": "next() has no test: add one that checks the oldest item comes out first." }),
+    );
+    assert!(
+        text(&verdict["output"]).contains("goes back to its builder"),
+        "{verdict}"
+    );
+    hub.work_done(r1_cid, rw1_id, "done", "sent back: next() has no test");
+    let sent_back = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| {
+        t["state"] == "rework"
+    });
+    assert_eq!(sent_back["state"], "rework", "{sent_back}\n{}", hub.log());
+
+    // The builder's next session runs on a VM of its own, with the finding in its prompt. It checks its lane out in
+    // its own workspace, writes the test and finishes: the change is sealed for a second review.
+    let b2 = next_session(&hub, &tid, "builder", &known);
+    let b2_cid = b2["cid"].as_u64().expect("its VM");
+    known.insert(b2_cid);
+    hello(&hub, b2_cid, "builder");
+    let w2 = first_work(&hub, &gateway, b2_cid);
+    let w2_id = w2["work"].as_u64().expect("the work item");
     assert!(text(&w2["prompt"]).contains("next() has no test"), "{w2}");
-    assert_eq!(w2["lane"]["change"], change.as_str());
-    vm.write(&format!("{repo}/src/queue.rs"), &format!("{}\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n    #[test]\n    fn the_oldest_goes_first() {{\n        let mut q = Queue {{ items: vec![1, 2] }};\n        assert_eq!(q.next(), Some(1));\n    }}\n}}\n", QUEUE.replace("self.items.pop()", "if self.items.is_empty() {\n            return None;\n        }\n        Some(self.items.remove(0))")));
-    vm.weft(
-        &ws,
+    assert_eq!(w2["lane"]["change"], change.as_str(), "{w2}");
+    let b2_vm = vm_of(&hub, b2_cid, &home, &token);
+    let ws2 = b2_vm.checkout(&change, &repo);
+    b2_vm.write(&format!("{repo}/src/queue.rs"), &tested_queue());
+    b2_vm.weft(
+        &ws2,
         &[
             "snapshot",
             "--turn",
@@ -537,131 +532,99 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
             "claude-opus-5-5",
         ],
     );
-    vm.tool(w2["work"].as_u64().unwrap(), "weft_describe", json!({ "intents": [
-        { "title": "The queue hands out its oldest item first", "kind": "fix", "summary": "next() takes from the front, with a test.", "covers": ["src/**"] },
-        { "title": "Say how the queue orders work", "kind": "docs", "covers": ["README.md"] }
-    ] }));
-    hub.work_done(300, w2["work"].as_u64().unwrap(), "done", "tested");
-
-    // Round 2: the security step sees a risk (a removal from the front of a vector is O(n)): the owner decides.
-    let owner_card = || {
-        let (_, list) = hub.call("GET", "/v1/approvals", None);
-        list.as_array()
-            .into_iter()
-            .flatten()
-            .find(|a| a["kind"] == "review" && a["state"] == "pending")
-            .cloned()
-    };
-    review(
-        &hub,
-        &gateway,
-        &reviewers,
-        &tid,
-        &token,
-        &home,
-        &answered,
-        &|run, node, tree| {
-            assert_ne!(run, rv1, "round 2 is a new run");
-            match node {
-                "risk" => Answer {
-                    pass: true,
-                    scores: vec![
-                        json!({ "symbol": first_symbol(tree, "fn next"), "axis": "sec", "level": -3, "confidence": 0.6, "basis": "estimated", "evidence": "a huge queue makes next() slow enough to stall the scheduler" }),
-                    ],
-                    findings: vec![],
-                    notes: "a denial of service risk",
-                },
-                "quality" => {
-                    // The finding from round 1 follows next() into round 2.
-                    assert!(
-                        tree["earlier_findings"]
-                            .as_array()
-                            .is_some_and(|f| f.iter().any(|x| x["text"] == "next() has no test")),
-                        "{tree}"
-                    );
-                    pass()
-                }
-                _ => pass(),
-            }
-        },
-        &|| owner_card().is_some(),
+    b2_vm.tool(
+        w2_id,
+        "weft_describe",
+        code_intents("next() takes from the front, with a test."),
     );
-    let card = owner_card().unwrap();
-    sample("approval-review-card", &card);
-    assert!(
-        text(&card["detail"]["needs_you"]).contains("security"),
-        "{card}"
+    hub.work_done(b2_cid, w2_id, "done", "tested");
+    let resealed = hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 2),
     );
     assert_eq!(
-        card["detail"]["readings"].as_array().map(|r| r.len()),
-        Some(4),
-        "{card}"
+        resealed["rounds"].as_array().map(Vec::len),
+        Some(2),
+        "{resealed}\n{}",
+        hub.log()
     );
-    let (status, decided) = hub.call(
-        "POST",
-        &format!("/v1/approvals/{}", text(&card["id"])),
-        Some(json!({ "approve": true, "reason": "fine for now; queues stay small" })),
-    );
-    assert_eq!(status, 200, "{decided}");
 
-    // Done, queued, landed, exported.
-    let task_done = hub.wait_for(&format!("/v1/tasks/{tid}"), Duration::from_secs(20), |t| {
-        t["state"] == "done"
-    });
-    assert_eq!(task_done["state"], "done", "{task_done}");
+    // The second review passes it: the change joins its repo's landing queue and lands.
+    let r2 = next_session(&hub, &tid, "reviewer", &known);
+    let r2_cid = r2["cid"].as_u64().expect("its VM");
+    known.insert(r2_cid);
+    hello(&hub, r2_cid, "reviewer");
+    let rw2 = first_work(&hub, &gateway, r2_cid);
+    let rw2_id = rw2["work"].as_u64().expect("the work item");
+    assert!(
+        text(&rw2["prompt"]).contains("The builder's handover:\ntested\n"),
+        "{rw2}"
+    );
+    let r2_vm = vm_of(&hub, r2_cid, &home, &token);
+    let verdict = r2_vm.tool(
+        rw2_id,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "fine" }),
+    );
+    assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
+    hub.work_done(r2_cid, rw2_id, "done", "passed");
+
+    // It lands: the change is on main, the task is done, its chats say so, and the change is exported to the remote.
     let landed = hub.wait_for(
         &format!("/v1/weft/changes/{change}"),
         Duration::from_secs(30),
-        |c| c["state"] == "landed",
+        // The landing's own sign-off record follows the landing itself.
+        |c| c["state"] == "landed" && has_record(c, "landed"),
     );
     assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
-    let kinds: Vec<String> = landed["records"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| text(&r["type"]))
-        .collect();
-    for k in ["written", "checked", "review", "gate", "ruling", "landed"] {
-        assert!(kinds.contains(&k.to_string()), "{k} in {kinds:?}");
-    }
+    assert!(
+        has_record(&landed, "written") && has_record(&landed, "landed"),
+        "{landed}"
+    );
     assert!(
         landed["records"]
             .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["type"] == "ruling" && r["via_console"] == true)
+            .into_iter()
+            .flatten()
+            .any(|r| r["type"] == "landed" && r["actor"] == "hub"),
+        "the landing is the hub's: {landed}"
     );
-    let verified = hub.wait_for(
-        &format!("/v1/weft/verify?subject={change}"),
-        Duration::from_secs(5),
-        |v| v["ok"] == true,
-    );
-    assert_eq!(verified["ok"], true, "{verified}");
-    let signers: HashSet<String> = verified["records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| text(&r["actor"]))
-        .collect();
-    for who in [
-        "agent:300",
-        "agent:301",
-        "agent:302",
-        "agent:303",
-        "hub",
-        "owner",
-    ] {
-        assert!(signers.contains(who), "{who} signed something: {signers:?}");
-    }
-    let (_, tree) = hub.call("GET", &format!("/v1/reviews/{}/tree", rv1), None);
-    assert!(tree["tree"]["files"].is_array(), "{tree}");
+    let done = hub.wait_for(&format!("/v1/tasks/{tid}"), Duration::from_secs(20), |t| {
+        t["state"] == "done"
+    });
+    assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
+    let landing = format!("{change} landed");
+    eventually(&hub, "the task's chat says it landed", || {
+        chat_says(&hub, &format!("task-{tid}"), &landing)
+    });
+    eventually(&hub, "the project's chat says it landed", || {
+        let (_, chats) = hub.call("GET", &format!("/v1/chats?project={pid}"), None);
+        chats
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| c["kind"] == "project")
+            .any(|c| {
+                chat_says(
+                    &hub,
+                    &text(&c["id"]),
+                    &format!("{change} landed: task {tid} is done"),
+                )
+            })
+    });
     if have_git {
-        let log = hub.wait_for(
+        let exported = hub.wait_for(
             &format!("/v1/weft/repos/{repo}"),
             Duration::from_secs(20),
             |r| r["connections"][0]["exported"] == 1,
         );
-        assert_eq!(log["connections"][0]["exported"], 1, "{log}\n{}", hub.log());
+        assert_eq!(
+            exported["connections"][0]["exported"],
+            1,
+            "{exported}\n{}",
+            hub.log()
+        );
         let out = std::process::Command::new("git")
             .args(["log", "--format=%an <%ae>|%s|%b%x00"])
             .current_dir(&remote)
@@ -685,53 +648,6 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
             "{commits:?}"
         );
     }
-
-    // The post-land suite runs on main and fails: a signed revert lands at once, and the author gets a fix task.
-    let reverted = || {
-        let (_, log) = hub.call(
-            "GET",
-            &format!("/v1/weft/repos/{repo}/log?q=reverts()%20%26%20landed()"),
-            None,
-        );
-        log["total"].as_u64().unwrap_or(0) == 1
-    };
-    review(
-        &hub,
-        &gateway,
-        &[303],
-        &tid,
-        &token,
-        &home,
-        &answered,
-        &|_, node, _| {
-            assert_eq!(node, "checks");
-            Answer {
-                pass: false,
-                scores: vec![
-                    json!({ "symbol": "src/queue.rs", "axis": "tst", "level": -4, "basis": "measured", "evidence": "cargo test --workspace --release: 1 failed" }),
-                ],
-                findings: vec![],
-                notes: "the release build's tests fail",
-            }
-        },
-        &reverted,
-    );
-    let (_, runs) = hub.call("GET", &format!("/v1/tasks/{tid}/reviews"), None);
-    assert!(
-        runs["runs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["recipe"] == "post-land@1" && r["state"] == "failed"),
-        "{runs}"
-    );
-    let (_, tasks) = hub.call("GET", &format!("/v1/tasks?project={pid}"), None);
-    assert!(
-        tasks
-            .to_string()
-            .contains(&format!("Fix what {change} broke")),
-        "{tasks}"
-    );
     let head = hub.call("GET", &format!("/v1/weft/repos/{repo}"), None).1["refs"]["main"].clone();
     let main_file = apz_http::client::send(
         hub.port,
@@ -742,142 +658,24 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
     )
     .unwrap();
     assert_eq!(
-        main_file.status, 404,
-        "the revert takes the file back out of main"
+        main_file.status,
+        200,
+        "the landed file is on main: {}",
+        String::from_utf8_lossy(&main_file.body)
     );
 
-    // ── the research brief ──
-    let (_, project) = hub.call("POST", "/v1/projects", Some(json!({ "title": "Edge caching", "goal": "Should nodes cache objects?", "kind": "other" })));
-    let rpid = text(&project["id"]);
-    for cid in [305, 306, 307] {
-        let (status, m) = hub.call(
-            "POST",
-            &format!("/v1/projects/{rpid}/members"),
-            Some(json!({ "cid": cid })),
+    // Every record verifies, from each signature to the owner's key: the builder's two VMs and the hub.
+    let signers = verified_signers(&hub, &change);
+    for who in [
+        format!("agent:{b1_cid}"),
+        format!("agent:{b2_cid}"),
+        "hub".to_string(),
+    ] {
+        assert!(
+            signers.contains(&who),
+            "{who} signed something: {signers:?}"
         );
-        assert_eq!(status, 200, "{m}");
     }
-    let (_, task) = hub.call("POST", "/v1/tasks", Some(json!({ "goal": "Write a brief on edge caching, with numbers", "project": rpid, "role": "researcher" })));
-    let rtid = text(&task["id"]);
-    let mut seen305 = HashSet::new();
-    let r1 = wait_work(&hub, &gateway, 305, &seen305, "the brief");
-    seen305.insert(r1["work"].as_u64().unwrap());
-    let rchange = text(&r1["lane"]["change"]);
-    let rrepo = text(&r1["lane"]["repo"]);
-    let rvm = Vm {
-        hub: &hub,
-        cid: 305,
-        home: home.join("vm305"),
-        token: token.clone(),
-    };
-    let rws = rvm.home.join(&rrepo);
-    rvm.weft(
-        &rvm.home,
-        &["checkout", &rchange, "--dir", rws.to_str().unwrap()],
-    );
-    rvm.write(&format!("{rrepo}/briefs/edge-caching.md"), "# Edge caching\n\n## Findings\n\n- 93% of reads repeat within a task.\n\n## Recommendation\n\nCache on every node.\n");
-    rvm.write(
-        &format!("{rrepo}/data/reads.csv"),
-        "task,reads,repeats\nt1,120,101\nt2,80,65\n",
-    );
-    rvm.weft(
-        &rws,
-        &["snapshot", "--turn", "1", "--model", "claude-opus-5-5"],
-    );
-    rvm.tool(r1["work"].as_u64().unwrap(), "weft_describe", json!({ "intents": [{ "title": "Measure how often reads repeat", "kind": "research", "covers": ["briefs/**", "data/**"] }] }));
-    hub.work_done(305, r1["work"].as_u64().unwrap(), "done", "brief written");
-    // The numbers step re-runs them: 166 of 200 is 83%, not 93% — a measured accuracy finding sends it back.
-    let rreview = [306, 307];
-    let back = || hub.call("GET", &format!("/v1/tasks/{rtid}"), None).1["state"] == "rework";
-    review(
-        &hub,
-        &gateway,
-        &rreview,
-        &rtid,
-        &token,
-        &home,
-        &answered,
-        &|_, node, tree| match node {
-            "numbers" => {
-                let claim = first_symbol(tree, "item 93% of reads repeat within a task.");
-                Answer {
-                    pass: false,
-                    scores: vec![
-                        json!({ "symbol": claim, "axis": "acc", "level": -3, "confidence": 0.95, "basis": "measured", "evidence": "data/reads.csv: 166 of 200 reads repeat (83%)" }),
-                    ],
-                    findings: vec![
-                        json!({ "symbol": claim, "text": "the data says 83%, not 93%", "severity": "major" }),
-                    ],
-                    notes: "the headline number is wrong",
-                }
-            }
-            _ => pass(),
-        },
-        &back,
-    );
-    let r2 = wait_work(&hub, &gateway, 305, &seen305, "the brief's rework");
-    assert!(text(&r2["prompt"]).contains("83%"), "{r2}");
-    rvm.write(&format!("{rrepo}/briefs/edge-caching.md"), "# Edge caching\n\n## Findings\n\n- 83% of reads repeat within a task (166 of 200, data/reads.csv).\n\n## Recommendation\n\nCache on every node.\n");
-    rvm.weft(
-        &rws,
-        &["snapshot", "--turn", "2", "--model", "claude-opus-5-5"],
-    );
-    hub.work_done(
-        305,
-        r2["work"].as_u64().unwrap(),
-        "done",
-        "fixed the number",
-    );
-    let rdone = || hub.call("GET", &format!("/v1/tasks/{rtid}"), None).1["state"] == "done";
-    review(
-        &hub,
-        &gateway,
-        &rreview,
-        &rtid,
-        &token,
-        &home,
-        &answered,
-        &|_, _, _| pass(),
-        &rdone,
-    );
-    let rlanded = hub.wait_for(
-        &format!("/v1/weft/changes/{rchange}"),
-        Duration::from_secs(30),
-        |c| c["state"] == "landed",
-    );
-    assert_eq!(rlanded["state"], "landed", "{rlanded}\n{}", hub.log());
-    let (_, rruns) = hub.call("GET", &format!("/v1/tasks/{rtid}/reviews"), None);
-    assert_eq!(
-        rruns["runs"].as_array().map(|r| r.len()),
-        Some(2),
-        "{rruns}"
-    );
-    assert!(
-        rruns["runs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|r| r["recipe"] == "research@1"),
-        "{rruns}"
-    );
-    // The brief's history: who wrote the corrected line.
-    let (_, blame) = hub.call(
-        "GET",
-        &format!("/v1/weft/repos/{rrepo}/blame?path=briefs/edge-caching.md"),
-        None,
-    );
-    let line = blame["lines"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|l| text(&l["text"]).contains("83%"))
-        .cloned()
-        .unwrap();
-    assert_eq!(line["by"]["by"]["cid"], 305, "{line}");
-    let deep = hub.wait_for("/v1/weft/verify?deep=1", Duration::from_secs(5), |v| {
-        v["ok"] == true
-    });
-    assert_eq!(deep["ok"], true, "{deep}");
 
     // With WEFT_SAMPLES set, the answers the consoles draw, kept as examples.
     if std::env::var_os("WEFT_SAMPLES").is_some() {
@@ -900,10 +698,6 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
                 format!("/v1/weft/revisions/{change}.r2/tree"),
             ),
             ("diff", format!("/v1/weft/revisions/{change}.r2/diff")),
-            (
-                "blame",
-                format!("/v1/weft/repos/{rrepo}/blame?path=briefs/edge-caching.md"),
-            ),
             ("queue", format!("/v1/weft/repos/{repo}/queue")),
             ("releases", format!("/v1/weft/repos/{repo}/releases")),
             ("map", format!("/v1/weft/repos/{repo}/map")),
@@ -916,17 +710,208 @@ fn a_code_task_and_a_research_brief_go_from_claim_to_landed_through_the_review_g
             ("packs", "/v1/weft/packs".to_string()),
             ("verify-change", format!("/v1/weft/verify?subject={change}")),
             ("artifacts", "/v1/weft/artifacts".to_string()),
-            ("task-reviews", format!("/v1/tasks/{tid}/reviews")),
-            ("review-run", format!("/v1/reviews/{rv1}")),
-            ("review-tree", format!("/v1/reviews/{rv1}/tree")),
-            ("research-reviews", format!("/v1/tasks/{rtid}/reviews")),
-            ("recipes", "/v1/recipes".to_string()),
-            ("recipe-code", "/v1/recipes/code".to_string()),
-            ("approvals", "/v1/approvals".to_string()),
+            ("task", format!("/v1/tasks/{tid}")),
         ] {
             let (_, v) = hub.call("GET", &path, None);
             sample(name, &v);
         }
+    }
+}
+
+#[test]
+fn a_research_brief_with_no_code_is_sent_back_over_a_wrong_number_and_lands() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let scratch = Scratch::new("weft-brief");
+    let hub = Hub::start_with_roles(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles()),
+    );
+    let weft = hub.wait_for("/v1/weft", Duration::from_secs(30), |w| {
+        w["running"] == true
+    });
+    assert_eq!(weft["running"], true, "{weft}\n{}", hub.log());
+    let token = scratch.0.join("internal.token");
+    std::fs::write(&token, hub.token()).unwrap();
+    let home = scratch.0.join("vms");
+
+    // A project without code, its builder and reviewer on two models, and the brief's task.
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Edge caching", "goal": "Should nodes cache objects?", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": REVIEWER_MODEL } })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Write a brief on edge caching, with numbers", "project": pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let tid = text(&task["id"]);
+
+    // The builder writes the brief and its data, and says what the brief measures.
+    let mut known = HashSet::new();
+    let b1 = next_session(&hub, &tid, "builder", &known);
+    let b1_cid = b1["cid"].as_u64().expect("its VM");
+    known.insert(b1_cid);
+    hello(&hub, b1_cid, "builder");
+    let w1 = first_work(&hub, &gateway, b1_cid);
+    let w1_id = w1["work"].as_u64().expect("the work item");
+    let change = text(&w1["lane"]["change"]);
+    let repo = text(&w1["lane"]["repo"]);
+    assert!(
+        change.starts_with("w-") && text(&w1["prompt"]).contains(&change),
+        "{w1}"
+    );
+    let b1_vm = vm_of(&hub, b1_cid, &home, &token);
+    let ws1 = b1_vm.checkout(&change, &repo);
+    b1_vm.write(&format!("{repo}/briefs/edge-caching.md"), BRIEF_WRONG);
+    b1_vm.write(&format!("{repo}/data/reads.csv"), READS);
+    b1_vm.weft(
+        &ws1,
+        &["snapshot", "--turn", "1", "--model", "claude-opus-5-5"],
+    );
+    b1_vm.tool(
+        w1_id,
+        "weft_describe",
+        json!({ "intents": [{ "title": "Measure how often reads repeat", "kind": "research", "covers": ["briefs/**", "data/**"] }] }),
+    );
+    hub.work_done(b1_cid, w1_id, "done", "brief written");
+    let sealed = hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 1) && has_record(c, "written"),
+    );
+    assert_eq!(
+        sealed["rounds"].as_array().map(Vec::len),
+        Some(1),
+        "{sealed}\n{}",
+        hub.log()
+    );
+
+    // The reviewer's first verdict: 166 of 200 reads repeat, which is 83%, not the brief's 93%.
+    let r1 = next_session(&hub, &tid, "reviewer", &known);
+    let r1_cid = r1["cid"].as_u64().expect("its VM");
+    known.insert(r1_cid);
+    assert_eq!(r1["model"], REVIEWER_MODEL, "{r1}");
+    hello(&hub, r1_cid, "reviewer");
+    let rw1 = first_work(&hub, &gateway, r1_cid);
+    let rw1_id = rw1["work"].as_u64().expect("the work item");
+    assert!(
+        text(&rw1["prompt"]).contains("The builder's handover:\nbrief written\n"),
+        "{rw1}"
+    );
+    let r1_vm = vm_of(&hub, r1_cid, &home, &token);
+    let verdict = r1_vm.tool(
+        rw1_id,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": false, "notes": "the data says 83%, not 93%: data/reads.csv has 166 of 200 reads repeating" }),
+    );
+    assert!(
+        text(&verdict["output"]).contains("goes back to its builder"),
+        "{verdict}"
+    );
+    hub.work_done(r1_cid, rw1_id, "done", "sent back: the number is wrong");
+    let sent_back = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| {
+        t["state"] == "rework"
+    });
+    assert_eq!(sent_back["state"], "rework", "{sent_back}\n{}", hub.log());
+
+    // The builder's next session, on a VM of its own, is sent the finding; it corrects the number in its own
+    // workspace, and the brief is sealed for a second review.
+    let b2 = next_session(&hub, &tid, "builder", &known);
+    let b2_cid = b2["cid"].as_u64().expect("its VM");
+    known.insert(b2_cid);
+    hello(&hub, b2_cid, "builder");
+    let w2 = first_work(&hub, &gateway, b2_cid);
+    let w2_id = w2["work"].as_u64().expect("the work item");
+    assert!(text(&w2["prompt"]).contains("83%"), "{w2}");
+    let b2_vm = vm_of(&hub, b2_cid, &home, &token);
+    let ws2 = b2_vm.checkout(&change, &repo);
+    b2_vm.write(&format!("{repo}/briefs/edge-caching.md"), BRIEF_RIGHT);
+    b2_vm.weft(
+        &ws2,
+        &["snapshot", "--turn", "2", "--model", "claude-opus-5-5"],
+    );
+    hub.work_done(b2_cid, w2_id, "done", "fixed the number");
+    let resealed = hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(20),
+        |c| c["rounds"].as_array().is_some_and(|r| r.len() == 2),
+    );
+    assert_eq!(
+        resealed["rounds"].as_array().map(Vec::len),
+        Some(2),
+        "{resealed}\n{}",
+        hub.log()
+    );
+
+    // The second verdict passes it, and it lands.
+    let r2 = next_session(&hub, &tid, "reviewer", &known);
+    let r2_cid = r2["cid"].as_u64().expect("its VM");
+    known.insert(r2_cid);
+    hello(&hub, r2_cid, "reviewer");
+    let rw2 = first_work(&hub, &gateway, r2_cid);
+    let rw2_id = rw2["work"].as_u64().expect("the work item");
+    let r2_vm = vm_of(&hub, r2_cid, &home, &token);
+    let verdict = r2_vm.tool(
+        rw2_id,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "the number matches data/reads.csv" }),
+    );
+    assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
+    hub.work_done(r2_cid, rw2_id, "done", "passed");
+    let landed = hub.wait_for(
+        &format!("/v1/weft/changes/{change}"),
+        Duration::from_secs(30),
+        // The landing's own sign-off record follows the landing itself.
+        |c| c["state"] == "landed" && has_record(c, "landed"),
+    );
+    assert_eq!(landed["state"], "landed", "{landed}\n{}", hub.log());
+    assert!(
+        has_record(&landed, "written") && has_record(&landed, "landed"),
+        "{landed}"
+    );
+    let done = hub.wait_for(&format!("/v1/tasks/{tid}"), Duration::from_secs(20), |t| {
+        t["state"] == "done"
+    });
+    assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
+
+    // Who wrote the corrected line: the second builder session's VM.
+    let (_, blame) = hub.call(
+        "GET",
+        &format!("/v1/weft/repos/{repo}/blame?path=briefs/edge-caching.md"),
+        None,
+    );
+    let line = blame["lines"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|l| text(&l["text"]).contains("83%"))
+        .cloned()
+        .unwrap_or_else(|| panic!("no corrected line: {blame}"));
+    assert_eq!(line["by"]["by"]["cid"], b2_cid, "{line}");
+
+    let signers = verified_signers(&hub, &change);
+    for who in [
+        format!("agent:{b1_cid}"),
+        format!("agent:{b2_cid}"),
+        "hub".to_string(),
+    ] {
+        assert!(
+            signers.contains(&who),
+            "{who} signed something: {signers:?}"
+        );
     }
 }
 

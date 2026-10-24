@@ -180,7 +180,7 @@ fn the_cost_of_metrics_for_a_thousand_agents() {
         closed.extend(rollup.flush_due(now));
         tick_time += started.elapsed();
 
-        // The store: buffer the closed windows and write what is due, as the Postgres store does every 10 s.
+        // The store: buffer the closed windows and write what is due, as the SQLite store does every 10 s.
         let started = Instant::now();
         store.put(&closed);
         store.flush(now, false);
@@ -274,7 +274,7 @@ fn the_cost_of_metrics_for_a_thousand_agents() {
         hours_day * 400.0
     );
     println!(
-        "Postgres writes per day: {:.0} MiB (each 10-minute block once, each hour folded once, the day's hour rows hourly)",
+        "SQLite writes per day: {:.0} MiB (each 10-minute block once, each hour folded once, the day's hour rows hourly)",
         mib(store.write_bytes as f64 * 24.0)
     );
     println!(
@@ -442,7 +442,8 @@ fn the_metrics_core_holds_steady_over_hours() {
     }
 }
 
-/// The Postgres store's buffering and write cadence (crates/apid/src/metrics/pg.rs), counting bytes instead of
+/// The metrics store's buffering and write cadence, as it was before the metrics moved to `metrics.db` (the removed
+/// layout), counting bytes instead of
 /// writing: the open 10-minute chunk of each series, the open hour's 1-minute windows and the open day's 1-hour
 /// windows per series; a minute row (ten windows of a series) written once when its windows have all arrived.
 #[derive(Default)]

@@ -141,7 +141,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 const ALIAS: Partial<Record<IconName, LucideName>> = {
   agents: 'bot', alert: 'triangle-alert', approval: 'shield-check', board: 'pin', commit: 'git-commit-horizontal',
   conversations: 'messages-square', git: 'git-branch', harness: 'cpu', loop: 'repeat', machine: 'server', models: 'cpu',
-  orchestrator: 'bot', projects: 'folder', refresh: 'refresh-cw', society: 'network', stop: 'square', tasks: 'list-checks',
+  orchestrator: 'bot', projects: 'folder', refresh: 'refresh-cw', stop: 'square', tasks: 'list-checks',
   file: 'file', settings: 'settings', library: 'library', overview: 'house',
 };
 

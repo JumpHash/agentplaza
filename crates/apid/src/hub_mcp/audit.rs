@@ -1,11 +1,8 @@
-//! The audit log: one row per tool call (token, tool, argument digest, outcome, duration). Append-only.
+//! The audit log: one row per tool call (token, tool, argument digest, outcome, duration). Append-only: each call is a
+//! new row of `hub_mcp_call` (see `store_db.rs`), keyed by its seq, and no row is changed.
 
-use std::sync::Mutex;
-
-use super::auth::lock;
-
-/// One audited call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One audited call. Its fields are the columns of `hub_mcp_call` (prefixed `call_`), beside the row's seq.
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
 pub struct CallRecord {
     pub at_ms: u64,
     /// The token's ID; None for an anonymous call (open mode).
@@ -36,21 +33,5 @@ pub trait Audit: Send + Sync {
             })
             .take(limit)
             .collect()
-    }
-}
-
-/// The in-memory log. It is lost at restart; the database table replaces it.
-#[derive(Default)]
-pub struct MemoryAudit {
-    rows: Mutex<Vec<CallRecord>>,
-}
-
-impl Audit for MemoryAudit {
-    fn record(&self, call: CallRecord) {
-        lock(&self.rows).push(call);
-    }
-
-    fn list(&self) -> Vec<CallRecord> {
-        lock(&self.rows).clone()
     }
 }

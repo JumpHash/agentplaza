@@ -334,7 +334,6 @@ const TOUR_AT: Record<string, string[]> = {
   floor: ['nav.nav a.nrow[href$="/machines"]'],
   projects: ['.side .proj', '.side-search'],
   approvals: ['nav.nav a.nrow[href$="/approvals"]'],
-  conversations: ['nav.nav a.nrow[href$="/conversations"]', '.side .thread[href^="#/talk/"]', 'nav.nav'],
   models: ['.side-foot a[href^="#/settings"]'],
   setup: ['.side-foot .hub', '.side-foot'],
 };

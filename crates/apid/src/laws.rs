@@ -6,24 +6,19 @@
 //! source that does not compile is never applied.
 //!
 //! `check` decides one tool call against the laws that cover `tool.call`. An applying forbid
-//! refuses the call and is recorded as a violation on the agent's profile. A call that no law
-//! permits is refused too (default deny), but not recorded: a missing permission, not misconduct.
+//! refuses the call. A call that no law permits is refused too (default deny): a missing permission.
 //! `permits` answers for a role and tool alone; it decides which tools an agent is offered.
 //! With strict permits on, an operation that has permit laws is refused unless one of them allows it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
-use apz_metrics::{EntityKind, Registry, SeriesKey};
-use apz_plaza::council;
 use jhrl::Program;
 use jhrl::ast::{Effect, Item, Law, Scope, TypeExpr};
 use jhrl::authz::{Decision, Entity, EntityStore, Request, authorize_except, check_authz};
 use jhrl::span::{Diag, SourceMap};
 use jhrl::value::Value;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 
@@ -49,10 +44,6 @@ pub(crate) const LAW_FILES: [(&str, &str); 4] = [
         include_str!("../../jhrl/specs/laws/tools.jhrl"),
     ),
 ];
-/// Violations kept per agent; the oldest go first.
-const KEEP: usize = 200;
-/// The window the profile shows, in milliseconds.
-const WINDOW_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// Tool calls kept for the dry run of a rule source ("would have refused").
 const CALLS_KEPT: usize = 500;
 /// The largest input (as JSON text) a call keeps for the dry run; a bigger one is not replayed.
@@ -67,14 +58,6 @@ pub const CONSTITUTION: &str = "constitution";
 const HISTORY_KEPT: usize = 500;
 /// The author of every owner rule and override: the owner is the only one who may write them.
 pub const OWNER: &str = "owner";
-
-/// One recorded violation: the law, when it was refused, and what happened.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Violation {
-    pub law: String,
-    pub at_ms: u64,
-    pub detail: String,
-}
 
 /// The outcome of checking one tool call.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -111,7 +94,7 @@ pub struct LawInfo {
     pub rationale: String,
     /// "permit" | "forbid".
     pub effect: String,
-    /// The actions it covers, e.g. "tool.exec", "plaza.pay".
+    /// The actions it covers, e.g. "tool.exec", "message.send".
     pub ops: Vec<String>,
     /// Who it applies to (`principal is Agent`, `principal in Role::"builder"`), as source text.
     pub principal: String,
@@ -135,7 +118,7 @@ pub struct LawInfo {
 }
 
 /// An owner rule set: JHRL source with one or more `law` blocks, applied while it is enabled.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct OwnerRule {
     pub id: String,
     pub title: String,
@@ -147,7 +130,7 @@ pub struct OwnerRule {
 }
 
 /// The owner's disabling of one built-in statute, with who did it and why.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Override {
     pub law: String,
     pub disabled_by: String,
@@ -157,7 +140,7 @@ pub struct Override {
 
 /// One change of state of a constitutional law, kept in the rules' history: who made it, when, and
 /// whether the owner confirmed it by typing the law's id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct LawChange {
     pub law: String,
     pub title: String,
@@ -171,13 +154,17 @@ pub struct LawChange {
     pub confirmed: bool,
 }
 
-/// The owner's rules and overrides: the state that is persisted (the `rules` component).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The owner's rules and overrides: the state that is persisted (the `rules` tables, saved by the store's saver).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
+#[table(name = "rules")]
 pub struct RuleSet {
+    #[table(child = "owner_rule")]
     pub rules: Vec<OwnerRule>,
+    #[table(child = "law_override")]
     pub overrides: Vec<Override>,
     /// The changes made to constitutional laws, oldest first; the newest [`HISTORY_KEPT`] are kept.
+    #[table(child = "law_change")]
     pub history: Vec<LawChange>,
 }
 
@@ -227,9 +214,6 @@ pub struct DryRun {
     pub would_refuse: Vec<Json>,
 }
 
-/// Where each recorded violation is also written (Postgres): (cid, violation, tool).
-pub type InfractionSink = Box<dyn Fn(u64, &Violation, &str) + Send + Sync>;
-
 /// The compiled live set: what every check reads. Built whole, then swapped in.
 struct Compiled {
     program: Program,
@@ -260,62 +244,6 @@ struct Seen {
     at_ms: u64,
 }
 
-/// Reads a state file (`violations.json`, `rules.json`, `permissions.json`). A missing file is
-/// `Ok(None)`. A file that exists but does not parse is copied to `<name>.corrupt-<unix-ms>`, never
-/// over an existing copy, and left where it is: it is read again at every start, so the damage is
-/// reported until the owner restores or removes it. The error names both paths. Any other read
-/// failure is reported and the file is left where it is.
-pub(crate) fn read_state<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            let message = format!("could not read {}: {e}", path.display());
-            eprintln!("laws: {message}");
-            return Err(message);
-        }
-    };
-    match serde_json::from_str(&text) {
-        Ok(value) => Ok(Some(value)),
-        Err(e) => {
-            let aside = corrupt_copy_path(path);
-            let message = match std::fs::copy(path, &aside) {
-                Ok(_) => format!(
-                    "{} does not parse ({e}); a copy is kept at {}, and the damaged file is left in place: it is read again at every start until it is restored or removed",
-                    path.display(),
-                    aside.display()
-                ),
-                Err(copied) => format!(
-                    "{} does not parse ({e}) and could not be copied to {}: {copied}; the damaged file is left in place",
-                    path.display(),
-                    aside.display()
-                ),
-            };
-            eprintln!("laws: {message}");
-            Err(message)
-        }
-    }
-}
-
-/// `<name>.corrupt-<unix-ms>` beside `path`, its millisecond moved on past any copy already there.
-fn corrupt_copy_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let mut ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    loop {
-        let candidate = path.with_file_name(format!("{name}.corrupt-{ms}"));
-        if !candidate.exists() {
-            return candidate;
-        }
-        ms += 1;
-    }
-}
-
 pub struct Laws {
     /// The built-in law sources: `LAW_FILES`, or the sources given to `from_files`.
     base: Vec<(String, String)>,
@@ -323,98 +251,46 @@ pub struct Laws {
     live: RwLock<Arc<Compiled>>,
     /// The owner's rules and overrides. Changes are made under this lock, then committed.
     rules: Mutex<RuleSet>,
-    /// The state directory: `violations.json` and `rules.json` are written there.
-    dir: Mutex<PathBuf>,
-    violations: Mutex<BTreeMap<String, Vec<Violation>>>,
-    sink: Mutex<Option<InfractionSink>>,
     /// Memoized [`Laws::permits`] answers, keyed by (role, tool). Cleared whenever the laws change.
     permitted: Mutex<HashMap<(String, String), bool>>,
     /// Whether an operation with permit laws must be allowed by one of them (`settings.laws`).
     strict: AtomicBool,
-    /// Set when the owner's rules could not be read at attach: only the built-in laws apply, and
-    /// `rules.json` is not written until the owner's rules are restored and the hub restarts.
-    rules_unreadable: AtomicBool,
-    /// Set when violations.json could not be read at attach: the violations are kept in memory only, and
-    /// the file is not written over until it is restored or removed and the hub restarts.
-    violations_unreadable: AtomicBool,
+    /// The laws' generation: bumped by every change to the live set or to strictness. The laws are process-wide
+    /// (`global`), so the generation is theirs rather than the hub's (see `sources`).
+    generation: AtomicU64,
     /// The most recent tool calls checked, for the dry run.
     seen: Mutex<VecDeque<Seen>>,
+    /// Why the stored owner rules were not applied at start, until a change applies them.
+    not_applied: Mutex<Option<String>>,
 }
 
 impl Laws {
-    /// Compiles the built-in laws and loads the violations and the owner's rules from `state_dir`.
+    /// The built-in laws, compiled, with no owner rules yet (the store's load adds them).
     /// Panics at startup if the built-in laws do not compile: an unenforced law is worse than no start.
-    pub fn load(state_dir: &Path) -> Laws {
+    pub fn builtin() -> Laws {
         let files: Vec<(String, String)> = LAW_FILES
             .iter()
             .map(|(name, text)| (name.to_string(), text.to_string()))
             .collect();
-        Laws::from_files(state_dir, files)
+        Laws::from_files(files)
     }
 
-    /// [`Laws::load`] for the given built-in law sources (`(file name, text)`). Tests use it to put a
+    /// [`Laws::builtin`] for the given built-in law sources (`(file name, text)`). Tests use it to put a
     /// rule in or leave one out.
-    pub fn from_files(state_dir: &Path, files: Vec<(String, String)>) -> Laws {
+    pub fn from_files(files: Vec<(String, String)>) -> Laws {
         let compiled = match compile(&files, &RuleSet::default()) {
             Ok(compiled) => compiled,
             Err(failure) => panic!("the laws do not compile: {}", failure.message()),
         };
-        let laws = Laws {
+        Laws {
             base: files,
             live: RwLock::new(Arc::new(compiled)),
             rules: Mutex::new(RuleSet::default()),
-            dir: Mutex::new(state_dir.to_path_buf()),
-            violations: Mutex::new(BTreeMap::new()),
-            sink: Mutex::new(None),
             permitted: Mutex::new(HashMap::new()),
             strict: AtomicBool::new(false),
-            rules_unreadable: AtomicBool::new(false),
-            violations_unreadable: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
             seen: Mutex::new(VecDeque::new()),
-        };
-        laws.attach(state_dir);
-        laws
-    }
-
-    /// Makes `state_dir` the home of this law set: the violations and the owner's rules are read from
-    /// it, and written back to it on every change. A rules file that no longer compiles is not applied.
-    /// One that cannot be read (or does not parse: a copy is kept and the file is left in place) leaves
-    /// the built-in laws only, and is not written over until it is restored or removed and the hub restarts.
-    pub fn attach(&self, state_dir: &Path) {
-        *lock(&self.dir) = state_dir.to_path_buf();
-        // `read_state` has already reported a damaged file and kept a copy. The violations are then kept
-        // in memory only, and the file is not written over until it is restored or removed.
-        let (violations, violations_damaged): (BTreeMap<String, Vec<Violation>>, bool) =
-            match read_state(&state_dir.join("violations.json")) {
-                Ok(found) => (found.unwrap_or_default(), false),
-                Err(_) => (BTreeMap::new(), true),
-            };
-        *lock(&self.violations) = violations;
-        self.violations_unreadable
-            .store(violations_damaged, Ordering::Relaxed);
-        if violations_damaged {
-            eprintln!(
-                "laws: {}/violations.json is damaged (see above): violations are kept in memory and not saved until the file is restored or removed and the hub restarts",
-                state_dir.display()
-            );
-        }
-        let (rules, unreadable) = match read_state::<RuleSet>(&state_dir.join("rules.json")) {
-            Ok(found) => (found.unwrap_or_default(), false),
-            Err(_) => (RuleSet::default(), true),
-        };
-        self.rules_unreadable.store(unreadable, Ordering::Relaxed);
-        if unreadable {
-            eprintln!(
-                "laws: the owner's rules are not applied (rules.json could not be read, see above), so only the built-in laws apply; rules.json is not written until it is restored or removed and the hub restarts"
-            );
-        }
-        let mut slot = lock(&self.rules);
-        match compile(&self.base, &rules) {
-            Ok(compiled) => {
-                *slot = rules;
-                self.swap(compiled);
-            }
-            Err(failure) => eprintln!("laws: rules.json not applied: {}", failure.message()),
+            not_applied: Mutex::new(None),
         }
     }
 
@@ -475,12 +351,17 @@ impl Laws {
         // message laws then see an empty recipient instead of being skipped.
         if matches!(
             tool,
-            "plaza_send_message" | "plaza_board_post" | "plaza_board_comment"
+            "plaza_send_message"
+                | "plaza_message_seat"
+                | "plaza_board_post"
+                | "plaza_board_comment"
         ) {
+            // A seat message's recipient is its seat address (`T12/reviewer`, `planner`).
             let to = input
                 .get("to_cid")
                 .and_then(Json::as_u64)
                 .map(|n| n.to_string())
+                .or_else(|| input.get("to").and_then(Json::as_str).map(str::to_string))
                 .unwrap_or_default();
             let peer = Entity {
                 ty: "Agent".into(),
@@ -508,7 +389,7 @@ impl Laws {
             store.insert(&artifact, BTreeMap::new());
             requests.push((operation, artifact, Context::new()));
         }
-        requests.extend(plaza_operations(tool, input, agent_cid, role, &mut store));
+        requests.extend(plaza_operations(tool, input, role, &mut store));
         let strict = self.strict.load(Ordering::Relaxed);
         let mut verdict = Verdict::default();
         for (i, (operation, resource, extra)) in requests.into_iter().enumerate() {
@@ -547,7 +428,7 @@ impl Laws {
     }
 
     /// Whether the laws let `role` use `tool` at all: no forbid applies and a permit covers it.
-    /// Decided on the role, tier and seat alone (an empty input), and memoized.
+    /// Decided on the role and tier alone (an empty input), and memoized.
     pub fn permits(&self, role: &str, tool: &str) -> bool {
         let key = (role.to_string(), tool.to_string());
         if let Some(answer) = lock(&self.permitted).get(&key) {
@@ -565,8 +446,8 @@ impl Laws {
         answer
     }
 
-    /// The refusal reason when a law forbids the call (recorded as a violation), or no law permits
-    /// it (default deny, not recorded); `None` when it may run.
+    /// The refusal reason when a law forbids the call, or no law permits it (default deny); `None`
+    /// when it may run.
     pub fn refusal(&self, cid: u64, role: &str, tool: &str, input: &Json) -> Option<String> {
         self.remember(cid, role, tool, input);
         let verdict = self.check(&cid.to_string(), role, tool, input);
@@ -581,7 +462,6 @@ impl Laws {
             }
             return None;
         }
-        self.record(cid, &verdict.forbid, tool, apz_plaza::now_ms());
         let live = self.live();
         let titles: Vec<&str> = verdict
             .forbid
@@ -599,7 +479,7 @@ impl Laws {
     /// The refusal reason when a law forbids an operation an agent's VM performs straight at a hub
     /// route, outside any tool call (a git push, a file publish), `None` when no law forbids it. Only
     /// forbids are decided here (and, with strict permits, an operation no permit allows), since these
-    /// routes have no tool to be offered; a forbid is recorded.
+    /// routes have no tool to be offered.
     pub fn refuse_op(
         &self,
         cid: u64,
@@ -667,7 +547,6 @@ impl Laws {
             }
             return None;
         }
-        self.record(cid, &by, operation, apz_plaza::now_ms());
         let titles: Vec<&str> = by
             .iter()
             .filter_map(|id| live.titles.get(id))
@@ -685,39 +564,6 @@ impl Laws {
         self.live().catalog.clone()
     }
 
-    /// Every violation recorded from now on is also handed to `sink`.
-    pub fn set_sink(&self, sink: InfractionSink) {
-        *lock(&self.sink) = Some(sink);
-    }
-
-    /// Every recorded violation, as (cid, violation), for the Rules view and the one-time import.
-    pub fn all_violations(&self) -> Vec<(u64, Violation)> {
-        let all = lock(&self.violations);
-        all.iter()
-            .flat_map(|(cid, list)| {
-                let cid = cid.parse::<u64>().unwrap_or(0);
-                list.iter().map(move |v| (cid, v.clone()))
-            })
-            .collect()
-    }
-
-    /// The agent's violations within the last 30 days, newest first, as profile JSON.
-    pub fn recent(&self, cid: u64, now_ms: u64) -> Vec<Json> {
-        let all = lock(&self.violations);
-        let Some(list) = all.get(&cid.to_string()) else {
-            return Vec::new();
-        };
-        let mut found: Vec<&Violation> = list
-            .iter()
-            .filter(|v| v.at_ms + WINDOW_MS >= now_ms)
-            .collect();
-        found.sort_by_key(|a| std::cmp::Reverse(a.at_ms));
-        found
-            .into_iter()
-            .map(|v| serde_json::to_value(v).unwrap_or(Json::Null))
-            .collect()
-    }
-
     /// Whether strict permits are on: an operation with permit laws is refused unless one allows it.
     pub fn strict(&self) -> bool {
         self.strict.load(Ordering::Relaxed)
@@ -727,7 +573,13 @@ impl Laws {
     pub fn set_strict(&self, on: bool) {
         let mut memo = lock(&self.permitted);
         self.strict.store(on, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         memo.clear();
+    }
+
+    /// The laws' generation now: it moves with every change to what the laws permit.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// The owner's rules and overrides.
@@ -952,18 +804,37 @@ impl Laws {
         Ok(DryRun { laws, would_refuse })
     }
 
-    /// The whole owner state as JSON, for Postgres (`crate::db`).
-    pub fn rules_snapshot(&self) -> String {
-        serde_json::to_string_pretty(&*lock(&self.rules)).unwrap_or_default()
+    /// The owner's rules and overrides as rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        apz_store::RowSet::one(def(), &*lock(&self.rules))
     }
 
-    /// Replaces the owner's rules with a [`Laws::rules_snapshot`]; a source that does not compile changes nothing.
-    pub fn rules_restore(&self, json: &str) -> Result<(), String> {
-        let next: RuleSet = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    /// Replaces the owner's rules with what plaza.db holds (at start), and applies them when they compile. Stored
+    /// rules that no longer compile are kept as they are and not applied: only the built-in laws apply until the
+    /// owner fixes or removes them (nothing is lost meanwhile).
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored: RuleSet = apz_store::table::load_one(conn, def())?.unwrap_or_default();
         let mut slot = lock(&self.rules);
-        let compiled = compile(&self.base, &next).map_err(|failure| failure.message())?;
-        self.commit(&mut slot, next, compiled);
+        match compile(&self.base, &stored) {
+            Ok(compiled) => self.swap(compiled),
+            Err(failure) => {
+                eprintln!(
+                    "laws: the owner's rules are not applied: {}",
+                    failure.message()
+                );
+                *lock(&self.not_applied) = Some(failure.message());
+            }
+        }
+        *slot = stored;
         Ok(())
+    }
+
+    /// Why the owner's stored rules are not applied (they did not compile at start), until a change applies them.
+    pub fn not_applied(&self) -> Option<String> {
+        lock(&self.not_applied).clone()
     }
 
     /// Applies a change to one rule: the change is compiled first, and nothing is applied unless it compiles.
@@ -988,35 +859,19 @@ impl Laws {
         Ok(edited)
     }
 
-    /// Whether the owner's rules are written to rules.json: false while the file is damaged (see `attach`),
-    /// when a change applies in memory only.
-    pub fn rules_saved(&self) -> bool {
-        !self.rules_unreadable.load(Ordering::Relaxed)
-    }
-
-    /// Stores `next` as the owner's rules, swaps in its compiled set and writes the rules to disk.
+    /// Stores `next` as the owner's rules and swaps in its compiled set. The saver writes it (see [`Laws::rows`]).
     fn commit(&self, slot: &mut MutexGuard<'_, RuleSet>, next: RuleSet, compiled: Compiled) {
         **slot = next;
         self.swap(compiled);
-        if self.rules_unreadable.load(Ordering::Relaxed) {
-            // The damaged file was copied to `.corrupt-<ms>` and left in place: nothing is written over
-            // rules.json until it is restored or removed.
-            eprintln!(
-                "laws: rules.json not written: the owner's rules could not be read at startup"
-            );
-            return;
-        }
-        let path = lock(&self.dir).join("rules.json");
-        if let Err(e) = write_json(&path, &**slot) {
-            eprintln!("laws: could not save rules: {e}");
-        }
     }
 
     /// Swaps in a compiled set. The memo lock is held so that no answer computed under the old set
     /// is remembered after the swap.
     fn swap(&self, next: Compiled) {
+        *lock(&self.not_applied) = None;
         let mut memo = lock(&self.permitted);
         *self.live.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
+        self.generation.fetch_add(1, Ordering::AcqRel);
         memo.clear();
     }
 
@@ -1025,10 +880,6 @@ impl Laws {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
-    }
-
-    fn violations_path(&self) -> PathBuf {
-        lock(&self.dir).join("violations.json")
     }
 
     /// Keeps the call for the dry run. A call whose input is too large to replay is not kept.
@@ -1048,47 +899,6 @@ impl Laws {
             at_ms: apz_plaza::now_ms(),
         });
     }
-
-    fn record(&self, cid: u64, laws: &[String], tool: &str, at_ms: u64) {
-        let recorded: Vec<Violation> = laws
-            .iter()
-            .map(|law| Violation {
-                law: law.clone(),
-                at_ms,
-                detail: format!("tool {tool} refused"),
-            })
-            .collect();
-        {
-            let mut all = lock(&self.violations);
-            let list = all.entry(cid.to_string()).or_default();
-            list.extend(recorded.iter().cloned());
-            let excess = list.len().saturating_sub(KEEP);
-            list.drain(..excess);
-            // While violations.json is damaged, the log is kept in memory only (see `attach`).
-            if !self.violations_unreadable.load(Ordering::Relaxed) {
-                save(&self.violations_path(), &all)
-                    .unwrap_or_else(|e| eprintln!("laws: could not save violations: {e}"));
-            }
-        }
-        // The sink runs outside the violations lock: it writes to Postgres.
-        let guard = lock(&self.sink);
-        if let Some(sink) = guard.as_ref() {
-            for violation in &recorded {
-                sink(cid, violation, tool);
-            }
-        }
-    }
-}
-
-/// Counts one infraction of `law` by agent `cid` on the `law.infractions` counter. The laws hold no
-/// handle on the metrics registry, so the caller that has one passes it in.
-pub fn count_infraction(registry: &Registry, cid: u64, law: &str) {
-    registry
-        .counter(
-            SeriesKey::new("law.infractions", EntityKind::Agent, &cid.to_string())
-                .label("law", law),
-        )
-        .inc();
 }
 
 /// Locks a mutex, ignoring poisoning: the guarded data is always left whole by its writers.
@@ -1226,29 +1036,16 @@ fn diagnostic(sources: &SourceMap, diag: &Diag) -> Diagnostic {
     }
 }
 
-/// Writes a value as JSON atomically, see [`write_synced`].
-fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(value).map_err(std::io::Error::other)?;
-    write_synced(path, text.as_bytes())
+/// The owner's rules' tables: `rules`, with each rule, override and history change as a child table.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(RuleSet)
 }
 
-/// Writes `bytes` to a temporary file beside `path`, syncs it to disk, then renames it over `path`:
-/// a crash leaves the old file or the new one, never a partly written mix.
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let tmp = path.with_extension("json.tmp");
-    let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(&tmp, path)
-}
-
-/// The compiled-in laws for questions asked outside an `App` (tool offers), compiled once.
-/// Only [`Laws::permits`] is answered from it, which records nothing, so its violations path is never written.
+/// The plaza's one law set (the state folder's rules are loaded into it at start, see [`Laws::load`]). Only
+/// [`Laws::permits`] is answered from the built-in set without an `App`, and that keeps nothing.
 pub fn global() -> &'static Laws {
     static LAWS: OnceLock<Laws> = OnceLock::new();
-    LAWS.get_or_init(|| Laws::load(&std::env::temp_dir().join("apz-laws-gate")))
+    LAWS.get_or_init(Laws::builtin)
 }
 
 /// The attributes of an agent as the laws read them: [`member_attrs`] plus its kind, `model` for a
@@ -1265,17 +1062,7 @@ fn member_attrs_of(cid: &str, role: &str) -> BTreeMap<String, Value> {
     attrs
 }
 
-/// The town as the statutes read it: a Town record carrying its `name`, so `principal.town.name`
-/// and `resource.town == principal.town` compare the same way the jhrl cases do (S-003c, S-003d, S-004b).
-fn town_record() -> Value {
-    Value::Record(std::sync::Arc::new(BTreeMap::from([
-        ("$type".to_string(), Value::str("Town")),
-        ("$id".to_string(), Value::str(TOWN)),
-        ("name".to_string(), Value::str(TOWN)),
-    ])))
-}
-
-/// The attributes of an agent with `role` as the laws read them: its role, town, tier and seat.
+/// The attributes of an agent with `role` as the laws read them: its role and tier.
 fn member_attrs(role: &str) -> BTreeMap<String, Value> {
     let tier = match tier_of(role) {
         Tier::Orchestrator => "orchestrator",
@@ -1283,15 +1070,8 @@ fn member_attrs(role: &str) -> BTreeMap<String, Value> {
     };
     BTreeMap::from([
         ("role".to_string(), Value::str(role)),
-        ("town".to_string(), town_record()),
         ("tier".to_string(), Value::str(tier)),
-        ("seated".to_string(), Value::Bool(council::is_seated(role))),
     ])
-}
-
-/// Writes the violations atomically and synced to disk, see [`write_synced`].
-fn save(path: &Path, all: &BTreeMap<String, Vec<Violation>>) -> std::io::Result<()> {
-    write_json(path, all)
 }
 
 /// Reads `law "<id>" "<title>" {` headers from a law source.
@@ -1420,8 +1200,8 @@ const GUEST_EXEC: &[&str] = &[
     "engine.other",
 ];
 
-/// The town every agent and task of this plaza belongs to, as the laws read it (`principal.town`).
-const TOWN: &str = "plaza";
+/// The plaza, as the one `Plaza` entity the laws name for an operation on the plaza as a whole.
+const PLAZA: &str = "plaza";
 
 /// The operations a plaza tool performs beyond its `tool.call`, each with the resource and the
 /// context its laws read. A forbid whose condition reads a missing attribute applies (fail closed),
@@ -1430,7 +1210,6 @@ const TOWN: &str = "plaza";
 fn plaza_operations(
     tool: &str,
     input: &Json,
-    agent_cid: &str,
     role: &str,
     store: &mut EntityStore,
 ) -> Vec<(&'static str, Entity, Context)> {
@@ -1442,18 +1221,18 @@ fn plaza_operations(
             .to_string()
     };
     match tool {
-        // The town is named by its `name` attribute (a bare resource is its `$type`/`$id` record).
+        // The plaza is named by its `name` attribute (a bare resource is its `$type`/`$id` record).
         // Posting a plan's whole list creates tasks as posting one does.
         "plaza_post_task" | "plaza_tasks_post" => {
-            let town = Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
+            let plaza = Entity {
+                ty: "Plaza".into(),
+                id: PLAZA.into(),
             };
             store.insert(
-                &town,
-                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
+                &plaza,
+                BTreeMap::from([("name".to_string(), Value::str(PLAZA))]),
             );
-            vec![("task.create", town, Context::new())]
+            vec![("task.create", plaza, Context::new())]
         }
         "plaza_assign" => {
             let cid = input
@@ -1486,39 +1265,6 @@ fn plaza_operations(
             task_resource(store, text("id")),
             Context::new(),
         )],
-        // Memory is each agent's private library: a write is a change to its own store, with no
-        // verification evidence in the call (so a librarian's verified-evidence permit does not apply).
-        "memory_write" => {
-            let context = Context::from([
-                ("to_scope".to_string(), Value::str("private")),
-                ("verified".to_string(), Value::Bool(false)),
-                ("tainted".to_string(), Value::Bool(false)),
-                ("owner_reviewed".to_string(), Value::Bool(false)),
-            ]);
-            vec![("memory.change", memory_resource(agent_cid, store), context)]
-        }
-        "memory_read" | "memory_search" | "memory_list" => {
-            let context = Context::from([("scope".to_string(), Value::str("private"))]);
-            vec![("memory.read", memory_resource(agent_cid, store), context)]
-        }
-        // A name is a claim of identity: the name is reserved when it is a role's name (`check_name`
-        // refuses those too). No lookalike check exists yet, so name_confusable is false.
-        "plaza_set_name" => {
-            let name = text("name").trim().to_lowercase().replace(' ', "-");
-            let registry = Entity {
-                ty: "Registry".into(),
-                id: "names".into(),
-            };
-            store.insert(&registry, BTreeMap::new());
-            let context = Context::from([
-                (
-                    "name_reserved".to_string(),
-                    Value::Bool(crate::role::Role::parse(&name).is_some()),
-                ),
-                ("name_confusable".to_string(), Value::Bool(false)),
-            ]);
-            vec![("registry.set_name", registry, context)]
-        }
         // No artifact is marked hidden from a role yet: the hidden set is empty, so S-010d does not apply.
         "plaza_get_file" => {
             let artifact = Entity {
@@ -1538,8 +1284,8 @@ fn plaza_operations(
         "foundry_submit_job" => vec![(
             "training.submit",
             Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
+                ty: "Plaza".into(),
+                id: PLAZA.into(),
             },
             Context::from([(
                 "gpu_hours".to_string(),
@@ -1563,24 +1309,6 @@ fn plaza_operations(
                 Context::from([("role_allowed".to_string(), Value::Bool(allowed))]),
             )]
         }
-        // A payment is a send of credits from the town. The owner's threshold is not known here: plaza_pay
-        // holds a large payment for approval, so the law never forbids it (S-007a).
-        "plaza_pay" => {
-            let town = Entity {
-                ty: "Town".into(),
-                id: TOWN.into(),
-            };
-            store.insert(
-                &town,
-                BTreeMap::from([("name".to_string(), Value::str(TOWN))]),
-            );
-            let amount = input.get("amount").and_then(Json::as_i64).unwrap_or(0);
-            vec![(
-                "payment.send",
-                town,
-                Context::from([("amount".to_string(), Value::int(amount.into()))]),
-            )]
-        }
         // An MCP call is `mcp.call` on its server, with the tool and the risk class the owner's rules may limit.
         t if t.starts_with(crate::mcp::PREFIX) => match crate::mcp::law_operation(t) {
             Some((server, tool, risk)) => {
@@ -1602,24 +1330,14 @@ fn plaza_operations(
     }
 }
 
-/// The task a call names, as an entity of this town.
+/// The task a call names, as an entity of the plaza.
 fn task_resource(store: &mut EntityStore, id: String) -> Entity {
     let task = Entity {
         ty: "Task".into(),
         id,
     };
-    store.insert(&task, BTreeMap::from([("town".to_string(), town_record())]));
+    store.insert(&task, BTreeMap::new());
     task
-}
-
-/// The memory store an agent writes its private notes to.
-fn memory_resource(agent_cid: &str, store: &mut EntityStore) -> Entity {
-    let memory = Entity {
-        ty: "MemoryStore".into(),
-        id: agent_cid.into(),
-    };
-    store.insert(&memory, BTreeMap::new());
-    memory
 }
 
 /// Where a tool comes from, as the tool laws (`tools.jhrl`) read it: a connector's action, a
@@ -1641,47 +1359,19 @@ fn tool_kind(tool: &str) -> &'static str {
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads
 /// it. Connector actions carry their own class (`connectors::risk_of`: e.g. a DNS record or a droplet
 /// created is `irreversible`), and C-004a refuses them, since owner approvals are not threaded through
-/// tool calls yet. Payments stay `write`: they are capped transfers and verdicts are reviewable.
+/// tool calls yet.
 pub(crate) fn risk_class(tool: &str) -> &'static str {
     match tool {
         "read" | "read_file" | "list" | "list_files" | "search" | "plaza_tasks"
-        | "plaza_agents" | "memory_read" | "memory_search" | "memory_list"
-        | "transcript_search" | "plaza_contacts" | "glob" | "grep" | "bash_output"
-        | "todo_write" | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search"
-        | "station_list" | "station_app_list" | "engine.read" => "read",
+        | "plaza_agents" | "transcript_search" | "glob" | "grep" | "bash_output" | "todo_write"
+        | "checkpoint_diff" | "checkpoint_list" | "foundry_hf_search" | "station_list"
+        | "station_app_list" | "engine.read" => "read",
         t if t.starts_with("plaza_") && t.ends_with("_read") => "read",
         t if crate::connectors::risk_of(t).is_some() => {
             crate::connectors::risk_of(t).unwrap_or("write")
         }
         t if crate::mcp::risk_of(t).is_some() => crate::mcp::risk_of(t).unwrap_or("write"),
         _ => "write",
-    }
-}
-
-impl Laws {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let all = self
-            .violations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        serde_json::to_string_pretty(&*all).unwrap_or_default()
-    }
-
-    /// Replaces the state with a [`Laws::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let violations: BTreeMap<String, Vec<Violation>> =
-            serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let mut all = self
-            .violations
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        // While violations.json is damaged, the restored log is kept in memory only (see `attach`).
-        if !self.violations_unreadable.load(Ordering::Relaxed) {
-            save(&self.violations_path(), &violations).map_err(|e| e.to_string())?;
-        }
-        *all = violations;
-        Ok(())
     }
 }
 
@@ -1848,7 +1538,6 @@ fn verb_of(op: &str) -> String {
         "artifact.publish" => "publish".to_string(),
         "artifact.create" => "create".to_string(),
         "artifact.share" => "share".to_string(),
-        "memory.change" => "change the memory of".to_string(),
         "device.actuate" => "operate".to_string(),
         "device.read" => "read".to_string(),
         "audit.modify" => "change the audit log".to_string(),
@@ -1858,7 +1547,6 @@ fn verb_of(op: &str) -> String {
         "vault.list" => "list".to_string(),
         "sandbox.event" => "report sandbox events for".to_string(),
         "approval.request" => "request".to_string(),
-        "registry.set_name" => "set its name in".to_string(),
         "task.create" => "create tasks in".to_string(),
         "task.assign" => "assign".to_string(),
         "merge.approve" => "approve merges for".to_string(),
@@ -1877,7 +1565,6 @@ fn verb_of(op: &str) -> String {
         "release.submit" => "release".to_string(),
         "research.submit" => "submit research to".to_string(),
         "artifact.read" => "read".to_string(),
-        "memory.read" => "read the memory of".to_string(),
         "audit_sample.get" => "draw audit samples from".to_string(),
         "any" => "act on".to_string(),
         other => match other.split_once('.') {
@@ -1912,15 +1599,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-laws-{}-{name}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn the_catalog_explains_each_law() {
-        let laws = Laws::load(&scratch("catalog"));
+        let laws = Laws::builtin();
         let catalog = laws.catalog();
         assert!(!catalog.is_empty());
         assert!(
@@ -1951,7 +1632,7 @@ mod tests {
     fn a_plain_read_and_an_acp_engines_actions_are_checked() {
         // a_plain_read_is_not_forbidden: a plain read is not forbidden.
         {
-            let laws = Laws::load(&scratch("read"));
+            let laws = Laws::builtin();
             let verdict = laws.check(
                 "7",
                 "researcher",
@@ -1962,7 +1643,7 @@ mod tests {
         }
         // an_acp_engines_own_actions_are_checked_one_by_one: each engine action is checked on its own.
         {
-            let laws = Laws::load(&scratch("engine"));
+            let laws = Laws::builtin();
             // A read is a tool call alone; an edit also runs in the VM, so the sandbox is checked too.
             let read = laws.check("7", "builder", "engine.read", &json!({}));
             assert!(!read.unpermitted && read.forbid.is_empty(), "{read:?}");
@@ -1988,7 +1669,7 @@ mod tests {
 
     #[test]
     fn a_credential_or_an_impersonation_is_forbidden_by_its_constitution_law() {
-        let laws = Laws::load(&scratch("cred"));
+        let laws = Laws::builtin();
         let key = "sk-proj-abcdefghijklmnopqrstuvwxyz0123";
         // (tool, input, the law that must forbid the call, as an id prefix). A malformed recipient is still a message.
         for (tool, input, law) in [
@@ -2017,39 +1698,6 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_is_checked_as_a_send_and_never_forbidden_whatever_its_amount() {
-        let laws = Laws::load(&scratch("pay"));
-        for amount in [5, 900] {
-            let verdict = laws.check(
-                "7",
-                "finance",
-                "plaza_pay",
-                &json!({"to": 9, "amount": amount, "memo": "thanks"}),
-            );
-            assert!(verdict.forbid.is_empty(), "{verdict:?}");
-            assert!(
-                verdict.requested.iter().any(|op| op == "payment.send"),
-                "{verdict:?}"
-            );
-            assert!(
-                verdict.permit.iter().any(|id| id == "S-007a"),
-                "{verdict:?}"
-            );
-        }
-        // Strict permits: a held payment is still not refused by the laws.
-        laws.set_strict(true);
-        assert!(
-            laws.refusal(
-                7,
-                "finance",
-                "plaza_pay",
-                &json!({"to": 9, "amount": 900, "memo": "thanks"})
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
     fn credential_shaped_input_is_flagged() {
         let flags = detect_flags(
             "bash",
@@ -2066,52 +1714,9 @@ mod tests {
     }
 
     #[test]
-    fn a_damaged_violations_file_is_kept_and_not_overwritten() {
-        let dir = scratch("damaged-violations");
-        let damaged: &[u8] = b"{ \"7\": [";
-        std::fs::write(dir.join("violations.json"), damaged).unwrap();
-        let laws = Laws::load(&dir);
-        // No rules.json here, so the owner's rules are saved.
-        assert!(laws.rules_saved());
-        // The violation is held in memory, and the damaged file keeps its bytes.
-        laws.record(7, &["C-002b".to_string()], "bash", apz_plaza::now_ms());
-        assert_eq!(std::fs::read(dir.join("violations.json")).unwrap(), damaged);
-        let kept = laws.all_violations();
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].0, 7);
-        // A damaged rules.json makes the owner's rules unsaved.
-        let rules_dir = scratch("damaged-rules-flag");
-        std::fs::write(rules_dir.join("rules.json"), damaged).unwrap();
-        assert!(!Laws::load(&rules_dir).rules_saved());
-    }
-
-    #[test]
-    fn violations_persist_through_the_state_file() {
-        let dir = scratch("persist");
-        let _ = std::fs::remove_file(dir.join("violations.json"));
-        let laws = Laws::load(&dir);
-        let refusal = laws.refusal(
-            7,
-            "builder",
-            "bash",
-            &json!({"command": "echo sk-proj-abcdefghijklmnopqrstuvwxyz0123"}),
-        );
-        assert!(refusal.unwrap_or_default().starts_with("refused by law C-"));
-        let again = Laws::load(&dir);
-        let found = again.recent(7, apz_plaza::now_ms());
-        assert!(!found.is_empty());
-        assert!(
-            found[0]["law"]
-                .as_str()
-                .unwrap_or_default()
-                .starts_with("C-")
-        );
-    }
-
-    #[test]
     fn every_tool_offered_to_a_role_is_permitted_by_a_law() {
-        let laws = Laws::load(&scratch("offered"));
-        let mut roles = vec!["builder", "reviewer", "mayor", "planner", "finance"];
+        let laws = Laws::builtin();
+        let mut roles = vec!["builder", "reviewer", "planner", "auditor"];
         roles.push(crate::settings::ORCHESTRATOR_ROLE);
         for role in roles {
             for tool in crate::tools::offered_names(role) {
@@ -2129,10 +1734,8 @@ mod tests {
     }
 
     #[test]
-    fn a_call_no_law_permits_is_refused_and_not_recorded() {
-        let dir = scratch("default-deny");
-        let _ = std::fs::remove_file(dir.join("violations.json"));
-        let laws = Laws::load(&dir);
+    fn a_call_no_law_permits_is_refused() {
+        let laws = Laws::builtin();
         let refusal = laws.refusal(7, "builder", "plaza_post_task", &json!({}));
         assert_eq!(
             refusal.as_deref(),
@@ -2142,15 +1745,13 @@ mod tests {
             laws.check("7", "builder", "plaza_post_task", &json!({}))
                 .unpermitted
         );
-        assert!(laws.all_violations().is_empty());
-        assert!(laws.recent(7, apz_plaza::now_ms()).is_empty());
     }
 
     #[test]
     fn refused_ops_and_permits_follow_the_laws_by_role() {
         // a_file_published_from_the_vm_is_checked_as_an_artifact: a published file is checked as an artifact.
         {
-            let laws = Laws::load(&scratch("artifact"));
+            let laws = Laws::builtin();
             let artifact = Entity {
                 ty: "Artifact".into(),
                 id: "report.txt".into(),
@@ -2164,15 +1765,10 @@ mod tests {
                 &Json::String("I pretend to be the owner".into()),
             );
             assert!(why.is_some_and(|w| w.contains("C-003b")));
-            assert!(
-                laws.recent(7, apz_plaza::now_ms())
-                    .iter()
-                    .any(|v| v["law"] == "C-003b")
-            );
         }
         // a_researcher_may_not_push_to_the_hub_git_but_a_builder_may: only a builder may push to the hub git.
         {
-            let laws = Laws::load(&scratch("git-push"));
+            let laws = Laws::builtin();
             let host = || Entity {
                 ty: "Host".into(),
                 id: "hub-git".into(),
@@ -2194,7 +1790,7 @@ mod tests {
         }
         // a_hidden_artifact_is_refused_to_the_role_it_is_hidden_from: a hidden artifact is refused to its hidden role.
         {
-            let laws = Laws::load(&scratch("hidden-artifact"));
+            let laws = Laws::builtin();
             let hidden = Entity {
                 ty: "Artifact".into(),
                 id: "acceptance.txt".into(),
@@ -2220,10 +1816,10 @@ mod tests {
     }
 
     #[test]
-    fn permits_follows_the_tier_seat_and_connector_laws() {
+    fn permits_follows_the_tier_and_connector_laws() {
         // an_irreversible_connector_action_is_withheld_from_every_role: no role is offered an irreversible action.
         {
-            let laws = Laws::load(&scratch("irreversible"));
+            let laws = Laws::builtin();
             assert_eq!(
                 crate::connectors::risk_of("cloudflare_dns_create"),
                 Some("irreversible")
@@ -2233,24 +1829,23 @@ mod tests {
                 assert!(!laws.permits(role, "cloudflare_dns_create"), "{role}");
             }
         }
-        // permits_follows_the_tier_and_seat_laws: permits follow the tier and seat laws.
+        // permits_follows_the_tier_laws: permits follow the tier laws.
         {
-            let laws = Laws::load(&scratch("permits"));
-            assert!(laws.permits("mayor", "plaza_project_approve"));
+            let laws = Laws::builtin();
+            assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_project_approve"));
             assert!(!laws.permits("builder", "plaza_project_approve"));
             assert!(!laws.permits("builder", "plaza_post_task"));
-            assert!(laws.permits("builder", "plaza_bid"));
             assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_post_task"));
             assert!(laws.permits("builder", "bash"));
             // A second ask is answered from the memo, the same way.
-            assert!(laws.permits("mayor", "plaza_project_approve"));
+            assert!(laws.permits(crate::settings::ORCHESTRATOR_ROLE, "plaza_project_approve"));
         }
     }
 
     #[test]
     fn a_tool_is_checked_as_the_operation_it_performs() {
         // (role, tool, input, operation the laws see, permit that allows it, must be permitted outright)
-        let cases: [(&str, &str, Json, &str, Option<&str>, bool); 7] = [
+        let cases: [(&str, &str, Json, &str, Option<&str>, bool); 6] = [
             (
                 crate::settings::ORCHESTRATOR_ROLE,
                 "plaza_post_task",
@@ -2276,20 +1871,12 @@ mod tests {
                 false,
             ),
             (
-                "mayor",
+                crate::settings::ORCHESTRATOR_ROLE,
                 "plaza_project_approve",
                 json!({"id": "p-1"}),
                 "plan.approve",
                 None,
                 true,
-            ),
-            (
-                "librarian",
-                "memory_write",
-                json!({"title": "t", "body": "b"}),
-                "memory.change",
-                None,
-                false,
             ),
             (
                 "builder",
@@ -2300,16 +1887,16 @@ mod tests {
                 false,
             ),
             (
-                "mayor",
+                crate::settings::ORCHESTRATOR_ROLE,
                 "plaza_assign",
                 json!({"task": "t-1", "agent": 9}),
                 "task.assign",
                 Some("S-004a"),
-                false,
+                true,
             ),
         ];
         for (role, tool, input, op, permit, allowed) in cases {
-            let laws = Laws::load(&scratch(&format!("checked-{tool}")));
+            let laws = Laws::builtin();
             let verdict = laws.check("7", role, tool, &input);
             assert!(
                 verdict.requested.iter().any(|o| o == op),
@@ -2326,25 +1913,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn a_name_of_a_role_is_refused_as_impersonation_and_a_personal_name_is_not() {
-        let laws = Laws::load(&scratch("set-name"));
-        let verdict = laws.check("7", "builder", "plaza_set_name", &json!({"name": "Mayor"}));
-        assert!(
-            verdict.forbid.iter().any(|id| id == "C-003a"),
-            "{verdict:?}"
-        );
-        let personal = laws.check("7", "builder", "plaza_set_name", &json!({"name": "Ada"}));
-        assert!(
-            personal
-                .requested
-                .iter()
-                .any(|op| op == "registry.set_name"),
-            "{personal:?}"
-        );
-        assert!(personal.forbid.is_empty(), "{personal:?}");
     }
 }
 
@@ -2378,21 +1946,13 @@ mod owner_rules_tests {
 }
 ";
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("apid-owner-rules-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     fn now() -> u64 {
         apz_plaza::now_ms()
     }
 
     #[test]
     fn a_rule_nested_past_the_parser_budget_is_refused() {
-        let laws = Laws::load(&scratch("nesting-budget"));
+        let laws = Laws::builtin();
         let source = format!(
             "law \"O-900\" \"Deep nesting\" {{
   tier statute
@@ -2419,7 +1979,7 @@ mod owner_rules_tests {
 
     #[test]
     fn a_rule_source_over_64_kib_is_refused() {
-        let laws = Laws::load(&scratch("size-limit"));
+        let laws = Laws::builtin();
         let source = "x".repeat(64 * 1024 + 1);
         let err = laws
             .add_rule("Too large", &source, true, now())
@@ -2437,43 +1997,8 @@ mod owner_rules_tests {
     }
 
     #[test]
-    fn a_damaged_rules_file_is_left_in_place_with_a_copy_and_an_owner_change_does_not_overwrite_it()
-    {
-        let dir = scratch("damaged-rules");
-        let damaged: &[u8] = b"law \"O-901\" {";
-        std::fs::write(dir.join("rules.json"), damaged).unwrap();
-        let corrupt_copies = |root: &std::path::Path| -> Vec<String> {
-            std::fs::read_dir(root)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("rules.json.corrupt-"))
-                .collect()
-        };
-        let laws = Laws::load(&dir);
-        assert!(laws.rules().rules.is_empty(), "no owner rules survive");
-        // The damaged file stays where it is, and its copy is kept beside it.
-        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
-        let kept = corrupt_copies(dir.as_path());
-        assert_eq!(kept.len(), 1, "{kept:?}");
-        // An owner change applies in memory but is not written: rules.json keeps its damaged bytes.
-        let rule = "law \"O-901\" \"Sensors\" {\n  tier statute\n  permit device.read\n  principal is Agent\n  when principal.role == \"sensor\"\n}\n";
-        let _ = laws.add_rule("", rule, true, now());
-        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
-        assert_eq!(corrupt_copies(dir.as_path()), kept);
-        // A second start still finds no owner rules, and the damaged file is still there.
-        let again = Laws::load(&dir);
-        assert!(
-            again.rules().rules.is_empty(),
-            "no owner rules survive a restart"
-        );
-        assert_eq!(std::fs::read(dir.join("rules.json")).unwrap(), damaged);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn a_rule_that_does_not_compile_is_rejected_with_its_place_and_not_applied() {
-        let laws = Laws::load(&scratch("compile"));
+        let laws = Laws::builtin();
         let broken = "law \"O-900\" \"Broken\" {\n  tier statute\n  frobnicate everything\n}\n";
         match laws.add_rule("", broken, true, now()) {
             Err(Failure::Diagnostics(list)) => assert!(
@@ -2493,7 +2018,7 @@ mod owner_rules_tests {
 
     #[test]
     fn an_added_forbid_refuses_the_call_at_once_and_disabling_it_stops_that() {
-        let laws = Laws::load(&scratch("forbid"));
+        let laws = Laws::builtin();
         let input = json!({"path": "a.md"});
         assert_eq!(gate(&laws, "read_file", &input), Ok(Runs::Guest));
         let rule = laws
@@ -2521,7 +2046,7 @@ mod owner_rules_tests {
 
     #[test]
     fn an_owner_disables_one_builtin_statute_with_a_reason_on_record() {
-        let laws = Laws::load(&scratch("override"));
+        let laws = Laws::builtin();
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
         let forbids = |laws: &Laws| {
             laws.check("7", "builder", "plaza_send_message", &input)
@@ -2566,7 +2091,7 @@ mod owner_rules_tests {
 
     #[test]
     fn strict_permits_refuse_an_operation_no_permit_allows_only_when_on() {
-        let laws = Laws::load(&scratch("strict"));
+        let laws = Laws::builtin();
         laws.add_rule("Only sensors read devices", SENSORS_ONLY, true, now())
             .expect("compiles");
         let device = || Entity {
@@ -2603,42 +2128,65 @@ mod owner_rules_tests {
         assert!(read(&laws, "builder").is_none());
     }
 
+    /// The laws as plaza.db keeps them, loaded into a fresh set: the owner's rules and overrides go through their
+    /// tables, as the saver writes them and the start loads them.
+    fn restored(laws: &Laws) -> Laws {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &laws.rows().unwrap()).unwrap();
+        let fresh = Laws::builtin();
+        fresh.load(&conn).unwrap();
+        fresh
+    }
+
     #[test]
-    fn owner_rules_and_overrides_survive_a_restart_and_a_snapshot() {
-        let dir = scratch("persist");
-        let laws = Laws::load(&dir);
+    fn owner_rules_and_overrides_survive_a_restart() {
+        let laws = Laws::builtin();
         laws.add_rule("No reading files", NO_READS, true, now())
             .unwrap();
         laws.set_override("C-002b", true, "testing", "C-002b", now())
             .unwrap();
         let before = laws.rules();
-        let again = Laws::load(&dir);
+        let again = restored(&laws);
         assert_eq!(again.rules(), before);
         assert!(gate(&again, "read_file", &json!({"path": "a.md"})).is_err());
-        // The Postgres copy restores the same state into a fresh set.
-        let other = Laws::load(&scratch("persist-db"));
-        other.rules_restore(&again.rules_snapshot()).unwrap();
-        assert_eq!(other.rules(), before);
         assert!(
-            other
+            again
                 .catalog()
                 .iter()
                 .any(|info| info.id == "O-001" && info.enabled)
         );
-        // A snapshot whose source does not compile changes nothing.
-        let mut bad = before.clone();
+    }
+
+    /// Stored rules that no longer compile are kept as they are and not applied: nothing is lost, and the built-in
+    /// laws alone decide until the owner fixes or removes them.
+    #[test]
+    fn stored_rules_that_do_not_compile_are_kept_and_not_applied() {
+        let laws = Laws::builtin();
+        laws.add_rule("No reading files", NO_READS, true, now())
+            .unwrap();
+        let mut bad = laws.rules();
         bad.rules[0].source = "law \"O-901\" \"Bad\" {".into();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let rows = apz_store::RowSet::one(def(), &bad).unwrap();
+        apz_store::table::replace(&conn, def(), &rows).unwrap();
+        let loaded = Laws::builtin();
+        loaded.load(&conn).unwrap();
+        assert_eq!(loaded.rules(), bad, "kept as stored");
         assert!(
-            other
-                .rules_restore(&serde_json::to_string(&bad).unwrap())
-                .is_err()
+            !loaded.catalog().iter().any(|info| info.id == "O-001"),
+            "not applied"
         );
-        assert_eq!(other.rules(), before);
+        assert!(
+            loaded.not_applied().is_some(),
+            "and the Rules view says why"
+        );
     }
 
     #[test]
     fn a_dry_run_lists_the_recent_calls_a_rule_would_refuse_and_applies_nothing() {
-        let laws = Laws::load(&scratch("dry"));
+        let laws = Laws::builtin();
         assert!(
             laws.refusal(7, "builder", "read_file", &json!({"path": "a.md"}))
                 .is_none()
@@ -2656,8 +2204,7 @@ mod owner_rules_tests {
 
     #[test]
     fn a_constitutional_law_switches_off_only_with_its_typed_id_and_its_changes_are_kept() {
-        let dir = scratch("constitution");
-        let laws = Laws::load(&dir);
+        let laws = Laws::builtin();
         let law = "C-002b";
         let input = json!({"to_cid": 9, "text": "key sk-proj-abcdefghijklmnopqrstuvwxyz0123"});
         let forbids = |laws: &Laws| {
@@ -2721,7 +2268,7 @@ mod owner_rules_tests {
                 && history[1].title == title
         );
         // The history is part of the rules: it survives a restart.
-        assert_eq!(Laws::load(&dir).rules().history, history);
+        assert_eq!(restored(&laws).rules().history, history);
         // A statute of another tier is switched off with no confirmation and no entry in the history.
         laws.set_override("S-013d", true, "researchers may commit", "", 3_000)
             .unwrap();

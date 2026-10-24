@@ -1,12 +1,12 @@
-//! Where metrics are kept. Two implementations: [`super::mem::MemStore`] (no Postgres: bounded memory, saved
-//! values in files) and [`super::pg::PgStore`] (the partitioned metrics tables).
+//! Where metrics are kept: the [`Store`] trait, over the metrics file (`metrics.db`, [`super::sqlite`]).
 
 use apz_metrics::agg::{Agg, Closed, Tier};
 use apz_metrics::trace::Trace;
 use apz_metrics::{Event, SeriesKey};
 use serde::{Deserialize, Serialize};
 
-use super::settings::Retention;
+use super::alerting::Stored;
+use super::settings::{MetricsSettings, Retention};
 
 /// One model call as `model_calls` keeps it: the usage ledger's call plus its timings and context split.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -90,22 +90,30 @@ pub trait Store: Send + Sync {
         limit: usize,
     ) -> Vec<Trace>;
 
+    /// The newest kept trace with this id.
     fn trace(&self, id: &str) -> Option<Trace>;
 
-    /// A small saved value (settings, alert rules and history, the owner's pins), as JSON text.
-    fn kv_get(&self, key: &str) -> Option<String>;
+    /// The owner's settings, saved as one row (`None` until they are first saved).
+    fn settings(&self) -> Option<MetricsSettings>;
 
-    fn kv_put(&self, key: &str, json: &str);
+    fn put_settings(&self, settings: &MetricsSettings);
 
-    /// Drops what is past retention (whole day partitions in Postgres).
+    /// The alert rules, states, mutes, acknowledgements and history, saved as one row.
+    fn alerts(&self) -> Option<Stored>;
+
+    fn put_alerts(&self, stored: &Stored);
+
+    /// The owner's dashboards, saved as one row.
+    fn dashboards(&self) -> Option<apz_metrics_view::model::Saved>;
+
+    fn put_dashboards(&self, saved: &apz_metrics_view::model::Saved);
+
+    /// Drops what is past retention, table by table, and caps the kept traces by size.
     fn prune(&self, now_ms: u64, retention: &Retention);
 
-    /// Bytes per table (or per in-memory tier), for "Metrics cost" and the stores table.
+    /// Bytes per stream table (its children with it), for "Metrics cost" and the stores table.
     fn sizes(&self) -> Vec<(String, u64)>;
 
-    /// Writes buffered rows.
+    /// Writes what is waiting.
     fn flush(&self);
-
-    /// "postgres" or "memory".
-    fn kind(&self) -> &'static str;
 }

@@ -1,5 +1,5 @@
 // Setup: the first-run checks of the desktop app (apps/desktop/src/console/setup and boot.rs),
-// run here through the hub's API. Rows a browser cannot see (Docker, the containers, the ports,
+// run here through the hub's API. Rows a browser cannot see (the services beside the app, the ports,
 // the hypervisor device of this machine) are marked as checked by the desktop app.
 
 import '../styles/proto/settings-d.css';
@@ -129,8 +129,8 @@ async function collect(): Promise<Row[]> {
   }
 
   rows.push(
-    desktop('AgentPlaza services', 'apid, vsockd and noded installed beside the app'),
-    desktop('Docker and containers', 'Docker running, with the Postgres container'),
+    desktop('AgentPlaza services', 'apid and noded installed beside the app, vsockd where it runs'),
+    { label: 'Docker or database', status: 'ok', detail: 'none needed: the hub keeps its state in SQLite in its state folder' },
     desktop('Ports', '7700, 8899 and 19080 free, or held by AgentPlaza itself'),
   );
   return rows;

@@ -521,7 +521,7 @@ mod tests {
             &server,
             Auth::Secret("s".into()),
         );
-        p.options = json!({"project": "p1"});
+        p.options = Some(serde_json::from_value(json!({"project": "p1"})).unwrap());
         let gw = gateway(vec![p]);
         let resp = gw
             .complete(

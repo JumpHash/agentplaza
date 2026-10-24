@@ -618,10 +618,9 @@ mod tests {
             ("architect", &["bash", "read_file", "list", "search"]),
             ("auditor", &["read_audit", "read_usage", "search"]),
             (
-                "legal-gov-judge",
-                &["read_case_record", "search_precedent", "issue_ruling"],
+                "incident",
+                &["request_grant", "quarantine_agent", "file_detection"],
             ),
-            ("mayor", &["read_file", "list", "search"]),
         ]);
         let roles = Some(&roles);
 
@@ -646,15 +645,15 @@ mod tests {
             "a shell grant covers the default's write"
         );
         // A role that may read and search but has no write *and* no shell — the
-        // mayor — falls back to the read-only script.
+        // auditor — falls back to the read-only script.
         assert_eq!(
-            plan_for("mayor", roles),
+            plan_for("auditor", roles),
             Plan::Drive(&READ_ONLY_FAMILY),
             "no write grant and no shell: the read-only fallback"
         );
         // A role the harness implements nothing for cannot be driven at all.
         assert_eq!(
-            plan_for("legal-gov-judge", roles),
+            plan_for("incident", roles),
             Plan::Skipped("the role grants no tool this dispatcher may drive")
         );
         // A role the manifest does not carry at all: the hub would refuse every

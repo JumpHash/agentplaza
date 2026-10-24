@@ -37,7 +37,7 @@ fn run_view(r: &super::Run) -> Value {
 
 /// The tree the views draw: each definition with its scores, findings and touches merged in.
 fn scored_tree(app: &App, r: &super::Run) -> Value {
-    let mut tree = r.tree.clone();
+    let mut tree = app.reviews.tree(r);
     let scores: Vec<&super::Score> = r.scores().collect();
     let findings: Vec<super::Finding> = r
         .nodes
@@ -115,6 +115,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
             };
             match parsed.and_then(|r| if r.id == p.get("id") { app.reviews.put_recipe(r) } else { Err("the recipe's id is not the route's".into()) }) {
                 Ok(r) => {
+                    super::save_owner_decision(app);
                     app.bus.publish("recipe", &json!({ "recipe": r.key() }));
                     Response::json(200, &json!({ "recipe": r }))
                 }
@@ -125,7 +126,10 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .post("/v1/recipes/proposals/{id}", |app, req: &Request, p: &Params<'_>| {
             let approve = req.json::<Value>().ok().and_then(|v| v["approve"].as_bool()).unwrap_or(false);
             match app.reviews.decide_proposal(p.get("id"), approve) {
-                Ok(pr) => Response::json(200, &json!(pr)),
+                Ok(pr) => {
+                    super::save_owner_decision(app);
+                    Response::json(200, &json!(pr))
+                }
                 Err(e) => Response::error(409, &e),
             }
         })

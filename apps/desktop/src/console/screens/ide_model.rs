@@ -6,13 +6,16 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::console::roles;
+
 // ---- The roster and the projects --------------------------------------------------------------
 
 /// One agent as the sidebar shows it (`GET /v1/agents`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentRow {
     pub cid: u64,
-    pub name: String,
+    /// The agent's label, the name it is shown by: its role and its cid (`roles::agent_label_of`).
+    pub label: String,
     pub role_label: String,
     pub model: String,
     pub status: String,
@@ -20,7 +23,7 @@ pub struct AgentRow {
     pub task: Option<String>,
     pub last_seen_ms: u64,
     pub tokens: u64,
-    /// The project it works on (None: on the bench, or the orchestrator).
+    /// The project its live session is on (None: no live session, or the orchestrator).
     pub project: Option<String>,
     /// The orchestrator: it works on every project.
     pub orchestrator: bool,
@@ -52,7 +55,7 @@ pub fn parse_agent(v: &Value) -> Option<AgentRow> {
         .map(str::to_string);
     Some(AgentRow {
         cid,
-        name: text(v, "name"),
+        label: roles::agent_label_of(v),
         role_label,
         model: text(v, "model"),
         status: text(v, "status"),
@@ -77,27 +80,20 @@ pub struct ProjectRow {
     pub stage: String,
     pub repo: Option<String>,
     pub tasks: Vec<String>,
-    pub members: BTreeSet<u64>,
+    /// Its lead agent (the orchestrator of a project it opened): listed under it while it works on no project.
+    pub agents: BTreeSet<u64>,
 }
 
-/// Reads one project; the agents are its lead (the orchestrator of a project it opened) and the `by_cid` of its
-/// documents, critiques and history.
+/// Reads one project; its lead (the orchestrator of a project it opened) is its agent on no project.
 pub fn parse_project(v: &Value) -> Option<ProjectRow> {
     let id = v.get("id")?.as_str()?.to_string();
-    let mut members = BTreeSet::new();
+    let mut agents = BTreeSet::new();
     if let Some(lead) = v
         .get("lead_cid")
         .and_then(Value::as_u64)
         .filter(|c| *c != 0)
     {
-        members.insert(lead);
-    }
-    for key in ["docs", "critiques", "history"] {
-        for item in v.get(key).and_then(Value::as_array).into_iter().flatten() {
-            if let Some(cid) = item.get("by_cid").and_then(Value::as_u64) {
-                members.insert(cid);
-            }
-        }
+        agents.insert(lead);
     }
     let tasks = v
         .get("tasks")
@@ -116,12 +112,12 @@ pub fn parse_project(v: &Value) -> Option<ProjectRow> {
             .map(str::to_string),
         id,
         tasks,
-        members,
+        agents,
     })
 }
 
-/// The sidebar in project mode (the IDE opened under a project): that project's group alone, with its agents (its
-/// members, and the orchestrator, which works on every project) and its repo. Empty until the project is listed.
+/// The sidebar in project mode (the IDE opened under a project): that project's group alone, with its agents (the ones
+/// working on it, and the orchestrator, which works on every project) and its repo. Empty until the project is listed.
 pub fn project_group(
     agents: &[AgentRow],
     projects: &[ProjectRow],
@@ -209,9 +205,9 @@ impl Group {
 
 /// The sidebar's groups: each project that has an agent or a repo, in the order given; then the workstations (after
 /// the projects, as the web IDE has them); then the agents no project names, under "Other agents". An agent is under
-/// the project it works on, and only that one; an agent on none, under a project that names it (its documents,
-/// critiques and history). `repos` are (workspace id, repo name) pairs; a repo no project owns goes under
-/// "Repositories", last. `stations` are the workstations' workspace ids.
+/// the project it works on, and only that one; an agent on none, under the project it leads. `repos` are (workspace
+/// id, repo name) pairs; a repo no project owns goes under "Repositories", last. `stations` are the workstations'
+/// workspace ids.
 pub fn groups(
     agents: &[AgentRow],
     projects: &[ProjectRow],
@@ -222,11 +218,11 @@ pub fn groups(
     let mut placed_repos: BTreeSet<String> = BTreeSet::new();
     let mut out = Vec::new();
     for project in projects {
-        let members: Vec<u64> = agents
+        let listed: Vec<u64> = agents
             .iter()
             .filter(|a| match &a.project {
                 Some(p) => *p == project.id,
-                None => project.members.contains(&a.cid),
+                None => project.agents.contains(&a.cid),
             })
             .map(|a| a.cid)
             .filter(|cid| !placed.contains(cid))
@@ -238,10 +234,10 @@ pub fn groups(
                 owned.push(id.clone());
             }
         }
-        if members.is_empty() && owned.is_empty() {
+        if listed.is_empty() && owned.is_empty() {
             continue;
         }
-        placed.extend(members.iter().copied());
+        placed.extend(listed.iter().copied());
         out.push(Group {
             key: format!("project:{}", project.id),
             title: if project.title.is_empty() {
@@ -250,7 +246,7 @@ pub fn groups(
                 project.title.clone()
             },
             project: Some(project.id.clone()),
-            agents: members,
+            agents: listed,
             repos: owned,
             stations: Vec::new(),
         });
@@ -1154,69 +1150,73 @@ mod tests {
     #[test]
     fn a_roster_entry_reads_its_work_and_its_usage() {
         let v = json!({
-            "cid": 4, "name": "Ada", "role": "dev", "role_label": "Developer", "status": "working",
+            "cid": 4, "role": "builder", "role_label": "Builder", "status": "working",
             "model": "m1", "last_seen_ms": 5000, "usage": {"input_tokens": 10, "output_tokens": 5},
             "work": {"kind": "task", "prompt": "Fix the parser"}
         });
         let row = parse_agent(&v).expect("an agent");
         assert_eq!(
-            (row.cid, row.role_label.as_str(), row.tokens),
-            (4, "Developer", 15)
+            (row.cid, row.label.as_str(), row.tokens),
+            (4, "Builder #4", 15)
         );
+        assert_eq!(row.role_label, "Builder");
         assert_eq!(row.task.as_deref(), Some("Fix the parser"));
-        assert!(parse_agent(&json!({"name": "no cid"})).is_none());
+        assert!(parse_agent(&json!({"status": "working"})).is_none());
     }
 
     #[test]
     fn an_agent_is_under_the_project_it_works_on_and_project_mode_shows_that_one() {
         let agent = |cid: u64, project: Option<&str>, orchestrator: bool| {
-            let mut a =
-                parse_agent(&json!({ "cid": cid, "name": format!("a{cid}"), "project": project }))
-                    .expect("an agent");
+            let mut a = parse_agent(&json!({ "cid": cid, "project": project })).expect("an agent");
             a.orchestrator = orchestrator;
             a
         };
-        // Ada works on p2 though she wrote p1's brief; Bo, on no project, wrote p1's; the orchestrator leads p2.
+        // Agent 1 works on p2; agent 2 works on no project, though it wrote p1's brief; agent 9, the
+        // orchestrator, leads p2.
         let agents = vec![
             agent(1, Some("p2"), false),
             agent(2, None, false),
             agent(9, None, true),
         ];
-        let p1 = parse_project(
-            &json!({ "id": "p1", "title": "One", "docs": [{ "by_cid": 1 }, { "by_cid": 2 }] }),
-        )
-        .expect("p1");
+        let p1 = parse_project(&json!({ "id": "p1", "title": "One", "docs": [{ "by_cid": 2 }] }))
+            .expect("p1");
         let p2 =
             parse_project(&json!({ "id": "p2", "title": "Two", "repo": "two", "lead_cid": 9 }))
                 .expect("p2");
         let projects = vec![p1, p2];
         let repos = vec![("repo:two@main".to_string(), "two".to_string())];
         let g = groups(&agents, &projects, &repos, &[]);
-        assert_eq!(g[0].agents, vec![2], "p1: its author on no project");
+        assert_eq!(
+            g[0].agents,
+            vec![1, 9],
+            "p2: its agent, and its lead on no project"
+        );
+        assert_eq!(g[0].repos, vec!["repo:two@main".to_string()]);
+        assert_eq!(g[1].key, "other");
         assert_eq!(
             g[1].agents,
-            vec![1, 9],
-            "p2: its member (not under p1, whose brief she wrote), and its lead"
+            vec![2],
+            "an author of p1's brief is under no project"
         );
         let mode = project_group(&agents, &projects, &repos, "p2");
         assert_eq!(mode.len(), 1);
-        assert_eq!(
-            mode[0].agents,
-            vec![1, 9],
-            "its member and the orchestrator"
-        );
+        assert_eq!(mode[0].agents, vec![1, 9], "its agent and the orchestrator");
         assert_eq!(mode[0].repos, vec!["repo:two@main".to_string()]);
         assert!(project_group(&agents, &projects, &repos, "p9").is_empty());
     }
 
     #[test]
-    fn a_project_lists_its_authors_its_repo_and_its_tasks() {
+    fn a_project_lists_its_lead_its_repo_and_its_tasks() {
         let v = json!({
-            "id": "p1", "title": "Plaza", "stage": "build", "repo": "plaza", "tasks": ["t1", "t2"],
+            "id": "p1", "title": "Plaza", "stage": "build", "repo": "plaza", "tasks": ["t1", "t2"], "lead_cid": 7,
             "docs": [{"by_cid": 3}], "critiques": [{"by_cid": 5}], "history": [{"by_cid": 3}, {"by": "owner"}]
         });
         let row = parse_project(&v).expect("a project");
-        assert_eq!(row.members.iter().copied().collect::<Vec<_>>(), vec![3, 5]);
+        assert_eq!(
+            row.agents.iter().copied().collect::<Vec<_>>(),
+            vec![7],
+            "its authors may work elsewhere now"
+        );
         assert_eq!(row.repo.as_deref(), Some("plaza"));
         assert_eq!(row.tasks.len(), 2);
     }

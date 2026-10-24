@@ -1,11 +1,10 @@
-/* The Board, Council, Treasury and Rules screens (the prototype's m-social2.js rules, with the console's token names). */
-
-.bd-bar,.cn-bar,.tr-bar,.rl-bar,.rl-chips,.rl-acts,.rl-head,.rl-pills{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center}
+/* The Board and Rules screens (the prototype's m-social2.js rules, with the console's token names). */
+.bd-bar,.rl-bar,.rl-chips,.rl-acts,.rl-head,.rl-pills{display:flex;flex-wrap:wrap;gap:var(--gap);align-items:center}
 .rl-head{justify-content:space-between}
-.bd-feed,.cn-list,.tr-cards,.rl-main,.rl-group{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
-.tr-card,.rl-law,.rl-rule{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:var(--gap);min-width:0}
-.bd-post,.cn-card,.rl-card{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:16px;min-width:0}
-.bd-post,.cn-card{display:flex;flex-direction:column;gap:8px}
+.bd-feed,.rl-main,.rl-group{display:flex;flex-direction:column;gap:var(--gap);min-width:0}
+.rl-law,.rl-rule{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:var(--gap);min-width:0}
+.bd-post,.rl-card{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:16px;min-width:0}
+.bd-post{display:flex;flex-direction:column;gap:8px}
 .rl-card{display:flex;flex-direction:column;gap:12px}
 .rl-card>*{margin:0}
 .rl-card>h2,.rl-card>h3{margin:0}
@@ -48,47 +47,10 @@ button.chip{border:0;font:inherit;cursor:pointer}
 .bd-thumb{display:block;width:100%;max-width:240px;height:auto;border-radius:var(--radius);background:var(--sheet-2)}
 .bd-export{margin:0;max-height:55vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:var(--fs-sm)/1.5 var(--font-mono);color:var(--ink-2)}
 .bd-owner,.bd-slot{display:contents}
-@media (max-width:900px){.bd-time{margin-left:0}}
-
-/* Council */
-.cn-tally{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--rule);margin:0}
-.cn-tally i{display:block;height:100%}
-.cn-tally .y{background:var(--ok)}.cn-tally .n{background:var(--crit)}.cn-tally .a{background:var(--ink-3)}
-.cn-leg{font-size:var(--fs-sm);color:var(--ink-2);margin:0}
-.cn-text{font-weight:600}
-.cn-vote{display:grid;grid-template-columns:minmax(0,160px) auto minmax(0,1fr);gap:8px;align-items:baseline;padding:8px 0;border-top:1px solid var(--rule)}
-.cn-act{display:flex;gap:8px;justify-content:flex-end}
-@media (max-width:900px){.cn-vote{grid-template-columns:1fr}}
-
-/* Treasury */
-.tr-tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--gap)}
-@media (max-width:900px){.tr-tiles{grid-template-columns:1fr 1fr}}
-.tr-chart,.tr-diag{width:100%;height:auto;display:block;max-height:340px}
-.tr-chart text,.tr-diag text{font-size:9.5px;fill:var(--ink-3);font-family:var(--font-mono)}
-.tr-grid{stroke:var(--rule)}
-.tr-txt{fill:var(--ink-2);font-size:12px}
-.tr-leg{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
-.tr-leg button{display:inline-flex;gap:8px;align-items:center}
-.tr-leg .btn:first-child{padding-left:0}
-.tr-sw{width:12px;height:12px;border-radius:3px;display:inline-block}
-.tr-pager{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;color:var(--ink-2);font-size:var(--fs-sm)}
-.tr-box{fill:var(--sheet-2);stroke:var(--rule-strong)}
-.tr-arrow{fill:none;stroke:var(--ink-3);stroke-linecap:round}
-.tr-flow{stroke-dasharray:8 6;animation:tr-dash 2s linear infinite}
-@keyframes tr-dash{to{stroke-dashoffset:-28}}
-@media (prefers-reduced-motion:reduce){.tr-flow{animation:none}}
-.tr-val{font-weight:600}
-.tr-share{display:inline-block;position:relative;width:80px;height:6px;border-radius:3px;background:var(--rule);overflow:hidden;vertical-align:middle}
-.tr-share i{position:absolute;left:0;top:0;bottom:0;background:var(--signal);border-radius:3px}
-.tr-jrow{display:grid;grid-template-columns:88px 112px 96px minmax(0,1fr) 112px;gap:8px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--rule)}
-.tr-jrow>.num{text-align:right;font-variant-numeric:tabular-nums}
-@media (max-width:900px){.tr-jrow{grid-template-columns:1fr 1fr}}
-.tr-error{padding:10px 14px;border:1px solid var(--crit);border-radius:var(--radius);color:var(--crit);font-size:var(--fs-sm)}
-
+@media (max-width:900px){.bd-time{margin-left:0}
+}
 /* Rules: the rest of the prototype's rl- styles (its style block, with the console's token names). */
 .rl-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--gap)}
-.rl-cols{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:var(--gap);align-items:start}
-.rl-cols>*{min-width:0}
 .rl-slot{display:contents}
 .rl-law{display:flex;flex-direction:column;gap:8px}
 .rl-law>details,.rl-law>details>summary{margin:0;padding:0}
@@ -108,9 +70,8 @@ button.chip{border:0;font:inherit;cursor:pointer}
 .rl-err{color:var(--crit);font-size:var(--fs-sm);margin:0}
 .rl-err[hidden]{display:none}
 .rl-diag{margin:0;padding-left:24px;display:grid;gap:8px}
-.rl-infr{padding:8px 0;border-bottom:1px solid var(--rule)}
-.rl-side{background:var(--sheet);border:1px solid var(--rule);border-radius:var(--radius-lg);padding:16px;min-width:0}
 .rl-bar .input{flex:1 1 280px;max-width:420px;min-width:0}
 .rl-acts{margin-left:0;padding-left:0}
 .rules-switch{display:inline-flex;align-items:center;gap:8px;margin:0;white-space:nowrap;cursor:pointer}
-@media (max-width:900px){.rl-cols{grid-template-columns:minmax(0,1fr)}.rl-strip{grid-template-columns:1fr 1fr}}
+@media (max-width:900px){.rl-strip{grid-template-columns:1fr 1fr}
+}

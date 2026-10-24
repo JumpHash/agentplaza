@@ -39,6 +39,7 @@ pub mod shell;
 pub mod toast;
 pub mod ui;
 pub mod view;
+pub mod work_api;
 pub mod workstation_setup;
 
 use iced::{Element, Subscription, Task};
@@ -154,18 +155,12 @@ fn boot() -> (Console, Task<Msg>) {
         } else if name.eq_ignore_ascii_case("Floor") {
             // The Floor is the Machines screen's grid, which is its default view.
             console.shell.current = screens::Id::Machines;
+        } else if name.eq_ignore_ascii_case("HardwareLab") {
+            // The hardware lab is under Lab in the sidebar; this opens it by name (a capture hook).
+            console.shell.current = screens::Id::HardwareLab;
         } else if name.eq_ignore_ascii_case("LabJobs") {
             // A Lab section has no nav entry; this opens the Jobs tab for the snapshot harness.
             console.shell.current = screens::Id::LabJobs;
-        } else if let Some(id) = [
-            ("RobotLab", screens::Id::RobotLab),
-            ("HardwareLab", screens::Id::HardwareLab),
-        ]
-        .into_iter()
-        .find_map(|(n, id)| name.eq_ignore_ascii_case(n).then_some(id))
-        {
-            // The engine's labs are hidden from the sidebar, as the web's lab routes are.
-            console.shell.current = id;
         } else if name.eq_ignore_ascii_case("Ide") {
             // The IDE is not in the sidebar; `APZ_IDE_WS=<workspace id>` opens that workspace on it.
             console.shell.current = screens::Id::Ide(
@@ -196,7 +191,7 @@ fn boot() -> (Console, Task<Msg>) {
     }
     // `APZ_PROJECT=<id>` and `APZ_TASK=<id>` open that project's page and that task's page (capture hooks).
     if let Ok(project) = std::env::var("APZ_PROJECT") {
-        // `APZ_PROJECT_TAB=maintenance|environments|team|settings` opens that tab of its page.
+        // `APZ_PROJECT_TAB=maintenance|environments|settings` opens that tab of its page.
         console.shell.current = match std::env::var("APZ_PROJECT_TAB")
             .ok()
             .and_then(|tab| screens::projects::Tab::named(&tab))
@@ -275,16 +270,6 @@ fn boot() -> (Console, Task<Msg>) {
             capture = onboard::local_task().map(|checks| Msg::Onboard(onboard::Msg::Local(checks)));
         }
         _ => {}
-    }
-    // `APZ_WIZARD=1` (a capture hook): the Agents screen opens with its spawn wizard.
-    if std::env::var_os("APZ_WIZARD").is_some() {
-        console.shell.current = screens::Id::Agents;
-        capture = Task::batch([
-            capture,
-            Task::done(Msg::Screen(screens::Msg::Agents(
-                screens::agents::Msg::Wizard(screens::wizard::WizardMsg::Open),
-            ))),
-        ]);
     }
     let reveal = onboard::reveal::<Msg>(&console.onboard, true);
     let tasks = Task::batch([

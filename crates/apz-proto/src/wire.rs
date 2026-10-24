@@ -41,6 +41,10 @@ pub const WELCOME_ECHO: &str = "plaza-orchestrator";
 /// The longest line either side accepts (model requests carry history).
 pub const MAX_LINE_BYTES: usize = 8 << 20;
 
+/// The start of a model result's error that means "held, ask again later": the work's budget or a limit is reached,
+/// or the plaza is held (STOP ALL). The harness's turn waits and asks again instead of failing (Engine 0.5).
+pub const MODEL_PAUSED: &str = "paused: ";
+
 /// The longest tool output the guest reports; longer output is cut head+tail.
 pub const MAX_TOOL_OUTPUT: usize = 64 << 10;
 
@@ -223,6 +227,7 @@ pub struct ProgramFile {
 
 /// A task's lane in Weft: the change the worker writes, and the repo it is in (checked out at `<workspace>/<repo>`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "store", derive(apz_store::Table))]
 pub struct WorkLane {
     pub change: String,
     pub repo: String,
@@ -316,7 +321,7 @@ pub enum HostMessage {
     Cancel { work: u64, reason: String },
     /// v3: replace the agent's profile (model, tools, limits).
     Profile { profile: AgentProfile },
-    /// v3: steer the running work item `work` (the orchestrator, the mayor or the owner).
+    /// v3: steer the running work item `work` (the orchestrator or the owner).
     Control { work: u64, control: Control },
 }
 
@@ -367,6 +372,7 @@ pub struct AgentProfile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "store", derive(apz_store::Column))]
 pub enum WorkKind {
     /// A plaza task assigned to this agent.
     Task,
@@ -374,8 +380,6 @@ pub enum WorkKind {
     Chat,
     /// A message from another agent.
     Message,
-    /// A council motion this agent's seat votes on.
-    Motion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

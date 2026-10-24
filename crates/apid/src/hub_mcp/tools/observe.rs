@@ -17,8 +17,6 @@ const DEFAULT_LIMIT: u64 = 50;
 const MAX_LIMIT: u64 = 200;
 /// A transcript tool result longer than this is cut, in bytes.
 const TOOL_RESULT_CAP: usize = 4096;
-/// The journal entries `treasury_summary` shows.
-const JOURNAL_LIMIT: usize = 20;
 const DAY_MS: u64 = 86_400_000;
 
 pub struct PlazaStatus;
@@ -33,7 +31,6 @@ pub struct GetProject;
 pub struct ProjectGraph;
 pub struct ListApprovals;
 pub struct ListMachines;
-pub struct TreasurySummary;
 pub struct UsageSummary;
 pub struct ListLaws;
 pub struct SearchLibrary;
@@ -203,14 +200,6 @@ impl Plaza for App {
             .collect()
     }
 
-    fn treasury(&self, journal_limit: usize) -> Value {
-        json!({
-            "view": serde_json::to_value(self.plaza.treasury.view()).unwrap_or(Value::Null),
-            "journal": serde_json::to_value(self.plaza.treasury.journal(journal_limit)).unwrap_or(Value::Null),
-            "plaza_budget": self.plaza.treasury.plaza_budget_balance(),
-        })
-    }
-
     fn usage(&self, from_ms: u64, to_ms: u64) -> Value {
         serde_json::to_value(self.usage.summary(from_ms, to_ms)).unwrap_or(Value::Null)
     }
@@ -223,28 +212,10 @@ impl Plaza for App {
             .collect()
     }
 
-    fn message_orchestrator(
-        &self,
-        text: &str,
-        conversation: Option<&str>,
-    ) -> Result<Value, String> {
-        if let Some(id) = conversation {
-            let said = crate::conversations::say(self, id, text, true).map_err(|(_, e)| e)?;
-            return Ok(json!({
-                "work": said.works.last().copied().unwrap_or(0),
-                "cid": said.cid,
-                "conversation": said.id,
-            }));
-        }
-        crate::agents::check_chat_text(text)?;
-        let cid = self
-            .agents
-            .list()
-            .into_iter()
-            .find(|agent| agent.role == "orchestrator")
-            .map(|agent| agent.cid)
-            .ok_or_else(|| "no orchestrator is on the roster".to_string())?;
-        Ok(queue_owner_chat(self, cid, text))
+    fn message_orchestrator(&self, text: &str, chat: Option<&str>) -> Result<Value, String> {
+        let chat = chat.unwrap_or(crate::chats::MAIN);
+        let said = crate::work_routes::say(self, chat, text, &[]).map_err(|(_, e)| e)?;
+        Ok(json!({ "chat": chat, "message": said.seq }))
     }
 
     fn tell_agent(&self, cid: u64, text: &str) -> Result<Value, String> {
@@ -256,8 +227,8 @@ impl Plaza for App {
         if let Some(refusal) = chat_refusal(&agent.kind, agent.status) {
             return Err(refusal.to_string());
         }
-        // An agent on the bench, or on a paused project, takes no chat (it would only wait).
-        if let Some(why) = crate::membership::held(self, &agent) {
+        // An agent whose project is paused or over takes no chat (it would only wait).
+        if let Some(why) = crate::projects::held(self, &agent) {
             return Err(why);
         }
         Ok(queue_owner_chat(self, cid, text))
@@ -1315,44 +1286,6 @@ impl Tool for ListMachines {
             "{} machines on this page.",
             out["machines"].as_array().map_or(0, Vec::len)
         )
-    }
-}
-
-impl Tool for TreasurySummary {
-    fn name(&self) -> &'static str {
-        "treasury_summary"
-    }
-
-    fn scope(&self) -> Scope {
-        Scope::Observe
-    }
-
-    fn description(&self) -> &'static str {
-        "The treasury: balances, the plaza budget, and the latest journal entries. The balances are all-time; there is no per-window or per-agent spend yet."
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({ "type": "object", "properties": {}, "additionalProperties": false })
-    }
-
-    fn output_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "view": { "type": "object" },
-                "journal": { "type": "object" },
-                "plaza_budget": { "type": "integer" },
-            },
-            "required": ["view", "journal", "plaza_budget"],
-        })
-    }
-
-    fn call(&self, ctx: &Ctx<'_>, _args: &Value) -> Result<Value, String> {
-        Ok(ctx.plaza.treasury(JOURNAL_LIMIT))
-    }
-
-    fn summary(&self, out: &Value) -> String {
-        format!("Plaza budget {}.", out["plaza_budget"])
     }
 }
 

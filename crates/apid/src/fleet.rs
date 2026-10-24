@@ -7,7 +7,7 @@ use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde_json::{Value, json};
 
 use crate::agents::Status;
-use crate::nodes::{Node, OFFLINE_AFTER_MS};
+use crate::nodes::{Machine, Node, OFFLINE_AFTER_MS};
 use crate::state::App;
 
 /// The hub's own machine.
@@ -225,16 +225,11 @@ pub struct HubReport {
 /// The fleet for the Machines view (`GET /v1/fleet`): the hub's own machine (`n0`, from its
 /// noded) and every joined node (from its last heartbeat), each with the agents it runs.
 pub fn fleet(app: &App) -> Value {
-    let answered = |path: &str| {
-        app.noded
-            .get(path)
-            .ok()
-            .filter(|(code, _)| *code == 200)
-            .map(|(_, body)| body)
-    };
+    // The latest probe round (probes.rs), not a live call per request.
+    let probed = crate::probes::latest(app);
     let hub = HubReport {
-        machine: answered("/v1/machine"),
-        stats: answered("/v1/machine/stats"),
+        machine: probed.machine,
+        stats: probed.stats,
         stopped: app.nodes.is_stopped(LOCAL),
     };
     // Agents that are offline are not running anywhere, so they are not placed.
@@ -343,7 +338,11 @@ pub fn station_rows(_now_ms: u64, stations: &Value) -> (Vec<Value>, Vec<Value>) 
 /// The hub's stats come from its noded; a remote node's come from its last heartbeat (`null` until
 /// one carries them), since its noded is reached only through the command queue.
 pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed]) -> Value {
-    let hub_machine = hub.machine.clone().unwrap_or(Value::Null);
+    let hub_machine: Machine = hub
+        .machine
+        .clone()
+        .and_then(|view| serde_json::from_value(view).ok())
+        .unwrap_or_default();
     let hub_status = if hub.stopped {
         "draining"
     } else if hub.machine.is_some() {
@@ -352,10 +351,9 @@ pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed])
         "offline"
     };
     let hub_name = hub_machine
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("hub")
-        .to_string();
+        .name
+        .clone()
+        .unwrap_or_else(|| "hub".to_string());
     let mut machines = vec![machine_row(
         LOCAL,
         &hub_name,
@@ -380,7 +378,7 @@ pub fn assemble(now_ms: u64, hub: &HubReport, nodes: &[Node], placed: &[Placed])
             "offline"
         };
         // A remote node's live stats are the ones its last heartbeat carried.
-        let stats = node.machine.get("stats").cloned().unwrap_or(Value::Null);
+        let stats = json!(node.machine.stats);
         machines.push(machine_row(
             &node.id,
             &node.name,
@@ -404,29 +402,28 @@ fn machine_row(
     name: &str,
     role: &str,
     status: &str,
-    machine: &Value,
+    machine: &Machine,
     placed: &[Placed],
     stats: Value,
     last_seen_ms: u64,
 ) -> Value {
-    let field = |key: &str| machine.get(key).cloned().unwrap_or(Value::Null);
     let here: Vec<&Placed> = placed.iter().filter(|agent| agent.node == id).collect();
     json!({
         "id": id,
         "name": name,
         "role": role,
-        "kind": field("kind"),
-        "vendor": field("vendor"),
-        "model": field("model"),
-        "apple": field("apple"),
+        "kind": machine.kind,
+        "vendor": machine.vendor,
+        "model": machine.model,
+        "apple": machine.apple,
         "status": status,
-        "arch": field("arch"),
-        "os": field("os"),
-        "backend": field("backend"),
-        "cpu": field("cpu"),
-        "memory_mib": field("memory_mib"),
-        "gpus": machine.get("gpus").cloned().unwrap_or_else(|| json!([])),
-        "storage_gib": field("storage_gib"),
+        "arch": machine.arch,
+        "os": machine.os,
+        "backend": machine.backend,
+        "cpu": machine.cpu,
+        "memory_mib": machine.memory_mib,
+        "gpus": machine.gpus,
+        "storage_gib": machine.storage_gib,
         "agents": here.iter().map(|agent| agent.cid).collect::<Vec<u64>>(),
         "working": here.iter().filter(|agent| agent.working).count(),
         "stats": stats,
@@ -501,7 +498,7 @@ mod tests {
             cid_count: 100,
             joined_ms: 0,
             last_seen_ms,
-            machine,
+            machine: serde_json::from_value(machine).unwrap_or_default(),
             draining,
             revoked,
             address: String::new(),

@@ -1,6 +1,6 @@
-//! `projects settings` and `projects budget`: the plaza's settings a project overrides for its agents, and the credits
-//! it has of its own (`crates/apid/src/project_settings.rs`). An override that is not set leaves the plaza's value, and
-//! an agent's own choice still wins over both.
+//! `projects settings`: the plaza's settings a project overrides for its agents
+//! (`crates/apid/src/project_settings.rs`). An override that is not set leaves the plaza's value, and an agent's own
+//! choice still wins over both.
 
 use clap::Subcommand;
 use serde_json::{Map, Value, json};
@@ -42,11 +42,11 @@ const ROLE_MODELS: &str = "role_models";
 pub enum Action {
     /// The project's overrides (the default).
     Get,
-    /// Every setting the project's agents get, and whether it is the project's or the plaza's; and its budget.
+    /// Every setting the project's agents get, and whether it is the project's or the plaza's.
     Effective,
     /// Override settings, each as `key=value`. The keys: default_model, role_models.<role>, effort, max_tokens,
-    /// max_turns, compress_at (bytes, 0 never), keep_recent, task_budget (credits), permission_mode (autonomous, ask
-    /// or read_only) and review_timeout_minutes.
+    /// max_turns, compress_at (bytes, 0 never), keep_recent, task_budget (in the project budget's unit),
+    /// permission_mode (autonomous, ask or read_only) and review_timeout_minutes.
     Set {
         /// The settings, such as `effort=high` or `role_models.builder=provider/model`.
         #[arg(required = true, value_name = "KEY=VALUE")]
@@ -58,24 +58,6 @@ pub enum Action {
         /// The settings' keys.
         #[arg(required = true, value_name = "KEY")]
         keys: Vec<String>,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum BudgetAction {
-    /// The project's budget, and what the plaza's holds (the default).
-    Get,
-    /// Set credits aside for the project from the plaza's budget: its tasks are paid from them.
-    Add {
-        /// How many credits.
-        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
-        credits: i64,
-    },
-    /// Give credits of the project's budget back to the plaza's.
-    Return {
-        /// How many credits.
-        #[arg(value_parser = clap::value_parser!(i64).range(1..))]
-        credits: i64,
     },
 }
 
@@ -261,20 +243,6 @@ fn effective_rows(effective: &Value) -> Vec<Vec<String>> {
     rows
 }
 
-/// A project's budget in words (`GET /v1/projects/{id}/budget`): its own credits, or that the plaza's budget pays its
-/// tasks; and what the plaza's budget holds.
-fn budget_line(budget: &Value) -> String {
-    let plaza = ctx::text(budget, "plaza");
-    if budget.get("own").and_then(Value::as_bool) == Some(true) {
-        format!(
-            "{} credits of its own; the plaza's budget holds {plaza}",
-            ctx::text(budget, "balance")
-        )
-    } else {
-        format!("no budget of its own: the plaza's budget pays its tasks, and holds {plaza}")
-    }
-}
-
 /// `projects settings ID`: the project's overrides; `effective`, `set` and `unset` show or change them.
 pub fn settings(ctx: &Ctx, id: &str, action: Option<Action>) -> Result<(), String> {
     let path = format!("/v1/projects/{}/settings", ctx::seg(id));
@@ -288,7 +256,6 @@ pub fn settings(ctx: &Ctx, id: &str, action: Option<Action>) -> Result<(), Strin
             let effective = ctx.client.get(&format!("{path}/effective"))?;
             ctx.out(&effective, |e| {
                 ctx::table(&["setting", "value", "from"], &effective_rows(e));
-                println!("\nbudget: {}", budget_line(&e["budget"]));
             });
             return Ok(());
         }
@@ -313,29 +280,6 @@ fn print_overrides(id: &str, settings: &Value) {
         .map(|(key, value)| (key.as_str(), value.clone()))
         .collect();
     ctx::fields(&fields);
-}
-
-/// `projects budget ID`: the project's budget; `add` and `return` move credits between it and the plaza's.
-pub fn budget(ctx: &Ctx, id: &str, action: Option<BudgetAction>) -> Result<(), String> {
-    let path = format!("/v1/projects/{}/budget", ctx::seg(id));
-    let (budget, done) = match action.unwrap_or(BudgetAction::Get) {
-        BudgetAction::Get => (ctx.client.get(&path)?, None),
-        BudgetAction::Add { credits } => (
-            ctx.client.post(&path, &json!({ "credits": credits }))?,
-            Some(format!("set {credits} credits aside for project {id}")),
-        ),
-        BudgetAction::Return { credits } => (
-            ctx.client.post(&path, &json!({ "credits": -credits }))?,
-            Some(format!(
-                "gave {credits} credits of project {id} back to the plaza"
-            )),
-        ),
-    };
-    ctx.out(&budget, |b| match &done {
-        Some(done) => println!("{done}: {}", budget_line(b)),
-        None => println!("project {id}: {}", budget_line(b)),
-    });
-    Ok(())
 }
 
 #[cfg(test)]
@@ -424,8 +368,7 @@ mod tests {
                 "default_model": { "value": "openai/gpt-6", "source": "plaza" },
                 "effort": { "value": null, "source": "plaza" }
             },
-            "role_models": { "qa": { "value": "xai/grok-4.7", "source": "project" } },
-            "budget": { "project": "pr3", "own": true, "balance": 4000, "plaza": 120000 }
+            "role_models": { "qa": { "value": "xai/grok-4.7", "source": "project" } }
         });
         assert_eq!(
             effective_rows(&effective),
@@ -436,14 +379,6 @@ mod tests {
                 ["role_models.qa", "xai/grok-4.7", "project"],
             ]
             .map(|row| row.map(String::from).to_vec())
-        );
-        assert_eq!(
-            budget_line(&effective["budget"]),
-            "4000 credits of its own; the plaza's budget holds 120000"
-        );
-        assert_eq!(
-            budget_line(&json!({ "own": false, "balance": 0, "plaza": 9000 })),
-            "no budget of its own: the plaza's budget pays its tasks, and holds 9000"
         );
     }
 }

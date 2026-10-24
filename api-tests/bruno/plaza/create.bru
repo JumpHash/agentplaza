@@ -14,7 +14,6 @@ body:json {
   {
     "goal": "Write the release notes",
     "acceptance": "The notes list every merged change",
-    "budget": 200,
     "role": "writer",
     "project": "{{projectId}}"
   }
@@ -25,7 +24,6 @@ assert {
   res.responseTime: lt {{budgetMs}}
   res.body.goal: eq "Write the release notes"
   res.body.state: eq "open"
-  res.body.budget: eq 200
   res.body.role: eq "writer"
 }
 

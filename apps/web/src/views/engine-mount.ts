@@ -1,6 +1,6 @@
 import { parseGpuCards, type GpuCardInfo } from './machine-view-model';
 import { api, type Agent, type FleetResponse } from '../api';
-import { floorName } from '../roles';
+import { agentLabel, agentName } from '../roles';
 import { button } from '../ui/components';
 import { h } from '../ui/dom';
 import type { Cleanup } from './index';
@@ -56,8 +56,6 @@ export interface WebEngine {
   draw_stats(): string;
   /** The lab's readout, JSON: the room lab's violations or the hardware lab's model validation; `{}` when no lab runs. */
   lab_info(): string;
-  /** The robot lab's draw counts of the last frame's main pass, JSON (`props`, `robots` with `species` and `calls`, `calls`); `{}` when no robot lab runs. */
-  lab_draws(): string;
   /** The shown view: `machines` or `floor` (as the three.js build's __apzPerf named it). */
   view_name(): string;
   /** The shown view's camera, JSON: { view, eye, target, fov, roomsTop }. */
@@ -66,7 +64,6 @@ export interface WebEngine {
   scene_json(): string;
   look_at(x: number, y: number, z: number, dist: number, polar: number, azimuth: number): void;
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
-  portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   /** One of the machine's views, RGBA8 w by h with a transparent background (each side at most 512). */
   view(id: string, view: string, w: number, h: number): Promise<Uint8Array>;
   /** The machine's facts, JSON `{"model", "size_cm"}`, or `null`. */
@@ -76,21 +73,6 @@ export interface WebEngine {
   destroy(): void;
 }
 
-/** The robot lab's options, as the route names them; each maps to its APZ_ROBOT_* name in the engine. Unset ones take the lab's defaults. */
-export interface LabOptions {
-  species?: string;
-  clip?: string;
-  tool?: string;
-  carry?: string;
-  state?: string;
-  hue?: number;
-  orch?: boolean;
-  cam?: string;
-  t?: number;
-  bg?: string;
-  prop?: string;
-  fx?: string;
-}
 
 /** The hardware lab's options, as the route names them; each maps to its APZ_HW_* name in the engine. `model` is a kit
  *  model id or `all`; `lod` is 0 (full) to 2 (block); `style` is ink, blueprint or night; `status` is working, idle,
@@ -106,20 +88,8 @@ export interface HardwareLabOptions {
   ortho?: boolean;
 }
 
-/** The labs' option lists, from the engine (`lab_catalog`): the robot species and their clips, tools, carried items,
- *  props and effects; the room roles; the hardware kit's model ids, render styles and levels of detail. */
+/** The hardware lab's option lists, from the engine (`lab_catalog`): the kit's model ids, render styles and levels of detail. */
 export interface LabCatalog {
-  species: string[];
-  /** The shared clip ids. */
-  clips: string[];
-  /** Each species' own clip ids. */
-  speciesClips: Record<string, string[]>;
-  tools: string[];
-  /** The tools whose grip is carry. */
-  carry: string[];
-  props: string[];
-  fx: string[];
-  roles: string[];
   models: string[];
   /** The hardware lab's styles: ink, blueprint, night. */
   styles: string[];
@@ -137,7 +107,6 @@ interface EngineGlue {
   kit_ready: () => void;
   lab_catalog: () => string;
   start: (canvas: HTMLCanvasElement, opts: { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
-  start_lab: (canvas: HTMLCanvasElement, opts: LabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
   start_hardware_lab: (canvas: HTMLCanvasElement, opts: HardwareLabOptions & { backend?: 'auto' | 'webgl2' }) => Promise<WebEngine>;
 }
 
@@ -260,11 +229,6 @@ export async function startEngine(canvas: HTMLCanvasElement): Promise<WebEngine>
   return startWithFallback(canvas, {}, (c, o) => glue.start(c, o));
 }
 
-/** The robot lab on the wasm engine: the route's options under the engine's APZ_ROBOT_* names. Throws without a glue. */
-export async function startLabEngine(canvas: HTMLCanvasElement, lab: LabOptions): Promise<WebEngine> {
-  const glue = await loadGlue();
-  return startWithFallback(canvas, lab, (c, o) => glue.start_lab(c, o));
-}
 
 /** The hardware lab on the wasm engine: the route's options under the engine's APZ_HW_* names. Throws without a glue. */
 export async function startHardwareLabEngine(canvas: HTMLCanvasElement, lab: HardwareLabOptions): Promise<WebEngine> {
@@ -354,8 +318,6 @@ export const isEngineStopped = (e: unknown): boolean => e instanceof Error && e.
 
 /** One engine on a page: a machine's live orbit for a Machines row, or the thumbnails alone (no machine on show). */
 export interface EngineStage {
-  /** An agent's robot portrait from the engine: the JSON spec, w by h, RGBA8. Rejects ENGINE_STOPPED once destroyed. */
-  portrait(json: string, w: number, h: number): Promise<Uint8Array>;
   /** The engine's RGBA8 thumbnail of a machine, w by h (each side at most 512). Rejects ENGINE_STOPPED once destroyed. */
   thumbnail(id: string, w: number, h: number): Promise<Uint8Array>;
   /** One of the machine's views (iso, front, side, back, top), RGBA8 w by h. Rejects ENGINE_STOPPED once destroyed. */
@@ -475,7 +437,6 @@ export function startEngineStage(canvas: HTMLCanvasElement, machineId: string | 
 
   return {
     thumbnail: (id, w, h) => whenReady((e) => e.thumbnail(id, w, h)),
-    portrait: (json, w, h) => whenReady((e) => e.portrait(json, w, h)),
     view: (id, view, w, h) => whenReady((e) => e.view(id, view, w, h)),
     machineInfo: (id) => whenReady((e) => parseMachineInfo(e.machine_info(id))),
     gpuCards: (id) => whenReady((e) => parseGpuCards(e.gpu_cards(id))),
@@ -506,7 +467,6 @@ export function startThumbEngine(): EngineStage {
   const stage = startEngineStage(canvas, null);
   return {
     thumbnail: (id, w, h) => stage.thumbnail(id, w, h),
-    portrait: (json, w, h) => stage.portrait(json, w, h),
     view: (id, view, w, h) => stage.view(id, view, w, h),
     machineInfo: (id) => stage.machineInfo(id),
     gpuCards: (id) => stage.gpuCards(id),
@@ -696,7 +656,7 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
 
   const pushFeed = (): void => feedEngine(engine, fleet, agents, fleetError);
 
-  const agentName = (cid: number): string => agentNames.get(cid) ?? `agent ${cid}`;
+  const labelOf = (cid: number): string => agentNames.get(cid) ?? agentLabel(cid);
 
   const hideCard = (): void => {
     popupId = null;
@@ -729,10 +689,10 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
       card.replaceChildren(bar, note);
       return;
     }
-    const key = JSON.stringify([m, m.agents.map(agentName)]);
+    const key = JSON.stringify([m, m.agents.map(labelOf)]);
     if (key === cardKey) return;
     cardKey = key;
-    const built = machineCard(m, agentName, Date.now());
+    const built = machineCard(m, labelOf, Date.now());
     card.replaceChildren(bar, ...built.children);
   };
 
@@ -767,7 +727,7 @@ export function mountEngine(root: HTMLElement, onFail?: (reason: string) => void
     api.agents().then(
       (list) => {
         agents = list;
-        agentNames = new Map(list.map((a) => [a.cid, floorName(a)] as [number, string]));
+        agentNames = new Map(list.map((a) => [a.cid, agentName(a)] as [number, string]));
         pushFeed();
       },
       () => undefined, // keep the last list until the next poll

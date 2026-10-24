@@ -2,9 +2,10 @@
 // with a join code (its token shown once, with the command to run on the machine), shows each one's
 // state and a picture of its screen, and holds the hub-wide recording defaults. `#/workstations/<id>` is one
 // workstation: its facts, the live view (and takeover), its leases, its work folder, its recordings, its
-// settings (the takeover policy, recording and rate) and its audit. `#/workstations/<id>/recordings/<rid>` plays
+// settings (the takeover policy and recording) and its audit. `#/workstations/<id>/recordings/<rid>` plays
 // one recording. Refreshes on the station, lease and sync frames, and every few seconds.
 
+import { agentLabel, agentName } from '../roles';
 import '../styles/proto/settings-d.css';
 import { api, ApiError, type Agent, type StationAuditRow, type StationCode, type StationLease, type StationView, type Takeover } from '../api';
 import { href } from '../router';
@@ -27,10 +28,7 @@ import {
   nameProblem,
   osText,
   pictureNote,
-  RATE_MAX,
   RECORD_FPS,
-  rateText,
-  readRate,
   readSettings,
   RETENTION_DAYS,
   type Section,
@@ -345,7 +343,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const liveBody = h('div', null, empty('machine', 'Loading…'));
   // The live view starts with the first load: it needs the workstation's sessions.
   let live: LiveHandle | null = null;
-  const nameOf = (cid: number): string => names.get(cid) ?? `agent ${cid}`;
+  const nameOf = (cid: number): string => names.get(cid) ?? agentLabel(cid);
   const sync: Section = syncCard(id);
   const recordings: Section = recordingsCard(id, nameOf);
 
@@ -357,8 +355,6 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   const snapshot = h('input', { type: 'checkbox' });
   const retention = input({ type: 'number', min: RETENTION_DAYS.min, max: RETENTION_DAYS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Keep recordings for, in days' });
   const fps = input({ type: 'number', min: RECORD_FPS.min, max: RECORD_FPS.max, step: 1, inputmode: 'numeric', 'aria-label': 'Frames per second' });
-  const rate = input({ type: 'number', min: 0, max: RATE_MAX, step: 1, inputmode: 'numeric', 'aria-label': 'Rate, in credits an hour' });
-  const rateHint = h('small.hint');
   const folder = input({ maxlength: WORK_FOLDER_MAX, placeholder: '~/AgentPlaza', 'aria-label': 'Work folder', autocomplete: 'off', spellcheck: 'false' });
   const settingsError = h('div.ws-problem');
   const saveButton = btn('Save settings', () => void save(), { kind: 'primary' });
@@ -370,7 +366,6 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     check(takeovers, "Record the owner's takeovers too"),
     field('Keep recordings for (days)', retention, `${RETENTION_DAYS.min} to ${RETENTION_DAYS.max}. Older recordings are deleted.`),
     field('Frames per second', fps, `${RECORD_FPS.min} to ${RECORD_FPS.max}. What a recording keeps.`),
-    withHint(field('Rate, credits an hour', rate), rateHint),
     field('Work folder', folder, "Under the agent's OS account. It syncs with the hub both ways."),
     check(snapshot, 'Snapshot and reset (VMs)'),
     h('p.hint', null, 'Restore a clean snapshot after each lease.'),
@@ -395,13 +390,6 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     ),
   );
 
-  /** The rate's hint: what the credits come to in dollars an hour, as the owner types them. */
-  const syncRateHint = (): void => {
-    const credits = readRate(rate.value);
-    rateHint.textContent = credits === null ? 'Whole credits an hour. 0 is free.' : `${rateText(credits)}. One credit is $0.001; 0 is free.`;
-  };
-  rate.addEventListener('input', syncRateHint);
-
   const syncHint = (): void => {
     takeoverHint.textContent = takeoverText(takeover.value as Takeover);
   };
@@ -415,7 +403,6 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     record_takeovers: takeovers.checked,
     work_folder: folder.value,
     snapshot_reset: snapshot.checked,
-    rate_per_hour: rate.value,
   });
 
   const showForm = (f: SettingsForm): void => {
@@ -426,9 +413,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     takeovers.checked = f.record_takeovers;
     folder.value = f.work_folder;
     snapshot.checked = f.snapshot_reset;
-    rate.value = f.rate_per_hour;
     syncHint();
-    syncRateHint();
   };
 
   const dirty = (): boolean => JSON.stringify(readForm()) !== baseline;
@@ -517,7 +502,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
   };
 
   const confirmRelease = (lease: StationLease): void => {
-    const who = names.get(lease.agent) ?? `agent ${lease.agent}`;
+    const who = names.get(lease.agent) ?? agentLabel(lease.agent);
     openDialog(
       'Release this lease?',
       h('p', null, `${who} gives the machine back: its session here ends, or its place in the queue is given up.`),
@@ -668,7 +653,7 @@ function detailScreen(root: HTMLElement, id: string): Cleanup {
     }
     const [ag, au] = await Promise.all([api.agents().catch((): Agent[] => []), api.stationAudit(id, 50).catch((): null => null)]);
     if (!alive) return;
-    names = new Map((ag ?? []).map((a): [number, string] => [a.cid, a.name]));
+    names = new Map((ag ?? []).map((a): [number, string] => [a.cid, agentName(a)]));
     audit = au;
     void sync.refresh();
     void recordings.refresh();

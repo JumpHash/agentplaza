@@ -25,7 +25,7 @@ import {
   type WeftSymbol,
   type WeftWhereHit,
 } from '../api-weft';
-import { agentName } from '../roles';
+import { agentLabel, agentName } from '../roles';
 import { href } from '../router';
 import { projectTitle, scope } from '../scope';
 import { agents } from '../store';
@@ -207,7 +207,7 @@ async function cached<T>(c: Ctx, key: string, load: () => Promise<T>): Promise<T
 function nameOfCid(cid: number | null, kind: string): string {
   if (cid === null) return kind;
   const agent = agents.get().find((a) => a.cid === cid);
-  return agent ? agentName(agent) : `agent ${cid}`;
+  return agent ? agentName(agent) : agentLabel(cid);
 }
 
 /** An actor label as a name: `agent:301` is the agent's name; the hub and the owner keep their words. */

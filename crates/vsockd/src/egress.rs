@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -192,91 +192,7 @@ impl Policy {
         if self.allow_loopback && ip.is_loopback() {
             return None;
         }
-        addr_refusal(ip)
-    }
-}
-
-/// Why a resolved address is refused, or `None` when it is public.
-pub fn addr_refusal(ip: IpAddr) -> Option<&'static str> {
-    match ip {
-        IpAddr::V4(v4) => v4_refusal(v4),
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => v4_refusal(v4),
-            None => v6_refusal(v6),
-        },
-    }
-}
-
-fn v4_refusal(ip: Ipv4Addr) -> Option<&'static str> {
-    if ip.is_unspecified() {
-        Some("unspecified")
-    } else if ip.is_loopback() {
-        Some("loopback")
-    } else if ip.is_private() {
-        Some("private")
-    } else if ip.is_link_local() {
-        Some("link-local")
-    } else if ip.is_broadcast() {
-        Some("broadcast")
-    } else if ip.is_multicast() {
-        Some("multicast")
-    } else if special_v4(ip) {
-        Some("reserved")
-    } else {
-        None
-    }
-}
-
-/// The IANA special-purpose IPv4 ranges with no stable `Ipv4Addr` predicate: "this network" (0/8), the
-/// shared address space (100.64/10: carrier-grade NAT, and Tailscale's tailnet addresses, which reach the
-/// owner's own machines), IETF protocol assignments (192.0.0/24), benchmarking (198.18/15) and the
-/// reserved 240/4.
-fn special_v4(ip: Ipv4Addr) -> bool {
-    let [a, b, c, _] = ip.octets();
-    a == 0
-        || (a == 100 && b & 0xc0 == 64)
-        || (a == 192 && b == 0 && c == 0)
-        || (a == 198 && b & 0xfe == 18)
-        || a >= 240
-}
-
-fn v6_refusal(ip: Ipv6Addr) -> Option<&'static str> {
-    let segments = ip.segments();
-    let first = segments[0];
-    if ip.is_unspecified() {
-        Some("unspecified")
-    } else if ip.is_loopback() {
-        Some("loopback")
-    } else if ip.is_multicast() {
-        Some("multicast")
-    } else if first & 0xffc0 == 0xfe80 {
-        Some("link-local")
-    } else if first & 0xffc0 == 0xfec0 {
-        Some("site-local")
-    } else if first & 0xfe00 == 0xfc00 {
-        Some("unique-local")
-    } else if let Some(v4) = embedded_v4(ip) {
-        // NAT64 and 6to4 carry an IPv4 address, which is held to the IPv4 rules.
-        v4_refusal(v4)
-    } else if segments[..3] == [0x64, 0xff9b, 0x1] {
-        Some("local NAT64")
-    } else if segments[..2] == [0x2001, 0] || segments[..2] == [0x2001, 0xdb8] {
-        Some("reserved")
-    } else {
-        None
-    }
-}
-
-/// The IPv4 address inside a NAT64 address (64:ff9b::/96, RFC 6052) or a 6to4 one (2002::/16, RFC 3056).
-fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
-    let segments = ip.segments();
-    let o = ip.octets();
-    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        Some(Ipv4Addr::new(o[12], o[13], o[14], o[15]))
-    } else if segments[0] == 0x2002 {
-        Some(Ipv4Addr::new(o[2], o[3], o[4], o[5]))
-    } else {
-        None
+        apz_egress_rules::refusal(ip)
     }
 }
 
@@ -1080,36 +996,15 @@ fn checked_addrs(
         return Err(Stop::Unreachable);
     }
     let refused = addrs.iter().any(|addr| {
-        policy.refusal(addr.ip()).is_some() || deny.iter().any(|block| in_cidr(addr.ip(), *block))
+        policy.refusal(addr.ip()).is_some()
+            || deny
+                .iter()
+                .any(|block| apz_egress_rules::in_cidr(addr.ip(), *block))
     });
     if refused {
         return Err(Stop::Forbidden);
     }
     Ok(addrs)
-}
-
-/// Whether `ip` lies in the deny block `block` (see `apid::cidr_of`). An IPv4-mapped IPv6 address is
-/// compared as its IPv4 address, and an IPv4 address never matches an IPv6 block, or the reverse.
-fn in_cidr(ip: IpAddr, (net, len): (IpAddr, u8)) -> bool {
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
-        v4 => v4,
-    };
-    match (ip, net) {
-        (IpAddr::V4(ip), IpAddr::V4(net)) => {
-            let mask = u32::MAX
-                .checked_shl(32u32.saturating_sub(u32::from(len)))
-                .unwrap_or(0);
-            u32::from(ip) & mask == u32::from(net) & mask
-        }
-        (IpAddr::V6(ip), IpAddr::V6(net)) => {
-            let mask = u128::MAX
-                .checked_shl(128u32.saturating_sub(u32::from(len)))
-                .unwrap_or(0);
-            u128::from(ip) & mask == u128::from(net) & mask
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -1120,79 +1015,22 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     #[test]
-    fn the_policy_refuses_non_public_addresses_and_unlisted_ports() {
+    fn the_policy_allows_only_the_web_ports_and_the_listed_ones() {
         let policy = Policy::new(vec![8080]);
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.9",
-            "172.31.255.1",
-            "192.168.1.1",
-            "169.254.10.10",
-            "0.0.0.0",
-            "255.255.255.255",
-            "224.0.0.1",
-            "::1",
-            "::",
-            "fe80::1",
-            "fc00::5",
-            "fd12::5",
-            "::ffff:10.0.0.5",
-        ] {
-            let ip: IpAddr = ip.parse().unwrap();
-            assert!(policy.refusal(ip).is_some(), "{ip} must be refused");
-        }
-        for ip in [
-            "93.184.216.34",
-            "172.32.0.1",
-            "8.8.8.8",
-            "2606:2800:220:1::1",
-        ] {
-            let ip: IpAddr = ip.parse().unwrap();
-            assert_eq!(policy.refusal(ip), None, "{ip} is public and allowed");
-        }
         assert!(policy.port_allowed(80) && policy.port_allowed(443) && policy.port_allowed(8080));
         assert!(!policy.port_allowed(22) && !policy.port_allowed(25));
     }
 
     #[test]
-    fn special_purpose_ranges_and_embedded_ipv4_are_refused() {
-        let policy = Policy::new(Vec::new());
-        for ip in [
-            "0.1.2.3",
-            "100.64.0.1",
-            "100.100.100.100",
-            "100.127.255.254",
-            "192.0.0.8",
-            "198.18.0.1",
-            "198.19.255.254",
-            "240.0.0.1",
-            "fec0::1",
-            "64:ff9b::7f00:1",
-            "64:ff9b::a00:5",
-            "64:ff9b:1::5",
-            "2002:7f00:1::",
-            "2002:c0a8:101::1",
-            "2001::1",
-            "2001:db8::1",
-        ] {
-            let ip: IpAddr = ip.parse().unwrap();
-            assert!(policy.refusal(ip).is_some(), "{ip} must be refused");
-        }
-        // The neighbours stay public, and so do NAT64 and 6to4 addresses that carry a public IPv4 address.
-        for ip in [
-            "100.63.255.255",
-            "100.128.0.1",
-            "192.0.1.1",
-            "192.1.0.1",
-            "198.17.0.1",
-            "198.20.0.1",
-            "64:ff9b::808:808",
-            "2002:808:808::1",
-        ] {
-            let ip: IpAddr = ip.parse().unwrap();
-            assert_eq!(policy.refusal(ip), None, "{ip} is public and allowed");
-        }
+    fn the_policy_refuses_loopback_unless_a_test_allows_it() {
+        // The address rules are the shared crate's (apz-egress-rules); the policy adds only the test override.
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(Policy::new(vec![]).refusal(loopback).is_some());
+        let allowed = Policy {
+            allow_loopback: true,
+            ..Policy::new(vec![])
+        };
+        assert_eq!(allowed.refusal(loopback), None);
     }
 
     #[test]
@@ -1748,32 +1586,6 @@ mod tests {
             std::io::ErrorKind::WouldBlock,
             "the denied address was dialled"
         );
-    }
-
-    #[test]
-    fn a_deny_block_matches_by_prefix_and_never_across_address_families() {
-        let block = |text: &str, len: u8| (text.parse::<IpAddr>().unwrap(), len);
-        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
-        let v4 = block("8.8.8.0", 24);
-        let v6 = block("2001:db8::", 32);
-        assert!(in_cidr(ip("8.8.8.8"), v4));
-        assert!(
-            in_cidr(ip("::ffff:8.8.8.8"), v4),
-            "a mapped address is its IPv4 address"
-        );
-        assert!(!in_cidr(ip("8.8.9.8"), v4));
-        assert!(in_cidr(ip("2001:db8::1"), v6));
-        assert!(!in_cidr(ip("2001:db9::1"), v6));
-        assert!(
-            !in_cidr(ip("8.8.8.8"), v6),
-            "an IPv4 address never matches an IPv6 block"
-        );
-        assert!(!in_cidr(ip("2001:db8::1"), v4));
-        assert!(
-            !in_cidr(ip("::ffff:8.8.8.8"), block("::", 0)),
-            "a mapped address is IPv4, so no IPv6 block holds it"
-        );
-        assert!(in_cidr(ip("1.2.3.4"), block("0.0.0.0", 0)));
     }
 
     #[test]

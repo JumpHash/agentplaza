@@ -619,11 +619,9 @@ fn answer(app: &App, id: &str) -> Response {
     }
 }
 
-/// Saves the node store now (the saver would on its next pass), so a stop outlives a restart.
+/// Saves the node store now (the saver's write, not its next pass), so a stop outlives a restart.
 fn save(app: &App) {
-    if let Err(err) = app.db.store("nodes", &crate::db::snapshot_of(app, "nodes")) {
-        eprintln!("apid: could not save the nodes: {err}");
-    }
+    crate::store::saver::save_now(app, "nodes");
 }
 
 #[cfg(test)]

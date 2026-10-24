@@ -1,7 +1,11 @@
-# IDE workspace, typography and rich content
+# Workspace: the IDE, rich content and workspace disks
 
 Status: built (2026-10-14). This extends `docs/design/ide.md`; the IDE stays a full-window view of its own (no console
 sidebar or top bar). What landed, per section, is in the next table; the known limits are at the end.
+
+"Workspace" names two things. The IDE (sections 1 to 5) is the editor and the views that open a workspace. The
+workspace disk (section 6) is the ext4 disk an agent VM mounts at `/workspace`, which noded makes and keeps on the
+node. The IDE's agent workspace reads and writes that disk.
 
 Owner's request (2026-10-14):
 
@@ -113,7 +117,7 @@ One classifier, three renderers. Everything agents write goes through it: transc
 | GitHub repository | `https://github.com/o/r` | GitHub mark, `o/r` | description, stars, language, updated |
 | GitHub file or folder | `.../blob/<ref>/path#L10`, `.../tree/<ref>/dir` | GitHub mark, `r: path:10` | path, ref, first lines (files) |
 | GitHub release, workflow run, gist | `.../releases/tag/v1`, `.../actions/runs/9`, `gist.github.com/...` | GitHub mark, short label | name, status, author |
-| Plaza git (Forgejo) | the same paths on the plaza's git host, and `#12` inside a project with a repo | plaza git mark, same labels | same fields from the plaza's git API |
+| Plaza repo (Weft) | the same paths on the plaza's Weft repos, and `#12` inside a project with a repo | plaza repo mark, same labels | same fields from the Weft API |
 | Agent | `@Name`, `agent:<cid>`, an agent page link | colour dot, name, status | role, model, current task, state, last activity |
 | Task | `task #528`, `#528` in a project context, a task link | `#528` with status | title, assignee, status, project |
 | File or folder in a workspace | `src/main.rs`, `src/main.rs:42`, `crates/apid/` (paths that exist in the current agent or repo workspace), `file:` links | file-type icon, path (`:line`) | file: first 12 lines; folder: entries count and first names |
@@ -138,9 +142,9 @@ context to expected spans), so the three apps recognise the same things.
 - `POST /v1/unfurl {refs:[...]}` (owner session or owner token) answers card data for many references at once;
   `GET /v1/unfurl?url=` for one.
 - Providers are an allow-list: GitHub (`api.github.com`, with the owner's GitHub token when one is in the vault or a
-  connector, anonymous otherwise), the plaza's git (Forgejo API), plaza agents, tasks, files and library items. The hub
+  connector, anonymous otherwise), the plaza's Weft repos, plaza agents, tasks, files and library items. The hub
   never fetches arbitrary URLs (no SSRF path).
-- Cache in Postgres (`unfurl_cache`: key, data, fetched_ms, ok) with the file fallback; 10 minutes for open items,
+- Cache in SQLite (`unfurl_cache`: key, data, fetched_ms, ok); 10 minutes for open items,
   1 hour for merged or closed ones, 1 minute for failures. Rate limits are respected and reported as "preview
   unavailable".
 - Workspace file previews go through the IDE routes that exist (`/v1/ide/...` read, first 12 lines).
@@ -168,6 +172,86 @@ context to expected spans), so the three apps recognise the same things.
 5. Every surface switched to the rich renderer (transcripts, boards, conversations, approvals, tasks, git).
 6. Checks: headless web screenshots of each surface in both themes and at phone width, desktop self-snapshots
    (`APZ_SNAPSHOT`), CLI output, then `docs/design/parity.md` updated.
+
+## 5. The IDE model (apz-ide)
+
+`crates/apz-ide` is the IDE's shared model. It does no I/O and has no UI toolkit; `serde` is its only dependency. The
+desktop app and the web console run the same code. The web loads it through `crates/apz-ide-web`, a wasm module it
+fetches on first use of the IDE (`apps/web/src/ide/wasm.ts`).
+
+| Module | Holds |
+|---|---|
+| `workspace` | the workspace identity (`agent:<cid>`, `repo:<name>@<ref>`, `station:<id>`) and its kind |
+| `tree` | entries, one page of a directory listing (`PAGE_SIZE`), the child order |
+| `buffer` | an open file's text, against the hash it was read at |
+| `diff` | `git diff` and `diff -u` output as a change set, and the reverse |
+| `path` | relative-path rules and the secret deny list (`check_read`, `check_write`, `is_secret`) |
+| `state` | the tab, panel and base state, and the reducer (`reduce`) |
+
+Each kind is served where its files live:
+
+| Kind | Served by | Files live in |
+|---|---|---|
+| Agent `agent:<cid>` | the agent's own `ide_*` tools (`crates/agent-harness/src/ide.rs`), reached through apid's `/v1/ide/workspaces/{id}/...` routes | the agent's `/workspace` disk (section 6) |
+| Repo `repo:<name>@<ref>` | apid, reading the head of the repo in Weft; an owner edit lands at once | Weft (`crates/weft`) |
+| Station `station:<id>` | the workstation's daemon, over its live link, scoped to its work folder | the workstation's own disk |
+
+An agent workspace's owner writes are checkpointed first (the label is `owner edit: <path>`), and a write that names a
+stale hash is refused as a conflict. A station has no checkpoints, changes, restore or branch, and STOP ALL refuses
+every operation on it. The file, run and terminal operations are shared with the workstation daemon through
+`crates/apz-ops`. Terminals are at `/v1/ide/terminal/{workspace}` (`crates/apid/src/ide_term.rs`).
+
+## 6. Workspace disks
+
+Each agent VM mounts its `/workspace` from a writable ext4 disk on its node. The disk is the virtio-blk device with an
+empty id; the guest's init finds it and mounts it. Named data volumes are read-only and are separate (`volumes.md`).
+This section follows the code in `crates/noded/src`: `workspace_image.rs`, `registry.rs`, `templates.rs` and
+`snapshots.rs`.
+
+### The base image
+
+- noded makes one base image when it starts, `workspace.ext4` in its persist directory, unless `--workspace IMAGE`
+  names another (an image named that way is never made) or `--no-workspace` gives no disk at all.
+- The base is a sparse 4 GiB file, labelled `plaza-workspace` with a fixed UUID, formatted by `mkfs.ext4` with lazy
+  inode tables and journal. It is written under a `.tmp` name and renamed into place.
+- Without `mkfs.ext4`, the node says so and runs its agents without a workspace disk.
+
+### Keepalive agents
+
+- Each keepalive agent keeps its own image, `persist/workspaces/cid-<cid>.ext4`. The first boot copies the base there
+  sparsely, through a `.partial` name. A later boot uses the image as it is, so the agent's files survive a restart of
+  the node.
+- A new agent VM starts from its shape's warm template when the node has one: its disk is laid down as a clone of the
+  template's disk. The template holds its own copy of the base (`templates.rs`).
+- `POST /v1/runs/{id}/vms/{index}/wipe` stops the VM, replaces its image with a fresh sparse copy of the base, and boots
+  it again. For a keepalive run this replaces the persistent image.
+
+### Sandbox and other runs
+
+- Each VM of a run gets its own writable copy, `run-<id>-<epoch_ms>/workspace-<index>.ext4`, in a 0700 directory under
+  `--uds-dir`. The copies are made once, before the run's VMs boot (`materialize_workspaces`). A copy is a reflink
+  where the filesystem has them, and a sparse copy elsewhere (`clonefile.rs`).
+- The run's directory name carries the daemon's start stamp, so a new `r1` never overwrites a previous daemon's copies.
+
+### Sleep, checkpoints, forks and moves
+
+- A sleep keeps the disk as the stopped VM left it. A wake reuses it.
+- A checkpoint writes `workspace.img`, a reflink copy of the disk, into the checkpoint's directory. A restore copies it
+  back over the disk before the VM boots. A forked VM gets its own copy, `fork-<cid>.ext4` in the run's directory.
+- An export carries the disk with the sleep snapshot. An import places it at the CID's persistent image, or in the
+  run's directory on a node without `--persist-dir`. A VM with no workspace disk exports its sleep snapshot alone
+  (`migrate.rs`).
+
+### Size and cleanup
+
+- A workspace disk does not grow. Every copy is the size of the base. Only workstation disks grow, to the size asked
+  for.
+- A checkpoint's directory goes when the checkpoint is deleted, and when taking its copy fails. A failed fork's copies
+  are discarded with the fork.
+- A run's directory is not removed when the run ends: noded has no code that deletes a `run-*` directory.
+- Persistent images (`persist/workspaces/cid-<cid>.ext4`) are not deleted by any route. Wipe replaces their contents.
+- An MCP server keeps its own workspace, which `DELETE /v1/mcp-storage/{server}` removes. It is refused while a VM of
+  that server runs.
 
 ## Known limits
 

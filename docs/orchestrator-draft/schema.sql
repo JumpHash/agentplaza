@@ -58,66 +58,20 @@ BEGIN
 END $$;
 CREATE TRIGGER machines_overcommit BEFORE INSERT ON core.machines FOR EACH ROW EXECUTE FUNCTION core.set_overcommit();
 
--- ================================================================= towns and agents
-CREATE TABLE core.towns (                           -- logical units (0031); config schema in towns-draft/ (0124)
-  id          text PRIMARY KEY CHECK (id ~ '^[a-z][a-z0-9-]{1,30}$'),
-  name        text NOT NULL,
-  template    text,
-  config      jsonb NOT NULL DEFAULT '{}',
-  state       text NOT NULL DEFAULT 'proposed' CHECK (state IN ('proposed', 'active', 'paused', 'archived', 'rejected')),
-  created_at  timestamptz NOT NULL DEFAULT now()
-);
-
--- Town lifecycle (design/towns.md (not in the repo)): proposed -> active (owner ratifies; the Mayor is spawned) | rejected;
--- active <-> paused; active | paused -> archived. Archived and rejected are final.
-CREATE FUNCTION core.check_town() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF TG_OP = 'INSERT' THEN
-    IF NEW.state <> 'proposed' THEN RAISE EXCEPTION 'town % must start as proposed', NEW.id; END IF;
-    RETURN NEW;
-  END IF;
-  IF NEW.id <> OLD.id THEN RAISE EXCEPTION 'town ids are permanent'; END IF;
-  IF NEW.state <> OLD.state AND (OLD.state, NEW.state) NOT IN
-     (('proposed', 'active'), ('proposed', 'rejected'), ('active', 'paused'), ('paused', 'active'),
-      ('active', 'archived'), ('paused', 'archived')) THEN
-    RAISE EXCEPTION 'town % may not go from % to %', OLD.id, OLD.state, NEW.state;
-  END IF;
-  -- Archiving retires the town's agents; their keys stay until the audit retention period (identity.md (not in the repo)).
-  IF NEW.state = 'archived' THEN
-    UPDATE core.agents SET status = 'retired', retired_at = now() WHERE town_id = NEW.id AND status <> 'retired';
-  END IF;
-  RETURN NEW;
-END $$;
-CREATE TRIGGER towns_lifecycle BEFORE INSERT OR UPDATE ON core.towns FOR EACH ROW EXECUTE FUNCTION core.check_town();
-
+-- ================================================================= agents
 CREATE TABLE core.agents (                          -- the registry card (identity.md (not in the repo)); keys live in the vault
   id           text PRIMARY KEY CHECK (id ~ '^[0-9A-HJKMNP-TV-Z]{26}$'),   -- ULID
-  name         text,                                -- self-chosen after first boot (0045)
   role         text NOT NULL,
-  town_id      text REFERENCES core.towns(id),      -- null for global departments and the council
-  department   text CHECK (department IN ('finance', 'legal-gov', 'legal-agents', 'incident', 'mayor-office')),
   parent_id    text REFERENCES core.agents(id),     -- lineage: successor of (0046)
   config_hash  bytea NOT NULL,                      -- model + prompt + role + toolsets + grants
   codex_hash   bytea NOT NULL,                      -- laws in force at spawn
   public_key   bytea NOT NULL,                      -- signatures stay verifiable after retirement
-  status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'hibernated', 'sanctioned', 'retired')),
+  status       text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'hibernated', 'retired')),
   created_at   timestamptz NOT NULL DEFAULT now(),
   retired_at   timestamptz,
   CHECK ((status = 'retired') = (retired_at IS NOT NULL)),
   CHECK (parent_id IS NULL OR parent_id <> id)
 );
--- Names are unique among agents that aren't retired; a retired name can be chosen again.
-CREATE UNIQUE INDEX agents_live_name ON core.agents (lower(name)) WHERE status <> 'retired' AND name IS NOT NULL;
-
--- New agents only join active towns (a paused town spawns nothing; 0104 hibernates instead).
-CREATE FUNCTION core.check_agent_town() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  IF NEW.town_id IS NOT NULL AND (SELECT state FROM core.towns WHERE id = NEW.town_id) <> 'active' THEN
-    RAISE EXCEPTION 'town % is not active', NEW.town_id;
-  END IF;
-  RETURN NEW;
-END $$;
-CREATE TRIGGER agents_join_active_town BEFORE INSERT ON core.agents FOR EACH ROW EXECUTE FUNCTION core.check_agent_town();
 
 -- ================================================================= tasks and change sets (0123)
 CREATE TABLE core.change_sets (                     -- a re-plan of one task tree (0081)
@@ -133,12 +87,10 @@ CREATE TABLE core.tasks (
   id             text PRIMARY KEY,
   root_id        text NOT NULL,                     -- the chain for the margin cap (0111)
   parent_id      text REFERENCES core.tasks(id),
-  town_id        text REFERENCES core.towns(id),
   title          text NOT NULL,
   spec_ref       text,                              -- artifact or Charter spec (0052)
   state          text NOT NULL DEFAULT 'draft',
   outcome        text CHECK (outcome IN ('accepted', 'failed', 'cancelled', 'superseded')),
-  budget_credits bigint NOT NULL DEFAULT 0 CHECK (budget_credits >= 0),
   assignee_id    text REFERENCES core.agents(id),
   verifier_id    text REFERENCES core.agents(id),
   attempts       integer NOT NULL DEFAULT 0,
@@ -449,7 +401,7 @@ CREATE TABLE core.approvals (
   step_deadline timestamptz NOT NULL,
   nonce         bytea NOT NULL,                     -- fresh per step; a decision must echo it
   status        text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied', 'expired')),
-  decided_as    text,                               -- the authority, e.g. 'owner', 'council', 'mayor:shop'
+  decided_as    text,                               -- the authority, e.g. 'owner'
   decided_by    text,                               -- the principal: device id or agent id
   decided_at    timestamptz,
   CONSTRAINT c004_owner_only CHECK (NOT c004 OR chain = ARRAY['owner']),       -- "C-004 is approved only by the owner" (crates/jhrl/specs/machines/approval.jhrl)
@@ -485,7 +437,7 @@ CREATE TABLE core.events (                          -- the resumable event log; 
   id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   at      timestamptz NOT NULL DEFAULT now(),
   run_id  text REFERENCES core.runs(id),
-  kind    text NOT NULL CHECK (kind IN ('run', 'transcript', 'approval', 'vm', 'egress', 'task', 'town', 'machine',
+  kind    text NOT NULL CHECK (kind IN ('run', 'transcript', 'approval', 'vm', 'egress', 'task', 'machine',
                                     'inbox', 'codex', 'vault', 'restore')),   -- matches daemon.proto EventKind
   payload jsonb NOT NULL
 );

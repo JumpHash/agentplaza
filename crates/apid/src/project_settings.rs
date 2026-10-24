@@ -7,30 +7,25 @@
 //!   choices are held to the plaza's model policy, so a project narrows it and never widens it.
 //! - **Effort and `max_tokens`:** the project's fill in before the plaza's (`internal::model_call`).
 //! - **Limits:** field by field, the agent's, then the project's, then the plaza's (`agents::profile`).
-//! - **A task's budget** when it names none (`task_budget`), and the **review timeout** of its tasks.
+//! - **A task's budget** when it names none (`task_budget`, in the project budget's unit), and the **review timeout** of
+//!   its tasks.
 //! - **The permission mode** of its agents that have none of their own (`approvals::gate`).
 //!
 //! The project's instructions and skills are the prompt and skills bound to `project:<id>`, beside `plaza` and
 //! `role:<role>`. Connectors and MCP servers take a `projects` list beside their roles.
 //!
-//! **The budget** is a `town_budget` account of the project's own (`apz_plaza::treasury`). Setting credits aside moves
-//! them from the plaza's budget as the owner's operation, the project's tasks are funded from it (and refunded to it),
-//! and when the project is over the rest goes back to the plaza.
-//!
-//! Kept in `project-settings.json` under the state dir, and with the plaza state (component `project_settings`).
+//! Kept in plaza.db (table `project_setting`: a row per project that has overrides, its role models a child table).
 //!
 //! GET   /v1/projects/{id}/settings            → the project's overrides
 //! PATCH /v1/projects/{id}/settings {…}        → the overrides (a field set to null goes back to the plaza's)
 //! GET   /v1/projects/{id}/settings/effective  → every setting the project's agents get, and where it comes from
-//! GET   /v1/projects/{id}/budget              → its budget: balance, and the plaza's
-//! POST  /v1/projects/{id}/budget {credits}    → sets more aside (or, negative, gives some back)
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_plaza::treasury::PLAZA_OWNER;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -40,7 +35,7 @@ use crate::settings::{Tier, tier_of};
 use crate::state::App;
 
 /// One project's overrides. Every field is optional: unset, the plaza's value holds.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProjectSettings {
     /// The model of the project's agents when their role has none here.
@@ -48,6 +43,7 @@ pub struct ProjectSettings {
     pub default_model: Option<String>,
     /// The model of each role's agents.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[table(map_value)]
     pub role_models: BTreeMap<String, String>,
     /// The reasoning effort of their model calls.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -62,7 +58,7 @@ pub struct ProjectSettings {
     pub compress_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keep_recent: Option<u32>,
-    /// A task's budget when it names none, in credits.
+    /// The amount a task reserves when it names none, in the project budget's unit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_budget: Option<u64>,
     /// The permission mode of the project's agents that have none of their own.
@@ -74,24 +70,12 @@ pub struct ProjectSettings {
 }
 
 /// Every project's overrides, by project id.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
     by_project: Mutex<BTreeMap<String, ProjectSettings>>,
 }
 
 impl Store {
-    /// Loads the store; a missing or unreadable file starts empty.
-    pub fn load(path: PathBuf) -> Self {
-        let by_project = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            by_project: Mutex::new(by_project),
-        }
-    }
-
     fn guard(&self) -> MutexGuard<'_, BTreeMap<String, ProjectSettings>> {
         self.by_project
             .lock()
@@ -103,46 +87,93 @@ impl Store {
         self.guard().get(id).cloned().unwrap_or_default()
     }
 
-    /// Replaces project `id`'s overrides, and writes the file; on failure nothing changes.
+    /// Replaces project `id`'s overrides; a project with none keeps no entry. The change is kept in memory and the
+    /// saver writes it to plaza.db, so this does not fail.
     pub fn set(&self, id: &str, settings: ProjectSettings) -> std::io::Result<()> {
         let mut by_project = self.guard();
-        let mut next = by_project.clone();
         if settings == ProjectSettings::default() {
-            next.remove(id);
+            by_project.remove(id);
         } else {
-            next.insert(id.to_string(), settings);
+            by_project.insert(id.to_string(), settings);
         }
-        self.save(&next)?;
-        *by_project = next;
         Ok(())
     }
 
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let by_project = self.guard();
-        if by_project.is_empty() {
-            return String::new();
-        }
-        serde_json::to_string(&*by_project).unwrap_or_default()
+    /// The overrides' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let rows: Vec<SettingsRow> = self
+            .guard()
+            .iter()
+            .map(|(id, settings)| SettingsRow::of(id, settings))
+            .collect();
+        RowSet::list(def(), &rows)
     }
 
-    /// Replaces the state with a [`Store::snapshot`] and writes the file; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let restored: BTreeMap<String, ProjectSettings> =
-            serde_json::from_str(json).map_err(|e| format!("project_settings: {e}"))?;
-        let mut by_project = self.guard();
-        self.save(&restored)
-            .map_err(|e| format!("project_settings: {e}"))?;
-        *by_project = restored;
+    /// Replaces the overrides with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<SettingsRow> = apz_store::table::load_list(conn, def())?;
+        *self.guard() = stored.into_iter().map(SettingsRow::into_entry).collect();
         Ok(())
     }
+}
 
-    fn save(&self, by_project: &BTreeMap<String, ProjectSettings>) -> std::io::Result<()> {
-        let text = serde_json::to_string_pretty(by_project).map_err(std::io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &self.path)
+/// One project's overrides as a row of `project_setting`: the project is the key and each setting a column (the role
+/// models are a child table).
+#[derive(Debug, Clone, PartialEq, Eq, apz_store::Table)]
+#[table(name = "project_setting")]
+struct SettingsRow {
+    #[table(key)]
+    project: String,
+    default_model: Option<String>,
+    effort: Option<String>,
+    max_tokens: Option<u32>,
+    max_turns: Option<u32>,
+    compress_at: Option<u64>,
+    keep_recent: Option<u32>,
+    task_budget: Option<u64>,
+    permission_mode: Option<Mode>,
+    review_timeout_minutes: Option<u32>,
+    #[table(map_value)]
+    role_models: BTreeMap<String, String>,
+}
+
+impl SettingsRow {
+    fn of(project: &str, settings: &ProjectSettings) -> Self {
+        SettingsRow {
+            project: project.to_string(),
+            default_model: settings.default_model.clone(),
+            effort: settings.effort.clone(),
+            max_tokens: settings.max_tokens,
+            max_turns: settings.max_turns,
+            compress_at: settings.compress_at,
+            keep_recent: settings.keep_recent,
+            task_budget: settings.task_budget,
+            permission_mode: settings.permission_mode,
+            review_timeout_minutes: settings.review_timeout_minutes,
+            role_models: settings.role_models.clone(),
+        }
     }
+
+    fn into_entry(self) -> (String, ProjectSettings) {
+        let settings = ProjectSettings {
+            default_model: self.default_model,
+            role_models: self.role_models,
+            effort: self.effort,
+            max_tokens: self.max_tokens,
+            max_turns: self.max_turns,
+            compress_at: self.compress_at,
+            keep_recent: self.keep_recent,
+            task_budget: self.task_budget,
+            permission_mode: self.permission_mode,
+            review_timeout_minutes: self.review_timeout_minutes,
+        };
+        (self.project, settings)
+    }
+}
+
+/// The table of the projects' overrides: `project_setting`.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(SettingsRow)
 }
 
 /// Checks a project's overrides against the plaza: models the roles may run (the plaza's model policy), roles it
@@ -157,7 +188,7 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         if !crate::roles_custom::exists(app, role) {
             return Err(format!("role_models: the plaza has no role {role}"));
         }
-        if crate::membership::plaza_wide(role) {
+        if crate::settings::plaza_wide(role) {
             return Err(format!(
                 "role_models: {role} works on every project, so a project sets no model for it"
             ));
@@ -193,8 +224,8 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
     {
         return Err("keep_recent must be 1 to 50".into());
     }
-    if let Some(budget) = settings.task_budget {
-        apz_plaza::tasks::resolve_budget(Some(budget)).map_err(|e| format!("task_budget: {e}"))?;
+    if settings.task_budget == Some(0) {
+        return Err("task_budget is at least 1 (unset it for the plaza's)".into());
     }
     if let Some(minutes) = settings.review_timeout_minutes
         && !(1..=10_080).contains(&minutes)
@@ -241,9 +272,7 @@ pub fn merged(current: &ProjectSettings, patch: &Value) -> Result<ProjectSetting
 
 /// The overrides of the project agent `cid` works on, if it works on one.
 pub fn of_agent(app: &App, cid: u64) -> Option<ProjectSettings> {
-    app.members
-        .project_of(cid)
-        .map(|project| app.project_settings.get(&project))
+    crate::projects::project_of(app, cid).map(|project| app.project_settings.get(&project))
 }
 
 /// The model agent `agent` runs, from the project's overrides (its role's, else the project's default); `None` when
@@ -257,7 +286,7 @@ pub fn model_for(app: &App, agent: &Agent) -> Option<String> {
         .or(settings.default_model)
 }
 
-/// The budget a task of project `pid` gets when it names none.
+/// The amount (in the project budget's unit) a task of project `pid` reserves when it names none.
 pub fn task_budget(app: &App, pid: Option<&str>) -> Option<u64> {
     pid.and_then(|pid| app.project_settings.get(pid).task_budget)
 }
@@ -277,39 +306,9 @@ pub fn permission_mode(app: &App, cid: u64) -> Mode {
         .unwrap_or_default()
 }
 
-// ---- The budget ---------------------------------------------------------------------------------------------------
-
-/// Sets `credits` of the plaza's budget aside for project `pid` (the owner's operation).
-pub fn fund(app: &App, pid: &str, credits: u64) -> Result<(), String> {
-    let amount = i64::try_from(credits).map_err(|_| "too many credits".to_string())?;
-    app.plaza
-        .treasury
-        .move_budget(PLAZA_OWNER, pid, amount)
-        .map(|_| ())
-        .map_err(|e| format!("the plaza's budget could not set {credits} credits aside: {e}"))
-}
-
-/// Gives the rest of project `pid`'s budget back to the plaza (it is over); nothing when it has none.
-pub fn return_rest(app: &App, pid: &str) {
-    if let Err(e) = app.plaza.treasury.return_town_budget(pid) {
-        eprintln!("apid: project {pid}'s budget not returned to the plaza: {e}");
-    }
-}
-
-/// Project `pid`'s budget as the API shows it.
-fn budget_view(app: &App, pid: &str) -> Value {
-    let treasury = &app.plaza.treasury;
-    json!({
-        "project": pid,
-        "own": treasury.has_town_budget(pid),
-        "balance": i64::try_from(treasury.town_budget_balance(pid)).unwrap_or(i64::MAX),
-        "plaza": i64::try_from(treasury.plaza_budget_balance()).unwrap_or(i64::MAX),
-    })
-}
-
 /// After a change to project `pid`'s overrides, its agents get their new profiles at once.
-fn push_members(app: &App, pid: &str) {
-    for cid in app.members.members(pid) {
+fn push_agents(app: &App, pid: &str) {
+    for cid in crate::projects::agents_of(app, pid) {
         if let Some(agent) = app.agents.get(cid)
             && agent.status != crate::agents::Status::Offline
         {
@@ -330,18 +329,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(
             RouteDoc::new("Show the settings a project's agents get, and where each comes from")
                 .errors(&[404]),
-        )
-        .get("/v1/projects/{id}/budget", |app, _, p| {
-            match app.projects.get(p.get("id")) {
-                Some(project) => Response::json(200, &budget_view(app, &project.id)),
-                None => Response::error(404, "no such project"),
-            }
-        })
-        .doc(RouteDoc::new("Show a project's budget").errors(&[404]))
-        .post("/v1/projects/{id}/budget", budget_route)
-        .doc(
-            RouteDoc::new("Set credits aside for a project, or give some back")
-                .errors(&[400, 404, 409]),
         )
 }
 
@@ -372,7 +359,7 @@ fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Err(e) = app.project_settings.set(id, next.clone()) {
         return Response::error(500, &format!("settings not saved: {e}"));
     }
-    push_members(app, id);
+    push_agents(app, id);
     if let Some(project) = app.projects.get(id) {
         app.bus.publish("project", &project);
     }
@@ -413,58 +400,15 @@ pub fn effective(app: &App, id: &str) -> Value {
             "max_turns": pick(own.max_turns.map(Value::from), json!(plaza.max_turns)),
             "compress_at": pick(own.compress_at.map(Value::from), json!(crate::harness_control::DEFAULT_COMPRESS_AT)),
             "keep_recent": pick(own.keep_recent.map(Value::from), json!(crate::harness_control::DEFAULT_KEEP_RECENT)),
-            "task_budget": pick(own.task_budget.map(Value::from), json!(apz_plaza::tasks::DEFAULT_TASK_BUDGET)),
+            "task_budget": match own.task_budget {
+                Some(budget) => json!({"value": budget, "source": "project"}),
+                None => json!({"value": null, "source": "default"}),
+            },
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
         },
         "role_models": role_models,
-        "budget": budget_view(app, id),
     })
-}
-
-#[derive(Deserialize)]
-struct BudgetBody {
-    credits: i64,
-}
-
-/// Body: `{credits}`: positive sets that much more aside from the plaza's budget, negative gives that much back.
-fn budget_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
-    let Some(project) = app.projects.get(p.get("id")) else {
-        return Response::error(404, "no such project");
-    };
-    let body: BudgetBody = match req.json() {
-        Ok(body) => body,
-        Err(e) => return Response::error(400, &format!("bad body: {e}")),
-    };
-    // A delivered project in maintenance still funds the work the owner picks.
-    if project.archived || (project.stage == "delivered" && !project.in_maintenance()) {
-        return Response::error(
-            409,
-            &format!(
-                "project {} is over: its budget went back to the plaza",
-                project.id
-            ),
-        );
-    }
-    let moved = match body.credits {
-        0 => return Response::error(400, "credits is not 0"),
-        credits if credits > 0 => app
-            .plaza
-            .treasury
-            .move_budget(PLAZA_OWNER, &project.id, credits),
-        credits => {
-            app.plaza
-                .treasury
-                .move_budget(&project.id, PLAZA_OWNER, credits.saturating_neg())
-        }
-    };
-    match moved {
-        Ok(_) => {
-            app.bus.publish("project", &project);
-            Response::json(200, &budget_view(app, &project.id))
-        }
-        Err(e) => Response::error(409, &format!("the budget did not move: {e}")),
-    }
 }
 
 #[cfg(test)]
@@ -506,29 +450,25 @@ mod tests {
     }
 
     #[test]
-    fn settings_survive_a_restart_and_a_snapshot_and_an_empty_one_is_dropped() {
-        let dir =
-            std::env::temp_dir().join(format!("apid-project-settings-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(dir.join("project-settings.json"));
+    fn settings_come_back_from_their_table_and_an_empty_one_is_dropped() {
+        let store = Store::default();
         let settings = ProjectSettings {
             task_budget: Some(3000),
+            permission_mode: Some(Mode::ReadOnly),
+            role_models: BTreeMap::from([("builder".into(), "anthropic/claude-sonnet-5-5".into())]),
             ..ProjectSettings::default()
         };
         store.set("pr1", settings.clone()).unwrap();
-        assert_eq!(
-            Store::load(dir.join("project-settings.json")).get("pr1"),
-            settings
-        );
-        let other = Store::load(dir.join("other.json"));
-        other.restore(&store.snapshot()).unwrap();
-        assert_eq!(other.get("pr1").task_budget, Some(3000));
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = Store::default();
+        loaded.load(&conn).unwrap();
+        assert_eq!(loaded.get("pr1"), settings);
         store.set("pr1", ProjectSettings::default()).unwrap();
         assert!(
-            store.snapshot().is_empty(),
-            "a project with no overrides keeps no entry"
+            store.rows().unwrap().tables["project_setting"].is_empty(),
+            "a project with no overrides keeps no row"
         );
-        assert!(other.restore("not json").is_err());
     }
 }

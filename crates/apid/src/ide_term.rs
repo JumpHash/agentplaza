@@ -49,8 +49,9 @@ use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use crate::events::Slots;
-use crate::ide::{TELL_TIMEOUT_MS, is_unreachable, station_gate, station_op};
+use crate::ide::{IdeAudit, TELL_TIMEOUT_MS, is_unreachable, station_gate, station_op};
 use crate::state::App;
+use crate::stations::audit::OwnerIdeAction;
 
 /// The subprotocol a terminal socket must be asked for.
 pub const PROTOCOL: &str = "apz.ide.terminal.v1";
@@ -328,10 +329,10 @@ pub trait TermHost {
     fn tell(&self, cid: u64, name: &str, args: &Value) -> Result<(u16, Value), String>;
     /// One terminal operation on workstation `station`: the daemon's answer, or the reason it gave none.
     fn request(&self, station: &str, op: Op) -> Result<Value, String>;
-    /// Appends one row to the IDE audit.
-    fn append_audit(&self, row: &Value) -> Result<(), String>;
-    /// Appends one row to the station audit.
-    fn append_station_audit(&self, row: &Value) -> Result<(), String>;
+    /// Appends one owner action on workspace `workspace` to the IDE audit.
+    fn append_audit(&self, workspace: &str, action: IdeAudit) -> Result<(), String>;
+    /// Appends one owner action on workstation `station` to the station audit.
+    fn append_station_audit(&self, station: &str, action: OwnerIdeAction) -> Result<(), String>;
     /// Publishes one `ide` bus event.
     fn publish(&self, data: &Value);
 }
@@ -355,12 +356,26 @@ impl TermHost for Live {
         station_op(&self.0, station, op)
     }
 
-    fn append_audit(&self, row: &Value) -> Result<(), String> {
-        self.0.db.append_ide_audit(row)
+    fn append_audit(&self, workspace: &str, action: IdeAudit) -> Result<(), String> {
+        crate::ide::append(
+            self.0.store.db(crate::store::PLAZA),
+            workspace,
+            None,
+            action,
+        )
+        .map(|_| ())
+        .map_err(|err| err.to_string())
     }
 
-    fn append_station_audit(&self, row: &Value) -> Result<(), String> {
-        self.0.db.append_station_audit(row)
+    fn append_station_audit(&self, station: &str, action: OwnerIdeAction) -> Result<(), String> {
+        crate::stations::audit::write(
+            self.0.store.db(crate::store::PLAZA),
+            Some(station),
+            None,
+            "owner",
+            crate::stations::audit::StationAudit::OwnerIde { action },
+        )
+        .map_err(|err| err.to_string())
     }
 
     fn publish(&self, data: &Value) {
@@ -591,33 +606,11 @@ impl Session<'_> {
         self.target.workspace()
     }
 
-    /// The audit row for one owner action on a terminal, then the bus event for it. On a workstation the action
-    /// is also a row of the station audit.
-    fn audit(&self, kind: &str, term: &str, detail: Value) -> Result<(), String> {
-        let mut row = json!({
-            "at_ms": apz_plaza::now_ms(),
-            "actor": "owner",
-            "workspace": self.workspace(),
-            "kind": kind,
-            "path": null,
-            "term": term,
-        });
-        if let (Some(map), Value::Object(detail)) = (row.as_object_mut(), detail.clone()) {
-            map.extend(detail);
-        }
-        self.host.append_audit(&row)?;
+    /// The audit entry for one owner action on a terminal: the IDE audit's, and on a workstation the station audit's.
+    fn audit(&self, action: IdeAudit, station_action: OwnerIdeAction) -> Result<(), String> {
+        self.host.append_audit(&self.workspace(), action)?;
         if let Target::Station(id) = &self.target {
-            let mut data = json!({ "action": kind, "term": term });
-            if let (Some(map), Value::Object(detail)) = (data.as_object_mut(), detail) {
-                map.extend(detail);
-            }
-            self.host.append_station_audit(&crate::stations::audit_row(
-                Some(id),
-                None,
-                "owner_ide",
-                "owner",
-                data,
-            ))?;
+            self.host.append_station_audit(id, station_action)?;
         }
         Ok(())
     }
@@ -671,11 +664,19 @@ impl Session<'_> {
             return self.error("the agent's answer names no terminal");
         };
         // A shell that is not in the audit is closed again: every terminal the owner opens is recorded.
-        if let Err(err) = self.audit(
-            "term_open",
-            &term,
-            json!({ "cols": cols, "rows": rows, "cwd": cwd }),
-        ) {
+        let action = IdeAudit::TermOpen {
+            term: term.clone(),
+            cols,
+            rows,
+            cwd: cwd.clone(),
+        };
+        let station_action = OwnerIdeAction::TermOpen {
+            term: term.clone(),
+            cols,
+            rows,
+            cwd: cwd.clone(),
+        };
+        if let Err(err) = self.audit(action, station_action) {
             let _ = call(
                 self.host,
                 &self.target,
@@ -740,7 +741,9 @@ impl Session<'_> {
             &json!({ "term": term }),
         ) {
             Ok(_) => {
-                if let Err(err) = self.audit("term_kill", &term, json!({})) {
+                let action = IdeAudit::TermKill { term: term.clone() };
+                let station_action = OwnerIdeAction::TermKill { term: term.clone() };
+                if let Err(err) = self.audit(action, station_action) {
                     self.error(format!(
                         "the terminal was closed, but its audit row could not be written ({err})"
                     ))?;
@@ -1443,8 +1446,15 @@ mod tests {
             serde_json::from_str(&output).map_err(|err| err.to_string())
         }
 
-        fn append_station_audit(&self, row: &Value) -> Result<(), String> {
-            self.guest().station_audit.push(row.clone());
+        fn append_station_audit(
+            &self,
+            station: &str,
+            action: OwnerIdeAction,
+        ) -> Result<(), String> {
+            let mut row = serde_json::to_value(&action).unwrap_or(Value::Null);
+            row["kind"] = json!("owner_ide");
+            row["station"] = json!(station);
+            self.guest().station_audit.push(row);
             Ok(())
         }
 
@@ -1501,12 +1511,16 @@ mod tests {
             })
         }
 
-        fn append_audit(&self, row: &Value) -> Result<(), String> {
+        fn append_audit(&self, workspace: &str, action: IdeAudit) -> Result<(), String> {
             let mut guest = self.guest();
             if guest.audit_fails {
                 return Err("the disk is full".into());
             }
-            guest.audit.push(row.clone());
+            let mut row = serde_json::to_value(&action).unwrap_or(Value::Null);
+            row["actor"] = json!("owner");
+            row["workspace"] = json!(workspace);
+            row["path"] = Value::Null;
+            guest.audit.push(row);
             Ok(())
         }
 

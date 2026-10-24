@@ -96,12 +96,12 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
         "plaza_skills" => list(
             &app.skills,
             &agent.role,
-            app.members.project_of(agent.cid).as_deref(),
+            crate::projects::project_of(app, agent.cid).as_deref(),
         ),
         "plaza_skill_read" => read(
             &app.skills,
             &agent.role,
-            app.members.project_of(agent.cid).as_deref(),
+            crate::projects::project_of(app, agent.cid).as_deref(),
             input,
         ),
         other => Err(format!("{other} is not a skill tool")),
@@ -152,7 +152,7 @@ fn read(
         .iter()
         .find(|file| &file.path == path)
         .ok_or_else(|| format!("{name} has no file {path}"))?;
-    let bytes = skills.blobs().get(&file.sha256)?;
+    let bytes = skills.blobs().get(&file.hash)?;
     Ok(match String::from_utf8(bytes) {
         Ok(text) => cap(text),
         Err(err) => {
@@ -190,16 +190,17 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::skills::store_mem::MemorySkills;
+    use crate::skills::store_db::DbSkills;
     use crate::skills::tests::MemBlobs;
     use crate::skills::{FileBody, FileIn, NewSkill, Source};
 
     const T0: u64 = 1_800_000_000_000;
 
     fn library() -> Skills {
-        Skills::new(
-            Arc::new(MemorySkills::in_memory()),
+        Skills::with_generations(
+            Arc::new(DbSkills::for_tests()),
             Arc::new(MemBlobs::default()),
+            Arc::default(),
         )
     }
 

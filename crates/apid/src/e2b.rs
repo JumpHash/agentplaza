@@ -40,6 +40,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use apz_http::{Request, Response, RouteDoc, Router};
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -48,7 +49,6 @@ use crate::internal::{EgressVerdict, egress_verdict};
 use crate::state::App;
 
 const KEYS_FILE: &str = "e2b-keys.json";
-const SANDBOXES_FILE: &str = "e2b-sandboxes.json";
 /// Every E2B key starts with this, then forty hex digits.
 const KEY_PREFIX: &str = "e2b_";
 const KEY_LABEL_MAX: usize = 80;
@@ -321,7 +321,7 @@ impl Keys {
 }
 
 /// Where a sandbox is: its VM running, or asleep (a snapshot of it kept by noded).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     Running,
@@ -339,7 +339,7 @@ impl Phase {
 
 /// A snapshot the sandbox was asked for: its E2B id (`<sandbox>:<checkpoint>`), the name the caller
 /// gave, and noded's checkpoint name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
 pub struct Snapshot {
     pub id: String,
     pub name: String,
@@ -355,12 +355,15 @@ fn kept_memory() -> bool {
     true
 }
 
-/// One sandbox. Its envd access token is kept here because vsockd needs it after a hub restart; the
-/// file is mode 0600. Environment variables are kept too, so a cold resume can hand them to a fresh
-/// daemon.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One sandbox. Its envd access token is kept here because vsockd needs it after a hub restart.
+/// Environment variables are kept too, so a cold resume can hand them to a fresh daemon. Kept in
+/// plaza.db (table `e2b_sandboxes`), with the metadata, environment, network rules and snapshots as
+/// child tables.
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "e2b_sandboxes")]
 pub struct Sandbox {
     /// `sb` and sixteen hex digits.
+    #[table(key)]
     pub id: String,
     /// The base image named in the request (`base` or any other template name).
     pub template: String,
@@ -373,9 +376,11 @@ pub struct Sandbox {
     pub phase: Phase,
     pub auto_pause: bool,
     pub allow_internet: bool,
+    #[table(map_value = "e2b_sandbox_metadata")]
     pub metadata: BTreeMap<String, String>,
     /// The environment variables the sandbox was created with; a cold resume gives them to the new daemon.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[table(map_value = "e2b_sandbox_env")]
     pub env_vars: BTreeMap<String, String>,
     /// Paused without memory: it resumes by booting from disk, not from a memory image.
     #[serde(default)]
@@ -383,6 +388,7 @@ pub struct Sandbox {
     /// The envd access token (`secure` sandboxes only).
     pub access_token: Option<String>,
     #[serde(default)]
+    #[table(child = "e2b_sandbox_snapshot")]
     pub snapshots: Vec<Snapshot>,
     /// Killed while it had snapshots: its VM is stopped and the record stays only for them, hidden
     /// from every sandbox route. Deleting its last snapshot ends its run and forgets it.
@@ -390,30 +396,32 @@ pub struct Sandbox {
     pub retired: bool,
     /// The network rules (`allowOut`, `denyOut`; see `crate::e2b_net`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "e2b_sandbox_allow_out")]
     pub allow_out: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(list = "e2b_sandbox_deny_out")]
     pub deny_out: Vec<String>,
 }
 
-/// The sandboxes, saved to `<state>/e2b-sandboxes.json` on every change.
+/// The sandboxes, kept in plaza.db (table `e2b_sandboxes`, see [`def`]). Each change is saved by the
+/// saver within a second; a change the owner's answer depends on is saved at once (see `save_now`).
+#[derive(Default)]
 pub struct Sandboxes {
-    path: PathBuf,
-    unreadable: Option<String>,
     set: Mutex<Vec<Sandbox>>,
 }
 
 impl Sandboxes {
-    pub fn load(state_dir: &Path) -> Sandboxes {
-        let path = state_dir.join(SANDBOXES_FILE);
-        let (sandboxes, unreadable) = read_list::<Sandbox>(&path);
-        if let Some(why) = &unreadable {
-            eprintln!("apid: the E2B sandboxes are unreadable; none is reaped ({why})");
-        }
-        Sandboxes {
-            path,
-            unreadable,
-            set: Mutex::new(sandboxes),
-        }
+    /// Replaces the sandboxes with what plaza.db holds (at start).
+    pub fn load(&self, conn: &apz_store::rusqlite::Connection) -> Result<(), StoreError> {
+        let stored: Vec<Sandbox> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.set) = stored;
+        Ok(())
+    }
+
+    /// The sandboxes' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let items = lock(&self.set);
+        RowSet::list(def(), items.iter())
     }
 
     pub fn list(&self) -> Vec<Sandbox> {
@@ -429,44 +437,43 @@ impl Sandboxes {
     }
 
     pub fn insert(&self, sandbox: Sandbox) -> Result<(), Refused> {
-        let mut set = lock(&self.set);
-        let mut next = set.clone();
-        next.push(sandbox);
-        persist(&self.path, self.unreadable.as_deref(), &next)?;
-        *set = next;
+        lock(&self.set).push(sandbox);
         Ok(())
     }
 
-    /// Changes sandbox `id` and saves; returns it as changed.
+    /// Changes sandbox `id`; returns it as changed.
     pub fn update(&self, id: &str, change: impl FnOnce(&mut Sandbox)) -> Result<Sandbox, Refused> {
         let mut set = lock(&self.set);
-        let mut next = set.clone();
-        let Some(sandbox) = next.iter_mut().find(|s| s.id == id) else {
+        let Some(sandbox) = set.iter_mut().find(|s| s.id == id) else {
             return Err(not_found(id));
         };
         change(&mut *sandbox);
-        let updated = sandbox.clone();
-        persist(&self.path, self.unreadable.as_deref(), &next)?;
-        *set = next;
-        Ok(updated)
+        Ok(sandbox.clone())
     }
 
     /// Forgets sandbox `id` (a no-op when it is gone).
     pub fn remove(&self, id: &str) -> Result<(), Refused> {
-        let mut set = lock(&self.set);
-        let mut next = set.clone();
-        next.retain(|s| s.id != id);
-        if next.len() == set.len() {
-            return Ok(());
-        }
-        persist(&self.path, self.unreadable.as_deref(), &next)?;
-        *set = next;
+        lock(&self.set).retain(|s| s.id != id);
         Ok(())
     }
 }
 
+/// The sandboxes' table: `e2b_sandboxes`, with its child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Sandbox)
+}
+
 pub(crate) fn not_found(id: &str) -> Refused {
     Refused::new(404, "sandbox_not_found", format!("no sandbox {id}"))
+}
+
+/// The sandboxes could not be committed to plaza.db (the same error a failed write gave).
+fn store_unsaved() -> Refused {
+    Refused::new(
+        500,
+        "internal_server_error",
+        "the E2B sandboxes could not be saved",
+    )
 }
 
 /// The hub's keys, loaded from the state dir on first use and kept for the process.
@@ -474,18 +481,17 @@ fn keys(app: &App) -> &'static Keys {
     KEYS.get_or_init(|| Keys::load(&app.config.state_dir))
 }
 
-/// The hub's sandboxes, loaded on first use. The first use also starts the reaper, which holds the app
-/// weakly and ends when the app is gone.
+/// The hub's sandboxes, empty until the saver loads them at start. The first use also starts the
+/// reaper, which holds the app weakly and ends when the app is gone.
 pub(crate) fn sandboxes(app: &App) -> &'static Sandboxes {
     SANDBOXES.get_or_init(|| {
-        let store = Sandboxes::load(&app.config.state_dir);
         spawn_reaper(app.handle());
-        store
+        Sandboxes::default()
     })
 }
 
-/// Loads the hub's sandboxes at start, which starts the reaper: sandboxes persisted by an earlier run
-/// end on time even before the first `/e2b` request.
+/// Starts the sandboxes' reaper at start: sandboxes persisted by an earlier run end on time even
+/// before the first `/e2b` request.
 pub(crate) fn start(app: &App) {
     let _ = sandboxes(app);
 }
@@ -1009,20 +1015,21 @@ fn destroy_run(app: &App, run: &str) {
     }
 }
 
-/// Records one sandbox event: a transcript entry under the sandbox's CID, and an `e2b` bus event.
-fn audit(app: &App, sandbox: &Sandbox, kind: &'static str, event: &str, actor: &str, extra: Value) {
-    let mut record = json!({
-        "event": event,
-        "sandbox": sandbox.id,
-        "cid": sandbox.cid,
-        "template": sandbox.template,
-        "by": actor,
-    });
-    if let (Value::Object(base), Value::Object(extra)) = (&mut record, extra) {
-        base.extend(extra);
+/// The base of a sandbox event: its event, the sandbox, its CID, its template, and who acted.
+fn sandbox_base(sandbox: &Sandbox, event: &str, actor: &str) -> crate::transcript::SandboxBase {
+    crate::transcript::SandboxBase {
+        event: event.to_string(),
+        sandbox: sandbox.id.clone(),
+        cid: sandbox.cid,
+        template: sandbox.template.clone(),
+        by: actor.to_string(),
     }
-    app.transcripts
-        .record(&app.bus, sandbox.cid, 0, kind, record.clone());
+}
+
+/// Records one sandbox event: a transcript entry under the sandbox's CID, and an `e2b` bus event.
+fn audit(app: &App, sandbox: &Sandbox, entry: crate::transcript::Entry) {
+    let record = serde_json::to_value(&entry).map_or(Value::Null, |mut value| value["data"].take());
+    app.transcripts.record(&app.bus, sandbox.cid, 0, entry);
     app.bus.publish("e2b", &record);
 }
 
@@ -1259,9 +1266,15 @@ pub(crate) fn admit(
         deny_out: spec.deny_out.clone(),
     };
     // The record comes first: vsockd finds the CID and the token by the sandbox's id on each gateway call.
+    // It is committed before the VM boots, so a restart can never leave a running VM with no record.
     if let Err(refused) = sandboxes(app).insert(sandbox.clone()) {
         destroy_run(app, &run);
         return Err(refused);
+    }
+    if !crate::store::saver::save_now(app, "e2b_sandboxes") {
+        let _ = sandboxes(app).remove(&sandbox.id);
+        destroy_run(app, &run);
+        return Err(store_unsaved());
     }
     if let Err(why) = boot(&sandbox.id, &spec.env_vars, access_token.as_deref()) {
         let _ = sandboxes(app).remove(&sandbox.id);
@@ -1277,10 +1290,11 @@ pub(crate) fn admit(
     audit(
         app,
         &sandbox,
-        "sandbox_create",
-        "create",
-        actor,
-        json!({"timeout": spec.timeout_s, "allow_internet_access": spec.allow_internet}),
+        crate::transcript::Entry::SandboxCreate {
+            base: sandbox_base(&sandbox, "create", actor),
+            timeout: spec.timeout_s,
+            allow_internet_access: spec.allow_internet,
+        },
     );
     Ok(sandbox)
 }
@@ -1312,10 +1326,11 @@ pub(crate) fn destroy(
         audit(
             app,
             sandbox,
-            "sandbox_kill",
-            "kill",
-            actor,
-            json!({"reason": reason, "kept_for_snapshots": sandbox.snapshots.len()}),
+            crate::transcript::Entry::SandboxKill {
+                base: sandbox_base(sandbox, "kill", actor),
+                reason: reason.to_string(),
+                kept_for_snapshots: Some(sandbox.snapshots.len()),
+            },
         );
         return Ok(());
     }
@@ -1324,10 +1339,11 @@ pub(crate) fn destroy(
     audit(
         app,
         sandbox,
-        "sandbox_kill",
-        "kill",
-        actor,
-        json!({"reason": reason}),
+        crate::transcript::Entry::SandboxKill {
+            base: sandbox_base(sandbox, "kill", actor),
+            reason: reason.to_string(),
+            kept_for_snapshots: None,
+        },
     );
     Ok(())
 }
@@ -1402,10 +1418,10 @@ fn pause_sandbox(
     audit(
         app,
         sandbox,
-        "sandbox_pause",
-        "pause",
-        actor,
-        json!({"reason": reason}),
+        crate::transcript::Entry::SandboxPause {
+            base: sandbox_base(sandbox, "pause", actor),
+            reason: reason.to_string(),
+        },
     );
     Ok(())
 }
@@ -1459,10 +1475,10 @@ fn wake(app: &App, id: &str, timeout_s: u32, actor: &str, cold: bool) -> Result<
     audit(
         app,
         &woken,
-        "sandbox_resume",
-        "resume",
-        actor,
-        json!({"timeout": timeout_s}),
+        crate::transcript::Entry::SandboxResume {
+            base: sandbox_base(&woken, "resume", actor),
+            timeout: timeout_s,
+        },
     );
     Ok(woken)
 }
@@ -1666,13 +1682,17 @@ pub(crate) fn take_snapshot(
     };
     let stored = snap.clone();
     sandboxes(app).update(&sandbox.id, |s| s.snapshots.push(stored))?;
+    // The owner gets the snapshot's id back, so the record must be committed before the answer goes out.
+    if !crate::store::saver::save_now(app, "e2b_sandboxes") {
+        return Err(store_unsaved());
+    }
     audit(
         app,
         sandbox,
-        "sandbox_snapshot",
-        "snapshot",
-        key,
-        json!({"snapshot": snap.id}),
+        crate::transcript::Entry::SandboxSnapshot {
+            base: sandbox_base(sandbox, "snapshot", key),
+            snapshot: snap.id.clone(),
+        },
     );
     Ok(snap)
 }
@@ -1816,18 +1836,27 @@ fn network(app: &App, req: &Request, id: &str, key: &str) -> Result<Response, Re
             break;
         }
     }
-    let record = json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet});
+    let record = crate::transcript::Entry::SandboxNetwork {
+        base: sandbox_base(&updated, "network", key),
+        allow_out: json!(updated.allow_out),
+        deny_out: json!(updated.deny_out),
+        allow_internet_access: allow_internet,
+        why: None,
+    };
     let Err(why) = forgot else {
-        audit(app, &updated, "sandbox_network", "network", key, record);
+        audit(app, &updated, record);
         return Ok(no_content());
     };
     audit(
         app,
         &updated,
-        "sandbox_network",
-        "network_pending",
-        key,
-        json!({"allowOut": updated.allow_out, "denyOut": updated.deny_out, "allow_internet_access": allow_internet, "why": why.clone()}),
+        crate::transcript::Entry::SandboxNetwork {
+            base: sandbox_base(&updated, "network_pending", key),
+            allow_out: json!(updated.allow_out),
+            deny_out: json!(updated.deny_out),
+            allow_internet_access: allow_internet,
+            why: Some(why.clone()),
+        },
     );
     Err(Refused::new(
         502,
@@ -1935,10 +1964,10 @@ pub(crate) fn delete_snapshot(app: &App, template: &str, key: &str) -> Result<Re
     audit(
         app,
         &updated,
-        "sandbox_snapshot",
-        "snapshot_delete",
-        key,
-        json!({"snapshot": snap.id}),
+        crate::transcript::Entry::SandboxSnapshot {
+            base: sandbox_base(&updated, "snapshot_delete", key),
+            snapshot: snap.id.clone(),
+        },
     );
     if updated.retired && updated.snapshots.is_empty() {
         end_run(app, &updated)?;
@@ -2659,30 +2688,44 @@ mod tests {
     }
 
     #[test]
-    fn the_sandbox_store_survives_a_restart_and_a_damaged_file_is_never_replaced() {
-        let dir = scratch("sandboxes");
-        let store = Sandboxes::load(&dir);
+    fn the_sandbox_store_comes_back_whole_from_its_tables() {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let store = Sandboxes::default();
         store.insert(sample(true)).unwrap();
         store
-            .update("sb0123456789abcdef", |s| s.phase = Phase::Paused)
+            .update("sb0123456789abcdef", |s| {
+                s.phase = Phase::Paused;
+                s.env_vars = BTreeMap::from([("K".to_string(), "V".to_string())]);
+                s.allow_out = vec!["example.com".to_string()];
+                s.snapshots = vec![Snapshot {
+                    id: "sb0123456789abcdef:cp-1".into(),
+                    name: "first".into(),
+                    checkpoint: "cp-1".into(),
+                    taken_ms: 2_000,
+                    memory: false,
+                }];
+            })
             .unwrap();
-        let reloaded = Sandboxes::load(&dir);
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+
+        let reloaded = Sandboxes::default();
+        reloaded.load(&conn).unwrap();
         let back = reloaded.get("sb0123456789abcdef").unwrap();
         assert_eq!(back.phase, Phase::Paused);
         assert_eq!(back.cid, 42);
+        assert_eq!(back.env_vars["K"], "V");
+        assert_eq!(back.allow_out, ["example.com"]);
+        assert_eq!(back.snapshots[0].checkpoint, "cp-1");
+        assert!(!back.snapshots[0].memory);
         assert_eq!(reloaded.by_cid(42).unwrap().id, "sb0123456789abcdef");
         assert!(reloaded.by_cid(7).is_none());
 
         reloaded.remove("sb0123456789abcdef").unwrap();
-        assert!(Sandboxes::load(&dir).list().is_empty());
-
-        std::fs::write(dir.join(SANDBOXES_FILE), b"{ not json").unwrap();
-        let damaged = Sandboxes::load(&dir);
-        assert!(damaged.insert(sample(true)).is_err());
-        assert_eq!(
-            std::fs::read(dir.join(SANDBOXES_FILE)).unwrap(),
-            b"{ not json"
-        );
+        apz_store::table::replace(&conn, def(), &reloaded.rows().unwrap()).unwrap();
+        let empty = Sandboxes::default();
+        empty.load(&conn).unwrap();
+        assert!(empty.list().is_empty());
     }
 
     #[test]

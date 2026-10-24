@@ -4,8 +4,10 @@
 // and this hub joined to another network as a node. Refreshes every few seconds.
 // The markup is the prototype's (settings-c.css: nd-* and mt-*); the data and every action are the hub's.
 
+import { agentLabel, agentName } from '../roles';
 import '../styles/proto/settings-c.css';
 import { api, type Agent, type HubIdentity, type JoinCode, type MachineNode, type NodeLink, type NodeView, type Rebalance } from '../api';
+import { on, RESYNC } from '../store';
 import { attempt, badge, button, card, empty, field, input, select, toast, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { KIND_LABEL, normalizeMachines, sentence, uptime } from './machine-list';
@@ -38,7 +40,7 @@ export function isStopped(n: NodeView): boolean {
 
 /** One line per agent that cannot leave a stopping node yet: its name (or CID) and why. */
 export function waitingLines(n: NodeView, nameOf: (cid: number) => string | undefined): string[] {
-  return (n.waiting ?? []).map((w) => `${nameOf(w.cid) ?? `Agent ${w.cid}`}: ${w.reason}`);
+  return (n.waiting ?? []).map((w) => `${nameOf(w.cid) ?? agentLabel(w.cid)}: ${w.reason}`);
 }
 
 /** What a rebalance did, for its toast. */
@@ -172,16 +174,8 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     return close;
   };
 
-  const load = async (): Promise<void> => {
-    const [n, c, id, ln, ms, ag] = await Promise.all([
-      api.nodes().catch(() => null),
-      api.joinCodes().catch(() => null),
-      api.hubIdentity().catch(() => null),
-      api.nodeLink().catch(() => null),
-      api.machines().catch(() => null),
-      api.agents().catch((): Agent[] => []),
-    ]);
-    if (!alive) return;
+  /** Draws the screen from what the hub answered (the copy first, then each fresh read); a null is a call that failed. */
+  const paint = (n: NodeView[] | null, c: JoinCode[] | null, id: HubIdentity | null, ln: NodeLink | null, ms: MachineNode[] | null, ag: Agent[] | null): void => {
     nodes = n;
     codes = c;
     hub = id;
@@ -193,6 +187,19 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     renderCodes();
     renderHub();
     renderLink();
+  };
+
+  const load = async (): Promise<void> => {
+    const [n, c, id, ln, ms, ag] = await Promise.all([
+      api.nodes().catch(() => null),
+      api.joinCodes().catch(() => null),
+      api.hubIdentity().catch(() => null),
+      api.nodeLink().catch(() => null),
+      api.machines().catch(() => null),
+      api.agents().catch((): Agent[] => []),
+    ]);
+    if (!alive) return;
+    paint(n, c, id, ln, ms, ag);
   };
 
   const stop = async (n: NodeView, now: boolean): Promise<void> => {
@@ -386,7 +393,10 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const nodeDetail = (n: NodeView, m: MachineNode | undefined): HTMLElement => {
     const mc = n.machine;
-    const waits = waitingLines(n, (cid) => agentsByCid.get(cid)?.name);
+    const waits = waitingLines(n, (cid) => {
+      const a = agentsByCid.get(cid);
+      return a ? agentName(a) : undefined;
+    });
     const lit = !!m && (m.runs ?? []).some((r) => r.vms.some((v) => LIVE_RE.test(v.state)));
     const view = m ? h('div.nd-view', null, svgOf(artSvg(m.kind, lit))) : null;
     return h(
@@ -657,12 +667,17 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     });
   };
 
+  // The last read paints at once; the reads that follow (each a 304 when nothing changed) replace it.
+  const kept = { nodes: api.nodes.cached(), codes: api.joinCodes.cached(), hub: api.hubIdentity.cached(), link: api.nodeLink.cached(), machines: api.machines.cached() };
+  if (kept.nodes !== undefined) paint(kept.nodes, kept.codes ?? null, kept.hub ?? null, kept.link ?? null, kept.machines ?? null, api.agents.cached() ?? null);
   void load();
   const refresh = window.setInterval(() => void load(), REFRESH_MS);
   const clock = window.setInterval(tickEnds, 1000);
+  const off = on(RESYNC, () => void load());
 
   return () => {
     alive = false;
+    off();
     window.clearInterval(refresh);
     window.clearInterval(clock);
     closeOpen?.();

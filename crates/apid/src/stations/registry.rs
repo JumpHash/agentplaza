@@ -1,5 +1,5 @@
 //! The station registry: the workstations the owner enrolled, their facts, settings and state, and the
-//! join codes that enroll them. Saved in Postgres as the `stations` component, as the nodes are. A
+//! join codes that enroll them. Saved in plaza.db (the `stations` tables), as the nodes are. A
 //! station's token is random and never stored: only its SHA-256 is.
 //!
 //! A join code is a join token (`apz_trust::token`, the same text a node's code is), used once, within
@@ -11,6 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use apz_station::{Facts, StationSettings};
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 
 use super::leases::{LeaseView, Leases};
@@ -30,10 +32,12 @@ pub const INVALID_CODE: &str = "this join code is not valid";
 /// The message a refused token gets.
 pub const INVALID_TOKEN: &str = "this workstation token is not valid";
 
-/// One enrolled workstation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One enrolled workstation (`station` rows, with its facts, settings and any sync pause as child rows).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "station")]
 pub struct Station {
     /// `w<seq>`.
+    #[table(key)]
     pub id: String,
     pub name: String,
     /// The daemon's version, from its last hello.
@@ -48,9 +52,11 @@ pub struct Station {
     #[serde(default)]
     pub last_seen_ms: u64,
     /// The machine, as the daemon last reported it.
+    #[table(child = "station_facts")]
     pub facts: Facts,
     /// The hub-side settings, pushed to the daemon on every link and on every change.
     #[serde(default)]
+    #[table(flatten)]
     pub settings: StationSettings,
     #[serde(default)]
     pub draining: bool,
@@ -61,6 +67,7 @@ pub struct Station {
     pub address: String,
     /// The work-folder sync's pause, while it holds (sync.rs): why, and the deletions it holds back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child = "station_sync_pause")]
     pub sync_pause: Option<SyncPause>,
 }
 
@@ -95,13 +102,23 @@ pub enum Refusal {
     OwnHost(String),
 }
 
-#[derive(Default, Serialize, Deserialize)]
+/// The stations' state of record: the one `stations` row, with the stations, their join codes and the workstation VMs
+/// as child tables.
+#[derive(Default, apz_store::Table)]
+#[table(name = "stations")]
 struct Persisted {
+    #[table(child = "station")]
     stations: Vec<Station>,
+    #[table(child = "station_code")]
     codes: Vec<Code>,
     /// The workstation VMs the hub makes on its nodes (vms.rs).
-    #[serde(default)]
+    #[table(child = "station_vm")]
     vms: Vec<VmRecord>,
+}
+
+/// The stations' tables: `stations`, with the stations, their join codes and their VMs as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Persisted)
 }
 
 #[derive(Default)]
@@ -178,17 +195,16 @@ impl Store {
         self.inner.lock().map_err(|e| e.to_string())
     }
 
-    pub fn snapshot(&self) -> String {
-        self.inner
-            .lock()
-            .ok()
-            .and_then(|p| serde_json::to_string(&*p).ok())
-            .unwrap_or_default()
+    /// The stations' rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let p = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        RowSet::one(def(), &*p)
     }
 
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let p: Persisted = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.guard()? = p;
+    /// Replaces the stations with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored = apz_store::table::load_one::<Persisted>(conn, def())?.unwrap_or_default();
+        *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = stored;
         Ok(())
     }
 
@@ -666,7 +682,7 @@ mod tests {
             nodes::hex(&apz_trust::sha256(token.as_bytes()))
         );
         assert!(
-            !store.snapshot().contains(&token),
+            !format!("{:?}", store.rows().unwrap()).contains(&token),
             "the token itself is never saved"
         );
         assert_eq!(store.authenticate(&token).unwrap().id, "w1");
@@ -919,23 +935,25 @@ mod tests {
         );
     }
 
+    /// The registry comes back from its tables whole: its stations with their facts, settings and codes.
     #[test]
-    fn the_registry_survives_a_snapshot_and_restore() {
+    fn the_registry_survives_a_save_and_load() {
         let store = Store::default();
         let (_, text) = code(&store, "desk", 10, NOW);
         let (_, token) = store
             .redeem("a", &text, facts("desk"), Some("front"), HUB, NOW)
             .unwrap();
-        let json = store.snapshot();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
         let restored = Store::default();
-        restored.restore(&json).unwrap();
+        restored.load(&conn).unwrap();
         assert_eq!(restored.station("w1").unwrap().name, "front");
         assert_eq!(restored.authenticate(&token).unwrap().id, "w1");
-        assert!(restored.restore("not json").is_err());
         assert_eq!(
-            restored.list().len(),
-            1,
-            "a refused restore changes nothing"
+            restored.list(),
+            store.list(),
+            "every station comes back whole"
         );
     }
 }

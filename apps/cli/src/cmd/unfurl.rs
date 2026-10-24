@@ -11,13 +11,13 @@ use crate::rich::{self, Mode};
 /// `agentplaza unfurl` options.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// A link (GitHub, the plaza's git, a hub file or page), `#N` or `task #N` for a task, or `@Name` for an agent.
+    /// A link (GitHub, the plaza's git, a hub file or page), `#N` or `task #N` for a task, or `agent:<cid>` for an agent.
     pub target: String,
 }
 
 pub fn run(ctx: &Ctx, args: Args) -> Result<(), String> {
     let target = args.target.trim();
-    // The agents for `@Name` and the excerpt's labels; a link in JSON needs none of them.
+    // The hub's host for the excerpt's links; a link in JSON needs none of it.
     let rich_ctx = if ctx.json && is_url(target) {
         RichCtx::default()
     } else {
@@ -28,7 +28,7 @@ pub fn run(ctx: &Ctx, args: Args) -> Result<(), String> {
             .get(&format!("/v1/unfurl?url={}", ctx::seg(target)))?
     } else {
         let found = reference(target, &rich_ctx).ok_or_else(|| {
-            format!("not a link or a reference: {target} (give a link, #N for a task, or @Name for an agent)")
+            format!("not a link or a reference: {target} (give a link, #N for a task, or agent:<cid> for an agent)")
         })?;
         let batch = ctx.client.post("/v1/unfurl", &json!({ "refs": [found] }))?;
         batch["cards"].get(0).cloned().unwrap_or(Value::Null)
@@ -130,24 +130,12 @@ fn error_of(answer: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use apz_rich::AgentName;
-
     use super::*;
 
     const FIXTURE: &str = include_str!("../../tests/fixtures/unfurl_pull.json");
 
     fn fixture() -> Value {
         serde_json::from_str(FIXTURE).unwrap()
-    }
-
-    fn ada() -> RichCtx {
-        RichCtx {
-            agents: vec![AgentName {
-                name: "Ada".into(),
-                cid: 3,
-            }],
-            ..RichCtx::default()
-        }
     }
 
     fn mode(colour: bool, hyperlinks: bool) -> Mode {
@@ -161,9 +149,9 @@ mod tests {
 
     #[test]
     fn the_excerpt_draws_its_references_as_labels_and_links_in_rich_mode() {
-        let text = format_answer(&fixture(), &ada(), &mode(false, true));
+        let text = format_answer(&fixture(), &RichCtx::default(), &mode(false, true));
         assert!(
-            text.contains("\x1b]8;;https://hub.test/#/agents/3\x1b\\@Ada\x1b]8;;\x1b\\"),
+            text.contains("\x1b]8;;https://hub.test/#/agents/3\x1b\\agent:3\x1b]8;;\x1b\\"),
             "{text:?}"
         );
         assert!(
@@ -187,10 +175,10 @@ mod tests {
             Some(Ref::Task { number: 528 })
         );
         assert_eq!(
-            reference("@Ada", &ada()),
+            reference("agent:3", &RichCtx::default()),
             Some(Ref::Agent {
-                name: Some("Ada".into()),
-                cid: None
+                name: None,
+                cid: Some(3)
             })
         );
         assert_eq!(reference("nothing here", &RichCtx::default()), None);

@@ -500,6 +500,24 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
 
     /// Waits for the host message `pick` accepts; anything else is logged and
     /// skipped. A stop from the host ends the wait with [`Halt::Stop`].
+    /// Waits `wait` while the host holds this work's model calls, beating and taking the host's messages meanwhile. A
+    /// cancel ends the wait at once (the drive loop then stops the work).
+    fn wait_paused(&mut self, wait: Duration) -> Result<(), Halt> {
+        let until = Instant::now() + wait;
+        while self.cancelled.is_none() && Instant::now() < until {
+            match self.pump()? {
+                Incoming::Stop(reason) => return Err(Halt::Stop(reason)),
+                Incoming::Message(other) => {
+                    let kind = kind_of(&other);
+                    self.shared
+                        .note(&format!("agent-harness: ignoring {kind} while paused"));
+                }
+                Incoming::Beat | Incoming::Handled => {}
+            }
+        }
+        Ok(())
+    }
+
     fn await_message<T>(
         &mut self,
         awaited: &str,
@@ -703,6 +721,8 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
     ) -> Result<(WorkStatus, String), Halt> {
         let mut turns = 0u32;
         let mut token_limit_hits = 0u32;
+        // How many times in a row the host answered a model call "paused".
+        let mut paused_waits = 0u32;
         // The last tool call's name and input, and how many times in a row it failed.
         let mut failing: Option<(String, u32)> = None;
         loop {
@@ -736,7 +756,23 @@ impl<S: Write + Send, W: Write + Send> Agent<'_, '_, S, W> {
             }
             turns += 1;
             let response = match self.model_call(work, profile, messages)? {
-                Ok(response) => response,
+                Ok(response) => {
+                    paused_waits = 0;
+                    response
+                }
+                // The host holds this work's model calls (its budget or a limit is reached, the plaza is held): the
+                // turn waits and asks again, instead of failing; a cancel ends the wait.
+                Err(reason) if reason.starts_with(PAUSED) => {
+                    turns -= 1;
+                    let wait = paused_wait(paused_waits);
+                    paused_waits += 1;
+                    self.shared.note(&format!(
+                        "agent-harness: {reason}; asking again in {}s",
+                        wait.as_secs()
+                    ));
+                    self.wait_paused(wait)?;
+                    continue;
+                }
                 Err(reason) => return Ok((WorkStatus::Failed, reason)),
             };
             let ChatResponse { content, stop, .. } = response;
@@ -1326,6 +1362,20 @@ mod thread_store_tests {
     }
 }
 
+/// The start of a model result's error that means "held, ask again later" (the hub's budget, a limit, STOP ALL).
+pub const PAUSED: &str = apz_proto::wire::MODEL_PAUSED;
+
+/// How long to wait before asking again after the `n`-th "paused" answer in a row: 2, 4, 8, 15, then 30 seconds.
+fn paused_wait(n: u32) -> Duration {
+    Duration::from_secs(match n {
+        0 => 2,
+        1 => 4,
+        2 => 8,
+        3 => 15,
+        _ => 30,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1615,7 +1665,7 @@ mod tests {
             expect_type(host, "model_call");
             host.send(&control(
                 1,
-                json!({"action": "steer", "from": "mayor", "text": "focus on the parser"}),
+                json!({"action": "steer", "from": "orchestrator", "text": "focus on the parser"}),
             ))
             .unwrap();
             host.send(&answer(
@@ -1629,7 +1679,7 @@ mod tests {
             let next = expect_type(host, "model_call");
             let results = &next["request"]["messages"][2]["content"];
             assert_eq!(
-                results[1]["text"], "[note from mayor]: focus on the parser",
+                results[1]["text"], "[note from orchestrator]: focus on the parser",
                 "{results}"
             );
             host.send(&answer(2, json!([text("found")]), "end_turn"))
@@ -1955,6 +2005,33 @@ mod tests {
                 let value: Value = serde_json::from_str(&next(host)).expect("a JSON line");
                 idle_beat = value["type"] == "heartbeat" && value["busy"] == false;
             }
+            stop(host);
+        });
+    }
+
+    #[test]
+    fn a_paused_model_call_waits_and_asks_again_instead_of_failing() {
+        let workspace = scratch("paused");
+        run_hub(&workspace, |host| {
+            host.send(&welcome(10)).unwrap();
+            host.send(&work(1, "task", "t", "spend")).unwrap();
+            expect_type(host, "model_call");
+            let paused = json!({
+                "type": "model_result", "req": 1, "ok": false,
+                "error": "paused: task t1 reached its budget; the owner was asked",
+            });
+            host.send(&paused.to_string()).unwrap();
+            // The same turn asks again (a new request id), and its answer ends the work as done.
+            let again = expect_type(host, "model_call");
+            assert_eq!(again["req"], 2, "{again}");
+            host.send(&answer(
+                2,
+                json!([text("finished after the raise")]),
+                "end_turn",
+            ))
+            .unwrap();
+            let done = expect_type(host, "work_done");
+            assert_eq!(done["status"], "done", "{done}");
             stop(host);
         });
     }

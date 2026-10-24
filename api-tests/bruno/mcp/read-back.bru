@@ -21,6 +21,7 @@ tests {
   test("the stored transport is the one created", function () {
     const body = res.getBody();
     expect(body.transport.kind).to.equal("stdio");
-    expect(body.transport.image).to.equal("ghcr.io/example/server:1.0");
+    expect(body.transport.package.kind).to.equal("npm");
+    expect(body.transport.package.name).to.equal("@modelcontextprotocol/server-memory");
   });
 }

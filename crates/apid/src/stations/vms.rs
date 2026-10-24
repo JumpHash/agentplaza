@@ -28,6 +28,7 @@ use apz_station::{Facts, Form};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::audit::StationAudit;
 use super::registry::Station;
 use super::{ops, ops::Failure};
 use crate::fleet;
@@ -52,7 +53,7 @@ const LINK_BACK_WAIT: Duration = Duration::from_secs(240);
 const LINK_POLL: Duration = Duration::from_millis(500);
 
 /// A workstation VM the hub knows: where it runs on its node, and the station it enrolled as.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct VmRecord {
     /// `v<seq>`.
     pub id: String,
@@ -420,15 +421,18 @@ pub fn after_lease(app: &App, station: &str) {
         let reverted = live_or_around(&Through(&app), &vm.node, &vm.vm, Step::Revert).map(|_| ());
         let back = wait_for_return(&app, &station);
         app.stations.end_reset(&station);
-        let (kind, data) = match (reverted, back) {
-            (Ok(()), true) => ("vm_reset", json!({"vm": vm.id})),
-            (Err(reason), _) => ("vm_reset_failed", json!({"vm": vm.id, "reason": reason})),
-            (Ok(()), false) => (
-                "vm_reset_failed",
-                json!({"vm": vm.id, "reason": "the workstation did not come back"}),
-            ),
+        let event = match (reverted, back) {
+            (Ok(()), true) => StationAudit::VmReset { vm: vm.id.clone() },
+            (Err(reason), _) => StationAudit::VmResetFailed {
+                vm: vm.id.clone(),
+                reason,
+            },
+            (Ok(()), false) => StationAudit::VmResetFailed {
+                vm: vm.id.clone(),
+                reason: "the workstation did not come back".into(),
+            },
         };
-        if let Err(reason) = ops::audit(&app, Some(&station), None, kind, "station", data) {
+        if let Err(reason) = ops::audit(&app, Some(&station), None, "station", event) {
             eprintln!("apid: workstation {station}: its reset is not in the audit: {reason}");
         }
         ops::schedule_grant(&app, &station);
@@ -469,11 +473,7 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
     if node.revoked {
         return Err((409, format!("node {} is revoked", node.id)));
     }
-    let apple = node.machine.get("vendor").and_then(Value::as_str) == Some("apple")
-        || node
-            .machine
-            .get("apple")
-            .is_some_and(|apple| !apple.is_null());
+    let apple = node.machine.vendor.as_deref() == Some("apple") || node.machine.apple.is_some();
     let macos = app
         .stations
         .vms()
@@ -483,9 +483,9 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
     check(request, apple, macos).map_err(|reason| (400, reason))?;
     let node_has_qemu = node
         .machine
-        .get("workstation_backends")
-        .and_then(Value::as_array)
-        .is_some_and(|backends| backends.iter().any(|b| b.as_str() == Some("qemu")));
+        .workstation_backends
+        .iter()
+        .any(|b| b == "qemu");
     let backend = backend_for(request, node_has_qemu).map_err(|reason| (400, reason))?;
 
     // The hub's address and its certificate pin: the node relays the VM's link to the hub and hands the VM the pin,
@@ -541,8 +541,14 @@ pub fn create(app: &App, request: &CreateVm, actor: &str) -> Result<VmView, Fail
     app.stations
         .add_vm(record.clone())
         .map_err(|reason| (500, reason))?;
-    let row = json!({"vm": record.id, "node": record.node, "node_vm": record.vm, "os": record.os, "code": code});
-    if let Err(reason) = ops::audit(app, None, None, "vm_create", actor, row) {
+    let event = StationAudit::VmCreate {
+        vm: record.id.clone(),
+        node: record.node.clone(),
+        node_vm: record.vm.clone(),
+        os: record.os.clone(),
+        code: code.clone(),
+    };
+    if let Err(reason) = ops::audit(app, None, None, actor, event) {
         eprintln!(
             "apid: workstation VM {}: its creation is not in the audit: {reason}",
             record.id
@@ -588,15 +594,13 @@ pub fn remove(app: &App, id: &str, actor: &str) -> Result<VmView, Failure> {
         }
     }
     app.stations.remove_vm(id);
-    let row = json!({"vm": record.id, "node": record.node, "node_vm": record.vm, "station": record.station});
-    if let Err(reason) = ops::audit(
-        app,
-        record.station.as_deref(),
-        None,
-        "vm_remove",
-        actor,
-        row,
-    ) {
+    let event = StationAudit::VmRemove {
+        vm: record.id.clone(),
+        node: record.node.clone(),
+        node_vm: record.vm.clone(),
+        station: record.station.clone(),
+    };
+    if let Err(reason) = ops::audit(app, record.station.as_deref(), None, actor, event) {
         eprintln!("apid: workstation VM {id}: its removal is not in the audit: {reason}");
     }
     Ok(view(app, record))
@@ -710,12 +714,25 @@ pub fn power(app: &App, id: &str, what: Power, actor: &str) -> Result<Value, Fai
         Ok((status, body)) if (200..300).contains(&status) => body,
         other => return Err(refusal_of(other)),
     };
-    let row = json!({"vm": record.id, "node": record.node, "node_vm": record.vm});
-    let kind = match what {
-        Power::Sleep => "vm_sleep",
-        Power::Wake => "vm_wake",
+    let (kind, event) = match what {
+        Power::Sleep => (
+            "sleep",
+            StationAudit::VmSleep {
+                vm: record.id.clone(),
+                node: record.node.clone(),
+                node_vm: record.vm.clone(),
+            },
+        ),
+        Power::Wake => (
+            "wake",
+            StationAudit::VmWake {
+                vm: record.id.clone(),
+                node: record.node.clone(),
+                node_vm: record.vm.clone(),
+            },
+        ),
     };
-    if let Err(reason) = ops::audit(app, record.station.as_deref(), None, kind, actor, row) {
+    if let Err(reason) = ops::audit(app, record.station.as_deref(), None, actor, event) {
         eprintln!("apid: workstation VM {id}: its {kind} is not in the audit: {reason}");
     }
     Ok(answer)

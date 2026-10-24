@@ -12,6 +12,8 @@ serde_json.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
 apz-trust = { path = "../apz-trust" }
+# ETags over responses as sent (Response::revalidated).
+apz-cache = { path = "../apz-cache" }
 sha1 = "0.10"
 base64 = "0.22"
 # The routes' documentation (RouteDoc) carries their bodies' JSON Schemas, for the OpenAPI spec.

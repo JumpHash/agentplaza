@@ -53,7 +53,7 @@
   flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px 0;
   border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.ct-ctx-hit:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
+.ct-ctx-hit:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
 .ct-track {
   flex: 1; display: flex; height: 4px; min-width: 40px; overflow: hidden;
   border-radius: 2px; background: var(--rule);

@@ -16,11 +16,20 @@ assert {
 }
 
 tests {
-  test("a fresh scratch hub holds only its own Weft keys", function () {
+  test("a fresh scratch hub holds its Weft keys and the OpenRouter header defaults, and nothing else", function () {
     const body = res.getBody();
     expect(body).to.be.an("array");
-    // Weft makes its hub key and its export signing key on first start; nothing else is there yet.
-    const names = body.map((s) => s.name).sort();
-    expect(names).to.deep.equal(["WEFT_HUB_KEY", "WEFT_SIGNING_KEY"]);
+    // Weft makes its hub key and its export signing key on first start. The hub also keeps the OpenRouter
+    // provider's default header values (HTTP-Referer, X-OpenRouter-Title) in the vault, since those are literals.
+    // Later requests add a Weft key per agent (WEFT_AGENT_<cid>), which is the only other name allowed here.
+    const names = body.map((s) => s.name);
+    const fixed = [
+      "OPENROUTER_HEADER_HTTP_REFERER",
+      "OPENROUTER_HEADER_X_OPENROUTER_TITLE",
+      "WEFT_HUB_KEY",
+      "WEFT_SIGNING_KEY",
+    ];
+    expect(names.filter((n) => fixed.includes(n)).sort()).to.deep.equal([...fixed].sort());
+    expect(names.filter((n) => !fixed.includes(n)).every((n) => /^WEFT_AGENT_\d+$/.test(n))).to.be.true;
   });
 }

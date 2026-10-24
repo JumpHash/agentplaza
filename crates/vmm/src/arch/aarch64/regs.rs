@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(pstate - PC, 8 / 4);
         assert_eq!(
             reg0,
-            KVM_REG_ARM64 as u64 | KVM_REG_ARM_CORE as u64 | KVM_REG_SIZE_U64
+            KVM_REG_ARM64 | KVM_REG_ARM_CORE as u64 | KVM_REG_SIZE_U64
         );
     }
 
@@ -171,11 +171,8 @@ mod tests {
     /// low bits, so two different system registers never collide.
     #[test]
     fn test_sys_reg_ids() {
-        let encoding = |id: u64| {
-            id & !(u64::from(KVM_REG_ARM64)
-                | u64::from(KVM_REG_SIZE_U64)
-                | u64::from(KVM_REG_ARM64_SYSREG))
-        };
+        let encoding =
+            |id: u64| id & !(KVM_REG_ARM64 | KVM_REG_SIZE_U64 | u64::from(KVM_REG_ARM64_SYSREG));
         assert_eq!(reg_size(MPIDR_EL1), 8);
         assert_ne!(encoding(MPIDR_EL1), encoding(MIDR_EL1));
         assert_ne!(encoding(CLIDR_EL1), encoding(SYS_CNTV_CVAL_EL0));

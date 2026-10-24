@@ -19,7 +19,7 @@ assert {
 }
 
 tests {
-  test("it says it waits on the bench", function () {
-    expect(res.getBody().held).to.include("bench");
+  test("no session, so nothing holds it", function () {
+    expect(res.getBody().held).to.be.null;
   });
 }

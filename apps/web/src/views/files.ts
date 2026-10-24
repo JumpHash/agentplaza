@@ -162,10 +162,9 @@ function facts(d: Deliverable): HTMLElement {
     ['Name', h('span.mono', null, d.name)],
     ['Content type', h('span.mono', null, d.content_type)],
     ['Size', `${humanSize(d.size)} (${d.size.toLocaleString()} bytes)`],
-    ['sha256', h('span.mono', null, d.sha256)],
+    ['Hash', h('span.mono', null, d.hash)],
     ['Handed in by', d.author],
     ['When', new Date(d.created_ms).toLocaleString()],
-    ['Store', d.store],
     ['Audience', d.audience + (d.audience === 'private' ? ` · ${d.allowed.length} agents` : '')],
   ];
   if (d.task) pairs.push(['Task', h('span.mono', null, d.task)]);
@@ -269,7 +268,6 @@ export function mount(root: HTMLElement, params: string[] = []): Cleanup {
     const b = h(
       'button.lib-tile',
       { type: 'button', title: d.name, 'data-key': `file-${d.id}`, class: selected === d.id ? 'is-on' : null },
-      h('span.chip.lib-tag', null, d.store),
       thumb(d),
       h('span.lib-tile-t', null, d.title || d.name),
       h('span.lib-clip.lib-card-name', null, d.name),

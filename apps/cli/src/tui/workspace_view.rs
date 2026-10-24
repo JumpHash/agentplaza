@@ -15,8 +15,9 @@ use super::screens::{clip, local_time, show};
 use super::style;
 use super::workspace::{
     Composer, Glyph, Item, Pane, Row, Target, Transcript, Workspace, agent_of, data_of, first_seq,
-    glyph, items, kind_of, shared_names, str_of, task_of, visible,
+    glyph, items, kind_of, str_of, task_of, visible,
 };
+use crate::cmd::agents::label_of;
 use crate::rich;
 
 static NULL: Value = Value::Null;
@@ -148,7 +149,6 @@ fn agents_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palet
     };
     frame.render_widget(Paragraph::new(filter_line), filter_row);
 
-    let names = shared_names(&ws.agents);
     let selected = ws.selected.clone();
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut chosen_lines = None;
@@ -176,10 +176,7 @@ fn agents_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palet
                 let agent = agent_of(&ws.agents, *cid).unwrap_or(&NULL);
                 let status = show(agent.get("status"));
                 let mark = glyph(&status, ws.outcomes.get(cid).map(String::as_str));
-                let mut name = show(agent.get("name"));
-                if names.contains(cid) {
-                    name.push_str(&format!(" #{cid}"));
-                }
+                let name = agent_label(&ws.agents, *cid);
                 let row_style = if !is_chosen {
                     Style::new()
                 } else if focused {
@@ -219,6 +216,14 @@ fn agents_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palet
     frame.render_widget(Paragraph::new(lines[top..end].to_vec()), list);
 }
 
+/// An agent as the pane names it: `<role> #<cid>` (agents have no names).
+fn agent_label(agents: &[Value], cid: u64) -> String {
+    match agent_of(agents, cid) {
+        Some(agent) => label_of(agent),
+        None => format!("agent #{cid}"),
+    }
+}
+
 fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette, clock: f32) {
     let focused = ws.focus == Pane::Chat;
     let steering = matches!(
@@ -246,7 +251,7 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
         return;
     };
     let agent = agent_of(&ws.agents, cid).unwrap_or(&NULL);
-    let name = show(agent.get("name"));
+    let name = agent_label(&ws.agents, cid);
     let status = show(agent.get("status"));
     let following = ws.transcripts.get(&cid).is_none_or(|t| t.view.follow);
     let title = if following {
@@ -255,7 +260,7 @@ fn chat_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palette
         format!(" {name} · {status} · End shows the newest ")
     };
     let working = status == "working";
-    let rctx = rich::from_agents(&ws.agents, None);
+    let rctx = apz_rich::Ctx::default();
 
     let block = pane_block(title, focused, palette);
     let inner = block.inner(body);
@@ -352,7 +357,7 @@ fn board_pane(frame: &mut Frame, area: Rect, ws: &mut Workspace, palette: Palett
     );
     let inner = block.inner(body);
     let width = usize::from(inner.width);
-    let rctx = rich::from_agents(&ws.agents, None);
+    let rctx = apz_rich::Ctx::default();
     let mut lines: Vec<Line<'static>> = Vec::new();
     match ws.board.as_ref().filter(|b| b.project == project) {
         None => lines.push(Line::from(Span::styled(

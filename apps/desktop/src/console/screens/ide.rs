@@ -16,7 +16,7 @@ use apz_ide::{Buffer, ChangeSet, EntryKind, TreePage, WorkspaceId, path as ide_p
 use iced::event::Status;
 use iced::keyboard::{self, Key, Modifiers, key::Named};
 use iced::widget::{Space, Stack, column, container, row, text_editor};
-use iced::{Alignment, Element, Length, Padding, Subscription, Task, mouse};
+use iced::{Alignment, Element, Length, Subscription, Task, mouse};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -24,7 +24,6 @@ use super::Id;
 use super::board;
 use super::ide_chat::{self, ChatMsg};
 use super::ide_chrome::{self, Drag, Edge, Layout};
-use super::ide_conversation;
 use super::ide_editor;
 use super::ide_files;
 use super::ide_model::{self, AgentRow, ProjectRow, TaskRow};
@@ -39,8 +38,10 @@ use crate::console::boot;
 use crate::console::client::{self, Client};
 use crate::console::events;
 use crate::console::rich;
+use crate::console::roles;
 use crate::console::shell;
 use crate::console::ui::{self, Tone};
+use crate::console::work_api::{self, Chat};
 
 /// The setting that keeps the last workspace the IDE opened (the console's Ctrl+Shift+E opens it).
 pub(super) const REMEMBERED: &str = "ide_workspace";
@@ -371,10 +372,8 @@ pub struct State {
     /// In a narrow window: the left sidebar drawn as a drawer over the centre, and the right panel as a sheet over it.
     pub left_drawer: bool,
     pub right_sheet: bool,
-    /// The conversation with the orchestrator open in place of a workspace (`conv-<n>`), if any.
-    pub conversation: Option<ide_conversation::Conversation>,
-    /// The owner's conversations, newest first, as the hub lists them: the sidebar's first section.
-    pub conversations: Vec<Value>,
+    /// The owner's chats, newest activity first, as the hub lists them: the sidebar's first section.
+    pub conversations: Vec<Chat>,
     /// Project mode: the IDE opened under a project (the console's scope) is that project's.
     pub project: Option<String>,
 }
@@ -444,19 +443,17 @@ pub enum Msg {
     DrawerTab(Drawer),
     /// Folds or unfolds the terminal drawer under the centre (Ctrl+`).
     ToggleDrawer,
-    /// The sidebar: its search, a group folded or unfolded, and "+ New agent" (the Agents screen's wizard).
+    /// The sidebar: its search, and a group folded or unfolded.
     SidebarQuery(String),
     ToggleGroup(String),
-    NewAgent,
     /// "+ New conversation": the shell's New project dialog (the console opens it).
     NewProject,
-    /// Opens a conversation with the orchestrator in place of the workspace.
+    /// Opens a chat from the sidebar's list: navigation to its page (see `go`).
     OpenConversation(String),
-    Conversation(ide_conversation::Msg),
-    /// A file dropped on the window: it goes to the composer on screen (the conversation's, else the agent chat's).
+    /// A file dropped on the window: it goes to the agent chat's composer on screen.
     Dropped(PathBuf),
-    /// The conversations, as the hub listed them.
-    Conversations(Result<Value, String>),
+    /// The chats, as the hub listed them.
+    Conversations(Result<Vec<Chat>, String>),
     /// The roster, projects and tasks, as the hub answered.
     Roster(Result<Roster, String>),
     /// The Board tab's messages, and its scope (true: the project's posts).
@@ -565,8 +562,7 @@ pub enum Msg {
 pub fn go(msg: &Msg) -> Option<Id> {
     match msg {
         Msg::Open(workspace) => Some(Id::Ide(workspace.clone())),
-        // "+ New agent" opens the Agents screen, whose wizard spawns one.
-        Msg::NewAgent => Some(Id::Agents),
+        Msg::OpenConversation(id) => Some(Id::Chat(id.clone())),
         Msg::Rich(rich::Ev::Action(action)) => action.route(),
         // A link on a board post in the panel navigates as it does on the board screen.
         Msg::Board(board::Msg::Rich(rich::Ev::Action(action))) => action.route(),
@@ -703,8 +699,8 @@ pub(super) fn selected_agent(st: &State) -> Option<&AgentRow> {
     }
 }
 
-/// The project the workspace on screen belongs to: the one its agent works on (else the first project that names
-/// it), or the one whose repo it is.
+/// The project the workspace on screen belongs to: the one its agent works on (else the project it leads), or the one
+/// whose repo it is.
 pub(super) fn selected_project(st: &State) -> Option<&ProjectRow> {
     match st.ide.workspace.as_ref()? {
         WorkspaceId::Agent(cid) => {
@@ -715,7 +711,7 @@ pub(super) fn selected_project(st: &State) -> Option<&ProjectRow> {
                 .and_then(|a| a.project.as_deref())
             {
                 Some(project) => st.projects.iter().find(|p| p.id == project),
-                None => st.projects.iter().find(|p| p.members.contains(cid)),
+                None => st.projects.iter().find(|p| p.agents.contains(cid)),
             }
         }
         WorkspaceId::Repo { name, .. } => st
@@ -727,37 +723,17 @@ pub(super) fn selected_project(st: &State) -> Option<&ProjectRow> {
     }
 }
 
-/// The breadcrumb's parts: the project's title (or "Plaza" when no project names the workspace), the agent's or
-/// repo's name, and the branch (a repo's ref, or "workspace" for an agent's working copy). A conversation on screen
-/// is "Conversations", its title, and the project it started, if it did.
+/// The breadcrumb's parts: the project's title (or "Plaza" when no project names the workspace), the agent's label
+/// or repo's name, and the branch (a repo's ref, or "workspace" for an agent's working copy).
 pub(super) fn crumbs(st: &State) -> (String, String, String) {
-    if let Some(conv) = &st.conversation {
-        let data = conv.data.as_ref();
-        let title = data
-            .and_then(|c| c["title"].as_str())
-            .unwrap_or(&conv.id)
-            .to_string();
-        let project = data
-            .and_then(|c| c["project"].as_str())
-            .map(crate::console::scope::title)
-            .unwrap_or_default();
-        return ("Conversations".to_string(), title, project);
-    }
     let project = selected_project(st)
         .map(|p| p.title.clone())
         .filter(|t: &String| !t.is_empty())
         .unwrap_or_else(|| "Plaza".to_string());
     match st.ide.workspace.as_ref() {
-        Some(WorkspaceId::Agent(_)) => {
+        Some(WorkspaceId::Agent(cid)) => {
             let name = selected_agent(st)
-                .map(|a| a.name.clone())
-                .unwrap_or_else(|| {
-                    st.ide
-                        .workspace
-                        .as_ref()
-                        .map(WorkspaceId::to_string)
-                        .unwrap_or_default()
-                });
+                .map_or_else(|| roles::agent_label("", *cid), |a| a.label.clone());
             (project, name, "workspace".to_string())
         }
         Some(WorkspaceId::Repo { name, git_ref }) => (project, name.clone(), git_ref.clone()),
@@ -1041,11 +1017,15 @@ pub(super) fn working(st: &State) -> bool {
     current_info(st).is_some_and(|w| w.status.contains("work"))
 }
 
-pub(super) fn choice(w: &WorkspaceInfo) -> Choice {
-    let mut name = if w.name.is_empty() {
-        w.id.clone()
-    } else {
-        w.name.clone()
+pub(super) fn choice(w: &WorkspaceInfo, roster: &[AgentRow]) -> Choice {
+    let mut name = match WorkspaceId::from_str(&w.id) {
+        // An agent is named by its label from the roster (a listing carries no role), else by its cid.
+        Ok(WorkspaceId::Agent(cid)) => roster
+            .iter()
+            .find(|a| a.cid == cid)
+            .map_or_else(|| roles::agent_label("", cid), |a| a.label.clone()),
+        _ if w.name.is_empty() => w.id.clone(),
+        _ => w.name.clone(),
     };
     // A repo workspace is shown on the branch it serves.
     if let Ok(WorkspaceId::Repo { git_ref, .. }) = WorkspaceId::from_str(&w.id) {
@@ -1339,10 +1319,8 @@ pub(super) fn reload_all(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     Task::batch(tasks)
 }
 
-/// Switches the screen to `id`: its tabs, tree and changes are its own, so the old ones go. A conversation on screen
-/// gives way to the workspace.
+/// Switches the screen to `id`: its tabs, tree and changes are its own, so the old ones go.
 pub(super) fn select(st: &mut State, id: WorkspaceId, ctx: &Ctx) -> Task<Msg> {
-    st.conversation = None;
     if st.ide.workspace.as_ref() == Some(&id) {
         return Task::none();
     }
@@ -1386,34 +1364,18 @@ pub(super) fn open_search(st: &mut State) -> Task<Msg> {
     iced::widget::operation::focus(SEARCH_ID.clone())
 }
 
-/// Opens conversation `id` in place of the workspace (the chat with the orchestrator, and the draft beside it).
-pub(super) fn open_conversation(st: &mut State, id: String, ctx: &Ctx) -> Task<Msg> {
-    if st.conversation.as_ref().is_some_and(|c| c.id == id) {
-        return Task::none();
-    }
-    let load = ide_conversation::load(&id, ctx).map(Msg::Conversation);
-    st.conversation = Some(ide_conversation::Conversation::new(id));
-    load
-}
-
-/// Asks the hub for the owner's conversations, for the sidebar.
+/// Asks the hub for the owner's chats (all projects', the live ones), for the sidebar.
 pub(super) fn load_conversations(ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
-    client::task(
-        move || c.get::<Value>("/v1/owner/conversations"),
-        Msg::Conversations,
-    )
+    client::task(move || work_api::chats(&c, None, false), Msg::Conversations)
 }
 
 /// Opens the target the screen's id named, once the list is in: its workspace, in review mode if asked,
-/// with its file open if one is named. A conversation's id opens that conversation.
+/// with its file open if one is named.
 pub(super) fn apply_preselect(st: &mut State, ctx: &Ctx) -> Task<Msg> {
     let Some(raw) = st.preselect.take() else {
         return Task::none();
     };
-    if ide_conversation::is_conversation_id(&raw) {
-        return open_conversation(st, raw, ctx);
-    }
     let target = Target::parse(&raw);
     match WorkspaceId::from_str(&target.workspace) {
         Ok(id) if st.workspaces.iter().any(|w| w.id == id.to_string()) => {
@@ -1672,25 +1634,16 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             }
         }
         Msg::Back | Msg::NewProject => Task::none(),
-        Msg::OpenConversation(id) => open_conversation(st, id, ctx),
-        Msg::Conversation(msg) => match st.conversation.as_mut() {
-            Some(conv) => ide_conversation::update(conv, msg, ctx).map(Msg::Conversation),
-            None => Task::none(),
-        },
-        Msg::Dropped(path) => match (st.conversation.as_ref(), st.ide.workspace.as_ref()) {
-            (Some(conv), _) => Task::done(Msg::Conversation(ide_conversation::Msg::Attach {
-                id: conv.id.clone(),
-                paths: vec![path],
-            })),
-            (None, Some(ws)) => Task::done(Msg::Panels(ide_panels::Msg::Attach {
+        Msg::Dropped(path) => match st.ide.workspace.as_ref() {
+            Some(ws) => Task::done(Msg::Panels(ide_panels::Msg::Attach {
                 ws: ws.to_string(),
                 paths: vec![path],
             })),
-            (None, None) => Task::none(),
+            None => Task::none(),
         },
         Msg::Conversations(res) => {
             if let Ok(list) = res {
-                st.conversations = list.as_array().cloned().unwrap_or_default();
+                st.conversations = list;
             }
             Task::none()
         }
@@ -1700,8 +1653,8 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             if matches!(event.kind.as_str(), "agent" | "work" | "project" | "task") {
                 tasks.push(load_roster(ctx));
             }
-            // A conversation changed: the sidebar's list, and the one on screen (an answer, or one streaming in).
-            if event.kind == "owner_conversation" {
+            // A chat changed: the sidebar's list is read again.
+            if event.kind == "chat" {
                 tasks.push(load_conversations(ctx));
             }
             if let Some(task) = st
@@ -1710,16 +1663,6 @@ pub fn update(st: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
                 .on_event(&ctx.client, &event.kind, &event.data)
             {
                 tasks.push(task.map(|m| Msg::Panels(ide_panels::Msg::ChatTools(m))));
-            }
-            if let Some(conv) = st.conversation.as_mut() {
-                ide_conversation::on_event(conv, &event.kind, &event.data);
-                if let Some(task) = conv
-                    .chat_tools
-                    .on_event(&ctx.client, &event.kind, &event.data)
-                {
-                    tasks
-                        .push(task.map(|m| Msg::Conversation(ide_conversation::Msg::ChatTools(m))));
-                }
             }
             if matches!(event.kind.as_str(), "board" | "board_paused") {
                 tasks.push(load_board(st, ctx));
@@ -1812,9 +1755,6 @@ pub fn load(st: &mut State, ctx: &Ctx) -> Task<Msg> {
         load_board(st, ctx),
         load_conversations(ctx),
     ];
-    if let Some(conv) = &st.conversation {
-        tasks.push(ide_conversation::load(&conv.id, ctx).map(Msg::Conversation));
-    }
     if !st.loaded {
         if !st.listing {
             st.listing = true;
@@ -1951,29 +1891,11 @@ pub(super) fn left_panel(st: &State, width: f32) -> Element<'_, Msg> {
         .into()
 }
 
-/// The right side panel: its tabs and the shown tab, on the panel's sheet. Its tabs take the panel's width. With a
-/// conversation on screen, the project it drafts.
+/// The right side panel: its tabs and the shown tab, on the panel's sheet. Its tabs take the panel's width.
 pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
-    let (body, padding) = match &st.conversation {
-        Some(conv) => {
-            let roster: Vec<(u64, String)> =
-                st.roster.iter().map(|a| (a.cid, a.name.clone())).collect();
-            (
-                ide_conversation::draft(conv, &roster, now_ms(), Msg::Conversation, Msg::Shell),
-                Padding {
-                    top: 10.0,
-                    right: 12.0,
-                    bottom: 10.0,
-                    left: 10.0,
-                },
-            )
-        }
-        None => (ide_right::view(st), Padding::from(0.0)),
-    };
-    container(body)
+    container(ide_right::view(st))
         .width(Length::Fixed(width))
         .height(Length::Fill)
-        .padding(padding)
         .style(ide_chrome::panel_style)
         .into()
 }
@@ -1982,18 +1904,6 @@ pub(super) fn right_panel(st: &State, width: f32) -> Element<'_, Msg> {
 /// when it is open and the centre is not the terminal itself. The drawer is an agent's or a workstation's: repo
 /// workspaces have none.
 pub(super) fn centre_column(st: &State) -> Element<'_, Msg> {
-    // A conversation is the chat with the orchestrator; it has no terminal drawer.
-    if let Some(conv) = &st.conversation {
-        let who = conv
-            .data
-            .as_ref()
-            .and_then(|c| c["cid"].as_u64())
-            .and_then(|cid| st.roster.iter().find(|a| a.cid == cid))
-            .map(|a| a.name.clone())
-            .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| "The orchestrator".to_string());
-        return ide_conversation::chat(conv, who, now_ms(), Msg::Conversation);
-    }
     let centre = container(ide_chat::centre(st))
         .width(Length::Fill)
         .height(Length::Fill);

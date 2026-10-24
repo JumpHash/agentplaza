@@ -1,6 +1,7 @@
 // The Tasks tab of the IDE's right column: the project's tasks, active first, with done of total. The markup is the
 // prototype's dock Tasks (loom: m-ide-tasks): a head with the project and its count, then a row per task with its state
 // glyph, goal, id, agent and state chip.
+import { agentLabel } from '../roles';
 import { api, type Project, type Task } from '../api';
 import { badge, empty } from '../ui/components';
 import { h, lu, replace } from '../ui/dom';
@@ -38,7 +39,7 @@ function shortId(id: string): string {
 
 function row(t: Task): HTMLElement {
   const tone = toneOf(t.state);
-  const who = t.agent_cid != null ? `agent ${t.agent_cid}` : t.assignee_id;
+  const who = t.agent_cid != null ? agentLabel(t.agent_cid) : t.assignee_id;
   const glyph = tone === 'done' ? lu('check', 13, '', 2.4) : tone === 'failed' ? lu('x', 13, '', 2.4) : null;
   return h(
     'div.idt-r',
@@ -71,7 +72,7 @@ export function tasksPanel(opts: { project: Project | null; onCount(done: number
   );
 
   if (!project) {
-    replace(body, empty('list-checks', 'Not in a project', 'Open an agent, a conversation or a repository of a project to see its tasks.'));
+    replace(body, empty('list-checks', 'Not in a project', 'Open an agent, a chat or a repository of a project to see its tasks.'));
     return { el, show() {}, dispose() {} };
   }
 

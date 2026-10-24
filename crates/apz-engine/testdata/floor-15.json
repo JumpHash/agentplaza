@@ -164,17 +164,14 @@
         202,
         203,
         204,
-        205,
         206,
         207,
-        208,
-        209,
         210,
         211,
         212,
         213
       ],
-      "working": 5,
+      "working": 4,
       "stats": {
         "cpu_pct": 38.4,
         "mem_used_mib": 27800
@@ -249,11 +246,8 @@
         218,
         219,
         220,
-        221,
         222,
         223,
-        224,
-        225,
         226,
         227,
         228,
@@ -263,7 +257,7 @@
         232,
         233
       ],
-      "working": 12,
+      "working": 9,
       "stats": {
         "cpu_pct": 64.2,
         "mem_used_mib": 1310720
@@ -307,10 +301,8 @@
         234,
         235,
         236,
-        237,
         238,
-        239,
-        240
+        239
       ],
       "working": 2,
       "stats": {
@@ -353,7 +345,6 @@
       ],
       "storage_gib": 512,
       "agents": [
-        241,
         242,
         243
       ],
@@ -467,11 +458,8 @@
       ],
       "storage_gib": 2000,
       "agents": [
-        253,
         254,
         255,
-        256,
-        257,
         258
       ],
       "working": 2,
@@ -566,8 +554,7 @@
         265,
         266,
         267,
-        268,
-        269
+        268
       ],
       "working": 3,
       "stats": {
@@ -612,15 +599,13 @@
       "agents": [
         270,
         271,
-        272,
-        273,
         274,
         275,
         276,
         277,
         278
       ],
-      "working": 4,
+      "working": 2,
       "stats": {
         "cpu_pct": 47.5,
         "mem_used_mib": 40100
@@ -674,10 +659,8 @@
         282,
         283,
         284,
-        285,
         286,
-        287,
-        288
+        287
       ],
       "working": 4,
       "stats": {
@@ -717,7 +700,6 @@
       ],
       "storage_gib": 8000,
       "agents": [
-        289,
         290,
         291,
         292,
@@ -778,11 +760,8 @@
       "storage_gib": 12000,
       "agents": [
         300,
-        301,
         302,
         303,
-        304,
-        305,
         306,
         307,
         308,
@@ -790,7 +769,7 @@
         310,
         311
       ],
-      "working": 6,
+      "working": 3,
       "stats": {
         "cpu_pct": 71.3,
         "mem_used_mib": 310000
@@ -833,11 +812,8 @@
         314,
         315,
         316,
-        317,
         318,
         319,
-        320,
-        321,
         322,
         323,
         324,
@@ -845,7 +821,7 @@
         326,
         327
       ],
-      "working": 7,
+      "working": 6,
       "stats": {
         "cpu_pct": 61.4,
         "mem_used_mib": 42000
@@ -994,44 +970,6 @@
       }
     },
     {
-      "cid": 205,
-      "name": "Esme",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "mushroom",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3805000,
-      "last_seen_ago_ms": 4000,
-      "run": "r205",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 165665,
-        "output_tokens": 28885,
-        "cache_read_tokens": 202205,
-        "cache_write_tokens": 25865
-      },
-      "queue": 1,
-      "work": {
-        "id": 5205,
-        "cid": 205,
-        "kind": "chat",
-        "thread": "thread-205",
-        "prompt": "Write release notes for the next build",
-        "origin": {
-          "task": null,
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 547500,
-        "started_ago_ms": 426000
-      }
-    },
-    {
       "cid": 206,
       "name": "Finn",
       "role": "incident",
@@ -1090,56 +1028,6 @@
         "output_tokens": 29079,
         "cache_read_tokens": 203007,
         "cache_write_tokens": 25971
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 208,
-      "name": "Hugo",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "pup",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3808000,
-      "last_seen_ago_ms": 7000,
-      "run": "r208",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 167504,
-        "output_tokens": 29176,
-        "cache_read_tokens": 203408,
-        "cache_write_tokens": 26024
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 209,
-      "name": "Ines",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "cube",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3809000,
-      "last_seen_ago_ms": 8000,
-      "run": "r209",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 168117,
-        "output_tokens": 29273,
-        "cache_read_tokens": 203809,
-        "cache_write_tokens": 26077
       },
       "queue": 0,
       "work": null
@@ -1498,44 +1386,6 @@
       }
     },
     {
-      "cid": 221,
-      "name": "Viggo",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "mole",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3821000,
-      "last_seen_ago_ms": 6000,
-      "run": "r221",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 175473,
-        "output_tokens": 30437,
-        "cache_read_tokens": 208621,
-        "cache_write_tokens": 26713
-      },
-      "queue": 2,
-      "work": {
-        "id": 5221,
-        "cid": 221,
-        "kind": "task",
-        "thread": "thread-221",
-        "prompt": "Check certificate rotation on the mail relay",
-        "origin": {
-          "task": "task-321",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 571500,
-        "started_ago_ms": 445200
-      }
-    },
-    {
       "cid": 222,
       "name": "Willa",
       "role": "incident",
@@ -1609,82 +1459,6 @@
         },
         "created_ago_ms": 574500,
         "started_ago_ms": 447600
-      }
-    },
-    {
-      "cid": 224,
-      "name": "Zoe",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "owl",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3824000,
-      "last_seen_ago_ms": 2000,
-      "run": "r224",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 177312,
-        "output_tokens": 30728,
-        "cache_read_tokens": 209824,
-        "cache_write_tokens": 26872
-      },
-      "queue": 2,
-      "work": {
-        "id": 5224,
-        "cid": 224,
-        "kind": "task",
-        "thread": "thread-224",
-        "prompt": "Summarise the incident timeline for the storage stall",
-        "origin": {
-          "task": "task-324",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 576000,
-        "started_ago_ms": 448800
-      }
-    },
-    {
-      "cid": 225,
-      "name": "Aster",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "crab",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3825000,
-      "last_seen_ago_ms": 3000,
-      "run": "r225",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 177925,
-        "output_tokens": 30825,
-        "cache_read_tokens": 210225,
-        "cache_write_tokens": 26925
-      },
-      "queue": 0,
-      "work": {
-        "id": 5225,
-        "cid": 225,
-        "kind": "chat",
-        "thread": "thread-225",
-        "prompt": "Triage the overnight alert backlog",
-        "origin": {
-          "task": null,
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 577500,
-        "started_ago_ms": 450000
       }
     },
     {
@@ -2002,31 +1776,6 @@
       }
     },
     {
-      "cid": 237,
-      "name": "Marlo",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "cube",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3837000,
-      "last_seen_ago_ms": 8000,
-      "run": "r237",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 185281,
-        "output_tokens": 31989,
-        "cache_read_tokens": 215037,
-        "cache_write_tokens": 27561
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
       "cid": 238,
       "name": "Nico",
       "role": "incident",
@@ -2072,56 +1821,6 @@
         "output_tokens": 32183,
         "cache_read_tokens": 215839,
         "cache_write_tokens": 27667
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 240,
-      "name": "Pavel",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "rover",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3840000,
-      "last_seen_ago_ms": 4000,
-      "run": "r240",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 187120,
-        "output_tokens": 32280,
-        "cache_read_tokens": 216240,
-        "cache_write_tokens": 27720
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 241,
-      "name": "Rafa",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "hover",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3841000,
-      "last_seen_ago_ms": 5000,
-      "run": "r241",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 187733,
-        "output_tokens": 32377,
-        "cache_read_tokens": 216641,
-        "cache_write_tokens": 27773
       },
       "queue": 0,
       "work": null
@@ -2441,31 +2140,6 @@
       "work": null
     },
     {
-      "cid": 253,
-      "name": "Emil",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "crab",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3853000,
-      "last_seen_ago_ms": 3000,
-      "run": "r253",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 195089,
-        "output_tokens": 33541,
-        "cache_read_tokens": 221453,
-        "cache_write_tokens": 28409
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
       "cid": 254,
       "name": "Freya",
       "role": "incident",
@@ -2540,56 +2214,6 @@
         "created_ago_ms": 622500,
         "started_ago_ms": 486000
       }
-    },
-    {
-      "cid": 256,
-      "name": "Hattie",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "frog",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3856000,
-      "last_seen_ago_ms": 6000,
-      "run": "r256",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 196928,
-        "output_tokens": 33832,
-        "cache_read_tokens": 222656,
-        "cache_write_tokens": 28568
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 257,
-      "name": "Ilse",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "duck",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3857000,
-      "last_seen_ago_ms": 7000,
-      "run": "r257",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 197541,
-        "output_tokens": 33929,
-        "cache_read_tokens": 223057,
-        "cache_write_tokens": 28621
-      },
-      "queue": 0,
-      "work": null
     },
     {
       "cid": 258,
@@ -2906,31 +2530,6 @@
       "work": null
     },
     {
-      "cid": 269,
-      "name": "Vito",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "hover",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3869000,
-      "last_seen_ago_ms": 5000,
-      "run": "r269",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 204897,
-        "output_tokens": 35093,
-        "cache_read_tokens": 227869,
-        "cache_write_tokens": 29257
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
       "cid": 270,
       "name": "Wiebke",
       "role": "incident",
@@ -2991,82 +2590,6 @@
         },
         "created_ago_ms": 646500,
         "started_ago_ms": 505200
-      }
-    },
-    {
-      "cid": 272,
-      "name": "Anka",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "can",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3872000,
-      "last_seen_ago_ms": 8000,
-      "run": "r272",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 206736,
-        "output_tokens": 35384,
-        "cache_read_tokens": 229072,
-        "cache_write_tokens": 29416
-      },
-      "queue": 2,
-      "work": {
-        "id": 5272,
-        "cid": 272,
-        "kind": "task",
-        "thread": "thread-272",
-        "prompt": "Review retry logic in the ingest worker",
-        "origin": {
-          "task": "task-372",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 648000,
-        "started_ago_ms": 506400
-      }
-    },
-    {
-      "cid": 273,
-      "name": "Bastien",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "lamp",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3873000,
-      "last_seen_ago_ms": 2000,
-      "run": "r273",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 207349,
-        "output_tokens": 35481,
-        "cache_read_tokens": 229473,
-        "cache_write_tokens": 29469
-      },
-      "queue": 0,
-      "work": {
-        "id": 5273,
-        "cid": 273,
-        "kind": "task",
-        "thread": "thread-273",
-        "prompt": "Summarise last week of board comments",
-        "origin": {
-          "task": "task-373",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 649500,
-        "started_ago_ms": 507600
       }
     },
     {
@@ -3410,31 +2933,6 @@
       "work": null
     },
     {
-      "cid": 285,
-      "name": "Noor",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "duck",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3885000,
-      "last_seen_ago_ms": 7000,
-      "run": "r285",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 214705,
-        "output_tokens": 36645,
-        "cache_read_tokens": 234285,
-        "cache_write_tokens": 30105
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
       "cid": 286,
       "name": "Otto",
       "role": "incident",
@@ -3480,56 +2978,6 @@
         "output_tokens": 36839,
         "cache_read_tokens": 235087,
         "cache_write_tokens": 30211
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 288,
-      "name": "Quinta",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "astro",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3888000,
-      "last_seen_ago_ms": 3000,
-      "run": "r288",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 216544,
-        "output_tokens": 36936,
-        "cache_read_tokens": 235488,
-        "cache_write_tokens": 30264
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 289,
-      "name": "Renzo",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "mushroom",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3889000,
-      "last_seen_ago_ms": 4000,
-      "run": "r289",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 217157,
-        "output_tokens": 37033,
-        "cache_read_tokens": 235889,
-        "cache_write_tokens": 30317
       },
       "queue": 0,
       "work": null
@@ -3862,44 +3310,6 @@
       "work": null
     },
     {
-      "cid": 301,
-      "name": "Dina",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "lamp",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3901000,
-      "last_seen_ago_ms": 2000,
-      "run": "r301",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 224513,
-        "output_tokens": 38197,
-        "cache_read_tokens": 240701,
-        "cache_write_tokens": 30953
-      },
-      "queue": 1,
-      "work": {
-        "id": 5301,
-        "cid": 301,
-        "kind": "task",
-        "thread": "thread-301",
-        "prompt": "Draft the migration plan for the ledger tables",
-        "origin": {
-          "task": "task-401",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 691500,
-        "started_ago_ms": 541200
-      }
-    },
-    {
       "cid": 302,
       "name": "Eero",
       "role": "incident",
@@ -3973,82 +3383,6 @@
         },
         "created_ago_ms": 694500,
         "started_ago_ms": 543600
-      }
-    },
-    {
-      "cid": 304,
-      "name": "Gabe",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "pogo",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3904000,
-      "last_seen_ago_ms": 5000,
-      "run": "r304",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 226352,
-        "output_tokens": 38488,
-        "cache_read_tokens": 241904,
-        "cache_write_tokens": 31112
-      },
-      "queue": 1,
-      "work": {
-        "id": 5304,
-        "cid": 304,
-        "kind": "task",
-        "thread": "thread-304",
-        "prompt": "Reconcile the treasury journal against invoices",
-        "origin": {
-          "task": "task-404",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 696000,
-        "started_ago_ms": 544800
-      }
-    },
-    {
-      "cid": 305,
-      "name": "Hedda",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "mole",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3905000,
-      "last_seen_ago_ms": 6000,
-      "run": "r305",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 226965,
-        "output_tokens": 38585,
-        "cache_read_tokens": 242305,
-        "cache_write_tokens": 31165
-      },
-      "queue": 2,
-      "work": {
-        "id": 5305,
-        "cid": 305,
-        "kind": "chat",
-        "thread": "thread-305",
-        "prompt": "Benchmark the 8-bit checkpoint on the new cards",
-        "origin": {
-          "task": null,
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 697500,
-        "started_ago_ms": 546000
       }
     },
     {
@@ -4392,44 +3726,6 @@
       }
     },
     {
-      "cid": 317,
-      "name": "Urban",
-      "role": "finance",
-      "role_label": "Finance",
-      "tier": "worker",
-      "status": "working",
-      "kind": "llm",
-      "species": "mushroom",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3917000,
-      "last_seen_ago_ms": 4000,
-      "run": "r317",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 234321,
-        "output_tokens": 39749,
-        "cache_read_tokens": 247117,
-        "cache_write_tokens": 31801
-      },
-      "queue": 2,
-      "work": {
-        "id": 5317,
-        "cid": 317,
-        "kind": "task",
-        "thread": "thread-317",
-        "prompt": "Review retry logic in the ingest worker",
-        "origin": {
-          "task": "task-417",
-          "motion": null,
-          "from_cid": null
-        },
-        "created_ago_ms": 715500,
-        "started_ago_ms": 560400
-      }
-    },
-    {
       "cid": 318,
       "name": "Verity",
       "role": "incident",
@@ -4504,56 +3800,6 @@
         "created_ago_ms": 718500,
         "started_ago_ms": 562800
       }
-    },
-    {
-      "cid": 320,
-      "name": "Yara",
-      "role": "mayor",
-      "role_label": "Mayor",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "pup",
-      "model": "claude-haiku-5-5",
-      "model_override": "claude-haiku-5-5",
-      "model_source": "agent",
-      "connected_ago_ms": 3920000,
-      "last_seen_ago_ms": 7000,
-      "run": "r320",
-      "vm": 0,
-      "usage": {
-        "input_tokens": 236160,
-        "output_tokens": 40040,
-        "cache_read_tokens": 248320,
-        "cache_write_tokens": 31960
-      },
-      "queue": 0,
-      "work": null
-    },
-    {
-      "cid": 321,
-      "name": "Ada",
-      "role": "mayor-office",
-      "role_label": "Mayor · office",
-      "tier": "worker",
-      "status": "idle",
-      "kind": "llm",
-      "species": "cube",
-      "model": "claude-sonnet-5",
-      "model_override": null,
-      "model_source": "default",
-      "connected_ago_ms": 3921000,
-      "last_seen_ago_ms": 8000,
-      "run": "r321",
-      "vm": 1,
-      "usage": {
-        "input_tokens": 236773,
-        "output_tokens": 40137,
-        "cache_read_tokens": 248721,
-        "cache_write_tokens": 32013
-      },
-      "queue": 0,
-      "work": null
     },
     {
       "cid": 322,

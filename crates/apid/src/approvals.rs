@@ -3,28 +3,32 @@
 //! A mode says what an agent may do with the tools that change things.
 //! `autonomous` (the default) lets them run, `ask` holds each call until the
 //! owner approves that exact call, and `read_only` refuses them. Read-class
-//! tools pass in every mode. Modes persist in `permissions.json`; the queue is
-//! kept in memory (snapshotted to Postgres or the state dir with the other components), newest last, capped at `QUEUE_CAP`.
+//! tools pass in every mode. Modes and the queue (newest last, capped at `QUEUE_CAP`) are kept in the hub's store
+//! (`approval_queue`: the modes as a map, the queue and its id counter as child rows); the owner's decisions and mode
+//! changes are saved at once (`saver::save_now`).
+//!
+//! If the saved state cannot be read at start, every agent without a mode runs in `ask`, and nothing is written over
+//! the stored state until the hub restarts with a readable one.
 
 use std::collections::BTreeMap;
-use std::io;
-use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_metrics::{EntityKind, SeriesKey};
 use apz_proto::wire::HostMessage;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::providers::write_atomic;
+use crate::cards::{self, Card, Choice, NewCard};
 use crate::state::App;
 
 /// How many approvals the queue keeps; the oldest drop first.
 const QUEUE_CAP: usize = 500;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Mode {
     #[default]
@@ -33,7 +37,7 @@ pub enum Mode {
     ReadOnly,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Pending,
@@ -46,7 +50,7 @@ pub enum State {
 
 /// An engine call the harness is waiting on for an owner's decision: the work item it runs under
 /// and the call's id in the harness (`<call>.e<n>`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Waiting {
     pub work: u64,
     pub call: String,
@@ -76,16 +80,20 @@ pub enum Gate {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// One approval: a row of the approvals queue (`approval_queue_items`). Its call's input and its detail are kept as
+/// written (content); the hub matches a held call against an approved one by its input.
+#[derive(Debug, Clone, Serialize, Deserialize, apz_store::Table)]
 pub struct Approval {
     pub id: String,
     pub cid: u64,
     pub tool: String,
+    /// The tool call's input (JSON), as the model sent it.
+    #[table(content)]
     pub input: Value,
     pub created_ms: u64,
     pub state: State,
     pub reason: Option<String>,
-    /// What the decision is: `tool` (a held tool call), `sanction`, `payment` or `review` (a done
+    /// What the decision is: `tool` (a held tool call) or `review` (a done
     /// task no reviewer took in time; the approval passes it and the denial fails it).
     #[serde(default = "tool_kind")]
     pub kind: String,
@@ -94,35 +102,21 @@ pub struct Approval {
     pub subject: String,
     /// The structured detail. For a tool approval, the input.
     #[serde(default)]
+    #[table(content)]
     pub detail: Value,
     /// The thread of the work item the call ran under: the decision's follow-up is queued there.
-    /// None when no work item was at hand, or for an approval recorded before this existed.
+    /// None when no work item was at hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<String>,
     /// The engine calls waiting on this decision; each gets a `permission_decision` when the owner
     /// decides. Empty for every other approval.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
     pub waiting: Vec<Waiting>,
 }
 
 fn tool_kind() -> String {
     "tool".to_string()
-}
-
-impl Approval {
-    /// Fills the tool-approval fields a snapshot from before they existed lacks: the
-    /// subject is the tool and the detail is the input. Other kinds are left as they are.
-    fn backfill(&mut self) {
-        if self.kind != "tool" {
-            return;
-        }
-        if self.subject.is_empty() {
-            self.subject = self.tool.clone();
-        }
-        if self.detail.is_null() {
-            self.detail = self.input.clone();
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -131,88 +125,116 @@ pub enum DecideError {
     NotPending,
 }
 
+/// The store's state in memory: the modes, the queue (every item whatever its state, oldest first), the id counter,
+/// and whether the saved state could not be read at start.
 #[derive(Default)]
 struct Inner {
     modes: BTreeMap<u64, Mode>,
     queue: Vec<Approval>,
+    /// The last id handed out (`a<next>`).
     next: u64,
+    /// Set when the saved state could not be read at start: the modes are then unknown, so an agent with no mode of
+    /// its own runs in `ask`, and nothing is written over the stored state until the hub restarts.
+    damaged: bool,
 }
 
-/// Modes (persisted) and the approvals queue (in memory).
+/// The approvals' state as its table: one row of `approval_queue`, the modes a child map and the queue a child list.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "approval_queue")]
+struct Queue {
+    #[table(map_value)]
+    modes: BTreeMap<u64, Mode>,
+    #[table(child)]
+    items: Vec<Approval>,
+    /// The last id handed out.
+    seq: u64,
+}
+
+/// The approvals' table: `approval_queue`.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(Queue)
+}
+
+/// Modes and the approvals queue, in memory: the hub's saver keeps them in `plaza.db`.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
-    /// The mode of an agent the owner set none for. `autonomous`, or `ask` when `permissions.json`
-    /// was damaged at load: the owner's modes are then unknown, so nothing runs unasked.
-    fallback: Mode,
-    /// Set when `permissions.json` was damaged at load. The damaged file is then left as it is, and
-    /// nothing is written over it until the owner restores or removes it and the hub restarts.
-    damaged: bool,
     inner: Mutex<Inner>,
 }
 
 impl Store {
-    /// Loads the saved modes from `dir`. A missing file means every agent starts in `autonomous`. A
-    /// damaged file is copied to `permissions.json.corrupt-<ms>` and left in place (see
-    /// `laws::read_state`): every agent without a saved mode starts in `ask`, on every start, until
-    /// the owner restores or removes it.
-    pub fn load(dir: &Path) -> Store {
-        let path = dir.join("permissions.json");
-        let found = crate::laws::read_state::<BTreeMap<u64, Mode>>(&path);
-        let (modes, fallback, damaged) = match found {
-            Ok(found) => (found.unwrap_or_default(), Mode::default(), false),
-            Err(_) => (BTreeMap::new(), Mode::Ask, true),
+    /// Replaces the modes and the queue with what the hub's store holds (at start). A store that cannot be read is
+    /// marked damaged: every agent without a mode of its own runs in `ask`, and nothing is written over the stored
+    /// state until the hub restarts with a readable one.
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored = match apz_store::table::load_one::<Queue>(conn, def()) {
+            Ok(stored) => stored.unwrap_or_default(),
+            Err(e) => {
+                self.lock().damaged = true;
+                return Err(e);
+            }
         };
-        Store {
-            path,
-            fallback,
-            damaged,
-            inner: Mutex::new(Inner {
-                modes,
-                queue: Vec::new(),
-                next: 1,
-            }),
-        }
+        let mut items = stored.items;
+        let excess = items.len().saturating_sub(QUEUE_CAP);
+        items.drain(..excess);
+        let mut inner = self.lock();
+        inner.modes = stored.modes;
+        inner.queue = items;
+        inner.next = stored.seq;
+        Ok(())
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The modes and the queue as their rows, as they are now (the saver writes what changed). Nothing while the saved
+    /// state could not be read: an empty row set writes nothing, so nothing is written over the stored state.
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let inner = self.lock();
+        if inner.damaged {
+            return Ok(RowSet::new());
+        }
+        let queue = Queue {
+            modes: inner.modes.clone(),
+            items: inner.queue.clone(),
+            seq: inner.next,
+        };
+        RowSet::one(def(), &queue)
+    }
+
+    /// Whether the saved state could not be read at start: the modes then apply in memory only.
+    pub fn damaged(&self) -> bool {
+        self.lock().damaged
+    }
+
+    /// The mode of agent `cid` when the owner set none: `ask` while the saved state is unreadable, else `autonomous`.
+    fn fallback(inner: &Inner) -> Mode {
+        if inner.damaged {
+            Mode::Ask
+        } else {
+            Mode::default()
+        }
+    }
+
     pub fn mode(&self, cid: u64) -> Mode {
-        self.lock()
+        let inner = self.lock();
+        inner
             .modes
             .get(&cid)
             .copied()
-            .unwrap_or(self.fallback)
+            .unwrap_or_else(|| Self::fallback(&inner))
     }
 
-    /// Saves the mode for `cid` and writes the whole map to disk. On a failed
-    /// write the in-memory mode is put back. While the file is damaged the mode
-    /// applies in memory only: nothing is written over the damaged file.
-    pub fn set_mode(&self, cid: u64, mode: Mode) -> io::Result<()> {
+    /// Sets the mode for `cid`. The saver writes it (at once for the owner's change: `put_mode`). While the saved state
+    /// is unreadable the mode applies in memory only.
+    pub fn set_mode(&self, cid: u64, mode: Mode) {
         let mut inner = self.lock();
-        if self.damaged {
-            inner.modes.insert(cid, mode);
+        if inner.damaged {
             eprintln!(
-                "approvals: agent {cid} is set to {mode:?} for this run only, not saved: permissions.json could not be read at startup and is not written until the owner restores or removes it and the hub restarts"
+                "approvals: agent {cid} is set to {mode:?} for this run only, not saved: the saved modes could not be read at startup and are not written until the hub restarts"
             );
-            return Ok(());
         }
-        let previous = inner.modes.insert(cid, mode);
-        let saved = serde_json::to_vec_pretty(&inner.modes)
-            .map_err(io::Error::other)
-            .and_then(|bytes| write_atomic(&self.path, &bytes, 0o600));
-        if saved.is_err() {
-            match previous {
-                Some(p) => {
-                    inner.modes.insert(cid, p);
-                }
-                None => {
-                    inner.modes.remove(&cid);
-                }
-            }
-        }
-        saved
+        inner.modes.insert(cid, mode);
     }
 
     /// The gate for one call. `class` is the tool's risk class. A held call is
@@ -230,12 +252,13 @@ impl Store {
 
     /// The mode the gate enforces for agent `cid` whose project's mode is `project` (None when the
     /// project sets none), and where it comes from: the owner's (`agent`), the project's (`project`),
-    /// the default (`default`), or `damaged-file-fallback` when a damaged `permissions.json` makes it `ask`.
+    /// the default (`default`), or `damaged-file-fallback` (the label the console reads) when the saved modes could not
+    /// be read and the agent's mode is `ask`.
     pub fn effective(&self, cid: u64, project: Option<Mode>) -> (Mode, &'static str) {
         if let Some(mode) = self.explicit(cid) {
             return (mode, "agent");
         }
-        match (self.damaged, project) {
+        match (self.damaged(), project) {
             (true, None | Some(Mode::Autonomous)) => (Mode::Ask, "damaged-file-fallback"),
             (_, Some(mode)) => (mode, "project"),
             (_, None) => (Mode::default(), "default"),
@@ -256,9 +279,9 @@ impl Store {
             return Gate::Run;
         }
         let mut inner = self.lock();
-        // A damaged permissions file makes `ask` the default of an agent with no saved mode, even when
+        // Unreadable saved modes make `ask` the default of an agent with no saved mode, even when
         // its project's mode is the default `autonomous`.
-        let default = match (self.damaged, fallback) {
+        let default = match (inner.damaged, fallback) {
             (true, Mode::Autonomous) => Mode::Ask,
             (_, own) => own,
         };
@@ -383,8 +406,8 @@ fn now_ms() -> u64 {
 /// `input` and `detail` are the same value, so a tool approval and a decision of
 /// another kind read alike.
 fn push_pending(inner: &mut Inner, cid: u64, kind: &str, subject: &str, detail: Value) -> Approval {
-    let id = format!("a{}", inner.next);
     inner.next += 1;
+    let id = format!("a{}", inner.next);
     let item = Approval {
         id,
         cid,
@@ -425,7 +448,7 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
         ..
     } = &gate
     {
-        app.bus.publish("approval", item);
+        announce(app, item);
         record_pushed(app, cid);
     }
     gate
@@ -433,14 +456,221 @@ pub fn gate(app: &App, cid: u64, tool: &str, input: &Value, held: &Held) -> Gate
 
 /// Queues a decision of `kind` about `subject` for the owner, whatever the agent's mode,
 /// publishes it, and returns it. The agent is `detail["cid"]`, or 0 when there is none.
-// Used by the sanctions and payments work, which is not wired yet.
-#[allow(dead_code)]
 pub fn submit(app: &App, kind: &str, subject: &str, detail: Value) -> Approval {
     let cid = detail_cid(&detail);
     let item = app.approvals.submit(cid, kind, subject, detail);
-    app.bus.publish("approval", &item);
+    announce(app, &item);
     record_pushed(app, cid);
     item
+}
+
+/// The card an approval of `kind` gets, when its kind has one: a held tool call's (`tool_call`) and a review ruling's
+/// (`review`). The other kinds (payments, deploys, shares) are decided in the console's queue alone.
+fn card_kind(kind: &str) -> Option<cards::Kind> {
+    match kind {
+        "tool" => Some(cards::Kind::ToolCall),
+        "review" => Some(cards::Kind::Review),
+        _ => None,
+    }
+}
+
+/// The subject of an approval's card.
+fn card_subject(id: &str) -> String {
+    format!("approval:{id}")
+}
+
+/// Publishes a new approval and opens its card in the chat it belongs to, when its kind has one.
+pub fn announce(app: &App, item: &Approval) {
+    app.bus.publish("approval", item);
+    let now = now_ms();
+    let card = match card_kind(&item.kind) {
+        Some(cards::Kind::ToolCall) => tool_placed(app, item, now),
+        Some(cards::Kind::Review) => review_placed(app, item, now),
+        _ => return,
+    };
+    crate::work_loop::open_card(app, card, now);
+}
+
+/// The card a held tool call asks, shown in its session's task chat, else its project's, else the main chat.
+fn tool_placed(app: &App, item: &Approval, now: u64) -> NewCard {
+    let agent = app
+        .agents
+        .get(item.cid)
+        .map_or_else(|| format!("Agent {}", item.cid), |a| a.label());
+    let mut card = tool_content(item, &agent);
+    if let Some(session) = app.sessions.by_cid(item.cid) {
+        card.session = Some(session.id.clone());
+        if let Some(task) = &session.task {
+            card.chat = Some(crate::work_loop::task_chat(
+                app,
+                task,
+                &session.project,
+                now,
+            ));
+            card.project = Some(session.project.clone());
+            card.task = Some(task.clone());
+            return card;
+        }
+        if session.project != crate::work_loop::PLAZA {
+            card.chat = Some(crate::work_loop::project_chat(app, &session.project, now));
+            card.project = Some(session.project.clone());
+            return card;
+        }
+    }
+    card.chat = Some(app.chats.main(now).id);
+    card
+}
+
+/// The card a review ruling asks, shown in its task's chat.
+fn review_placed(app: &App, item: &Approval, now: u64) -> NewCard {
+    let mut card = review_content(item);
+    let task = card.task.clone().unwrap_or_default();
+    match app
+        .plaza
+        .tasks
+        .find(&task)
+        .and_then(|t| t.project().map(str::to_string))
+    {
+        Some(project) => {
+            card.chat = Some(crate::work_loop::task_chat(app, &task, &project, now));
+            card.project = Some(project);
+        }
+        None => card.chat = Some(app.chats.main(now).id),
+    }
+    card
+}
+
+/// What a held tool call's card says, before it is placed: approve it (it runs once, as asked) or deny it.
+fn tool_content(item: &Approval, agent: &str) -> NewCard {
+    NewCard {
+        kind: cards::Kind::ToolCall,
+        chat: None,
+        project: None,
+        task: None,
+        session: None,
+        subject: card_subject(&item.id),
+        title: format!("{agent} asks to run {}", item.tool),
+        body: Some(format!(
+            "Its permission mode is ask, so the call waits for you. Input: {}",
+            clip(&item.input.to_string(), 300)
+        )),
+        choices: vec![
+            Choice {
+                id: "approve".into(),
+                label: "Approve".into(),
+                detail: Some("the call runs once, as it was asked".into()),
+                takes_amount: false,
+            },
+            Choice {
+                id: "deny".into(),
+                label: "Deny".into(),
+                detail: Some("the agent is told, and the call does not run".into()),
+                takes_amount: false,
+            },
+        ],
+    }
+}
+
+/// What a review ruling's card says, before it is placed: pass the task, send it back to its builder (only a review
+/// run can take it back), or fail it.
+fn review_content(item: &Approval) -> NewCard {
+    let task = item
+        .detail
+        .get("task")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let text = ["verdict", "needs_you", "summary"]
+        .iter()
+        .filter_map(|key| item.detail.get(*key).and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let choice = |id: &str, label: &str, detail: &str| Choice {
+        id: id.into(),
+        label: label.into(),
+        detail: Some(detail.into()),
+        takes_amount: false,
+    };
+    let mut choices = vec![choice("pass", "Pass", "the work is accepted")];
+    if item.detail.get("run").is_some() {
+        choices.push(choice(
+            "rework",
+            "Send back",
+            "to its builder, with your notes",
+        ));
+    }
+    choices.push(choice(
+        "fail",
+        "Fail",
+        "the task fails; the planner decides what follows",
+    ));
+    NewCard {
+        kind: cards::Kind::Review,
+        chat: None,
+        project: None,
+        task: Some(task.clone()),
+        session: None,
+        subject: card_subject(&item.id),
+        title: format!("Task {task}'s review needs your ruling"),
+        body: (!text.is_empty()).then(|| clip(&text, 400)),
+        choices,
+    }
+}
+
+/// `text` cut to `max` characters, with an ellipsis when it was cut.
+pub(crate) fn clip(text: &str, max: usize) -> String {
+    let mut out: String = text.chars().take(max).collect();
+    if text.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+/// What a card's choice rules on its approval: whether it is approved, and the action a review ruling names. None for a
+/// choice the card does not offer.
+pub fn ruling(kind: cards::Kind, choice: &str) -> Option<(bool, Option<&'static str>)> {
+    match (kind, choice) {
+        (cards::Kind::ToolCall, "approve") | (cards::Kind::Review, "pass") => Some((true, None)),
+        (cards::Kind::ToolCall, "deny") | (cards::Kind::Review, "fail") => Some((false, None)),
+        (cards::Kind::Review, "rework") => Some((false, Some("rework"))),
+        _ => None,
+    }
+}
+
+/// Decides the approval a card asks about, as the card's choice rules: the same decision `POST /v1/approvals/{id}`
+/// makes. Returns the answer in words.
+pub fn card_answered(app: &App, card: &Card) -> String {
+    let choice = card.answer.as_deref().unwrap_or_default();
+    let (Some(id), Some((approve, action))) = (
+        card.subject.strip_prefix("approval:"),
+        ruling(card.kind, choice),
+    ) else {
+        return "recorded".into();
+    };
+    match decide_approval(app, id, approve, None, action) {
+        Ok(_) => format!("{choice}: approval {id} is decided"),
+        Err((_, why)) => why,
+    }
+}
+
+/// Withdraws the open card of each approval in `items`, which were decided or withdrawn elsewhere: the owner is not
+/// asked what is settled.
+pub fn withdraw_cards(app: &App, items: &[Approval]) {
+    for card in withdrawn_cards(&app.cards, items, now_ms()) {
+        app.bus.publish("card", &card);
+    }
+}
+
+/// The open cards of `items`' approvals, withdrawn; the cards withdrawn.
+fn withdrawn_cards(board: &cards::Cards, items: &[Approval], now: u64) -> Vec<Card> {
+    items
+        .iter()
+        .filter_map(|item| {
+            card_kind(&item.kind).map(|kind| board.withdraw(kind, &card_subject(&item.id), now))
+        })
+        .flatten()
+        .collect()
 }
 
 /// Records a newly queued approval for agent `cid`: the waiting count and the agent's state.
@@ -484,7 +714,7 @@ struct DecideBody {
     approve: bool,
     #[serde(default)]
     reason: Option<String>,
-    /// For a sanction decision: `acknowledge`, `lift` or `retire` (see `sanctions::decided`).
+    /// For a review decision: what the owner chose (see `review_graph::owner_ruled`).
     #[serde(default)]
     action: Option<String>,
 }
@@ -531,6 +761,8 @@ pub(crate) fn decide_approval(
             return Err((409, "this approval is already decided".to_string()));
         }
     };
+    // The decision is written before anything it starts (a review, a call's answer).
+    crate::store::saver::save_now(app, "approvals");
     app.metrics
         .registry
         .hist(SeriesKey::new(
@@ -541,12 +773,12 @@ pub(crate) fn decide_approval(
         .record(now_ms().saturating_sub(item.created_ms) as f64);
     record_pending(app);
     app.bus.publish("approval", &item);
+    withdraw_cards(app, std::slice::from_ref(&item));
     // The decision is recorded; each kind then does its own work with it.
     let applied = match item.kind.as_str() {
-        "sanction" => crate::sanctions::decided(app, &item, approve, action),
-        "payment" => crate::payments::decided(app, &item, approve),
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),
+        crate::mcp::loopback::KIND => crate::mcp::loopback::decided(app, &item, approve),
         "artifact.share" => crate::shares::request::on_decided(app, &item),
         _ => {
             // A held engine call gets the decision pushed to it. The agent is told in chat only when
@@ -660,72 +892,23 @@ fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if app.agents.get(cid).is_none() {
         return Response::error(404, "no such agent");
     }
-    if let Err(e) = app.approvals.set_mode(cid, body.mode) {
-        return Response::error(500, &format!("could not save the permission mode: {e}"));
-    }
-    Response::json(200, &mode_change_body(&app.approvals, body.mode))
+    app.approvals.set_mode(cid, body.mode);
+    // The owner's change is written before the answer.
+    let saved = crate::store::saver::save_now(app, "approvals");
+    Response::json(200, &mode_change_body(&app.approvals, body.mode, saved))
 }
 
-/// The answer to a mode change: the mode, and whether it was written to disk. While `permissions.json`
-/// is damaged the change applies in memory only, and the answer says so with a note.
-fn mode_change_body(store: &Store, mode: Mode) -> serde_json::Value {
-    if store.damaged {
+/// The answer to a mode change: the mode, and whether it was written to the hub's store (`saved`, what the write
+/// said). While the saved modes are unreadable the change applies in memory only, and the answer says so with a note.
+fn mode_change_body(store: &Store, mode: Mode, saved: bool) -> serde_json::Value {
+    if store.damaged() {
         json!({
             "mode": mode,
             "saved": false,
-            "note": "permissions.json is damaged; the change applies until the hub restarts",
+            "note": "the saved permission modes could not be read at startup; the change applies until the hub restarts",
         })
     } else {
-        json!({ "mode": mode, "saved": true })
-    }
-}
-
-/// The snapshot's shape: the modes, the queue (`pending`, every item whatever its state) and the next id.
-#[derive(Serialize, Deserialize)]
-struct Snapshot {
-    modes: BTreeMap<u64, Mode>,
-    pending: Vec<Approval>,
-    #[serde(default)]
-    seq: u64,
-}
-
-impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let inner = self.lock();
-        let snap = Snapshot {
-            modes: inner.modes.clone(),
-            pending: inner.queue.clone(),
-            seq: inner.next,
-        };
-        serde_json::to_string(&snap).unwrap_or_default()
-    }
-
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let snap: Snapshot =
-            serde_json::from_str(json).map_err(|e| format!("bad approvals snapshot: {e}"))?;
-        let bytes = serde_json::to_vec_pretty(&snap.modes).map_err(|e| e.to_string())?;
-        let mut pending = snap.pending;
-        for item in &mut pending {
-            item.backfill();
-        }
-        let excess = pending.len().saturating_sub(QUEUE_CAP);
-        pending.drain(..excess);
-        let mut inner = self.lock();
-        if self.damaged {
-            // Nothing is written over the damaged file (see `Store::load`): the restored modes apply in memory.
-            eprintln!(
-                "approvals: permissions.json is not written: it could not be read at startup, so the restored modes apply for this run only"
-            );
-        } else {
-            write_atomic(&self.path, &bytes, 0o600)
-                .map_err(|e| format!("write permissions: {e}"))?;
-        }
-        inner.modes = snap.modes;
-        inner.queue = pending;
-        inner.next = snap.seq.max(1);
-        Ok(())
+        json!({ "mode": mode, "saved": saved })
     }
 }
 
@@ -752,39 +935,29 @@ mod tests {
         }
     }
 
-    fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apid-approvals-{tag}-{}", now_ms()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// The store as the hub saves it and loads it back: its rows written to an in-memory `approval_queue`, then a fresh
+    /// store loaded from them, as a restart does.
+    fn restarted(store: &Store) -> Store {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = Store::default();
+        loaded.load(&conn).unwrap();
+        loaded
     }
 
     #[test]
-    fn a_damaged_permissions_file_is_left_in_place_with_a_copy_and_unknown_agents_ask_on_every_start()
-     {
-        let dir = scratch("damaged");
-        let damaged: &[u8] = b"{ damaged";
-        std::fs::write(dir.join("permissions.json"), damaged).unwrap();
-        let copies = |root: &Path| -> Vec<String> {
-            std::fs::read_dir(root)
-                .unwrap()
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|name| name.starts_with("permissions.json.corrupt-"))
-                .collect()
-        };
-        let store = Store::load(&dir);
+    fn a_store_that_cannot_be_read_asks_for_every_agent_and_writes_nothing() {
+        // A connection with no tables: the saved modes cannot be read.
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        let store = Store::default();
+        assert!(store.load(&conn).is_err());
+        assert!(store.damaged());
         assert_eq!(store.mode(7), Mode::Ask);
         assert_eq!(
             store.effective(7, None),
             (Mode::Ask, "damaged-file-fallback")
         );
-        // The damaged file stays where it is, and a copy of it is kept beside it.
-        assert_eq!(
-            std::fs::read(dir.join("permissions.json")).unwrap(),
-            damaged
-        );
-        let kept = copies(dir.as_path());
-        assert_eq!(kept.len(), 1, "{kept:?}");
         // The gate, too: an agent with no saved mode and an autonomous project is held, not run.
         assert!(matches!(
             store.gate_with(
@@ -797,68 +970,44 @@ mod tests {
             ),
             Gate::Held { .. }
         ));
-        // A second start falls back the same way, and the damaged file is still there.
-        let again = Store::load(&dir);
-        assert_eq!(again.mode(7), Mode::Ask);
-        assert!(matches!(
-            again.gate_with(
-                7,
-                "write_thing",
-                "write",
-                &json!({}),
-                &Held::default(),
-                Mode::Autonomous
-            ),
-            Gate::Held { .. }
-        ));
+        // A mode change applies in memory; the answer says it was not saved, and nothing is written over the store.
+        store.set_mode(7, Mode::ReadOnly);
+        assert_eq!(store.mode(7), Mode::ReadOnly);
         assert_eq!(
-            std::fs::read(dir.join("permissions.json")).unwrap(),
-            damaged
+            mode_change_body(&store, Mode::ReadOnly, true)["saved"],
+            false
         );
-        // A mode change applies in memory, and the damaged file is not written over.
-        again.set_mode(7, Mode::ReadOnly).unwrap();
-        assert_eq!(again.mode(7), Mode::ReadOnly);
-        // The answer to that change says it was not saved, and a healthy store says it was.
-        assert_eq!(mode_change_body(&again, Mode::ReadOnly)["saved"], false);
-        assert_eq!(
-            mode_change_body(&again, Mode::ReadOnly)["mode"],
-            "read_only"
+        assert!(
+            store.rows().unwrap().tables.is_empty(),
+            "an unreadable store writes nothing"
         );
+        // A store that reads fine gives the default to an agent with no mode.
+        assert_eq!(Store::default().mode(7), Mode::Autonomous);
         assert_eq!(
-            std::fs::read(dir.join("permissions.json")).unwrap(),
-            damaged
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let missing = scratch("missing");
-        assert_eq!(Store::load(&missing).mode(7), Mode::Autonomous);
-        assert_eq!(
-            Store::load(&missing).effective(7, None),
+            Store::default().effective(7, None),
             (Mode::Autonomous, "default")
         );
-        let _ = std::fs::remove_dir_all(&missing);
     }
 
     #[test]
-    fn mode_round_trips_through_disk() {
-        let dir = scratch("mode");
-        let store = Store::load(&dir);
+    fn modes_round_trip_through_the_store() {
+        let store = Store::default();
         assert_eq!(store.mode(7), Mode::Autonomous);
-        store.set_mode(7, Mode::ReadOnly).unwrap();
-        store.set_mode(9, Mode::Ask).unwrap();
+        store.set_mode(7, Mode::ReadOnly);
+        store.set_mode(9, Mode::Ask);
 
-        let again = Store::load(&dir);
+        let again = restarted(&store);
         assert_eq!(again.mode(7), Mode::ReadOnly);
         assert_eq!(again.mode(9), Mode::Ask);
         assert_eq!(again.mode(3), Mode::Autonomous);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode_change_body(&again, Mode::Ask, true)["saved"], true);
+        assert_eq!(mode_change_body(&again, Mode::Ask, false)["saved"], false);
     }
 
     #[test]
     fn ask_holds_a_call_until_approved_then_passes_once() {
-        let dir = scratch("ask");
-        let store = Store::load(&dir);
-        store.set_mode(1, Mode::Ask).unwrap();
+        let store = Store::default();
+        store.set_mode(1, Mode::Ask);
         let input = json!({ "path": "/x", "body": "y" });
 
         let (held, created) = store.gate_plain(1, "write_thing", "write", &input);
@@ -888,29 +1037,25 @@ mod tests {
                 .0
                 .is_some()
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn read_only_refuses_writes() {
-        let dir = scratch("ro");
-        let store = Store::load(&dir);
-        store.set_mode(2, Mode::ReadOnly).unwrap();
+        let store = Store::default();
+        store.set_mode(2, Mode::ReadOnly);
         let (refusal, created) = store.gate_plain(2, "write_thing", "write", &json!({}));
         assert_eq!(
             refusal.unwrap(),
             "this agent is read-only: write_thing is not allowed"
         );
         assert!(created.is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn reads_pass_in_every_mode_and_autonomous_lets_writes_run() {
-        let dir = scratch("read");
-        let store = Store::load(&dir);
+        let store = Store::default();
         for (cid, mode) in [(1, Mode::Autonomous), (2, Mode::Ask), (3, Mode::ReadOnly)] {
-            store.set_mode(cid, mode).unwrap();
+            store.set_mode(cid, mode);
             let (refusal, created) = store.gate_plain(cid, "read_thing", "read", &json!({}));
             assert!(
                 refusal.is_none() && created.is_none(),
@@ -924,86 +1069,66 @@ mod tests {
             refusal.is_none() && created.is_none(),
             "autonomous writes run"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn snapshot_round_trips_modes_and_queue() {
-        let dir = scratch("snap");
-        let store = Store::load(&dir);
-        store.set_mode(5, Mode::Ask).unwrap();
+    fn the_modes_and_the_queue_come_back_whole_from_their_tables() {
+        let store = Store::default();
+        store.set_mode(5, Mode::Ask);
         let (_, created) = store.gate_plain(5, "write_thing", "write", &json!({ "a": 1 }));
         let id = created.unwrap().id;
 
-        let other_dir = scratch("snap-other");
-        let other = Store::load(&other_dir);
-        other.restore(&store.snapshot()).unwrap();
+        let other = restarted(&store);
+        assert_eq!(
+            serde_json::to_value(other.list()).unwrap(),
+            serde_json::to_value(store.list()).unwrap()
+        );
         assert_eq!(other.mode(5), Mode::Ask);
-        assert_eq!(other.list().len(), 1);
         assert_eq!(other.list()[0].id, id);
-        assert_eq!(Store::load(&other_dir).mode(5), Mode::Ask);
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&other_dir);
+        // The id counter comes back too: the next item gets the id after the last one.
+        let (_, next) = other.gate_plain(5, "write_thing", "write", &json!({ "a": 2 }));
+        assert_eq!(next.unwrap().id, "a2");
     }
 
     #[test]
     fn submit_queues_a_pending_decision_in_any_mode() {
-        let dir = scratch("submit");
-        let store = Store::load(&dir);
-        store.set_mode(6, Mode::ReadOnly).unwrap();
+        let store = Store::default();
+        store.set_mode(6, Mode::ReadOnly);
         let detail = json!({ "cid": 6, "amount": 900, "to": "bob" });
-        let item = store.submit(6, "payment", "pay 900 to bob", detail.clone());
+        let item = store.submit(6, "tool", "run ls", detail.clone());
         assert_eq!(item.state, State::Pending);
-        assert_eq!(item.kind, "payment");
-        assert_eq!(item.subject, "pay 900 to bob");
-        assert_eq!(item.tool, "pay 900 to bob");
+        assert_eq!(item.kind, "tool");
+        assert_eq!(item.subject, "run ls");
+        assert_eq!(item.tool, "run ls");
         assert_eq!(item.detail, detail);
         assert_eq!(item.input, detail);
         assert_eq!(item.cid, 6);
         assert_eq!(store.list()[0].id, item.id);
         // Gate and submit share one id counter: the held call gets the next id.
-        store.set_mode(7, Mode::Ask).unwrap();
+        store.set_mode(7, Mode::Ask);
         let (_, held) = store.gate_plain(7, "write_thing", "write", &json!({}));
         let held = held.expect("a held call queues an item");
         let next: u64 = item.id[1..].parse::<u64>().unwrap() + 1;
         assert_eq!(held.id, format!("a{next}"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn an_old_snapshot_without_the_new_fields_restores_as_a_tool_approval() {
-        let old = r#"{"modes":{"5":"ask"},"pending":[{"id":"a3","cid":5,"tool":"write_thing","input":{"a":1},"created_ms":10,"state":"pending","reason":null}],"seq":4}"#;
-        let store = Store::load(&scratch("old"));
-        store.restore(old).unwrap();
-        assert_eq!(store.mode(5), Mode::Ask);
-        let item = store.list().into_iter().next().unwrap();
-        assert_eq!(item.kind, "tool");
-        assert_eq!(item.subject, "write_thing");
-        assert_eq!(item.detail, json!({ "a": 1 }));
-        // The snapshot it writes now carries the new fields, and reads back.
-        let other = Store::load(&scratch("old-other"));
-        other.restore(&store.snapshot()).unwrap();
-        assert_eq!(other.list()[0].kind, "tool");
     }
 
     #[test]
     fn submit_holds_the_queue_cap() {
-        let store = Store::load(&scratch("cap"));
+        let store = Store::default();
         for i in 0..(QUEUE_CAP + 5) {
-            store.submit(1, "payment", &format!("pay {i}"), json!({ "cid": 1 }));
+            store.submit(1, "tool", &format!("run {i}"), json!({ "cid": 1 }));
         }
         let list = store.list();
         assert_eq!(list.len(), QUEUE_CAP);
         // Newest first: the five oldest were dropped.
-        assert_eq!(list[0].subject, format!("pay {}", QUEUE_CAP + 4));
-        assert_eq!(list[QUEUE_CAP - 1].subject, "pay 5");
+        assert_eq!(list[0].subject, format!("run {}", QUEUE_CAP + 4));
+        assert_eq!(list[QUEUE_CAP - 1].subject, "run 5");
     }
 
     #[test]
     fn a_held_engine_call_keeps_its_thread_and_waiter_and_joins_a_pending_item() {
-        let dir = scratch("held");
-        let store = Store::load(&dir);
-        store.set_mode(8, Mode::Ask).unwrap();
+        let store = Store::default();
+        store.set_mode(8, Mode::Ask);
         let input = json!({ "engine": "claude", "title": "edit" });
         let first = Held {
             thread: Some("acp-s1".into()),
@@ -1045,14 +1170,12 @@ mod tests {
         }
         let stored = store.list().into_iter().find(|a| a.id == approval).unwrap();
         assert_eq!(stored.waiting.len(), 2);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_decision_is_pushed_to_each_waiter_and_a_failed_push_is_reported() {
-        let dir = scratch("push");
-        let store = Store::load(&dir);
-        store.set_mode(4, Mode::Ask).unwrap();
+        let store = Store::default();
+        store.set_mode(4, Mode::Ask);
         let input = json!({ "path": "/w/x" });
         let held = Held {
             thread: None,
@@ -1110,7 +1233,6 @@ mod tests {
         // A refused push stops at the failure, which the caller sees.
         let refused = push_decisions(&item, |_, _| Err("the gateway answered 409".into()));
         assert_eq!(refused, Err("the gateway answered 409".to_string()));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1168,5 +1290,111 @@ mod tests {
         assert_eq!(tell_thread(&item), "op-5");
         item.thread = Some("acp-s9".into());
         assert_eq!(tell_thread(&item), "acp-s9");
+    }
+
+    fn held_item(id: &str, kind: &str, detail: Value) -> Approval {
+        Approval {
+            id: id.into(),
+            cid: 3,
+            tool: "write_thing".into(),
+            input: json!({ "path": "/x" }),
+            created_ms: 0,
+            state: State::Pending,
+            reason: None,
+            kind: kind.into(),
+            subject: "write_thing".into(),
+            detail,
+            thread: None,
+            waiting: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_tool_call_card_is_answered_into_a_decision_and_withdrawn_when_decided_elsewhere() {
+        let store = Store::default();
+        let board = cards::Cards::default();
+        store.set_mode(3, Mode::Ask);
+        let (_, created) = store.gate_plain(3, "write_thing", "write", &json!({ "path": "/x" }));
+        let item = created.expect("the held call queues its approval");
+        let card = board.open(tool_content(&item, "builder #3"), 1).0;
+        assert_eq!(card.kind, cards::Kind::ToolCall);
+        assert_eq!(card.subject, card_subject(&item.id));
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["approve", "deny"]
+        );
+
+        // Answering the card rules the approval, and the store decides it.
+        board.answer(&card.id, "approve", None, 2).unwrap();
+        let (approve, action) = ruling(card.kind, "approve").unwrap();
+        assert_eq!((approve, action), (true, None));
+        assert_eq!(
+            store.decide(&item.id, approve, None).unwrap().state,
+            State::Approved
+        );
+
+        // A second call decided through the approvals route: its card is withdrawn, not answered.
+        let (_, created) = store.gate_plain(3, "write_other", "write", &json!({}));
+        let other = created.expect("the second held call queues its approval");
+        let open = board.open(tool_content(&other, "builder #3"), 3).0;
+        let decided = store.decide(&other.id, false, None).unwrap();
+        let withdrawn = withdrawn_cards(&board, std::slice::from_ref(&decided), 4);
+        assert_eq!(
+            withdrawn.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            [open.id.as_str()]
+        );
+        assert_eq!(board.get(&open.id).unwrap().state, cards::State::Withdrawn);
+        assert!(board.list(true, None).is_empty());
+    }
+
+    #[test]
+    fn a_review_card_offers_send_back_only_when_a_review_run_can_take_it() {
+        let run = held_item(
+            "a9",
+            "review",
+            json!({ "task": "t7", "run": "r1", "verdict": "two checks failed", "summary": "built it" }),
+        );
+        let card = review_content(&run);
+        assert_eq!(card.task.as_deref(), Some("t7"));
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pass", "rework", "fail"]
+        );
+        assert_eq!(card.body.as_deref(), Some("two checks failed built it"));
+        assert_eq!(ruling(card.kind, "pass"), Some((true, None)));
+        assert_eq!(ruling(card.kind, "rework"), Some((false, Some("rework"))));
+        assert_eq!(ruling(card.kind, "fail"), Some((false, None)));
+
+        // A ruling from before the review graph has no run to send back.
+        let legacy = held_item("a10", "review", json!({ "task": "t8", "summary": "done" }));
+        let card = review_content(&legacy);
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["pass", "fail"]
+        );
+        assert!(
+            !card.choices.iter().any(|c| c.id == "rework"),
+            "a card offers only the choices it has: none can send a legacy ruling back"
+        );
+    }
+
+    #[test]
+    fn only_tool_calls_and_review_rulings_have_cards() {
+        assert_eq!(card_kind("tool"), Some(cards::Kind::ToolCall));
+        assert_eq!(card_kind("review"), Some(cards::Kind::Review));
+        assert_eq!(card_kind("payment"), None);
+        let payment = held_item("a11", "payment", json!({}));
+        assert!(withdrawn_cards(&cards::Cards::default(), &[payment], 1).is_empty());
+        assert_eq!(clip("abcdef", 3), "abc…");
+        assert_eq!(clip("ab", 3), "ab");
     }
 }

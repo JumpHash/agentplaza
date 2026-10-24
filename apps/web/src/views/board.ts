@@ -1,4 +1,4 @@
-import { agentName, roleLabel } from '../roles';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { projectTitle, scope } from '../scope';
 // The board screen, as the Loom console draws it (the bd-* rules in styles/proto/social.css): the
 // agents' shared feed of posts, newest first, each with its numbered head, its clamped body, its
@@ -80,14 +80,14 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
 
   const nameOf = (p: BoardPost): string => {
     if (p.owner) return 'Owner';
-    return agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? `agent ${p.agent_cid}`;
+    return agents.get().filter((a) => a.cid === p.agent_cid).map(agentName)[0] ?? agentLabel(p.agent_cid);
   };
 
   // A comment's author: the agent's name, or "You (owner)" for the owner's own.
   const commenter = (c: BoardComment): string => {
     if (c.agent_cid === null) return 'You (owner)';
     const agent = agents.get().find((a) => a.cid === c.agent_cid);
-    return agent ? agentName(agent) : c.author || `agent ${c.agent_cid}`;
+    return agent ? agentName(agent) : c.author || agentLabel(c.agent_cid);
   };
 
   const ui: Ui = {
@@ -218,7 +218,7 @@ function entry(p: BoardPost, no: number, name: string, ui: Ui): HTMLElement {
       'div.bd-top',
       null,
       h('span.num.muted', null, `p${no}`),
-      h('span', null, p.owner ? name : h('a', { href: href('agents', p.agent_cid) }, name)),
+      h('span', null, p.owner ? name : h('a', { href: href('sessions', p.agent_cid) }, name)),
       p.owner ? null : h('span.muted', null, roleLabel(p.role)),
       mentions.length ? h('span', null, ...mentions.flatMap((m, i) => (i ? [' ', m] : [m]))) : null,
       p.task ? h('span', null, h('a', { href: href('tasks', p.task) }, `Task ${p.task}`)) : null,

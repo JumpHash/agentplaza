@@ -112,14 +112,14 @@ fn endpoint(ctx: &Ctx, model: &str) -> Result<Endpoint, GatewayError> {
     let first_party = ctx
         .p
         .options
-        .get("first_party")
-        .and_then(Value::as_bool)
+        .as_ref()
+        .and_then(|o| o.first_party)
         .unwrap_or(host == FIRST_PARTY_HOST);
     let refusal_fallbacks = ctx
         .p
         .options
-        .get("refusal_fallbacks")
-        .and_then(Value::as_bool)
+        .as_ref()
+        .and_then(|o| o.refusal_fallbacks)
         .unwrap_or(false);
     Ok(Endpoint {
         url: format!("{base}/v1/messages"),
@@ -663,7 +663,10 @@ mod tests {
             &server,
             Auth::Env("ANTHROPIC_API_KEY".into()),
         );
-        p.options = json!({"first_party": true, "refusal_fallbacks": true});
+        p.options = Some(
+            serde_json::from_value(json!({"first_party": true, "refusal_fallbacks": true}))
+                .unwrap(),
+        );
         p.extra_headers
             .insert("anthropic-beta".into(), "extra-beta".into());
         let gw = gateway(vec![p]);
@@ -782,7 +785,7 @@ mod tests {
             Reply::sse(sse_body(TEXT_STREAM)),
         ]);
         let mut p = provider("a", ProviderKind::Anthropic, &server, Auth::None);
-        p.options = json!({"first_party": true});
+        p.options = Some(serde_json::from_value(json!({"first_party": true})).unwrap());
         let gw = gateway(vec![p]);
         let pinned = ChatRequest {
             model: "a/claude-haiku-5-5@low".into(),
@@ -949,7 +952,9 @@ mod tests {
             &server,
             Auth::Command("printf 'ya29.tok\\n'".into()),
         );
-        p.options = json!({"project": "proj", "location": "us-east5"});
+        p.options = Some(
+            serde_json::from_value(json!({"project": "proj", "location": "us-east5"})).unwrap(),
+        );
         let gw = gateway(vec![p]);
         let req = ChatRequest {
             model: "v/claude-opus-5-5".into(),

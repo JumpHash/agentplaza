@@ -1,7 +1,7 @@
 //! When a task fails or is withdrawn, the open tasks that run after it are blocked. They stay open
 //! (nothing fails on its own) until someone replans them, and the agent that can is told: the
 //! project's orchestrator (its lead) for a project's tasks, else the agent that posted them. It gets
-//! a chat item in its conversation with the operator, as a poster hears that its task ended. The
+//! a chat item (the project's chat, when its draft started there), as a poster hears that its task ended. The
 //! item names the task that ended, the tasks it holds up, and the three ways on: relink, repost, or
 //! withdraw.
 
@@ -44,17 +44,18 @@ fn tell(app: &App, ended: &str, state: &str) {
         return;
     };
     for (cid, prompt) in notices(task, state, &tasks, |blocked| replanner(app, blocked)) {
-        // A replanner that does not work now (on the bench, or its project paused) is not told; the owner
+        // A replanner that does not work now (its project is paused or over) is not told; the owner
         // sees the task blocked on its view.
-        if crate::membership::held_cid(app, cid).is_some() {
+        if crate::projects::held_cid(app, cid).is_some() {
             continue;
         }
-        // A project started from a conversation hears of it there.
-        if let Some(conversation) = crate::scheduler::project_conversation(app, ended, cid) {
-            crate::conversations::notify(
+        // A project whose draft started hears of it in its chat.
+        if let Some(chat) = crate::scheduler::project_chat(app, ended, cid) {
+            crate::work_loop::tell_chat(
                 app,
-                &conversation,
-                crate::conversations::shown_line(&prompt),
+                &chat,
+                cid,
+                crate::work_loop::shown_line(&prompt),
                 &prompt,
             );
             continue;
@@ -149,7 +150,6 @@ mod tests {
             .create(&CreateTask {
                 goal: goal.to_string(),
                 acceptance: None,
-                budget: None,
                 role: None,
                 after: after.iter().map(|id| id.to_string()).collect(),
                 project: project.map(str::to_string),

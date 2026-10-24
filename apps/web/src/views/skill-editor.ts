@@ -55,7 +55,7 @@ interface EditFile {
   /** The executable bit in the latest version. */
   savedExecutable: boolean;
   /** The stored content's hash, sent instead of the bytes while the content is unchanged. */
-  sha256: string | null;
+  hash: string | null;
   text: string | null;
   bytes: Uint8Array | null;
   /** Not in the latest version. */
@@ -98,13 +98,13 @@ function toEdit(
   path: string,
   bytes: Uint8Array,
   executable: boolean,
-  sha256: string | null,
+  hash: string | null,
   savedExecutable: boolean,
   isNew: boolean,
   edited: boolean,
 ): EditFile {
   const text = decodeText(bytes);
-  return { path, executable, savedExecutable, sha256, text, bytes: text == null ? bytes : null, isNew, edited };
+  return { path, executable, savedExecutable, hash, text, bytes: text == null ? bytes : null, isNew, edited };
 }
 
 function toBase64(bytes: Uint8Array): string {
@@ -235,9 +235,9 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
   /** The files as a save sends them: changed or new ones with their bytes, unchanged ones by hash. */
   function filesIn(): SkillFileIn[] {
     return files.map((f): SkillFileIn =>
-      f.edited || f.isNew || f.sha256 == null
+      f.edited || f.isNew || f.hash == null
         ? { path: f.path, executable: f.executable, content_b64: toBase64(contentOf(f)) }
-        : { path: f.path, executable: f.executable, sha256: f.sha256 },
+        : { path: f.path, executable: f.executable, hash: f.hash },
     );
   }
 
@@ -537,7 +537,7 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
           showErr(err, problem);
           return;
         }
-        files.push({ path: p, executable: false, savedExecutable: false, sha256: null, text: '', bytes: null, isNew: true, edited: false });
+        files.push({ path: p, executable: false, savedExecutable: false, hash: null, text: '', bytes: null, isNew: true, edited: false });
         selected = p;
         revision++;
         closeModal?.();
@@ -1206,7 +1206,7 @@ export function mountEditor(root: HTMLElement, id: string, onBack: () => void): 
     const next = await skillsApi.get(id);
     const ver = await skillsApi.version(id, next.skill.latest_version);
     const loaded = await Promise.all(
-      ver.files.map(async (sf) => toEdit(sf.path, await fetchBytes(ver.version, sf.path), sf.executable, sf.sha256, sf.executable, false, false)),
+      ver.files.map(async (sf) => toEdit(sf.path, await fetchBytes(ver.version, sf.path), sf.executable, sf.hash, sf.executable, false, false)),
     );
     if (!alive) return;
     detail = next;

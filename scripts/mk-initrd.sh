@@ -33,6 +33,13 @@
 #                    harness itself.
 #   plaza.vm=N       this VM's index within the spawn (default 0), read by the
 #                    harness itself.
+#   plaza.mcp=1      run the MCP bridge (this initramfs' /mcp-bridge) instead of
+#                    the agent harness. The vsock modules load and the volumes
+#                    mount as for the harness; then the bridge runs as init's
+#                    child with the console as its stdout and stderr. It carries
+#                    one MCP server's stdio over vsock ports 5200-5202 and the
+#                    server's egress proxy on 127.0.0.1:3128. When the bridge
+#                    exits, the VM reboots (the harness's clean exit path).
 #
 # Serial commands: help, echo <text>, uname, uptime, mem, cpu, interrupts,
 # wspace [text], sync, poweroff, reboot, halt. `interrupts` prints the kernel's
@@ -90,6 +97,7 @@
 #          and handed to the VMM with --workspace)
 #
 # Env overrides: APZ_HARNESS_BIN=/path/to/agent-harness  skip the cargo build.
+#                APZ_MCP_BRIDGE_BIN=/path/to/mcp-bridge  skip the MCP bridge build.
 #                APZ_GUEST_MODULES=builtin  the guest kernel has every driver built
 #                in (scripts/mk-guest-kernel.sh, the packaged guest): no modules.
 #                APZ_GUEST_MODULES=host (default)  the guest boots the host's own
@@ -292,6 +300,36 @@ fi
 echo "agent harness: $harness -> /agent-harness"
 
 # ---------------------------------------------------------------------------
+# The MCP bridge: the guest end of one MCP server's stdio, the `mcp-bridge`
+# binary of the vsockd crate. Built like the harness (static, with the explicit
+# --target), and run by init instead of the harness when the command line has
+# plaza.mcp=1.
+# ---------------------------------------------------------------------------
+mcp_bridge="${APZ_MCP_BRIDGE_BIN:-}"
+if [ -z "$mcp_bridge" ]; then
+    RUSTFLAGS="-C target-feature=+crt-static" \
+        cargo build --release -p vsockd --bin mcp-bridge --target "$arch-unknown-linux-gnu"
+    mcp_bridge="target/$arch-unknown-linux-gnu/release/mcp-bridge"
+fi
+if [ ! -x "$mcp_bridge" ]; then
+    echo "mk-initrd: no MCP bridge binary at $mcp_bridge" >&2
+    exit 1
+fi
+if command -v file >/dev/null 2>&1; then
+    if ! file -b "$mcp_bridge" | grep -q static; then
+        echo "mk-initrd: $mcp_bridge is not statically linked; the guest has no dynamic loader" >&2
+        exit 1
+    fi
+else
+    echo "mk-initrd: warning: file(1) not found, cannot verify $mcp_bridge is statically linked" >&2
+fi
+cp "$mcp_bridge" "$root/mcp-bridge"
+if command -v strip >/dev/null 2>&1; then
+    strip "$root/mcp-bridge" 2>/dev/null || true
+fi
+echo "MCP bridge: $mcp_bridge -> /mcp-bridge"
+
+# ---------------------------------------------------------------------------
 # The agent's shell: the host's busybox, dynamically linked, so its ELF
 # interpreter and every library ldd lists go in at their absolute paths (the
 # interpreter is /lib64/ld-linux-x86-64.so.2; the image has no ld.so.cache, so
@@ -399,6 +437,11 @@ cat > "$out_dir/init.c" <<'EOF'
 // 5 s (a keepalive guest only once), serves the serial command loop and - when the kernel command line says
 // `plaza.harness=1` - loads the guest's virtio modules and runs the AgentPlaza
 // agent harness, which prints its whole session to this same console.
+//
+// `plaza.mcp=1` runs the MCP bridge (`/mcp-bridge`) instead of the harness: the
+// same modules load and the same volumes mount, then init runs the bridge as its
+// child, with the console as its stdout and stderr, and reboots the VM when the
+// bridge exits.
 //
 // `plaza.keepalive=1` implies the harness and changes what an exit means: the
 // agent fleet's sessions are long-lived and the harness owns its reconnect
@@ -1279,6 +1322,31 @@ static void lo_up(void)
     close(fd);
 }
 
+// Runs the MCP bridge as PID 1's child, with the console as its stdout and
+// stderr, then reboots the VM when it exits: the harness's clean exit path. It
+// never returns. A failed fork reboots too, since there is nothing else to run.
+static void run_mcp_bridge(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) {
+        put("plaza guest: cannot fork the MCP bridge\n");
+    } else if (pid == 0) {
+        execl("/mcp-bridge", "mcp-bridge", (char *)NULL);
+        put("plaza guest: cannot exec /mcp-bridge: ");
+        put(strerror(errno));
+        put("\n");
+        _exit(127);
+    } else {
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+        }
+        put("plaza guest: MCP bridge exited; rebooting\n");
+    }
+    do_sync();
+    reboot(RB_AUTOBOOT);
+    for (;;)
+        pause();
+}
+
 int main(void)
 {
     mount("devtmpfs", "/dev", "devtmpfs", 0, "");
@@ -1297,6 +1365,7 @@ int main(void)
     // A keepalive agent is a harness by definition: the flag says "long-lived
     // session", and the harness is what speaks it.
     const unsigned long harness = parse_flag("plaza.harness=") || keepalive;
+    const unsigned long mcp = parse_flag("plaza.mcp=");
     pid_t harness_pid = -1;
 
     if (halt) {
@@ -1309,13 +1378,15 @@ int main(void)
         put("plaza guest: plaza.harness=1: loading the vsock modules\n");
     // The virtio modules carry every virtio-mmio device this VM has: the vsock
     // device and/or the block device of its workspace volume.
-    load_guest_modules((int)harness);
+    load_guest_modules((int)(harness || mcp));
     // The workspace volume, if this VM was given one, and the read-only data
     // volumes: mounted before anything the harness does, so its sessions (and
     // the serial `wspace` command) can use them.
     mount_workspace();
     mount_volumes();
     own_workspace();
+    if (mcp)
+        run_mcp_bridge();
     if (harness)
         harness_pid = start_harness(prepare_sysroot());
 

@@ -305,6 +305,43 @@ impl Response {
         self
     }
 
+    /// This response with an `ETag` over its body as sent, or `304 Not Modified` (no body) when `request` is a `GET`
+    /// whose `If-None-Match` already names it (PLAN 30.4). Only a `GET` answered `200` with a body is touched; a
+    /// handler that set its own `ETag` keeps it. The server applies it to every response.
+    pub fn revalidated(mut self, request: &Request) -> Response {
+        if !request.method.eq_ignore_ascii_case("GET") || self.status != 200 {
+            return self;
+        }
+        let Body::Bytes(bytes) = &self.body else {
+            return self;
+        };
+        let tag = match self
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("etag"))
+        {
+            Some((_, tag)) => tag.clone(),
+            None => {
+                let tag = apz_cache::etag(bytes);
+                self.headers.push(("ETag".to_string(), tag.clone()));
+                tag
+            }
+        };
+        if apz_cache::not_modified(request.header("if-none-match"), &tag) {
+            let headers = self
+                .headers
+                .into_iter()
+                .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
+                .collect();
+            return Response {
+                status: 304,
+                headers,
+                body: Body::Bytes(Vec::new()),
+            };
+        }
+        self
+    }
+
     /// The body's bytes; empty for a stream.
     pub fn bytes(&self) -> &[u8] {
         match &self.body {
@@ -321,7 +358,10 @@ impl Response {
         for (name, value) in &self.headers {
             head.push_str(&format!("{name}: {value}\r\n"));
         }
-        if let Body::Bytes(bytes) = &self.body {
+        // A 304 has no body and says nothing of its length.
+        if let Body::Bytes(bytes) = &self.body
+            && self.status != 304
+        {
             head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
         }
         if !self
@@ -354,12 +394,14 @@ impl Response {
 }
 
 fn reason(status: u16) -> &'static str {
-    const REASONS: [(u16, &str); 21] = [
+    const REASONS: [(u16, &str); 24] = [
         (101, "Switching Protocols"),
         (200, "OK"),
         (201, "Created"),
         (202, "Accepted"),
         (204, "No Content"),
+        (206, "Partial Content"),
+        (304, "Not Modified"),
         (400, "Bad Request"),
         (401, "Unauthorized"),
         (403, "Forbidden"),
@@ -368,6 +410,7 @@ fn reason(status: u16) -> &'static str {
         (408, "Request Timeout"),
         (409, "Conflict"),
         (413, "Content Too Large"),
+        (416, "Range Not Satisfiable"),
         (422, "Unprocessable Content"),
         (423, "Locked"),
         (426, "Upgrade Required"),
@@ -418,6 +461,41 @@ mod tests {
 
     fn read(raw: &[u8]) -> Result<Request, &'static str> {
         Request::read(&mut Cursor::new(raw), Limits::default())
+    }
+
+    #[test]
+    fn a_get_gets_an_etag_and_a_matching_if_none_match_gets_304() {
+        let get = read(b"GET /v1/models HTTP/1.1\r\nHost: h\r\n\r\n").unwrap();
+        let first = Response::json(200, &serde_json::json!([1, 2, 3])).revalidated(&get);
+        let tag = first
+            .headers
+            .iter()
+            .find(|(n, _)| n == "ETag")
+            .map(|(_, v)| v.clone())
+            .expect("an ETag");
+        let again =
+            read(format!("GET /v1/models HTTP/1.1\r\nIf-None-Match: {tag}\r\n\r\n").as_bytes())
+                .unwrap();
+        let second = Response::json(200, &serde_json::json!([1, 2, 3])).revalidated(&again);
+        assert_eq!(second.status, 304);
+        assert!(second.bytes().is_empty());
+        let mut out = Vec::new();
+        second.write_to(&mut out).unwrap();
+        let head = String::from_utf8(out).unwrap();
+        assert!(head.starts_with("HTTP/1.1 304 Not Modified"), "{head}");
+        assert!(!head.contains("Content-Length"), "{head}");
+        // A changed body is a new tag: the full answer.
+        let changed = Response::json(200, &serde_json::json!([1, 2])).revalidated(&again);
+        assert_eq!(changed.status, 200);
+        // Writes and errors are not touched.
+        let post = read(b"POST /v1/x HTTP/1.1\r\nContent-Length: 0\r\n\r\n").unwrap();
+        assert!(
+            Response::json(200, &1)
+                .revalidated(&post)
+                .headers
+                .iter()
+                .all(|(n, _)| n != "ETag")
+        );
     }
 
     #[test]

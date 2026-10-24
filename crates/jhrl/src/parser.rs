@@ -1429,7 +1429,7 @@ impl Parser {
             resource: None,
             when: Vec::new(),
             unless: Vec::new(),
-            town: None,
+            project: None,
             expires: None,
             implements: Vec::new(),
             span: lo,
@@ -1502,9 +1502,9 @@ impl Parser {
                     self.bump();
                     l.unless.push(self.expr()?);
                 }
-                "town" => {
+                "project" => {
                     self.bump();
-                    l.town = Some(self.string()?);
+                    l.project = Some(self.string()?);
                 }
                 "expires" => {
                     self.bump();

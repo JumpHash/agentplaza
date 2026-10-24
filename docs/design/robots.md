@@ -8,8 +8,8 @@ machine's chips and now also work *on* the chips.
 
 ## Goals
 
-- **30 cute species**, each with its own silhouette, gait, idle quirks and personality, so a plaza of 40
-  agents looks like a crowd of individuals, not clones.
+- **30 cute species**, each with its own silhouette, gait, idle quirks and traits, so a plaza of 40
+  agents reads as a crowd of individuals, not clones.
 - **Assigned at random when an agent is created, kept for life, balanced**: the hub deals species like a
   shuffled deck, so every species shows up a reasonable number of times.
 - **They live their jobs**: what an agent is doing right now (its role, its state, its latest tool call,
@@ -47,7 +47,7 @@ hardware geometry builders. A part hangs on a **bone** instead of a model.
 {
   "schema": 1,
   "id": "owl",
-  "name": "Hoot",                       // the species' nickname, shown in the agent card
+  "name": "Hoot",                       // the species' nickname
   "blurb": "Sees everything twice. Swivels its head all the way round when it thinks.",
   "accent": "#ffb84d",                  // the species' own fixed colour (mat "accent")
   "height": 1.0,                        // robot units, before the floor's scale (about 1)
@@ -89,7 +89,7 @@ hardware geometry builders. A part hangs on a **bone** instead of a model.
 arms (snail, jelly, ghost, ufo) still has the arm bones: tentacles, eye stalks, a tractor beam, sheet
 "hands". A tool must look held in `gripR` for every species, and a crate must look carried at `carry`.
 
-**Materials** (`mat`): `shell` (the agent's own hue), `shell2` (the same hue, darker), `panel` (the
+**Materials** (`mat`): `shell` (the robot's own hue), `shell2` (the same hue, darker), `panel` (the
 room's hue), `paper` (white), `trim` (brushed metal), `ink` (graphite), `signal` (orange), `glass` (dark
 lens), `eye` (state colour, glowing), `light` (signal glow), `thruster` (info, unlit), `accent` (the
 species' accent), `clear` (translucent: domes, jelly bells), or an inline material as in the hardware
@@ -136,7 +136,7 @@ Shared clips (at least): `idle`, `walk` (per locomotion family: `walk.treads`, `
 `write`, `draw`, `read`, `think`, `talk`, `listen`, `point`, `wave`, `cheer`, `celebrate`, `nap`,
 `stretch`, `dance`, `sweep`, `carry`, `hold`, `solder`, `screw`, `hammer`, `probe`, `inspect` (magnifier
 up), `pour`, `microscope`, `water` (watering can), `count` (coins), `stamp`, `conduct` (baton), `speech`
-(megaphone/gavel), `spray` (extinguisher), `patrol` (flashlight sweep), `lay-cable`, `shelve`, `sticky`
+(megaphone), `spray` (extinguisher), `patrol` (flashlight sweep), `lay-cable`, `shelve`, `sticky`
 (put a note on a board), `measure`, `highfive`, `sit`, `gaze`, `offline` (slumped, eyes dim).
 
 ## Tools and props
@@ -159,7 +159,7 @@ breeder's nursery: saplings that glow brighter as a job trains), meeting-table, 
 
 ## The 30 species
 
-Personality is 0–9: **so**cial, **en**ergy, **fo**cus, **cu**riosity, **pl**ay, **ti**dy.
+The six traits are 0–9: **so**cial, **en**ergy, **fo**cus, **cu**riosity, **pl**ay, **ti**dy.
 
 | # | id | name | look | moves | quirks | so en fo cu pl ti |
 |---|---|---|---|---|---|---|
@@ -176,7 +176,7 @@ Personality is 0–9: **so**cial, **en**ergy, **fo**cus, **cu**riosity, **pl**ay
 | 11 | penguin | Waddles | a tuxedo body, flippers | waddle | belly slide, flipper flap | 9 6 5 4 7 5 |
 | 12 | frog | Ribbit | a squat body, big eyes on top | hop | tongue flick (catches a spark), throat-bubble croak | 5 8 4 7 8 3 |
 | 13 | mole | Digger | a drill nose, goggles, treads | treads | drill spin, burrows and pops up | 2 7 8 6 3 6 |
-| 14 | lamp | Lumen | a desk lamp hopping on its base, eyes on the shade | hop | shines its light on whoever it looks at, curious tilt | 6 7 6 9 6 4 |
+| 14 | lamp | Lumen | a desk lamp hopping on its base, eyes on the shade | hop | shines its light on whoever it turns to, curious tilt | 6 7 6 9 6 4 |
 | 15 | teapot | Earl | a round pot, a spout arm, a lid hat | waddle | lid pops with steam, pours a cup | 8 3 6 4 4 8 |
 | 16 | jelly | Glim | a translucent bell with glowing tendrils | float | glow pulse down the bell, slow drift spin | 5 2 6 6 5 4 |
 | 17 | bunny | Hops | long floppy ears, round tail | hop | ear flop, nose twitch, a happy binky jump | 7 9 3 7 9 3 |
@@ -250,8 +250,6 @@ Every spot is reserved by one robot at a time; a busy spot is skipped.
 | review | read + point | clipboard + red-pen | beside another agent's desk | verdicts, reviews |
 | huddle | talk / listen | — | a table, or beside a partner | messages between agents, pairing |
 | conduct | conduct | baton | commons (the atom) | the orchestrator while others work |
-| speech | speech | megaphone / gavel | podium | council, motions, votes |
-| count | count | coin-bag / abacus | counter | payments, treasury |
 | tend | water | watering-can / seedling | plant-bed, gpu/npu component | breeders: datasets, jobs, training |
 | respond | spray / run | extinguisher | the hottest component | incidents, failures |
 | patrol | patrol | flashlight | traces, bmc/network components | security reviews, idle security bots |
@@ -262,7 +260,7 @@ Every spot is reserved by one robot at a time; a busy spot is skipped.
 ### Choosing
 
 - **Working** agents do work. The latest tool call's **category** (`behaviour.json` `tools`: tool name
-  patterns → code, docs, recall, research, test, ship, talk, review, plan, money, train, govern) and the
+  patterns → code, docs, recall, research, test, ship, talk, review, plan, train) and the
   role pick the activity (`roles.<role>.work.<category>`, else `roles.<role>.work.default`). It holds for
   at least `min_s` (no flicker); a new category switches at the next beat. Variation within a category is
   weighted (a builder's `test` is 60 % tinker on a component, 40 % probe).
@@ -276,7 +274,7 @@ Every spot is reserved by one robot at a time; a busy spot is skipped.
   to B and they huddle (both work). A reviewer reviewing B's work stands at B's desk with a clipboard.
 - **Events**: a task done → its agent celebrates (hearts, confetti) and idle neighbours cheer; a project
   stand-up (project created or advanced) → its members gather at the commons and the orchestrator
-  conducts; a failure → incident bots respond; a payment → a finance bot carries coins; a deliverable
+  conducts; a failure → incident bots respond; a deliverable
   shared → a crate travels from the author to the requester.
 - **Offline**: walks to its dock and powers down. **Held plaza** (STOP ALL): everyone idles; nobody works.
 
@@ -285,7 +283,6 @@ Every spot is reserved by one robot at a time; a busy spot is skipped.
 | role | toolbox | work (default first) | room props |
 |---|---|---|---|
 | orchestrator | baton, clipboard | conduct, huddle, review, type | podium, meeting-table |
-| mayor, mayor-office | gavel, megaphone, scroll, stamp | speech, write, stamp, huddle | podium, counter |
 | architect | blueprint, pencil, t-square, tape-measure | draw, measure on components, type | drafting-table, easel |
 | builder | wrench, screwdriver, soldering-iron, hammer | type, tinker, deliver | workbench |
 | qa | multimeter, magnifier, clipboard | probe, tinker, type | workbench |
@@ -297,7 +294,6 @@ Every spot is reserved by one robot at a time; a busy spot is skipped.
 | librarian | book-stack, book, feather-duster | shelve, read, deliver books | book-cart |
 | researcher | flask, test-tube, notebook, magnifier | research, read, write | lab-bench, microscope-desk |
 | planner | sticky-notes, marker, scroll | sticky, draw, huddle | whiteboard |
-| finance | coin-bag, calculator, abacus | count, deliver coins, type | counter |
 | auditor | ledger, magnifier, stamp | probe, read, stamp | counter |
 | breeder | watering-can, seedling, dna-vial, flask | tend, research, type | plant-bed, lab-bench |
 | (other) | coffee-mug, notebook | type, read, write | — |
@@ -322,8 +318,7 @@ Per tick (the floor calls `step` at most every `scoring.decision_s`, 0.25 s, and
    transformed to board coordinates and `region` = the room id), the component spots (`kind` `component:<slot>`),
    commons, docks (`dock`), traces (`trace`), free points (`anywhere`), and the desks (`desk`). `held`: the STOP ALL
    state. `events`: `celebrate` (a task done, `cid`), `standup` (a project advanced: `conductor`, `members`),
-   `respond` (a failure at a component: `slot`), `payment` (`to`), `deliver` (`from`, `to`, `item`: crate or
-   coin-bag).
+   `respond` (a failure at a component: `slot`), `deliver` (`from`, `to`, `item`: crate).
 2. **Output.** One `Decision` per robot: `activity`, `clip`, `tool`, `carry`, `spot` (reserved until its next
    decision), `goal` (`{x, z, region, face}`), `partner` (a cid), `until` (seconds), `changed`. Only `changed`
    decisions need action. Act on them:
@@ -340,7 +335,7 @@ Per tick (the floor calls `step` at most every `scoring.decision_s`, 0.25 s, and
    robot and decision). The floor must pass the robots in any order: the engine sorts them by cid itself.
 
 Check: the Rust tests in `crates/apz-engine/src/world/behaviour.rs` (the TS suite, "Robot behaviour engine", is retired) run the same
-checks (data, choice per role and category, idle traits, reservation, groups, offline, held, pairs, payments,
+checks (data, choice per role and category, idle traits, reservation, groups, offline, held, pairs,
 determinism, fixtures).
 
 ## Rendering notes

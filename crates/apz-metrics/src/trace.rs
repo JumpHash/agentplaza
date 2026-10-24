@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum SpanKind {
     Model,
@@ -36,7 +36,7 @@ pub struct Span {
 }
 
 /// Why a trace was kept.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
 #[serde(rename_all = "snake_case")]
 pub enum Keep {
     Error,

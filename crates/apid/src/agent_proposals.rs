@@ -3,7 +3,7 @@
 //! the work it runs in is the owner's own chat. A proposal holds a full role definition (or an
 //! existing role), how many agents, and why; it waits in the console's Approvals until the owner
 //! approves (optionally after editing it in the agent wizard) or rejects it. Approval saves the
-//! role (when new) and spawns the agents. Saved in Postgres ("agent_proposals").
+//! role (when new) and spawns the agents. Saved in plaza.db (the `agent_proposal` tables, saved by the store's saver).
 //!
 //! GET  /v1/agent-proposals                    → [AgentProposal], newest first
 //! POST /v1/agent-proposals/{id}/approve  body {role?: RoleDef, count?, model?, project?} → the proposal (spawned)
@@ -14,10 +14,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use apz_proto::wire::WorkKind;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::agents::{Agent, spawn_agents};
+use crate::cards::{self, Card, Choice, Kind, NewCard};
 use crate::roles_custom::RoleDef;
 use crate::scheduler::WorkItem;
 use crate::settings::tier_of;
@@ -31,11 +34,14 @@ const REJECTED: &str = "rejected";
 const MAX_COUNT: u32 = 8;
 const MAX_TEXT_CHARS: usize = 2000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "agent_proposal")]
 pub struct AgentProposal {
     /// `ap<seq>`.
+    #[table(key)]
     pub id: String,
     /// The role: a new definition, or an existing role's id with the other fields empty.
+    #[table(child)]
     pub role: RoleDef,
     /// True when `role` defines a new role.
     pub new_role: bool,
@@ -57,8 +63,9 @@ pub struct AgentProposal {
     pub note: String,
     /// Agents spawned on approval (cids, when known).
     #[serde(default)]
+    #[table(list)]
     pub spawned: Vec<u64>,
-    /// The project the agents work on once they connect; none leaves them on the bench.
+    /// The project the agents are for (open, or paused): they work on it only through a task's seat.
     #[serde(default)]
     pub project: Option<String>,
 }
@@ -104,14 +111,22 @@ impl Store {
     fn deciding(&self) -> MutexGuard<'_, ()> {
         self.deciding.lock().unwrap_or_else(|e| e.into_inner())
     }
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.list()).unwrap_or_default()
+    /// Every proposal's rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        let items = self.items.lock().unwrap_or_else(|e| e.into_inner());
+        RowSet::list(def(), items.iter())
     }
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let items: Vec<AgentProposal> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.items.lock().map_err(|e| e.to_string())? = items;
+    /// Replaces the proposals with what plaza.db holds (at start), in the order they were kept.
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<AgentProposal> = apz_store::table::load_list(conn, def())?;
+        *self.items.lock().unwrap_or_else(|e| e.into_inner()) = stored;
         Ok(())
     }
+}
+
+/// The proposals' table: `agent_proposal`, with the role each asks for as a child row.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(AgentProposal)
 }
 
 pub fn spec(name: &str) -> Option<(&'static str, Value)> {
@@ -131,7 +146,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
                     "budget": {"type": "integer"},
                     "count": {"type": "integer", "minimum": 1, "maximum": 8},
                     "model": {"type": "string"},
-                    "project": {"type": "string", "description": "the project the agents will work on (pr<n>); without one they wait on the bench until the owner puts them on one"},
+                    "project": {"type": "string", "description": "the project the agents are for (pr<n>): they work on it only through a task's seat"},
                     "reason": {"type": "string"},
                     "instruction": {"type": "string"}
                 }),
@@ -144,7 +159,8 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 
 /// Runs `plaza_agent_propose` for the orchestrator.
 pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
-    owner_chat(app.work.current(agent.cid).as_ref())?;
+    let current = app.work.current(agent.cid);
+    owner_chat(current.as_ref())?;
     let count = input
         .get("count")
         .and_then(Value::as_u64)
@@ -189,8 +205,7 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
             collaboration: text(input, "collaboration"),
             boundaries: list(input, "boundaries"),
             tools: list(input, "tools"),
-            budget: input.get("budget").and_then(Value::as_u64).unwrap_or(0),
-            created_by: agent.name.clone(),
+            created_by: agent.label(),
             created_ms: now_ms(),
             ..RoleDef::default()
         };
@@ -214,7 +229,7 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
         reason,
         instruction,
         by_cid: agent.cid,
-        by: agent.name.clone(),
+        by: agent.label(),
         created_ms: now_ms(),
         state: PENDING.into(),
         decided_ms: 0,
@@ -223,6 +238,9 @@ pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
         project,
     });
     app.bus.publish("agent_proposal", &proposal);
+    let now = now_ms();
+    let chat = owner_chat_of(app, current.as_ref(), now);
+    crate::work_loop::open_card(app, proposal_card(&proposal, chat), now);
     Ok(format!(
         "Proposal {} is waiting for the owner's approval in the console (Approvals). Nothing is spawned until the owner approves.",
         proposal.id
@@ -294,6 +312,7 @@ pub fn approve(
         })
         .ok_or_else(|| format!("no proposal {id}"))?;
     app.bus.publish("agent_proposal", &decided);
+    withdraw_card(app, id);
     Ok(decided)
 }
 
@@ -310,6 +329,7 @@ pub fn reject(app: &App, id: &str, reason: &str) -> Result<AgentProposal, String
         })
         .ok_or_else(|| format!("no proposal {id}"))?;
     app.bus.publish("agent_proposal", &decided);
+    withdraw_card(app, id);
     Ok(decided)
 }
 
@@ -358,6 +378,85 @@ fn reject_route(app: &App, req: &Request, params: &Params<'_>) -> Response {
         Ok(p) => Response::json(200, &p),
         Err(e) => Response::error(409, &e),
     }
+}
+
+/// The chat a proposal is shown in: the chat its work runs in (a project planner's thread is that project's chat), else
+/// the main chat.
+fn owner_chat_of(app: &App, current: Option<&WorkItem>, now: u64) -> String {
+    let thread = current.map_or("", |item| item.thread.as_str());
+    if let Some(project) = thread.strip_prefix("chat:project:") {
+        return crate::work_loop::project_chat(app, project, now);
+    }
+    match thread.strip_prefix("chat:") {
+        Some(chat) if app.chats.get(chat).is_some() => chat.to_string(),
+        _ => app.chats.main(now).id,
+    }
+}
+
+/// The card a proposal asks: the owner approves it (its role is saved when new, then its agents spawn) or rejects it.
+fn proposal_card(p: &AgentProposal, chat: String) -> NewCard {
+    let plural = if p.count == 1 { "" } else { "s" };
+    NewCard {
+        kind: Kind::Proposal,
+        chat: Some(chat),
+        project: p.project.clone(),
+        task: None,
+        session: None,
+        subject: card_subject(&p.id),
+        title: format!(
+            "Proposal {}: {} agent{plural} of role {}",
+            p.id, p.count, p.role.id
+        ),
+        body: Some(format!(
+            "{} Asked in the chat: {}",
+            p.reason,
+            crate::approvals::clip(&p.instruction, 300)
+        )),
+        choices: vec![
+            Choice {
+                id: "approve".into(),
+                label: "Approve".into(),
+                detail: Some("the role is saved when it is new, then its agents spawn".into()),
+                takes_amount: false,
+            },
+            Choice {
+                id: "reject".into(),
+                label: "Reject".into(),
+                detail: Some("nothing is spawned".into()),
+                takes_amount: false,
+            },
+        ],
+    }
+}
+
+fn card_subject(id: &str) -> String {
+    format!("proposal:{id}")
+}
+
+/// Withdraws the open card of proposal `id`, which was decided by its route: the owner is not asked again.
+fn withdraw_card(app: &App, id: &str) {
+    for card in app
+        .cards
+        .withdraw(cards::Kind::Proposal, &card_subject(id), now_ms())
+    {
+        app.bus.publish("card", &card);
+    }
+}
+
+/// Does what an answered proposal card decides: the proposal is approved (its agents spawn) or rejected. Returns it in
+/// words.
+pub fn card_answered(app: &App, card: &Card) -> String {
+    let Some(id) = card.subject.strip_prefix("proposal:") else {
+        return "recorded".into();
+    };
+    let decided = match card.answer.as_deref() {
+        Some("approve") => {
+            approve(app, id, None, None, None, None).map(|p| format!("{} approved", p.id))
+        }
+        Some("reject") => reject(app, id, "").map(|p| format!("{} rejected", p.id)),
+        _ => return "recorded".into(),
+    };
+    decided.unwrap_or_else(|why| why)
 }
 
 /// Refuses unless the work the agent runs now is the owner's own chat.
@@ -411,8 +510,8 @@ fn check_role_shape(def: &RoleDef) -> Result<(), String> {
 /// The model, when given, must be allowed for the role's tier.
 /// A proposal's project must exist and still take agents.
 fn check_project(app: &App, project: &str) -> Result<(), String> {
-    use crate::membership::ProjectState;
-    match crate::membership::project_state(app, project) {
+    use crate::projects::ProjectState;
+    match crate::projects::state(app, project) {
         ProjectState::Missing => Err(format!("no project {project}")),
         ProjectState::Over => Err(format!("project {project} is over (archived or delivered)")),
         ProjectState::Active | ProjectState::Paused => Ok(()),
@@ -557,5 +656,63 @@ mod tests {
         let rejected = store.update("ap1", |p| p.state = REJECTED.into()).unwrap();
         assert_eq!(rejected.state, REJECTED);
         assert!(store.update("ap9", |_| {}).is_none());
+    }
+
+    #[test]
+    fn the_proposals_come_back_whole_from_their_tables() {
+        let store = Store::default();
+        store.add(draft("a-role"));
+        let mut second = draft("b-role");
+        second.spawned = vec![42, 43];
+        second.project = Some("pr1".into());
+        store.add(second);
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+
+        let restored = Store::default();
+        restored.load(&conn).unwrap();
+        assert_eq!(restored.list()[0].id, "ap2", "newest first, as kept");
+        assert_eq!(
+            serde_json::to_value(restored.list()).unwrap(),
+            serde_json::to_value(store.list()).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_proposal_card_is_answered_and_withdrawn_when_its_route_decides_it() {
+        let store = Store::default();
+        let board = cards::Cards::default();
+        let asked = store.add(draft("pricing-analyst"));
+        let card = board.open(proposal_card(&asked, "main".into()), 1).0;
+        assert_eq!(card.kind, Kind::Proposal);
+        assert_eq!(card.subject, card_subject(&asked.id));
+        assert_eq!(card.chat.as_deref(), Some("main"));
+        assert!(card.title.contains("pricing-analyst"), "{}", card.title);
+        assert_eq!(
+            card.choices
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["approve", "reject"]
+        );
+        // Answered by the owner: the card is spent, so nothing is left to withdraw.
+        board.answer(&card.id, "reject", None, 2).unwrap();
+        assert!(
+            board
+                .withdraw(Kind::Proposal, &card_subject(&asked.id), 3)
+                .is_empty()
+        );
+
+        // Decided through its route first: the open card is withdrawn, not answered.
+        let other = store.add(draft("pricing-analyst"));
+        let open = board.open(proposal_card(&other, "main".into()), 4).0;
+        store.update(&other.id, |item| item.state = REJECTED.into());
+        let withdrawn = board.withdraw(Kind::Proposal, &card_subject(&other.id), 5);
+        assert_eq!(
+            withdrawn.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            [open.id.as_str()]
+        );
+        assert_eq!(board.get(&open.id).unwrap().state, cards::State::Withdrawn);
     }
 }

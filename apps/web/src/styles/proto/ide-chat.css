@@ -114,7 +114,7 @@
 .files-card .fl div { display: flex; gap: 10px; font: 12px/1.9 var(--font-mono); color: var(--ink-2); }
 .files-card .fl span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---- The owner conversation view (#/talk and #/ide/conv-<n>): side list, centre chat, dock draft ---- */
+/* ---- The IDE's talk view of a chat (#/ide/chat:<id>): side list, centre chat, dock draft ---- */
 .ic-talk-host { position: fixed; inset: 0; background: var(--paper); color: var(--ink); font: 14px/1.5 var(--font); }
 .ic-talk { display: grid; height: 100%; min-height: 0;
   grid-template-columns: 240px minmax(0, 1fr) minmax(320px, 380px);

@@ -1,45 +1,50 @@
 //! Roles the owner defines (the spawn wizard) or approves (an orchestrator's proposal), beside
 //! the built-in roles from the manifest. A role is what an agent is for: its purpose,
 //! responsibilities, what it delivers, how it works with others, its tools and its budget.
-//! The agent's prompt is written from those fields (and may be edited). Saved in Postgres
-//! ("custom_roles").
+//! The agent's prompt is written from those fields (and may be edited). Saved in plaza.db (the `custom_role`
+//! tables, saved by the store's saver).
 //!
 //! GET    /v1/roles        → [RoleView] — built-in and custom, with their definitions
 //! POST   /v1/roles        body RoleDef → the saved RoleDef (create or update a custom role)
 //! DELETE /v1/roles/{id}   → refused while agents of that role run
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use apz_cache::Generations;
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_plaza::tasks::MIN_TASK_BUDGET;
+use apz_store::rusqlite::Connection;
+use apz_store::{RowSet, StoreError, TableDef};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::agents::{self, Status};
 use crate::state::App;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "custom_role")]
 pub struct RoleDef {
     /// a-z, 0-9 and '-', 2..=32 characters; not a built-in role's id.
+    #[table(key)]
     pub id: String,
     pub title: String,
     /// One or two sentences: what this agent is for.
     pub purpose: String,
+    #[table(list)]
     pub responsibilities: Vec<String>,
     /// What it hands in when its work is done.
+    #[table(list)]
     pub deliverables: Vec<String>,
     /// Who it works with and how (who it takes work from, who reviews it).
     #[serde(default)]
     pub collaboration: String,
     /// What it must not do, beyond the plaza's laws.
     #[serde(default)]
+    #[table(list)]
     pub boundaries: Vec<String>,
     /// Tool names granted beyond what every agent gets (the laws still decide).
     #[serde(default)]
+    #[table(list)]
     pub tools: Vec<String>,
-    /// Default task budget for its work, credits.
-    #[serde(default)]
-    pub budget: u64,
     /// Its default model (`provider/model[@effort]`); empty = the plaza default.
     #[serde(default)]
     pub model: String,
@@ -68,9 +73,17 @@ pub struct RoleView {
 #[derive(Default)]
 pub struct Store {
     roles: Mutex<Vec<RoleDef>>,
+    /// The hub's generations: each role's `role:<id>` is bumped by a save or a removal.
+    gens: Arc<Generations<String>>,
 }
 
 impl Store {
+    /// Counts this store's changes in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
     pub fn list(&self) -> Vec<RoleDef> {
         self.roles.lock().map(|r| r.clone()).unwrap_or_default()
     }
@@ -89,6 +102,7 @@ impl Store {
             }
             None => roles.push(def.clone()),
         }
+        crate::sources::bump(&self.gens, &crate::sources::role(&def.id));
         Ok(def)
     }
     pub fn remove(&self, id: &str) -> Result<(), String> {
@@ -98,16 +112,28 @@ impl Store {
             .position(|r| r.id == id)
             .ok_or_else(|| format!("no role {id}"))?;
         roles.remove(i);
+        crate::sources::bump(&self.gens, &crate::sources::role(id));
         Ok(())
     }
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string(&self.list()).unwrap_or_default()
+    /// Every role's rows, as they are now (the saver writes what changed).
+    pub fn rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::list(def(), lock(&self.roles).iter())
     }
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let roles: Vec<RoleDef> = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        *self.roles.lock().map_err(|e| e.to_string())? = roles;
+    /// Replaces the roles with what plaza.db holds (at start).
+    pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
+        let stored: Vec<RoleDef> = apz_store::table::load_list(conn, def())?;
+        *lock(&self.roles) = stored;
         Ok(())
     }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The custom roles' table: `custom_role`, one row a role, its lists as child tables.
+pub fn def() -> &'static TableDef {
+    apz_store::root_def!(RoleDef)
 }
 
 /// The checks a definition must pass before it is saved (the built-in-id check is the route's,
@@ -131,10 +157,6 @@ fn validate(def: &RoleDef) -> Result<(), String> {
     }
     for item in &def.deliverables {
         check_text("deliverable", item, usize::MAX)?;
-    }
-    let min_budget = u64::try_from(MIN_TASK_BUDGET).unwrap_or(0);
-    if def.budget != 0 && !(min_budget..=50_000).contains(&def.budget) {
-        return Err(format!("budget: 0 (none) or {min_budget}..=50000 credits"));
     }
     Ok(())
 }
@@ -186,12 +208,6 @@ pub fn prompt_of(def: &RoleDef) -> String {
         for item in &def.boundaries {
             out.push_str(&format!("- {}\n", item.trim()));
         }
-    }
-    if def.budget > 0 {
-        out.push_str(&format!(
-            "\n## Budget\nDefault task budget: {} credits.\n",
-            def.budget
-        ));
     }
     out
 }
@@ -268,6 +284,17 @@ fn agent_count(app: &App, role: &str) -> u32 {
 }
 
 fn list_route(app: &App, _req: &Request, _: &Params<'_>) -> Response {
+    // One snapshot of the roster for every role's count (PLAN 30.4), not one clone per role.
+    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for agent in app
+        .agents
+        .list()
+        .into_iter()
+        .filter(|a| a.status != Status::Offline)
+    {
+        *counts.entry(agent.role).or_default() += 1;
+    }
+    let agent_count = |_: &App, role: &str| counts.get(role).copied().unwrap_or(0);
     let mut builtin: Vec<RoleView> = app
         .roles
         .tools
@@ -360,7 +387,6 @@ mod tests {
             deliverables: vec!["A source list".into()],
             collaboration: "Takes work from the planner.".into(),
             boundaries: vec!["No purchases".into()],
-            budget: 500,
             ..Default::default()
         }
     }
@@ -381,9 +407,6 @@ mod tests {
         let mut long_resp = sample("longresp");
         long_resp.responsibilities = vec!["x".repeat(301)];
         assert!(store.save(long_resp).is_err(), "responsibility too long");
-        let mut bad_budget = sample("budget");
-        bad_budget.budget = 100;
-        assert!(store.save(bad_budget).is_err(), "budget below 200");
         assert_eq!(store.list().len(), 1);
     }
 
@@ -401,5 +424,45 @@ mod tests {
         assert_eq!(saved.created_ms, 7);
         assert_eq!(saved.created_by, "owner");
         assert_eq!(store.get("scout").unwrap().title, "Scout Two");
+    }
+
+    #[test]
+    fn the_roles_come_back_whole_from_their_tables() {
+        let store = Store::default();
+        store.save(sample("scout")).unwrap();
+        let mut analyst = sample("analyst");
+        analyst.tools = vec!["web.search".into(), "files.read".into()];
+        analyst.model = "anthropic/claude@high".into();
+        store.save(analyst).unwrap();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+
+        let restored = Store::default();
+        restored.load(&conn).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored.list()).unwrap(),
+            serde_json::to_value(store.list()).unwrap()
+        );
+        assert_eq!(restored.list().len(), 2, "the order is kept");
+    }
+
+    #[test]
+    fn a_save_and_a_removal_move_the_role_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::default().with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::role("scout");
+        store.save(sample("scout")).expect("save");
+        let created = gens.get(&key);
+        store.save(sample("scout")).expect("save again");
+        let replaced = gens.get(&key);
+        assert!(replaced > created, "a save moves the role");
+        store.remove("scout").expect("remove");
+        assert!(gens.get(&key) > replaced, "a removal moves the role");
+        assert_eq!(
+            gens.get(&crate::sources::role("other")),
+            0,
+            "only the role's own source moves"
+        );
     }
 }

@@ -6,7 +6,7 @@
 
 import '../styles/proto/review.css';
 import { review, type ChangeTree, type RecipeDetail, type ReviewFinding, type ReviewNode, type ReviewRun, type ReviewRunDetail, type ReviewScore, type ReviewTree, type Touch, type TreeFile, type WordedTouch } from '../api-review';
-import { agentName, roleLabel } from '../roles';
+import { agentLabel, agentName, roleLabel } from '../roles';
 import { agents } from '../store';
 import { badge, clip, empty, table, type Column } from '../ui/components';
 import { h, replace } from '../ui/dom';
@@ -692,6 +692,6 @@ function labelOf(defs: Map<string, Def>, id: string): string {
 function assigneeName(cid: number | null): string {
   if (cid === null) return '—';
   const a = agents.get().find((x) => x.cid === cid);
-  return a ? agentName(a) : `agent ${cid}`;
+  return a ? agentName(a) : agentLabel(cid);
 }
 

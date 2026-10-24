@@ -1,57 +1,50 @@
-//! A conversation's project draft: the project the orchestrator sets up with the owner, which the owner starts.
+//! A project's draft: the project the orchestrator sets up with the owner, which the owner starts. It lives in the
+//! project's chat: the orchestrator opens the project (its id reserved, at "brief", where nothing runs) and the chat
+//! with it, and writes the draft with `plaza_project_draft` as the owner's talk goes. The chat shows the draft and a
+//! `start` card. The owner can edit the draft too (`PATCH …/draft`). Each edit bumps the revision: a write names the
+//! revision it read, so neither overwrites a change it has not seen, and the orchestrator is told of the owner's edits
+//! with the next message. Every revision withdraws the card and asks again.
 //!
-//! The orchestrator writes it with `plaza_project_draft` as the conversation goes, and the owner can edit it too
-//! (`PATCH …/draft`). Each edit bumps the revision: a write names the revision it read, so neither overwrites a change
-//! it has not seen, and the orchestrator is told of the owner's edits with the next message. Start
-//! (`POST …/start {revision}`) takes the revision the owner looked at and checks the whole draft. Then, all or
-//! nothing, it:
-//! - opens the project (its plan the owner's, the orchestrator its lead);
-//! - posts its tasks;
-//! - spawns the agents the team still needs, and puts the named ones on it from the bench.
+//! Start (the card's `start`, or `POST …/start {revision}`) takes the revision the owner looked at and checks the whole
+//! draft. Then, all or nothing, it:
+//! - opens the project: at "implementation", its plan the owner's, with its GitHub mode and disk quota;
+//! - sets its budget (unit, cap and monthly cap);
+//! - posts its tasks.
 //!
-//! A step that fails undoes the ones before it: the tasks are withdrawn, and the project is archived, which sends its
-//! agents back to the bench. Afterwards the conversation is the project's line to the orchestrator: it is told there
-//! that the project started, and the project's notices (a task ended, tasks to replan) come there too.
+//! The project's planner starts on the work loop's next tick, and each task's seats fill from there (`work_loop.rs`).
+//! A step that fails undoes the ones before it: the tasks are withdrawn, and the project is archived, which ends its
+//! agents' work. Afterwards the chat is the project's line to the orchestrator that drafted it: the project's notices
+//! (it started, a task ended, tasks to replan) come there.
 //!
-//! GET   /v1/owner/conversations/{id}/draft               → the draft, and what still stops Start (`problems`)
-//! PATCH /v1/owner/conversations/{id}/draft {revision, …} → the conversation, its draft one revision on
-//! POST  /v1/owner/conversations/{id}/start {revision}    → the conversation, with its project, and what Start did
-
-use std::collections::BTreeSet;
+//! GET   /v1/chats/{id}/draft                → the draft, and what still stops Start (`problems`)
+//! PATCH /v1/chats/{id}/draft {revision, …}  → the draft one revision on
+//! POST  /v1/chats/{id}/start {revision}     → the project started, and its tasks
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::agents::Agent;
-use crate::conversations::{self, Conversation};
-use crate::settings::tier_of;
+use crate::budgets::Unit;
+use crate::cards::{self, Card, NewCard};
+use crate::chats::{Author, Chat, Kind, MessageKind, Post};
+use crate::projects::Actor;
 use crate::state::App;
 use crate::task_plan::{self, Planned};
+use crate::work_loop;
 
 pub const TOOLS: &[&str] = &["plaza_project_draft"];
+/// Who the owner's edits are by.
+pub const OWNER: &str = "owner";
+/// Who the orchestrator's writes are by.
+pub const ORCHESTRATOR: &str = "orchestrator";
+/// The share of a project's cap at which the owner is told, when the draft's budget starts it.
+const WARN_AT_PCT: u8 = 80;
+/// The smallest disk quota a draft may set, in bytes (zero means none).
+const MIN_QUOTA_BYTES: u64 = 1 << 20;
 
-/// The most agents of one role a draft's team may have.
-pub const MAX_SEAT: u32 = 16;
-/// The most seats (roles) a team may have.
-const MAX_SEATS: usize = 24;
-
-/// One role on a draft's team.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Seat {
-    pub role: String,
-    /// How many agents of the role the project has.
-    pub count: u32,
-    /// Agents on the bench to put on it (counted in `count`, by guest CID); the rest are spawned.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub bench: Vec<u64>,
-    /// The model of the spawned ones (else the plaza's for the role).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// A conversation's project draft.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A project's draft (a child of its chat's row).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Draft {
     /// Bumped by every edit, the orchestrator's or the owner's.
     pub revision: u64,
@@ -64,21 +57,38 @@ pub struct Draft {
     pub repo: Option<String>,
     /// The task list, as a plan's (`task_plan`): `after` names keys of the list.
     #[serde(default)]
+    #[table(child)]
     pub tasks: Vec<Planned>,
-    #[serde(default)]
-    pub team: Vec<Seat>,
-    /// The project's budget, in credits.
+    /// The project's budget: its unit, its cap and its monthly cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<u64>,
-    /// The project's settings overrides.
-    #[serde(default, skip_serializing_if = "Value::is_null")]
-    pub settings: Value,
+    #[table(child)]
+    pub budget: Option<DraftBudget>,
+    /// How the project meets GitHub: one of `projects::GITHUB_MODES`.
+    #[serde(default = "crate::projects::github_none")]
+    pub github: String,
+    /// The disk the project's files may take, in bytes; none means no quota.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_quota_bytes: Option<u64>,
+    /// The project's settings overrides, when any were set: the project's own settings, as the plaza reads them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[table(child)]
+    pub settings: Option<crate::project_settings::ProjectSettings>,
     /// `orchestrator` or `owner`: who made the last edit.
     pub updated_by: String,
     pub updated_ms: u64,
     /// When the owner started it; a started draft is not edited again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_ms: Option<u64>,
+}
+
+/// A project's budget as its draft sets it: the unit, the cap in it, and optionally the cap per month for the planner.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct DraftBudget {
+    pub unit: Unit,
+    /// In the unit: micro-dollars for `usd`, tokens for `tokens`. Never zero.
+    pub cap: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub monthly_cap: Option<u64>,
 }
 
 /// An edit: the fields given replace the draft's.
@@ -99,11 +109,14 @@ struct Edit {
     #[serde(default)]
     tasks: Option<Vec<Planned>>,
     #[serde(default)]
-    team: Option<Vec<Seat>>,
+    budget: Option<DraftBudget>,
     #[serde(default)]
-    budget: Option<u64>,
+    github: Option<String>,
+    /// Zero goes back to no quota.
     #[serde(default)]
-    settings: Option<Value>,
+    disk_quota_bytes: Option<u64>,
+    #[serde(default)]
+    settings: Option<crate::project_settings::ProjectSettings>,
 }
 
 /// `edit` applied to `current` (none: a first draft) by `by`, at `now`: the next revision, checked for shape
@@ -143,15 +156,19 @@ fn apply(current: Option<&Draft>, edit: Edit, by: &str, now: u64) -> Result<Draf
             .tasks
             .or_else(|| base.as_ref().map(|d| d.tasks.clone()))
             .unwrap_or_default(),
-        team: edit
-            .team
-            .or_else(|| base.as_ref().map(|d| d.team.clone()))
-            .unwrap_or_default(),
-        budget: edit.budget.or_else(|| base.as_ref().and_then(|d| d.budget)),
+        budget: edit
+            .budget
+            .or_else(|| base.as_ref().and_then(|d| d.budget.clone())),
+        github: pick(edit.github, base.as_ref().map(|d| &d.github))
+            .unwrap_or_else(crate::projects::github_none),
+        disk_quota_bytes: match edit.disk_quota_bytes {
+            Some(0) => None,
+            Some(quota) => Some(quota),
+            None => base.as_ref().and_then(|d| d.disk_quota_bytes),
+        },
         settings: edit
             .settings
-            .or_else(|| base.as_ref().map(|d| d.settings.clone()))
-            .unwrap_or(Value::Null),
+            .or_else(|| base.as_ref().and_then(|d| d.settings.clone())),
         updated_by: by.to_string(),
         updated_ms: now,
         started_ms: None,
@@ -160,8 +177,8 @@ fn apply(current: Option<&Draft>, edit: Edit, by: &str, now: u64) -> Result<Draf
     Ok(draft)
 }
 
-/// Whether a draft is well formed, whatever the plaza holds: its text within bounds, its tasks a list that can be
-/// posted (keys once, links inside the list, no cycle), its team's counts sound.
+/// Whether a draft is well formed, whatever the plaza holds: its text within bounds, its budget and quota positive, its
+/// GitHub mode one of the modes, and its tasks a list that can be posted (keys once, links inside the list, no cycle).
 pub fn shape(draft: &Draft) -> Result<(), String> {
     let chars = |text: &str| text.trim().chars().count();
     if !(1..=120).contains(&chars(&draft.title)) {
@@ -180,145 +197,68 @@ pub fn shape(draft: &Draft) -> Result<(), String> {
     {
         return Err("a draft's repo is at most 200 characters".into());
     }
+    if let Some(budget) = &draft.budget {
+        if budget.cap == 0 {
+            return Err("a draft's budget cap is at least 1".into());
+        }
+        if budget.monthly_cap == Some(0) {
+            return Err("a draft's monthly cap is at least 1 (leave it out for none)".into());
+        }
+    }
+    if !crate::projects::GITHUB_MODES.contains(&draft.github.as_str()) {
+        return Err(format!(
+            "a draft's github is one of {}",
+            crate::projects::GITHUB_MODES.join(", ")
+        ));
+    }
+    if draft
+        .disk_quota_bytes
+        .is_some_and(|quota| quota < MIN_QUOTA_BYTES)
+    {
+        return Err("a draft's disk quota is at least 1 MiB (zero means none)".into());
+    }
     if !draft.tasks.is_empty() {
         task_plan::check(&draft.tasks, |_| false)?;
-    }
-    if draft.team.len() > MAX_SEATS {
-        return Err(format!("a team has at most {MAX_SEATS} roles"));
-    }
-    let mut cids = BTreeSet::new();
-    for seat in &draft.team {
-        if seat.role.trim().is_empty() {
-            return Err("a seat names its role".into());
-        }
-        if !(1..=MAX_SEAT).contains(&seat.count) {
-            return Err(format!("{}: a role has 1 to {MAX_SEAT} agents", seat.role));
-        }
-        if seat.bench.len() > seat.count as usize {
-            return Err(format!(
-                "{}: {} agents from the bench, but a count of {}",
-                seat.role,
-                seat.bench.len(),
-                seat.count
-            ));
-        }
-        for cid in &seat.bench {
-            if !cids.insert(*cid) {
-                return Err(format!("agent {cid} is named twice on the team"));
-            }
-        }
-    }
-    if !draft.settings.is_null() && !draft.settings.is_object() {
-        return Err("a draft's settings are an object".into());
     }
     Ok(())
 }
 
-/// What still stops Start, as the plaza is now: no tasks; a role the plaza does not have, or the orchestrator's; an
-/// agent named from the bench that is not on it (or not of its seat's role); a task for a role the team does not
-/// have; a model the role may not use; a budget below what the tasks need.
+/// What still stops Start, as the plaza is now: no tasks; a task for a role the plaza does not have; no budget; the
+/// project's settings, which the plaza refuses.
 pub fn problems(app: &App, draft: &Draft) -> Vec<String> {
     let mut found = Vec::new();
     if draft.tasks.is_empty() {
         found.push("the draft has no tasks yet".to_string());
     }
-    for seat in &draft.team {
-        if !crate::roles_custom::exists(app, &seat.role) {
-            found.push(format!("the plaza has no role {}", seat.role));
-            continue;
-        }
-        if crate::membership::plaza_wide(&seat.role) {
-            found.push(format!(
-                "{} works on every project: it is no seat on a team",
-                seat.role
-            ));
-        }
-        if let Some(model) = &seat.model
-            && let Err(why) = app.settings.allowed(tier_of(&seat.role), model)
-        {
-            found.push(format!("{}: {why}", seat.role));
-        }
-        for cid in &seat.bench {
-            match app.agents.get(*cid) {
-                None => found.push(format!("agent {cid} is not on the roster")),
-                Some(agent) if agent.kind == "model" => {
-                    found.push(format!("agent {cid} is a model agent, which takes no work"));
-                }
-                Some(agent) if agent.role != seat.role => found.push(format!(
-                    "{} (agent {cid}) is a {}, not a {}",
-                    name_of(&agent),
-                    agent.role,
-                    seat.role
-                )),
-                Some(agent) => {
-                    if let Some(project) = app.members.project_of(*cid) {
-                        found.push(format!(
-                            "{} (agent {cid}) works on project {project}, not on the bench",
-                            name_of(&agent)
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    let roles: BTreeSet<&str> = draft.team.iter().map(|seat| seat.role.as_str()).collect();
     for task in &draft.tasks {
         if let Some(role) = task.role.as_deref().filter(|r| !r.is_empty())
-            && !roles.contains(role)
+            && !crate::roles_custom::exists(app, role)
         {
             found.push(format!(
-                "task {} is for a {role}, and the team has none",
+                "task {} is for a {role}, and the plaza has no such role",
                 task.key.trim()
             ));
         }
     }
-    let settings = settings_of(draft);
-    if let Err(why) = &settings {
-        found.push(format!("the settings: {why}"));
-    } else if let Ok(settings) = &settings
-        && let Err(why) = crate::project_settings::check(app, settings)
-    {
-        found.push(format!("the settings: {why}"));
+    if draft.budget.is_none() {
+        found.push("the draft has no budget yet: its unit and cap".to_string());
     }
-    let task_budget = settings.ok().and_then(|s| s.task_budget);
-    let needed: u64 = draft
-        .tasks
-        .iter()
-        .map(|task| apz_plaza::tasks::resolve_budget(task.budget.or(task_budget)).unwrap_or(0))
-        .sum();
-    if let Some(budget) = draft.budget
-        && budget < needed
-    {
-        found.push(format!(
-            "the budget is {budget} credits, and the tasks alone need {needed}"
-        ));
-    }
-    if let Some(budget) = draft.budget
-        && i128::from(budget) > app.plaza.treasury.plaza_budget_balance()
-    {
-        found.push(format!(
-            "the budget is {budget} credits, more than the plaza's budget holds"
-        ));
+    if let Err(why) = crate::project_settings::check(app, &settings_of(draft)) {
+        found.push(format!("the settings: {why}"));
     }
     found
 }
 
 /// The draft's settings as a project's overrides (none set when it has none).
-fn settings_of(draft: &Draft) -> Result<crate::project_settings::ProjectSettings, String> {
-    if draft.settings.is_null() {
-        return Ok(crate::project_settings::ProjectSettings::default());
-    }
-    crate::project_settings::merged(
-        &crate::project_settings::ProjectSettings::default(),
-        &draft.settings,
-    )
+fn settings_of(draft: &Draft) -> crate::project_settings::ProjectSettings {
+    draft.settings.clone().unwrap_or_default()
 }
 
-fn name_of(agent: &Agent) -> String {
-    if agent.name.is_empty() {
-        format!("agent {}", agent.cid)
-    } else {
-        agent.name.clone()
+/// The project's goal: the draft's goal, and where the work goes after it.
+fn goal_of(draft: &Draft) -> String {
+    match &draft.repo {
+        Some(repo) => format!("{}\n\nWhere the work goes: {repo}", draft.goal.trim()),
+        None => draft.goal.trim().to_string(),
     }
 }
 
@@ -329,20 +269,150 @@ pub fn view(app: &App, draft: &Draft) -> Value {
     value
 }
 
-/// Saves `draft` as conversation `id`'s and publishes the conversation. `seen`: the orchestrator made the edit, so it
-/// has seen this revision.
-fn save(app: &App, id: &str, draft: Draft, seen: bool) -> Result<Conversation, (u16, String)> {
-    let saved = app.conversations.update(id, |c| {
+/// The project draft chat of project `pid` (archived ones too): the chat that holds its draft, if it has one.
+pub fn chat_of(app: &App, pid: &str) -> Option<Chat> {
+    app.chats
+        .list(Some(pid), true)
+        .into_iter()
+        .find(|c| c.kind == Kind::Project && c.draft.is_some())
+}
+
+/// Saves `draft` as the draft of project `pid`'s chat `chat`, and keeps the project's fields and the chat's start card
+/// current. `seen`: the orchestrator made the edit, so it has seen this revision.
+fn save(
+    app: &App,
+    chat: &str,
+    pid: &str,
+    draft: Draft,
+    seen: bool,
+) -> Result<Draft, (u16, String)> {
+    app.projects
+        .set_draft(
+            pid,
+            draft.title.trim(),
+            &goal_of(&draft),
+            &draft.kind,
+            &draft.github,
+        )
+        .map_err(|e| (409, e))?;
+    let now = draft.updated_ms;
+    let saved = app.chats.update(chat, |c| {
         if seen {
             c.draft_seen = draft.revision;
         }
-        c.updated_ms = draft.updated_ms;
-        c.draft = Some(draft);
+        c.updated_ms = now;
+        c.draft = Some(draft.clone());
         Ok(())
     })?;
-    app.bus
-        .publish("owner_conversation", &conversations::view(app, &saved));
-    Ok(saved)
+    ask_to_start(app, chat, &draft, pid, now);
+    crate::store::saver::save_now(app, "projects");
+    crate::store::saver::save_now(app, "chats");
+    app.bus.publish(
+        "chat",
+        &json!({ "chat": saved.id, "draft": view(app, &draft) }),
+    );
+    Ok(draft)
+}
+
+/// The subject of a project's start card: one open card per draft.
+fn start_subject(pid: &str) -> String {
+    format!("draft:{pid}")
+}
+
+/// Withdraws the start card of the draft's revision before, and asks the owner to start the draft in `chat` (unless it
+/// has started). The card's two choices: start it, or keep drafting.
+fn ask_to_start(app: &App, chat: &str, draft: &Draft, pid: &str, now: u64) {
+    let subject = start_subject(pid);
+    for card in app.cards.withdraw(cards::Kind::Start, &subject, now) {
+        app.bus.publish("card", &card);
+    }
+    if draft.started_ms.is_some() {
+        return;
+    }
+    let title = format!("Start project {pid} \"{}\"?", draft.title.trim());
+    let (card, created) = app.cards.open(
+        NewCard {
+            kind: cards::Kind::Start,
+            chat: Some(chat.to_string()),
+            project: Some(pid.to_string()),
+            task: None,
+            session: None,
+            subject,
+            title: title.clone(),
+            body: Some(summary(draft)),
+            choices: vec![
+                cards::Choice {
+                    id: "start".into(),
+                    label: "Start".into(),
+                    detail: Some("open the project with this budget and post its tasks".into()),
+                    takes_amount: false,
+                },
+                cards::Choice {
+                    id: "edit-later".into(),
+                    label: "Keep drafting".into(),
+                    detail: Some("the draft stays here until it is started".into()),
+                    takes_amount: false,
+                },
+            ],
+        },
+        now,
+    );
+    if created {
+        let posted = app.chats.post(
+            chat,
+            Post {
+                author: Author::System,
+                session: None,
+                seat: None,
+                kind: MessageKind::Question,
+                text: format!("{title}\n\n{}", summary(draft)),
+                card: Some(card.id.clone()),
+                attachments: Vec::new(),
+            },
+            now,
+        );
+        app.bus.publish("card", &card);
+        if let Some(message) = posted {
+            app.bus
+                .publish("chat", &json!({ "chat": chat, "message": message }));
+        }
+    }
+}
+
+/// What the start card says of a draft: its tasks, budget, disk quota and GitHub mode, in words.
+fn summary(draft: &Draft) -> String {
+    let tasks = if draft.tasks.is_empty() {
+        "none yet".to_string()
+    } else {
+        draft
+            .tasks
+            .iter()
+            .map(|task| format!("- {}: {}", task.key.trim(), task.goal.trim()))
+            .collect::<Vec<String>>()
+            .join("\n")
+    };
+    let budget = draft.budget.as_ref().map_or_else(
+        || "No budget yet".to_string(),
+        |b| {
+            let cap = work_loop::amount(b.cap, b.unit);
+            match b.monthly_cap {
+                Some(monthly) => format!(
+                    "{cap}, {} a month for the planner",
+                    work_loop::amount(monthly, b.unit)
+                ),
+                None => cap,
+            }
+        },
+    );
+    let quota = draft.disk_quota_bytes.map_or_else(
+        || "No disk quota".to_string(),
+        |q| format!("Disk quota {} MiB", q >> 20),
+    );
+    format!(
+        "{}\n\nTasks:\n{tasks}\n\nBudget: {budget}. {quota}. GitHub: {}.",
+        draft.goal.trim(),
+        draft.github
+    )
 }
 
 // ---- The orchestrator's tool -------------------------------------------------------------------------------------
@@ -357,30 +427,31 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
         },
         "required": ["key", "goal"],
     });
-    let seat = json!({
-        "type": "object",
-        "properties": {
-            "role": {"type": "string"},
-            "count": {"type": "integer", "minimum": 1, "maximum": MAX_SEAT},
-            "bench": {"type": "array", "items": {"type": "integer"}, "description": "guest CIDs of agents on the bench (plaza_agents: project null) to put on it; counted in count"},
-            "model": {"type": "string"},
-        },
-        "required": ["role", "count"],
-    });
     (name == "plaza_project_draft").then(|| {
         (
-            "Keep the project draft of the owner's conversation you are in current: the project you set up with the owner, which they start (you never start it). `read` returns the draft, its revision and what still stops Start. `write` changes it: give the revision you read (the owner may edit it too), and only the fields that change: title, goal, kind (code|other), repo (where the work goes, in words), tasks [{key, goal, acceptance, role, budget, after}] (after: keys of tasks of this list it runs after), team [{role, count, bench, model}] (bench: agents from the bench by CID, counted in count; the rest are spawned), budget (credits for the whole project) and settings (the project's overrides).",
+            "Keep a project draft current: the project you set up with the owner, in its own chat, which they start (you never start it). `read` with `project` returns its draft, the revision and what still stops Start; without `project` it lists the drafts not started yet. `write` without `project` opens a new draft (its project and chat); with `project` it changes that draft: give the revision you read (the owner may edit it too), and only the fields that change: title, goal, kind (code|other), repo (where the work goes, in words), tasks [{key, goal, acceptance, role, budget, after}] (after: keys of tasks of this list it runs after), budget {unit: usd|tokens, cap, monthly_cap?} (the project's budget), github (none|mirror|ci), disk_quota_bytes (0 for none) and settings (the project's overrides).",
             json!({
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["read", "write"]},
+                    "project": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 0},
                     "title": {"type": "string"}, "goal": {"type": "string"},
                     "kind": {"type": "string", "enum": ["code", "other"]},
                     "repo": {"type": "string"},
                     "tasks": {"type": "array", "items": task, "maxItems": task_plan::MAX_PLANNED},
-                    "team": {"type": "array", "items": seat},
-                    "budget": {"type": "integer", "minimum": 0},
+                    "budget": {
+                        "type": "object",
+                        "properties": {
+                            "unit": {"type": "string", "enum": ["usd", "tokens"]},
+                            "cap": {"type": "integer", "minimum": 1},
+                            "monthly_cap": {"type": "integer", "minimum": 1},
+                        },
+                        "required": ["unit", "cap"],
+                        "additionalProperties": false,
+                    },
+                    "github": {"type": "string", "enum": crate::projects::GITHUB_MODES},
+                    "disk_quota_bytes": {"type": "integer", "minimum": 0},
                     "settings": {"type": "object"},
                 },
                 "required": ["action"],
@@ -390,123 +461,154 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     })
 }
 
-/// Runs `plaza_project_draft` for the orchestrator, in the conversation its current work item is in.
+/// Runs `plaza_project_draft` for the orchestrator.
 pub fn run(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
-    let id = app
-        .work
-        .current(agent.cid)
-        .and_then(|item| item.origin.conversation)
-        .ok_or(
-            "plaza_project_draft works in the owner's conversations, and this work is not one",
-        )?;
-    let conversation = app
-        .conversations
-        .get(&id)
-        .ok_or_else(|| format!("no conversation {id}"))?;
     match input.get("action").and_then(Value::as_str) {
-        Some("read") => {
-            app.conversations
-                .update(&id, |c| {
-                    c.draft_seen = c.draft.as_ref().map_or(0, |d| d.revision);
-                    Ok(())
-                })
-                .map_err(|(_, e)| e)?;
-            let bench: Vec<Value> = app
-                .agents
-                .list()
-                .into_iter()
-                .filter(|a| {
-                    a.kind != "model"
-                        && !crate::membership::plaza_wide(&a.role)
-                        && app.members.project_of(a.cid).is_none()
-                })
-                .map(|a| json!({"cid": a.cid, "name": a.name, "role": a.role, "status": a.status}))
-                .collect();
-            Ok(json!({
-                "conversation": id,
-                "project": conversation.project,
-                "draft": conversation.draft.as_ref().map(|draft| view(app, draft)),
-                "bench": bench,
-            })
-            .to_string())
-        }
-        Some("write") => {
-            let mut fields = input.clone();
-            if let Some(object) = fields.as_object_mut() {
-                object.remove("action");
-            }
-            let edit: Edit =
-                serde_json::from_value(fields).map_err(|e| format!("a draft edit: {e}"))?;
-            let draft = apply(
-                conversation.draft.as_ref(),
-                edit,
-                conversations::ORCHESTRATOR,
-                apz_plaza::now_ms(),
-            )
-            .map_err(|(_, e)| e)?;
-            let found = problems(app, &draft);
-            let revision = draft.revision;
-            save(app, &id, draft, true).map_err(|(_, e)| e)?;
-            let next = if found.is_empty() {
-                "Nothing stops Start: tell the owner it is ready, and that they start it."
-                    .to_string()
-            } else {
-                format!("Before the owner can start it: {}.", found.join("; "))
-            };
-            Ok(format!(
-                "Draft revision {revision} saved; the owner sees it beside the conversation. {next}"
-            ))
-        }
+        Some("read") => read(app, input),
+        Some("write") => write(app, agent, input),
         _ => Err("action is read or write".into()),
     }
+}
+
+/// `read`: the draft of `project`, marked seen; without a project, the drafts not started.
+fn read(app: &App, input: &Value) -> Result<String, String> {
+    let Some(pid) = input.get("project").and_then(Value::as_str) else {
+        let open: Vec<Value> = app
+            .chats
+            .list(None, false)
+            .into_iter()
+            .filter(|c| c.kind == Kind::Project)
+            .filter_map(|c| {
+                let draft = c.draft.as_ref().filter(|d| d.started_ms.is_none())?;
+                Some(json!({
+                    "project": c.project,
+                    "chat": c.id,
+                    "revision": draft.revision,
+                    "title": draft.title,
+                }))
+            })
+            .collect();
+        return Ok(json!({ "drafts": open }).to_string());
+    };
+    let chat = chat_of(app, pid).ok_or_else(|| format!("no draft for project {pid}"))?;
+    let Some(draft) = chat.draft.clone() else {
+        return Err(format!("no draft for project {pid}"));
+    };
+    app.chats
+        .update(&chat.id, |c| {
+            c.draft_seen = draft.revision;
+            Ok(())
+        })
+        .map_err(|(_, e)| e)?;
+    Ok(json!({
+        "project": pid,
+        "chat": chat.id,
+        "draft": view(app, &draft),
+    })
+    .to_string())
+}
+
+/// `write`: a new draft (without `project`), or the next revision of the draft of `project`.
+fn write(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
+    let mut fields = input.clone();
+    if let Some(object) = fields.as_object_mut() {
+        object.remove("action");
+        object.remove("project");
+    }
+    let edit: Edit = serde_json::from_value(fields).map_err(|e| format!("a draft edit: {e}"))?;
+    let now = apz_plaza::now_ms();
+    let (pid, chat, draft) = match input.get("project").and_then(Value::as_str) {
+        Some(pid) => {
+            let chat = chat_of(app, pid).ok_or_else(|| format!("no draft for project {pid}"))?;
+            let draft = apply(chat.draft.as_ref(), edit, ORCHESTRATOR, now).map_err(|(_, e)| e)?;
+            let saved = save(app, &chat.id, pid, draft, true).map_err(|(_, e)| e)?;
+            (pid.to_string(), chat.id, saved)
+        }
+        None => {
+            let draft = apply(None, edit, ORCHESTRATOR, now).map_err(|(_, e)| e)?;
+            let lead = Actor {
+                cid: agent.cid,
+                name: agent.label(),
+                role: agent.role.clone(),
+            };
+            let project = app.projects.open(
+                &lead,
+                draft.title.trim(),
+                &goal_of(&draft),
+                &draft.kind,
+                true,
+            )?;
+            let chat = app.chats.open_project(&project.id, draft.title.trim(), now);
+            let saved = save(app, &chat.id, &project.id, draft, true).map_err(|(_, e)| e)?;
+            // The main chat is told where the draft is.
+            app.chats.main(now);
+            work_loop::notice(
+                app,
+                crate::chats::MAIN,
+                &format!(
+                    "Draft {} \"{}\" is in chat {}: the owner starts it there.",
+                    project.id,
+                    saved.title.trim(),
+                    chat.id
+                ),
+                now,
+            );
+            (project.id, chat.id, saved)
+        }
+    };
+    let found = problems(app, &draft);
+    let next = if found.is_empty() {
+        "Nothing stops Start: tell the owner it is ready, and that they start it.".to_string()
+    } else {
+        format!("Before the owner can start it: {}.", found.join("; "))
+    };
+    Ok(format!(
+        "Draft revision {} saved as project {pid} (chat {chat}); the owner sees it there. {next}",
+        draft.revision
+    ))
 }
 
 // ---- The owner's routes -------------------------------------------------------------------------------------------
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
-        .get("/v1/owner/conversations/{id}/draft", get_route)
-        .doc(RouteDoc::new("Read a conversation's project draft").errors(&[404]))
-        .route("PATCH", "/v1/owner/conversations/{id}/draft", patch_route)
-        .doc(RouteDoc::new("Edit a conversation's project draft").errors(&[400, 404, 409, 500]))
-        .post("/v1/owner/conversations/{id}/start", start_route)
+        .get("/v1/chats/{id}/draft", get_route)
+        .doc(RouteDoc::new("Read a project chat's draft").errors(&[404]))
+        .route("PATCH", "/v1/chats/{id}/draft", patch_route)
+        .doc(RouteDoc::new("Edit a project chat's draft").errors(&[400, 404, 409, 500]))
+        .post("/v1/chats/{id}/start", start_route)
         .doc(
-            RouteDoc::new("Start the project a conversation drafted")
-                .errors(&[400, 404, 409, 500, 502]),
+            RouteDoc::new("Start the project a chat's draft describes")
+                .errors(&[400, 404, 409, 500]),
         )
 }
 
 fn get_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
-    let Some(conversation) = app.conversations.get(p.get("id")) else {
-        return Response::error(404, "no such conversation");
-    };
-    match &conversation.draft {
-        Some(draft) => Response::json(200, &view(app, draft)),
-        None => Response::error(404, "the conversation has no draft yet"),
+    match app.chats.get(p.get("id")).and_then(|chat| chat.draft) {
+        Some(draft) => Response::json(200, &view(app, &draft)),
+        None => Response::error(404, "the chat has no draft"),
     }
 }
 
-/// Body: `{revision, title?, goal?, kind?, repo?, tasks?, team?, budget?, settings?}`.
+/// Body: `{revision, title?, goal?, kind?, repo?, tasks?, budget?, github?, disk_quota_bytes?, settings?}`.
 fn patch_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let edit: Edit = match req.json() {
         Ok(edit) => edit,
         Err(e) => return Response::error(400, &format!("bad body: {e}")),
     };
     let id = p.get("id");
-    let Some(conversation) = app.conversations.get(id) else {
-        return Response::error(404, "no such conversation");
+    let Some(chat) = app.chats.get(id) else {
+        return Response::error(404, &format!("no chat {id}"));
     };
-    let draft = match apply(
-        conversation.draft.as_ref(),
-        edit,
-        conversations::OWNER,
-        apz_plaza::now_ms(),
-    ) {
+    let Some(pid) = chat.project.clone() else {
+        return Response::error(409, "the chat has no project");
+    };
+    let draft = match apply(chat.draft.as_ref(), edit, OWNER, apz_plaza::now_ms()) {
         Ok(draft) => draft,
         Err((code, e)) => return Response::error(code, &e),
     };
-    match save(app, id, draft, false) {
-        Ok(conversation) => Response::json(200, &conversations::view(app, &conversation)),
+    match save(app, id, &pid, draft, false) {
+        Ok(saved) => Response::json(200, &view(app, &saved)),
         Err((code, e)) => Response::error(code, &e),
     }
 }
@@ -523,38 +625,34 @@ fn start_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Err(e) => return Response::error(400, &format!("bad body: {e}")),
     };
     match start(app, p.get("id"), body.revision) {
-        Ok((conversation, done)) => {
-            let mut value = conversations::view(app, &conversation);
-            value["started"] = done;
-            Response::json(200, &value)
-        }
+        Ok(done) => Response::json(200, &done),
         Err((code, e)) => Response::error(code, &e),
     }
 }
 
 // ---- Start --------------------------------------------------------------------------------------------------------
 
-/// Starts conversation `id`'s draft at `revision`: checks it, then opens the project, posts its tasks, spawns the
-/// team's new agents and puts the named ones on it from the bench, undoing what was done when a step fails. Returns
-/// the conversation and what Start did.
-pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value), (u16, String)> {
-    let conversation = app
-        .conversations
+/// Starts chat `id`'s draft at `revision`: checks it, then opens the project and posts its tasks, undoing what was
+/// done when a step fails. Returns what Start did: the project and its tasks.
+pub fn start(app: &App, id: &str, revision: u64) -> Result<Value, (u16, String)> {
+    let chat = app
+        .chats
         .get(id)
-        .ok_or_else(|| (404, format!("no conversation {id}")))?;
-    if conversation.archived {
-        return Err((409, format!("conversation {id} is archived")));
+        .ok_or_else(|| (404, format!("no chat {id}")))?;
+    if chat.archived {
+        return Err((409, format!("chat {id} is archived")));
     }
-    if let Some(project) = &conversation.project {
-        return Err((
-            409,
-            format!("this conversation started project {project} already"),
-        ));
-    }
-    let draft = conversation
+    let draft = chat
         .draft
         .clone()
-        .ok_or_else(|| (409, "the conversation has no draft yet".to_string()))?;
+        .ok_or_else(|| (409, "the chat has no draft yet".to_string()))?;
+    let pid = chat
+        .project
+        .clone()
+        .ok_or_else(|| (409, "the chat has no project".to_string()))?;
+    if draft.started_ms.is_some() {
+        return Err((409, format!("this draft started project {pid} already")));
+    }
     if draft.revision != revision {
         return Err((
             409,
@@ -572,165 +670,169 @@ pub fn start(app: &App, id: &str, revision: u64) -> Result<(Conversation, Value)
             format!("the draft cannot start yet: {}", found.join("; ")),
         ));
     }
+    let budget = draft
+        .budget
+        .clone()
+        .ok_or_else(|| (409, "the draft has no budget yet".to_string()))?;
 
-    // 1. The project, its plan the owner's.
-    let goal = match &draft.repo {
-        Some(repo) => format!("{}\n\nWhere the work goes: {repo}", draft.goal.trim()),
-        None => draft.goal.trim().to_string(),
-    };
-    let project = app
-        .projects
-        .open_for_owner(draft.title.trim(), &goal, &draft.kind)
-        .map_err(|e| (400, e))?;
-    let pid = project.id.clone();
+    // 1. The project, at implementation: its plan the owner's.
+    let project = app.projects.start_draft(&pid).map_err(|e| (409, e))?;
     crate::projects::attach_repo(app, &project);
-    if let Err(e) = app.projects.set_lead(&pid, conversation.cid) {
-        undo(app, &pid, &[]);
-        return Err((500, e));
-    }
 
-    // 2. Its settings, and its budget set aside: its tasks are funded from it.
-    let settings = settings_of(&draft).unwrap_or_default();
-    let task_budget = settings.task_budget;
+    // 2. Its settings, and its budget: its tasks are funded from it.
+    let settings = settings_of(&draft);
     if let Err(e) = app.project_settings.set(&pid, settings) {
-        undo(app, &pid, &[]);
+        undo(app, &pid);
         return Err((500, format!("the project's settings were not saved: {e}")));
     }
-    if let Some(budget) = draft.budget
-        && let Err(e) = crate::project_settings::fund(app, &pid, budget)
-    {
-        undo(app, &pid, &[]);
-        return Err((409, e));
+    if let Err(e) = app.budgets.set_project(
+        &pid,
+        budget.unit,
+        Some(budget.cap),
+        WARN_AT_PCT,
+        budget.monthly_cap,
+        draft.disk_quota_bytes,
+        apz_plaza::now_ms(),
+    ) {
+        undo(app, &pid);
+        return Err((409, e.to_string()));
     }
 
     // 3. Its tasks: the ledger creates them all or none.
-    let posted = match task_plan::post(
-        &app.projects,
-        &app.plaza.tasks,
-        &pid,
-        &draft.tasks,
-        task_budget,
-    ) {
+    let posted = match task_plan::post(&app.projects, &app.plaza.tasks, &pid, &draft.tasks) {
         Ok(posted) => posted,
         Err(e) => {
-            undo(app, &pid, &[]);
+            undo(app, &pid);
             return Err((409, format!("the tasks were not posted: {e}")));
         }
     };
     let task_ids: Vec<String> = posted.iter().map(|task| task.id.clone()).collect();
-
-    // 4. The team: the new agents (they join at their first hello), then the ones from the bench.
-    let mut spawned = Vec::new();
-    for seat in &draft.team {
-        let new = seat.count.saturating_sub(seat.bench.len() as u32);
-        if new == 0 {
-            continue;
-        }
-        match crate::agents::spawn_agents(
-            app,
-            &seat.role,
-            new,
-            seat.model.as_deref(),
-            None,
-            Some(&pid),
-        ) {
-            Ok(reply) => spawned.push(json!({"role": seat.role, "count": new, "reply": reply})),
-            Err(e) => {
-                undo(app, &pid, &task_ids);
-                let code = if e.starts_with("noded") { 502 } else { 409 };
-                return Err((code, format!("{} agents were not spawned: {e}", seat.role)));
-            }
-        }
-    }
-    let mut joined = Vec::new();
-    for cid in draft.team.iter().flat_map(|seat| seat.bench.iter()) {
-        if let Err((code, e)) = crate::membership::join_project(app, *cid, &pid) {
-            undo(app, &pid, &task_ids);
-            return Err((code, format!("agent {cid} did not join: {e}")));
-        }
-        joined.push(*cid);
-    }
-
-    // The orchestrator leads it from this conversation: it hears when each task ends.
+    // The orchestrator that drafted it leads it: it hears when each task ends.
     for task in &task_ids {
-        app.work.note_poster(task, conversation.cid);
+        app.work.note_poster(task, project.lead_cid);
     }
+
+    // 4. The chat: the draft is started, its start card is settled, and the project's lead is told.
     let now = apz_plaza::now_ms();
-    let started = app.conversations.update(id, |c| {
-        c.project = Some(pid.clone());
+    let started = app.chats.update(id, |c| {
         if let Some(draft) = c.draft.as_mut() {
             draft.started_ms = Some(now);
         }
         c.updated_ms = now;
         Ok(())
     })?;
+    if let Some(draft) = &started.draft {
+        ask_to_start(app, id, draft, &pid, now);
+    }
+    crate::store::saver::save_now(app, "projects");
+    crate::store::saver::save_now(app, "chats");
     if let Some(project) = app.projects.get(&pid) {
         app.bus.publish("project", &project);
     }
-    app.bus
-        .publish("owner_conversation", &conversations::view(app, &started));
-    let new_agents: u32 = draft
-        .team
-        .iter()
-        .map(|seat| seat.count.saturating_sub(seat.bench.len() as u32))
-        .sum();
-    let staffed = staffing(task_ids.len(), joined.len(), new_agents as usize);
-    let notice = format!(
-        "[plaza] The owner started project {pid} \"{}\" from this conversation's draft (revision {revision}): {staffed} (tasks {}). You lead it from here: the plaza hands each task out once everything it runs after is done. Follow the tasks with plaza_task_result, replan blocked ones, post new tasks to {pid} when the owner asks, and answer the owner in this conversation.",
+    let posted_in_words = posted_words(task_ids.len());
+    let shown = format!(
+        "Project {pid} \"{}\" started: {posted_in_words}, budget {}. Its planner starts on the next tick.",
+        draft.title.trim(),
+        work_loop::amount(budget.cap, budget.unit)
+    );
+    let prompt = format!(
+        "[plaza] The owner started project {pid} \"{}\" from this chat's draft (revision {revision}): {posted_in_words} (tasks {}). You lead it from here: the plaza hands each task out once everything it runs after is done. Follow the tasks with plaza_task_result, replan blocked ones, post new tasks to {pid} when the owner asks, and answer the owner in this chat.",
         draft.title.trim(),
         task_ids.join(", "),
     );
-    let shown = format!(
-        "You started project {pid} \"{}\": {staffed}.",
-        draft.title.trim()
-    );
-    conversations::notify(app, id, &shown, &notice);
-    let done = json!({
+    work_loop::tell_chat(app, id, project.lead_cid, &shown, &prompt);
+    Ok(json!({
+        "chat": id,
         "project": pid,
         "tasks": posted,
-        "joined": joined,
-        "spawned": spawned,
-    });
-    Ok((app.conversations.get(id).unwrap_or(started), done))
+    }))
 }
 
-/// What Start did, in words: `2 tasks posted, 1 agent from the bench on it, 1 new one on its way`; a part with none is
-/// left out (a project always has a task).
-fn staffing(tasks: usize, bench: usize, new: usize) -> String {
-    let mut parts = vec![match tasks {
-        1 => "1 task posted".to_string(),
-        n => format!("{n} tasks posted"),
-    }];
-    match bench {
-        0 => {}
-        1 => parts.push("1 agent from the bench on it".to_string()),
-        n => parts.push(format!("{n} agents from the bench on it")),
+/// The owner answered a draft's start card: `start` starts the project, `edit-later` keeps it a draft. Returns what
+/// it did, in words; a Start that fails says why in the chat, and asks again.
+pub fn answered(app: &App, card: &Card) -> String {
+    let Some(chat) = card.chat.clone() else {
+        return "recorded".into();
+    };
+    let now = apz_plaza::now_ms();
+    if card.answer.as_deref() != Some("start") {
+        work_loop::notice(
+            app,
+            &chat,
+            "The draft stays a draft: edit it, then start it when it looks right.",
+            now,
+        );
+        return "the draft stays a draft".into();
     }
-    match new {
-        0 => {}
-        1 => parts.push("1 new one on its way".to_string()),
-        n => parts.push(format!("{n} new ones on their way")),
-    }
-    parts.join(", ")
-}
-
-/// Undoes a Start that failed after opening project `pid`: its tasks are withdrawn (their escrow back in its budget),
-/// the project is archived, which sends its agents back to the bench (and spawned ones arriving later stay there),
-/// and its budget goes back to the plaza.
-fn undo(app: &App, pid: &str, tasks: &[String]) {
-    for id in tasks {
-        if let Some(task) = app.plaza.tasks.find(id) {
-            let _ = task.withdraw();
+    let revision = app
+        .chats
+        .get(&chat)
+        .and_then(|c| c.draft)
+        .map_or(0, |draft| draft.revision);
+    match start(app, &chat, revision) {
+        Ok(done) => format!(
+            "project {} started",
+            done["project"].as_str().unwrap_or_default()
+        ),
+        Err((_, why)) => {
+            work_loop::notice(app, &chat, &format!("The draft did not start: {why}."), now);
+            if let Some(found) = app.chats.get(&chat)
+                && let (Some(draft), Some(pid)) = (found.draft.as_ref(), found.project.as_deref())
+            {
+                ask_to_start(app, &chat, draft, pid, now);
+            }
+            format!("not started: {why}")
         }
     }
+}
+
+/// The owner's draft edits the orchestrator has not read are pointed out with the owner's next message in the chat:
+/// the note the message's prompt starts with. None while there is nothing new (or the draft started).
+pub fn edit_note(chats: &crate::chats::Chats, chat: &str) -> Option<String> {
+    let mut revision = None;
+    let _ = chats.update(chat, |c| {
+        if let Some(draft) = &c.draft
+            && draft.revision > c.draft_seen
+            && draft.updated_by == OWNER
+            && draft.started_ms.is_none()
+        {
+            revision = Some(draft.revision);
+        }
+        if let Some(seen) = revision {
+            c.draft_seen = seen;
+        }
+        Ok(())
+    });
+    revision.map(|revision| {
+        format!(
+            "[plaza] The owner edited the project draft: it is at revision {revision} now. Read it with plaza_project_draft before you change it."
+        )
+    })
+}
+
+/// Undoes a Start that failed after opening project `pid`: its tasks never posted, so the project is archived, which
+/// ends its agents' work.
+fn undo(app: &App, pid: &str) {
     if let Err(e) = app.projects.archive(pid) {
         eprintln!("apid: project {pid} of a failed start not archived: {e}");
     }
-    crate::membership::release_project(app, pid);
-    crate::project_settings::return_rest(app, pid);
+    work_loop::end_project(app, pid, "the project did not start");
     if let Some(project) = app.projects.get(pid) {
         app.bus.publish("project", &project);
     }
+}
+
+/// What the tasks count is, in words: `2 tasks` (a draft always has a task to start).
+fn tasks_words(tasks: usize) -> String {
+    match tasks {
+        1 => "1 task".to_string(),
+        n => format!("{n} tasks"),
+    }
+}
+
+/// What Start did, in words: `2 tasks posted`.
+fn posted_words(tasks: usize) -> String {
+    format!("{} posted", tasks_words(tasks))
 }
 
 #[cfg(test)]
@@ -739,19 +841,8 @@ mod tests {
 
     #[test]
     fn start_says_what_it_did_in_words() {
-        assert_eq!(
-            staffing(7, 3, 2),
-            "7 tasks posted, 3 agents from the bench on it, 2 new ones on their way"
-        );
-        assert_eq!(
-            staffing(2, 1, 1),
-            "2 tasks posted, 1 agent from the bench on it, 1 new one on its way"
-        );
-        assert_eq!(staffing(1, 0, 2), "1 task posted, 2 new ones on their way");
-        assert_eq!(
-            staffing(1, 1, 0),
-            "1 task posted, 1 agent from the bench on it"
-        );
+        assert_eq!(posted_words(7), "7 tasks posted");
+        assert_eq!(posted_words(1), "1 task posted");
     }
 
     fn task(key: &str, role: &str, after: &[&str]) -> Planned {
@@ -760,8 +851,15 @@ mod tests {
             goal: format!("goal {key}"),
             acceptance: None,
             role: Some(role.into()),
-            budget: None,
             after: after.iter().map(|k| k.to_string()).collect(),
+        }
+    }
+
+    fn usd(cap: u64) -> DraftBudget {
+        DraftBudget {
+            unit: Unit::Usd,
+            cap,
+            monthly_cap: None,
         }
     }
 
@@ -770,38 +868,39 @@ mod tests {
             title: Some("Release 0.9".into()),
             goal: Some("Fix the flaky scheduler tests and tag 0.9.".into()),
             tasks: Some(vec![task("1", "qa", &[]), task("2", "builder", &["1"])]),
-            team: Some(vec![Seat {
-                role: "builder".into(),
-                count: 2,
-                bench: vec![104],
-                model: None,
-            }]),
             ..Edit::default()
         }
     }
 
     #[test]
     fn edits_go_revision_by_revision_and_a_stale_one_is_refused() {
-        let draft = apply(None, first(), "orchestrator", 10).expect("a first draft");
+        let draft = apply(None, first(), ORCHESTRATOR, 10).expect("a first draft");
         assert_eq!(draft.revision, 1);
         assert_eq!(draft.kind, "code", "kind defaults to code");
-        // The owner changes the budget on revision 1: the rest is kept.
+        assert_eq!(draft.github, "none", "GitHub defaults to none");
+        assert_eq!(draft.budget, None, "a draft has no budget until one is set");
+        // The owner sets the budget and the quota on revision 1: the rest is kept.
         let edit = Edit {
             revision: Some(1),
-            budget: Some(15_000),
+            budget: Some(usd(15_000_000)),
+            disk_quota_bytes: Some(5 << 30),
+            github: Some("mirror".into()),
             ..Edit::default()
         };
-        let owned = apply(Some(&draft), edit, "owner", 20).expect("the owner's edit");
-        assert_eq!((owned.revision, owned.budget), (2, Some(15_000)));
+        let owned = apply(Some(&draft), edit, OWNER, 20).expect("the owner's edit");
+        assert_eq!(owned.revision, 2);
+        assert_eq!(owned.budget, Some(usd(15_000_000)));
+        assert_eq!(owned.disk_quota_bytes, Some(5 << 30));
+        assert_eq!(owned.github, "mirror");
         assert_eq!(owned.tasks, draft.tasks);
-        assert_eq!(owned.updated_by, "owner");
+        assert_eq!(owned.updated_by, OWNER);
         // The orchestrator still writing on revision 1 is told to read again.
         let stale = Edit {
             revision: Some(1),
             title: Some("Release 0.9.1".into()),
             ..Edit::default()
         };
-        let (code, why) = apply(Some(&owned), stale, "orchestrator", 30).unwrap_err();
+        let (code, why) = apply(Some(&owned), stale, ORCHESTRATOR, 30).unwrap_err();
         assert_eq!(code, 409);
         assert!(why.contains("revision 2"), "{why}");
         // A started draft is not edited again.
@@ -811,12 +910,82 @@ mod tests {
             revision: Some(2),
             ..Edit::default()
         };
-        assert_eq!(apply(Some(&started), edit, "owner", 50).unwrap_err().0, 409);
+        assert_eq!(apply(Some(&started), edit, OWNER, 50).unwrap_err().0, 409);
+    }
+
+    #[test]
+    fn a_zero_quota_goes_back_to_none_and_the_rest_is_kept() {
+        let draft = apply(None, first(), ORCHESTRATOR, 1).expect("a first draft");
+        let quota = |current: &Draft, bytes: u64| Edit {
+            revision: Some(current.revision),
+            disk_quota_bytes: Some(bytes),
+            ..Edit::default()
+        };
+        let set = apply(Some(&draft), quota(&draft, 2 << 30), OWNER, 2).expect("a quota");
+        assert_eq!(set.disk_quota_bytes, Some(2 << 30));
+        let cleared = apply(Some(&set), quota(&set, 0), OWNER, 3).expect("no quota");
+        assert_eq!(cleared.disk_quota_bytes, None);
+        assert_eq!(cleared.title, "Release 0.9", "the title is kept");
+    }
+
+    #[test]
+    fn the_owners_edits_are_pointed_out_to_the_orchestrator_once() {
+        use crate::chats::Chats;
+        let chats = Chats::default();
+        let chat = chats.open_project("pr1", "Release 0.9", 1);
+        let first_draft = apply(None, first(), ORCHESTRATOR, 2).expect("a first draft");
+        let owned = apply(
+            Some(&first_draft),
+            Edit {
+                revision: Some(1),
+                budget: Some(usd(5)),
+                ..Edit::default()
+            },
+            OWNER,
+            3,
+        )
+        .expect("the owner's edit");
+        chats
+            .update(&chat.id, |c| {
+                c.draft = Some(first_draft.clone());
+                c.draft_seen = 1;
+                Ok(())
+            })
+            .expect("the draft is kept");
+        chats
+            .update(&chat.id, |c| {
+                c.draft = Some(owned.clone());
+                Ok(())
+            })
+            .expect("the owner's draft is kept");
+        let note = edit_note(&chats, &chat.id).expect("the owner edited the draft");
+        assert!(note.contains("revision 2"), "{note}");
+        assert_eq!(edit_note(&chats, &chat.id), None, "pointed out once");
+        // The orchestrator's own write is seen when it is made: nothing is pointed out.
+        let written = apply(
+            Some(&owned),
+            Edit {
+                revision: Some(2),
+                title: Some("Release 0.9.1".into()),
+                ..Edit::default()
+            },
+            ORCHESTRATOR,
+            4,
+        )
+        .expect("the orchestrator's write");
+        chats
+            .update(&chat.id, |c| {
+                c.draft = Some(written.clone());
+                c.draft_seen = written.revision;
+                Ok(())
+            })
+            .expect("the write is kept");
+        assert_eq!(edit_note(&chats, &chat.id), None);
     }
 
     #[test]
     fn a_malformed_draft_is_refused_with_what_is_wrong() {
-        let bad = |edit: Edit| apply(None, edit, "orchestrator", 1).unwrap_err();
+        let bad = |edit: Edit| apply(None, edit, ORCHESTRATOR, 1).unwrap_err();
         let (code, why) = bad(Edit {
             title: Some(" ".into()),
             ..first()
@@ -829,26 +998,104 @@ mod tests {
         });
         assert!(why.contains("cycle") || why.contains("itself"), "{why}");
         let (_, why) = bad(Edit {
-            team: Some(vec![Seat {
-                role: "builder".into(),
-                count: 1,
-                bench: vec![104, 105],
-                model: None,
-            }]),
-            ..first()
-        });
-        assert!(why.contains("count of 1"), "{why}");
-        let (_, why) = bad(Edit {
             kind: Some("film".into()),
             ..first()
         });
         assert!(why.contains("kind"), "{why}");
         let (_, why) = bad(Edit {
-            settings: Some(json!([1])),
+            budget: Some(usd(0)),
             ..first()
         });
-        assert!(why.contains("settings"), "{why}");
-        // An edit with a field the draft does not have is not one.
+        assert!(why.contains("cap"), "{why}");
+        let (_, why) = bad(Edit {
+            budget: Some(DraftBudget {
+                monthly_cap: Some(0),
+                ..usd(5)
+            }),
+            ..first()
+        });
+        assert!(why.contains("monthly"), "{why}");
+        let (_, why) = bad(Edit {
+            github: Some("gitlab".into()),
+            ..first()
+        });
+        assert!(why.contains("github"), "{why}");
+        let (_, why) = bad(Edit {
+            disk_quota_bytes: Some(1024),
+            ..first()
+        });
+        assert!(why.contains("disk quota"), "{why}");
+        // The settings are the project's own, typed: an unknown one is refused when the edit is read.
+        assert!(
+            serde_json::from_value::<Edit>(json!({"settings": {"max_turns": 5, "owner": "me"}}))
+                .is_err()
+        );
+        assert!(serde_json::from_value::<Edit>(json!({"settings": {"max_turns": 5}})).is_ok());
+        // The budget names its unit: a budget in credits is not one.
+        assert!(
+            serde_json::from_value::<Edit>(json!({"budget": 9000})).is_err(),
+            "a budget is an object"
+        );
+        assert!(
+            serde_json::from_value::<Edit>(json!({"budget": {"unit": "credits", "cap": 1}}))
+                .is_err()
+        );
+        // An edit with a field the draft does not have is not one: a draft has no team any more.
         assert!(serde_json::from_value::<Edit>(json!({"title": "x", "owner": "me"})).is_err());
+        assert!(serde_json::from_value::<Edit>(json!({"team": []})).is_err());
+    }
+
+    #[test]
+    fn the_start_card_says_the_draft_and_what_starting_costs() {
+        let mut draft = apply(None, first(), ORCHESTRATOR, 1).expect("a first draft");
+        draft.budget = Some(DraftBudget {
+            unit: Unit::Usd,
+            cap: 15_000_000,
+            monthly_cap: Some(4_000_000),
+        });
+        draft.github = "ci".into();
+        draft.disk_quota_bytes = Some(3 << 30);
+        assert_eq!(
+            summary(&draft),
+            "Fix the flaky scheduler tests and tag 0.9.\n\nTasks:\n- 1: goal 1\n- 2: goal 2\n\nBudget: $15.00, $4.00 a month for the planner. Disk quota 3072 MiB. GitHub: ci."
+        );
+        draft.tasks.clear();
+        draft.budget = None;
+        draft.disk_quota_bytes = None;
+        assert_eq!(
+            summary(&draft),
+            "Fix the flaky scheduler tests and tag 0.9.\n\nTasks:\nnone yet\n\nBudget: No budget yet. No disk quota. GitHub: ci."
+        );
+    }
+
+    #[test]
+    fn the_draft_keeps_its_budget_mode_and_quota_through_the_store() {
+        use crate::chats::Chats;
+        let chats = Chats::default();
+        let chat = chats.open_project("pr1", "Release 0.9", 1);
+        let mut draft = apply(None, first(), ORCHESTRATOR, 2).expect("a first draft");
+        draft.budget = Some(DraftBudget {
+            unit: Unit::Tokens,
+            cap: 9_000,
+            monthly_cap: None,
+        });
+        draft.github = "mirror".into();
+        draft.disk_quota_bytes = Some(1 << 30);
+        let saved = chats
+            .update(&chat.id, |c| {
+                c.draft = Some(draft.clone());
+                Ok(())
+            })
+            .expect("the draft is kept");
+        assert_eq!(saved.draft.as_ref(), Some(&draft));
+
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&crate::chats::def().ddl()).unwrap();
+        apz_store::table::replace(&conn, crate::chats::def(), &chats.rows().unwrap()).unwrap();
+        let loaded = Chats::default();
+        loaded.load(&conn).unwrap();
+        let back = loaded.get(&chat.id).unwrap().draft.unwrap();
+        assert_eq!(back, draft);
+        assert_eq!(back.budget.unwrap().unit, Unit::Tokens);
     }
 }

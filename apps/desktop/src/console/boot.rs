@@ -7,8 +7,8 @@
 //!
 //! The choice is remembered (`~/.config/agentplaza/desktop.json`) and offered first next time.
 //!
-//! Start locally and Host a hub first check every requirement (`setup`), and install or set up
-//! what is missing only after the user agrees to each step.
+//! Start locally and Host a hub first check what this machine needs (`setup`). Nothing is installed:
+//! a requirement that is not met says what to do, and the console opens without provisioning steps.
 
 use std::time::Duration;
 
@@ -25,7 +25,8 @@ use super::setup;
 use super::ui::{self, Kind, Tone};
 use super::workstation_setup;
 
-/// The hub the local services run; the chooser polls it until it answers.
+/// The hub the local services run, on the loopback address apid answers on by default (its ready line names
+/// the address it really took).
 pub const LOCAL_HUB: &str = "http://127.0.0.1:7700";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -91,12 +92,6 @@ pub struct State {
     pub checks: Vec<setup::Check>,
     /// The requirements are being checked.
     pub checking: bool,
-    /// The requirement being installed or set up.
-    pub fixing: Option<setup::Need>,
-    /// The requirement whose fix waits for the user's go-ahead.
-    pub confirm: Option<setup::Need>,
-    /// Progress lines from installing and setting up requirements.
-    pub setup_log: Vec<String>,
     /// The `agentplaza` command: offered on the chooser when it can be linked onto PATH here.
     pub cli: CliLink,
     /// The outcome of the last "Add" press, shown under the command row.
@@ -122,14 +117,6 @@ pub enum Msg {
     Check,
     /// The requirements were checked.
     Checked(Vec<setup::Check>),
-    /// Ask before installing or setting up this requirement.
-    Ask(setup::Need),
-    /// Drop the pending question.
-    Cancel,
-    /// Install or set up this requirement (the user agreed).
-    Fix(setup::Need),
-    /// The fix finished: its progress lines and the outcome.
-    Fixed(setup::Need, Result<(), String>, Vec<String>),
     /// Link the `agentplaza` command onto PATH.
     LinkCli,
     /// The command was linked (or not).
@@ -166,7 +153,6 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             }
             state.choice = Some(choice);
             state.error = None;
-            state.confirm = None;
             if choice == Choice::Workstation {
                 state.ws = workstation_setup::State::default();
             }
@@ -180,11 +166,10 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             }
         }
         Msg::Back => {
-            if !state.busy && state.fixing.is_none() && !state.ws.busy {
+            if !state.busy && !state.ws.busy {
                 state.choice = None;
                 state.error = None;
                 state.log.clear();
-                state.confirm = None;
             }
             (Task::none(), None)
         }
@@ -202,7 +187,7 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
         }
         Msg::Go => go(state),
         Msg::Check => match setup_mode(state.choice) {
-            Some(mode) if !state.checking && state.fixing.is_none() => {
+            Some(mode) if !state.checking => {
                 state.checking = true;
                 (check_task(mode), None)
             }
@@ -213,18 +198,6 @@ pub fn update(state: &mut State, msg: Msg) -> (Task<Msg>, Option<Client>) {
             state.checking = false;
             (Task::none(), None)
         }
-        Msg::Ask(need) => {
-            if state.fixing.is_none() {
-                state.confirm = Some(need);
-            }
-            (Task::none(), None)
-        }
-        Msg::Cancel => {
-            state.confirm = None;
-            (Task::none(), None)
-        }
-        Msg::Fix(need) => fix_requirement(state, need),
-        Msg::Fixed(need, result, lines) => fix_done(state, need, result, lines),
         Msg::LinkCli => link_cli(state),
         Msg::CliLinked(result) => {
             state.cli_note = Some(match result {
@@ -269,7 +242,7 @@ fn setup_mode(choice: Option<Choice>) -> Option<setup::Mode> {
 
 /// Start may run: the requirements are checked, every required one passes, nothing is in progress.
 fn can_start(state: &State) -> bool {
-    !state.checking && state.fixing.is_none() && setup::ready(&state.checks)
+    !state.checking && setup::ready(&state.checks)
 }
 
 /// Checks every requirement off the UI thread.
@@ -318,51 +291,6 @@ fn go(state: &mut State) -> (Task<Msg>, Option<Client>) {
     (task, None)
 }
 
-/// Installs or sets up one requirement off the UI thread, its progress lines kept for the log.
-fn fix_requirement(state: &mut State, need: setup::Need) -> (Task<Msg>, Option<Client>) {
-    if state.fixing.is_some() {
-        return (Task::none(), None);
-    }
-    state.confirm = None;
-    state.fixing = Some(need);
-    let task = Task::perform(
-        async move {
-            let mut lines = Vec::new();
-            let result = setup::fix(need, &mut |line: String| lines.push(line));
-            (need, result, lines)
-        },
-        |(need, result, lines)| Msg::Fixed(need, result, lines),
-    );
-    (task, None)
-}
-
-/// A fix finished: its lines and the outcome go to the log, then the requirements are checked again.
-fn fix_done(
-    state: &mut State,
-    need: setup::Need,
-    result: Result<(), String>,
-    lines: Vec<String>,
-) -> (Task<Msg>, Option<Client>) {
-    state.fixing = None;
-    let label = state
-        .checks
-        .iter()
-        .find(|check| check.need == need)
-        .map_or("requirement", |check| check.label);
-    state.setup_log.extend(lines);
-    state.setup_log.push(match result {
-        Ok(()) => format!("{label}: ✓ done"),
-        Err(error) => format!("{label}: {error}"),
-    });
-    match setup_mode(state.choice) {
-        Some(mode) => {
-            state.checking = true;
-            (check_task(mode), None)
-        }
-        None => (Task::none(), None),
-    }
-}
-
 /// Links the `agentplaza` command in the background (macOS asks for a password).
 fn link_cli(state: &mut State) -> (Task<Msg>, Option<Client>) {
     let CliLink::Linkable { target, link } = state.cli.clone() else {
@@ -378,17 +306,25 @@ fn link_cli(state: &mut State) -> (Task<Msg>, Option<Client>) {
     )
 }
 
-/// Services came up (or not). Local and Host wait for their hub to answer; Join stops here.
+/// Services came up (or not). Local and Host open the console once their hub answers; Join reports and stops here.
 fn started(state: &mut State, result: Result<Vec<String>, String>) -> (Task<Msg>, Option<Client>) {
     match result {
         Ok(lines) => {
             state.log.extend(lines);
             match state.choice {
                 Some(Choice::Local) | Some(Choice::Host) => {
-                    state
-                        .log
-                        .push(format!("waiting for the hub on {LOCAL_HUB}"));
-                    (client::task(await_local_hub, Msg::Connected), None)
+                    let task = if services::started_here("apid") {
+                        state
+                            .log
+                            .push("waiting for the hub to say it is listening".into());
+                        client::task(await_started_hub, Msg::Connected)
+                    } else {
+                        state
+                            .log
+                            .push(format!("checking the hub on {LOCAL_HUB} once"));
+                        client::task(await_running_hub, Msg::Connected)
+                    };
+                    (task, None)
                 }
                 _ => {
                     state.busy = false;
@@ -404,11 +340,14 @@ fn started(state: &mut State, result: Result<Vec<String>, String>) -> (Task<Msg>
     }
 }
 
-/// Starts the node as a member of another hub, returning the progress lines.
+/// Starts the node as a member of another hub, then checks that hub once: its answer is the last line.
 fn join_node(token: &str) -> Result<Vec<String>, String> {
+    let hub = join_code(token)?;
     let node = services::join(token)?;
     let mut lines = vec![format!("joined as node {node}")];
     lines.extend(services::start(Mode::Node)?);
+    let (_, line) = check_hub_once(&Client::new(&hub.hub_url, Some(hub.cert_sha256), None));
+    lines.push(line);
     Ok(lines)
 }
 
@@ -448,20 +387,43 @@ fn join_code_note<'a>(text: &str) -> Option<Element<'a, Msg>> {
     })
 }
 
-/// Polls the local hub up to 20 times, a second apart.
-fn await_local_hub() -> Result<Client, String> {
+/// How long the hub this app started has to say it is listening (apid's ready line, `services::await_ready`).
+const HUB_READY_WAIT: Duration = Duration::from_secs(30);
+
+/// Waits for the hub this app started to say it is listening, then gives the console the client on the URL it names.
+fn await_started_hub() -> Result<Client, String> {
+    let url = services::await_ready("apid", HUB_READY_WAIT)?;
+    Ok(Client::new(&url, None, services::local_owner_token()))
+}
+
+/// A hub already running here that this app did not start: one check, and the console on it if it answers.
+fn await_running_hub() -> Result<Client, String> {
     let client = Client::new(LOCAL_HUB, None, services::local_owner_token());
-    let mut last = String::from("no answer");
-    for attempt in 0..20 {
-        match client.get::<serde_json::Value>("/v1/auth/check") {
-            Ok(_) => return Ok(client),
-            Err(error) => last = error,
-        }
-        if attempt < 19 {
-            std::thread::sleep(Duration::from_secs(1));
-        }
+    match check_hub_once(&client) {
+        (true, _) => Ok(client),
+        (false, line) => Err(line),
     }
-    Err(format!("the hub did not answer on {LOCAL_HUB}: {last}"))
+}
+
+/// One request to a hub, to say whether it answers. Any HTTP answer does (a node's join does not need the owner's
+/// sign-in, so the 401 a hub gives an unsigned request is an answer too); no connection does not. Returns that,
+/// and the line that reports it.
+fn check_hub_once(client: &Client) -> (bool, String) {
+    let base = client.base();
+    match apz_http::client::request_json(
+        &client.target,
+        "GET",
+        "/v1/auth/check",
+        None,
+        client.timeout,
+    ) {
+        Ok((200..=299 | 401, _)) => (true, format!("the hub at {base} answers")),
+        Ok((status, _)) => (
+            true,
+            format!("the hub at {base} answers with HTTP {status}"),
+        ),
+        Err(error) => (false, format!("the hub at {base} did not answer: {error}")),
+    }
 }
 
 pub fn view(state: &State) -> Element<'_, Msg> {
@@ -483,12 +445,8 @@ fn chooser(state: &State) -> Element<'_, Msg> {
     let busy = state.busy;
     let mut page: Vec<Element<'_, Msg>> = vec![
         ui::sans("AgentPlaza", 13.0, crate::theme::palette().ink).into(),
-        ui::sans(
-            "How do you want to run it?",
-            30.0,
-            crate::theme::palette().ink,
-        )
-        .into(),
+        ui::sans("Where does the hub run?", 30.0, crate::theme::palette().ink).into(),
+        ui::faint("One hub runs the plaza: on this machine, or a hub you join by its URL. Model providers and their keys come later, in Models.").into(),
     ];
     if let Some(choice) = state.remembered {
         let label = format!("Continue: {}", choice.title());
@@ -501,19 +459,17 @@ fn chooser(state: &State) -> Element<'_, Msg> {
     }
     page.push(
         column![
+            ui::label("On this machine"),
             row![
                 option_card(Choice::Local, busy),
                 option_card(Choice::Host, busy)
             ]
             .spacing(12),
+            ui::label("A hub URL to join"),
             row![
                 option_card(Choice::Join, busy),
-                option_card(Choice::Workstation, busy)
-            ]
-            .spacing(12),
-            row![
                 option_card(Choice::Connect, busy),
-                Space::new().width(Length::Fill)
+                option_card(Choice::Workstation, busy)
             ]
             .spacing(12),
         ]
@@ -594,7 +550,7 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
             "Back",
             None,
             Kind::Ghost,
-            (!busy && !ws_busy && state.fixing.is_none()).then_some(Msg::Back)
+            (!busy && !ws_busy).then_some(Msg::Back)
         ),
     ]
     .align_y(Alignment::Center);
@@ -651,7 +607,7 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
         ));
     }
     if gated && !ready && !state.checking {
-        page.push(ui::faint("Install or set up what is missing first.").into());
+        page.push(ui::faint("Fix what is missing above, then check again.").into());
     }
     if busy {
         page.push(ui::loading());
@@ -665,95 +621,42 @@ fn form(state: &State, choice: Choice) -> Element<'_, Msg> {
     column(page).spacing(14).into()
 }
 
-/// The requirements of Start locally and Host a hub: one row each, with its state and, when it can
-/// be installed or set up here, the button that asks first. Then the progress of the last fix.
+/// The requirements of Start locally and Host a hub. A plaza whose requirements are all OK shows none, so it opens
+/// without a checklist. A requirement that is not OK shows what to do: nothing here installs anything.
 fn requirements(state: &State) -> Element<'_, Msg> {
-    let mut page: Vec<Element<'_, Msg>> = vec![ui::label("Requirements").into()];
+    let open: Vec<&setup::Check> = state
+        .checks
+        .iter()
+        .filter(|check| check.state != setup::State::Ok)
+        .collect();
+    let mut page: Vec<Element<'_, Msg>> = Vec::new();
     if state.checking {
-        page.push(ui::faint("Checking what is installed...").into());
+        page.push(ui::faint("Checking this machine...").into());
     }
-    for check in &state.checks {
+    if !open.is_empty() {
+        page.push(ui::label("Needs attention").into());
+    }
+    for check in &open {
         let (stamp, tone) = match check.state {
             setup::State::Ok => ("OK", Tone::Ok),
             setup::State::Missing => ("MISSING", Tone::Warn),
             setup::State::Blocked => ("NEEDS YOU", Tone::Danger),
             setup::State::Warning => ("WARNING", Tone::Muted),
         };
-        let action: Element<'_, Msg> = match (check.state, check.fix.is_some()) {
-            (setup::State::Missing, true) => {
-                let text = match check.need {
-                    setup::Need::Docker => "Install",
-                    setup::Need::DockerRunning => "Start",
-                    _ => "Set up",
-                };
-                ui::btn(
-                    text,
-                    None,
-                    Kind::Ghost,
-                    (state.fixing.is_none()).then_some(Msg::Ask(check.need)),
-                )
-            }
-            _ => Space::new().into(),
-        };
         let line = row![
             ui::sans(check.label, 13.0, crate::theme::palette().ink),
             ui::faint(check.detail.clone()),
             Space::new().width(Length::Fill),
-            action,
             ui::badge(stamp, tone),
         ]
         .spacing(12)
         .align_y(Alignment::Center);
-        let mut block: Vec<Element<'_, Msg>> = vec![line.into()];
-        if state.confirm == Some(check.need) {
-            let buttons = row![
-                ui::btn("Go ahead", None, Kind::Primary, Some(Msg::Fix(check.need))),
-                ui::btn("Cancel", None, Kind::Ghost, Some(Msg::Cancel)),
-            ]
-            .spacing(12);
-            let question = check.fix.clone().unwrap_or_default();
-            block.push(
-                container(column![ui::prose(question), buttons].spacing(12))
-                    .padding(14)
-                    .width(Length::Fill)
-                    .style(confirm_box)
-                    .into(),
-            );
-        }
-        page.push(column(block).spacing(8).into());
+        page.push(line.into());
     }
-    if let Some(need) = state.fixing {
-        let label = state
-            .checks
-            .iter()
-            .find(|check| check.need == need)
-            .map_or("requirement", |check| check.label);
-        page.push(ui::faint(format!("Working on {label}...")).into());
-    }
-    page.push(ui::btn(
-        "Check again",
-        None,
-        Kind::Ghost,
-        (!state.checking && state.fixing.is_none()).then_some(Msg::Check),
-    ));
-    if !state.setup_log.is_empty() {
-        let start = state.setup_log.len().saturating_sub(12);
-        page.push(log_lines(&state.setup_log[start..]));
+    if !open.is_empty() && !state.checking {
+        page.push(ui::btn("Check again", None, Kind::Ghost, Some(Msg::Check)));
     }
     column(page).spacing(10).into()
-}
-
-/// The box that asks before a fix runs: the same paper and rule as the option cards.
-fn confirm_box(_: &Theme) -> container::Style {
-    container::Style {
-        background: Some(crate::theme::palette().sheet.into()),
-        border: Border {
-            color: crate::theme::palette().rule,
-            width: 1.0,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
-    }
 }
 
 /// The progress lines, mono and faint.

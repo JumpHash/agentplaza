@@ -16,8 +16,12 @@ body:json {
     "name": "Test server",
     "transport": {
       "kind": "stdio",
-      "image": "ghcr.io/example/server:1.0",
-      "command": ["serve"]
+      "package": {
+        "kind": "npm",
+        "name": "@modelcontextprotocol/server-memory",
+        "version": "0.6.2"
+      },
+      "args": ["serve"]
     },
     "tools": {
       "allow": "all"

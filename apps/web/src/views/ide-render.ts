@@ -1,5 +1,6 @@
 // The IDE's rendering: every paint of the screen, in one order (renderAll). Each function reads the context and writes the
 // DOM the controller built; none of them changes the state, except the review's scroll target, which is taken once.
+import { agentLabel, agentLabelIn, agentName } from '../roles';
 import { badge, empty, type Tone } from '../ui/components';
 import { h, replace } from '../ui/dom';
 import { badgeOf, languageFor, stationBadgeOf, stationCrumb } from '../ide/model';
@@ -51,8 +52,7 @@ export function renderSelection(c: IdeCtx): void {
   const { frame } = c.dom;
   const agent = c.cid !== null ? c.agentList.find((a) => a.cid === c.cid) : undefined;
   const title =
-    agent?.name ??
-    (c.ws?.kind === 'repo' ? repoNameOf(c.ws) : c.ws?.kind === 'station' ? c.ws.name || c.ws.owner : c.cid !== null ? `agent ${c.cid}` : 'No selection');
+    agent ? agentName(agent) : (c.ws?.kind === 'repo' ? repoNameOf(c.ws) : c.ws?.kind === 'station' ? c.ws.name || c.ws.owner : c.cid !== null ? agentLabel(c.cid) : 'No selection');
   frame.centre.title.textContent = title;
   frame.centre.dot.dataset.status = agent ? rowStatus(agent, null) : 'idle';
   frame.centre.popout.hidden = c.cid === null;
@@ -79,7 +79,7 @@ export function renderTop(c: IdeCtx): void {
     ? ['IDE']
     : ws.kind === 'station'
       ? stationCrumb(ws)
-      : [project?.title ?? (c.cid !== null ? 'No project' : 'Repositories'), ws.kind === 'agent' ? (c.agentList.find((a) => a.cid === c.cid)?.name ?? `agent ${c.cid}`) : repoNameOf(ws), refOf(ws) || 'work'].filter(Boolean);
+      : [project?.title ?? (c.cid !== null ? 'No project' : 'Repositories'), ws.kind === 'agent' ? (c.cid === null ? 'Agent' : agentLabelIn(c.agentList, c.cid)) : repoNameOf(ws), refOf(ws) || 'work'].filter(Boolean);
   setCrumb(c.dom.frame.crumb, parts);
   c.dom.frame.state.replaceChildren(badge(label, TONE[label] ?? 'muted'));
   const active = c.state?.active ?? null;

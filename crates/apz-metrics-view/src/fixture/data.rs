@@ -147,8 +147,8 @@ const MODELS: &[(&str, &str)] = &[
 const VOLUMES: &[(&str, &str, &str, f64)] = &[
     ("n1:/var/lib/plaza", "n1 /var/lib/plaza", "n1", 54.0),
     ("n2:/var/lib/plaza", "n2 /var/lib/plaza", "n2", 91.0),
-    ("n0:postgres", "n0 postgres", "n0", 38.0),
-    ("n0:garage", "n0 garage", "n0", 46.0),
+    ("n0:sqlite", "n0 sqlite", "n0", 38.0),
+    ("n0:blobs", "n0 blobs", "n0", 46.0),
 ];
 /// (id, label, node). The stores of the hub's node are services too; their ids are `store:<label>`.
 const SERVICES: &[(&str, &str, &str)] = &[
@@ -156,39 +156,31 @@ const SERVICES: &[(&str, &str, &str)] = &[
     ("n0:weft", "weft (hub)", "n0"),
     ("n1:noded", "noded (n1)", "n1"),
     ("n2:noded", "noded (n2)", "n2"),
-    ("store:garage (objects)", "garage (objects)", "n0"),
+    ("store:blobs (objects)", "blobs (objects)", "n0"),
     ("store:weft (store)", "weft (store)", "n0"),
-    ("store:postgres · plaza", "postgres · plaza", "n0"),
+    ("store:sqlite · plaza", "sqlite · plaza", "n0"),
     (
-        "store:postgres · metrics chunks",
-        "postgres · metrics chunks",
+        "store:sqlite · metrics chunks",
+        "sqlite · metrics chunks",
         "n0",
     ),
-    ("store:postgres · metrics 1m", "postgres · metrics 1m", "n0"),
-    ("store:postgres · metrics 1h", "postgres · metrics 1h", "n0"),
-    (
-        "store:postgres · model_calls",
-        "postgres · model_calls",
-        "n0",
-    ),
-    (
-        "store:postgres · trace_spans",
-        "postgres · trace_spans",
-        "n0",
-    ),
+    ("store:sqlite · metrics 1m", "sqlite · metrics 1m", "n0"),
+    ("store:sqlite · metrics 1h", "sqlite · metrics 1h", "n0"),
+    ("store:sqlite · model_calls", "sqlite · model_calls", "n0"),
+    ("store:sqlite · trace_spans", "sqlite · trace_spans", "n0"),
 ];
 const GIB: f64 = 1_073_741_824.0;
 const MB: f64 = 1_000_000.0;
 /// (id, bytes held) of each store.
 const STORES: &[(&str, f64)] = &[
-    ("store:garage (objects)", 180.0 * GIB),
+    ("store:blobs (objects)", 180.0 * GIB),
     ("store:weft (store)", 6.0 * GIB),
-    ("store:postgres · plaza", 850.0 * MB),
-    ("store:postgres · metrics chunks", 640.0 * MB),
-    ("store:postgres · metrics 1m", 210.0 * MB),
-    ("store:postgres · metrics 1h", 34.0 * MB),
-    ("store:postgres · model_calls", 96.0 * MB),
-    ("store:postgres · trace_spans", 380.0 * MB),
+    ("store:sqlite · plaza", 850.0 * MB),
+    ("store:sqlite · metrics chunks", 640.0 * MB),
+    ("store:sqlite · metrics 1m", 210.0 * MB),
+    ("store:sqlite · metrics 1h", 34.0 * MB),
+    ("store:sqlite · model_calls", 96.0 * MB),
+    ("store:sqlite · trace_spans", 380.0 * MB),
 ];
 const TOOLS: &[(&str, f64)] = &[
     ("bash", 0.35),
@@ -638,8 +630,6 @@ fn base_level(id: &str) -> f64 {
         "hub.http_ms" => 16.5,
         "hub.http_requests" => 240.0,
         "hub.http_errors" => 0.6,
-        "hub.pg_ms" => 3.0,
-        "hub.pg_in_use" => 6.0,
         "hub.bus_lag_ms" => 2.0,
         "hub.ws_clients" => 4.0,
         "hub.events" => 900.0,
@@ -655,7 +645,6 @@ fn base_level(id: &str) -> f64 {
         "self.points_in" => 3_000.0,
         "self.series" => 14_000.0,
         "self.cache_hit_pct" => 92.0,
-        "self.pg_bytes_day" => 2e9,
         "self.alert_eval_ms" => 3.0,
         "self.traces_bytes" => 5e7,
         _ => 1.0,

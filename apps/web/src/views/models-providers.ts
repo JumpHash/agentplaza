@@ -10,7 +10,7 @@ import { ago, attempt, badge, brandLogo, button, card, compact, dot, empty, fiel
 import { BRAND_ICONS } from '../ui/brands.gen';
 import { h, lu, replace } from '../ui/dom';
 import { choicesFrom, modelPicker } from '../ui/model-picker';
-import { on } from '../store';
+import { on, RESYNC } from '../store';
 import type { Cleanup } from './index';
 import { decisionPanel } from './models-decisions';
 import { openProviderWizard } from './provider-wizard';
@@ -156,12 +156,38 @@ export function mountProviders(root: HTMLElement, actions: HTMLElement): Cleanup
       if (!loaded) healthSecs = s.health_interval_s ?? 300;
     }
     loaded = true;
+    chooseSelection();
+  };
+
+  /** Selects the instance `?instance=` asked for when nothing is selected yet, else the first one still held. */
+  const chooseSelection = (): void => {
     const all = items();
     if (asked && selected === null) {
       const hit = all.find((it) => keyOf(it) === `api:${asked}`) ?? all.find((it) => keyOf(it) === `engine:${asked}`);
       if (hit) selected = keyOf(hit);
     }
     if (!all.some((it) => keyOf(it) === selected)) selected = all[0] ? keyOf(all[0]) : null;
+  };
+
+  /** The lists as they were last read paint at once; the fresh read (refresh, below) replaces them. */
+  const paintKept = (): void => {
+    const a = providersApi.list.cached();
+    const e = providersApi.engines.cached();
+    const u = providersApi.usage.cached();
+    const k = api.providerKinds.cached();
+    const m = api.models.cached();
+    const s = api.settings.cached();
+    if (!a || !e || !u || !k || !m || !s) return;
+    apis = a;
+    engines = e;
+    usage = u;
+    kinds = k;
+    chatModels = m.models;
+    settings = s;
+    healthSecs = s.health_interval_s ?? 300;
+    loaded = true;
+    chooseSelection();
+    paintAll();
   };
 
   /** Saves one API instance's change, then reloads. */
@@ -950,7 +976,9 @@ export function mountProviders(root: HTMLElement, actions: HTMLElement): Cleanup
   replace(list, h('p.prov-faint', null, 'Loading providers…'));
   replace(detail, h('p.prov-faint', null, 'Loading providers…'));
 
-  const offs = [on('providers.health', live), on('engines.health', live), on('engines.changed', live)];
+  paintKept();
+  // A model listing refreshed in the background, or a resync: the lists read again.
+  const offs = [on('providers.health', live), on('engines.health', live), on('engines.changed', live), on('models', live), on(RESYNC, live)];
   const tick = setInterval(paintHead, 30_000);
   void refresh();
 

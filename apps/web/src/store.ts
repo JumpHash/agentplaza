@@ -3,12 +3,24 @@
 // state the shell and several views share (agents, overview).
 
 import { api, type Agent, type Overview } from './api';
+import { flush, noteHub } from './api-cache';
 
 type Listener = (data: unknown) => void;
 const listeners = new Map<string, Set<Listener>>();
 let socket: WebSocket | null = null;
 let connected = false;
 const connectionListeners = new Set<(up: boolean) => void>();
+
+/**
+ * The screens' resync: the lists may have missed events, so each one asks the hub again (a 304 when nothing changed).
+ * Dispatched to `on(RESYNC, …)` like a frame; it is not a kind the hub sends.
+ */
+export const RESYNC = 'cache.resync';
+// The events' numbers: each seq is one more than the last. The socket's hello names the seq it starts after.
+let lastSeq: number | null = null;
+let lastBoot: string | null = null;
+let opens = 0; // sockets opened on this page
+let reconnected = false; // the socket now open replaces one that was lost, so its hello asks the screens again
 
 // Reconnects: 1 s doubling to 30 s, each wait jittered into [half, whole] of
 // the current step; the step resets once a socket has stayed open for a minute.
@@ -35,7 +47,7 @@ export function onConnection(fn: (up: boolean) => void): () => void {
   return () => connectionListeners.delete(fn);
 }
 
-const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'treasury', 'agora', 'board', 'conversation', 'motion', 'provider', 'run', 'vm', 'serial', 'memory', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role', 'usage', 'training', 'vault.changed', 'vault.audit_broken', 'mcp.changed', 'mcp.status', 'ide', 'engine', 'prompt', 'skill', 'station', 'lease_waiting', 'lease_granted', 'lease_released', 'lease_ended', 'lease_failed', 'lease_owner_input', 'station_takeover', 'station_give_back', 'station_sync_conflict', 'station_sync_paused', 'metrics', 'metrics.alert', 'board_paused', 'law', 'foundry', 'task_link', 'agent_step', 'owner_conversation', 'weft_change', 'weft_queue', 'weft_land', 'weft_release', 'weft_export', 'weft_op', 'weft_revert', 'review_run', 'review_node', 'review_replan', 'recipe', 'recipe_proposal', 'platform', 'maintenance', 'environment', 'providers.health', 'engines.health', 'engines.changed', 'context']);
+const KINDS = new Set(['agent', 'work', 'transcript', 'delta', 'task', 'board', 'provider', 'run', 'vm', 'serial', 'approval', 'library', 'connector', 'file', 'toolbox', 'project', 'loop', 'plaza', 'agent_proposal', 'role', 'usage', 'training', 'vault.changed', 'vault.audit_broken', 'mcp.changed', 'mcp.status', 'ide', 'engine', 'prompt', 'skill', 'station', 'lease_waiting', 'lease_granted', 'lease_released', 'lease_ended', 'lease_failed', 'lease_owner_input', 'station_takeover', 'station_give_back', 'station_sync_conflict', 'station_sync_paused', 'metrics', 'metrics.alert', 'board_paused', 'law', 'foundry', 'task_link', 'agent_step', 'weft_change', 'weft_queue', 'weft_land', 'weft_release', 'weft_export', 'weft_op', 'weft_revert', 'review_run', 'review_node', 'review_replan', 'recipe', 'recipe_proposal', 'platform', 'maintenance', 'environment', 'providers.health', 'engines.health', 'engines.changed', 'context', 'hello', 'models', 'session', 'card', 'chat', 'budget']);
 
 /** Opens the live layer (idempotent). It reconnects on its own until the page leaves. */
 export function connect(): void {
@@ -50,6 +62,8 @@ function open(): void {
   socket = ws;
   ws.onopen = () => {
     if (socket !== ws) return;
+    if (opens++ > 0) reconnected = true;
+    lastSeq = null;
     stableTimer = setTimeout(() => {
       stableTimer = undefined;
       backoff = BACKOFF_MIN_MS;
@@ -76,7 +90,7 @@ function scheduleRetry(): void {
   }, wait);
 }
 
-/** Routes one text frame `{"event", "data"}` to its listeners; anything else is ignored. */
+/** Routes one text frame `{"event", "seq", "data"}` to its listeners; anything else is ignored. */
 function dispatch(raw: unknown): void {
   if (typeof raw !== 'string' || oversized(raw)) return;
   let frame: unknown;
@@ -86,10 +100,42 @@ function dispatch(raw: unknown): void {
     return;
   }
   if (typeof frame !== 'object' || frame === null) return;
-  const f = frame as { event?: unknown; data?: unknown };
+  const f = frame as { event?: unknown; seq?: unknown; data?: unknown };
   if (typeof f.event !== 'string' || !KINDS.has(f.event) || !('data' in f)) return;
   const data = f.data;
+  if (f.event === 'hello') hello(data, f.seq);
+  else follow(f.seq);
   listeners.get(f.event)?.forEach((fn) => fn(data));
+}
+
+/** An event's number: one more than the last. A gap means events were missed, so the screens ask again. */
+function follow(seq: unknown): void {
+  if (typeof seq !== 'number') return;
+  if (lastSeq !== null && seq !== lastSeq + 1) resync();
+  lastSeq = seq;
+}
+
+/**
+ * A socket's first frame: the hub's boot, version and schema, and the seq the socket starts after. A new version or schema
+ * (the copies in api-cache.ts go with them), a new boot, and a reconnect (events may have passed while the socket was
+ * down) make the screens ask again.
+ */
+function hello(data: unknown, seq: unknown): void {
+  const d = (typeof data === 'object' && data !== null ? data : {}) as { boot?: unknown; version?: unknown; schema?: unknown; seq?: unknown };
+  lastSeq = typeof seq === 'number' ? seq : typeof d.seq === 'number' ? d.seq : null;
+  const hubChanged = typeof d.version === 'string' && typeof d.schema === 'number' && noteHub({ version: d.version, schema: d.schema });
+  const boot = typeof d.boot === 'string' ? d.boot : null;
+  const bootChanged = boot !== null && lastBoot !== null && boot !== lastBoot;
+  if (boot !== null) lastBoot = boot;
+  if (reconnected || hubChanged || bootChanged) resync();
+  reconnected = false;
+}
+
+/** The shared state and every screen ask the hub again: the copies answer with a 304 when nothing changed. */
+function resync(): void {
+  void refreshAgents();
+  void refreshOverview();
+  listeners.get(RESYNC)?.forEach((fn) => fn(null));
 }
 
 /** True when the frame is over 1 MB of UTF-8. */
@@ -112,6 +158,7 @@ function leave(): void {
   socket = null;
   ws?.close(1000, 'page hidden');
   setConnected(false);
+  flush();
 }
 
 if (typeof window !== 'undefined') {
@@ -183,6 +230,11 @@ export function applyAgent(frame: Partial<Agent> & { cid: number }): Agent[] {
 
 export function startShared(): void {
   connect();
+  // The last answers paint at once; the revalidated ones follow.
+  const kept = api.agents.cached();
+  if (kept) agents.set(kept.sort((a, b) => a.cid - b.cid));
+  const keptOverview = api.overview.cached();
+  if (keptOverview) overview.set(keptOverview);
   void refreshAgents();
   void refreshOverview();
   on('agent', (frame) => {

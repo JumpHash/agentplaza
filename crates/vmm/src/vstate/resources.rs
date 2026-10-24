@@ -411,6 +411,8 @@ mod tests {
         // it; only the legacy range is exercised here.
         let gsis = resource_allocator.allocate_gsi_legacy(2).unwrap();
         assert_eq!(gsis.len(), 2);
-        assert!(gsis[0] >= arch_layout::GSI_LEGACY_START);
+        assert!(gsis.iter().all(|gsi| {
+            (arch_layout::GSI_LEGACY_START..=arch_layout::GSI_LEGACY_END).contains(gsi)
+        }));
     }
 }

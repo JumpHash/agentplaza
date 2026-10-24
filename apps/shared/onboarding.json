@@ -23,7 +23,7 @@
       {
         "id": "deps",
         "title": "Dependencies",
-        "body": "The plaza's requirements: Docker and its containers (Postgres, Garage) and the services beside the app. Anything missing is set up from here, after you have read what it will run."
+        "body": "The plaza's requirements: the services beside the app, their ports free, and a hypervisor for the agents' VMs. Nothing is installed here: no Docker or database is needed, and anything not ready says what to do."
       },
       {
         "id": "keys",
@@ -59,10 +59,10 @@
       "running": "Running…",
       "skip": "Skip for now",
       "ready": "Every required check passes.",
-      "not_ready": "Set up what is missing, or skip for now.",
+      "not_ready": "Fix what is missing, then check again, or skip for now.",
       "web_lead": "The browser cannot install anything on the host. For each missing one, run its command on the host:",
-      "web_desktop": "Or open the AgentPlaza desktop app on that machine and set it up there.",
-      "web_host": "Docker and the containers run on the host, not in the hub: check them there with",
+      "web_desktop": "Or open the AgentPlaza desktop app on that machine and check them there.",
+      "web_host": "No Docker or database is needed: the hub keeps its state in SQLite. Check the rest with",
       "web_services": "Start AgentPlaza on the host (desktop app: Start locally)",
       "web_hypervisor": "Turn on virtualization in the firmware: agents run in VMs",
       "web_weft": "Weft runs inside the hub: restarting the hub starts it",
@@ -70,7 +70,7 @@
         "services": "Services",
         "hypervisor": "Hypervisor",
         "weft": "Weft",
-        "host": "Docker and containers"
+        "host": "Docker or database"
       }
     },
     "look": {
@@ -101,7 +101,7 @@
       {
         "screen": "agents",
         "title": "Agents",
-        "body": "Your agents. Each works on one project at a time; the ones on no project wait on the bench and use nothing. Open one for its details, its model and its tools."
+        "body": "Your agents. Each works on the project its task gives it; one with none waits and uses nothing. Open one for its details, its model and its tools."
       },
       {
         "screen": "floor",
@@ -111,17 +111,12 @@
       {
         "screen": "projects",
         "title": "Projects and tasks",
-        "body": "Start a project in a conversation with the orchestrator (New project, in the switcher at the top): it drafts the tasks, the team and the budget, and you start it. The switcher shows one project, or all of them."
+        "body": "Start a project in a conversation with the orchestrator (New project, in the switcher at the top): it drafts the tasks and the budget, and you start it. The switcher shows one project, or all of them."
       },
       {
         "screen": "approvals",
         "title": "Approvals",
         "body": "Requests waiting for you: an agent asking to spend, act or change something. Approve or refuse each one."
-      },
-      {
-        "screen": "conversations",
-        "title": "Society and conversations",
-        "body": "What agents say to each other and to you, in the society and in conversations."
       },
       {
         "screen": "models",

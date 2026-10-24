@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use super::Id;
 use crate::console::services::{self, Mode};
-use crate::console::{Ctx, client, ui};
+use crate::console::{Ctx, client, roles, ui};
 use crate::theme;
 
 /// The hub's own node: it can be stopped and resumed from here, but not revoked.
@@ -2102,9 +2102,9 @@ fn agents_move_line(agents: u64) -> String {
     }
 }
 
-/// A waiting agent's line: its CID, since the screen has no agent names, and why it cannot leave.
+/// A waiting agent's line: its label, and why it cannot leave.
 fn waiting_line(w: &Waiting) -> String {
-    format!("Agent {}: {}", w.cid, w.reason)
+    format!("{}: {}", roles::agent_label("", w.cid), w.reason)
 }
 
 /// How many agents a rebalance moved, from the hub's reply.
@@ -2297,11 +2297,14 @@ mod tests {
     }
 
     #[test]
-    fn waiting_line_names_the_agent_and_its_reason() {
+    fn waiting_line_labels_the_agent_and_its_reason() {
         let n = node(
             r#"{"id":"n1","state":"stopping","waiting":[{"cid":42,"reason":"no machine has room"}]}"#,
         );
-        assert_eq!(waiting_line(&n.waiting[0]), "Agent 42: no machine has room");
+        assert_eq!(
+            waiting_line(&n.waiting[0]),
+            "agent #42: no machine has room"
+        );
     }
 
     #[test]

@@ -1,12 +1,13 @@
-//! The providers' health: one check per provider (its key, then its model listing and how long the listing
-//! took), run by hand (`POST /v1/providers/check`, `POST /v1/providers/{id}/check`) and in the background
-//! every `health_interval_s` seconds. Each round is published on the bus as `providers.health`, so the
-//! consoles show it without polling. A check never makes a paid call: listing models is free.
+//! The providers' health: one check per provider (its key, then a refresh of its model listing and how long the
+//! listing took), run by hand (`POST /v1/providers/check`, `POST /v1/providers/{id}/check`) and in the background
+//! every `health_interval_s` seconds, every provider at once. Each round is published on the bus as
+//! `providers.health`, so the consoles show it without polling. A check never makes a paid call: listing models is
+//! free; and it refreshes the cached listing (`provider_listings.rs`) rather than clearing it.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use apz_gateway::{Caller, Gateway, ProviderConfig};
+use apz_gateway::{Gateway, ProviderConfig};
 use serde_json::{Value, json};
 
 use crate::state::App;
@@ -18,7 +19,12 @@ const TICK: Duration = Duration::from_secs(5);
 
 /// One check of `p`, given its credential state (`credential` in the provider view): `ok`, `warn` or `crit`
 /// with a sentence for the consoles, the time, the listing's latency and how many models it offered.
-pub fn check(gateway: &Gateway, p: &ProviderConfig, credential: &str) -> Value {
+pub fn check(
+    listings: &crate::provider_listings::Listings,
+    gateway: &Gateway,
+    p: &ProviderConfig,
+    credential: &str,
+) -> Value {
     let checked_ms = apz_plaza::now_ms();
     let refused = match credential {
         "missing" => Some(("crit", "Not authenticated · add a key")),
@@ -30,22 +36,25 @@ pub fn check(gateway: &Gateway, p: &ProviderConfig, credential: &str) -> Value {
         return json!({ "status": status, "message": message, "checked_ms": checked_ms });
     }
     let started = Instant::now();
-    let listed = gateway.list_models_for(&p.id, &Caller::Owner { node: None });
+    // A forced refresh of the listing the models list shows: the check probes and refreshes in one call.
+    let listed = listings
+        .fetch(gateway, p, true)
+        .map(|listing| listing.models.len());
     let latency_ms = started.elapsed().as_millis() as u64;
     match listed {
-        Ok(models) if models.is_empty() => json!({
+        Ok(0) => json!({
             "status": "warn",
             "message": "Reachable · it lists no models",
             "checked_ms": checked_ms,
             "latency_ms": latency_ms,
             "models": 0,
         }),
-        Ok(models) => json!({
+        Ok(count) => json!({
             "status": "ok",
-            "message": format!("Ready · {} {}", models.len(), if models.len() == 1 { "model" } else { "models" }),
+            "message": format!("Ready · {} {}", count, if count == 1 { "model" } else { "models" }),
             "checked_ms": checked_ms,
             "latency_ms": latency_ms,
-            "models": models.len(),
+            "models": count,
         }),
         Err(err) => json!({
             "status": "crit",
@@ -130,7 +139,12 @@ mod tests {
     fn a_missing_key_is_not_authenticated_and_makes_no_call() {
         let gw = Gateway::builder().providers(vec![]).build();
         let p = ProviderConfig::new("openai", ProviderKind::OpenAi);
-        let h = check(&gw, &p, "missing");
+        let listings = crate::provider_listings::Listings::new();
+        let h = check(&listings, &gw, &p, "missing");
+        assert!(
+            listings.attempt("openai").is_none(),
+            "no listing was attempted"
+        );
         assert_eq!(h["status"], "crit");
         assert!(
             h["message"]

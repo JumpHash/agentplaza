@@ -78,7 +78,7 @@ export function plural(n: number, word: string): string {
 
 /** An actor label in plain words: `agent:301` is `agent 301`; the hub and the owner keep their names. */
 export function displayActor(label: string): string {
-  return label.replace(/^agent:/, 'agent ');
+  return label.replace(/^agent:/, 'Agent #');
 }
 
 /** The change a revision belongs to: `w-12.r2` is `w-12`. */

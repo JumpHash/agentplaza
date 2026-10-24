@@ -189,16 +189,20 @@ pub struct ScopeNode {
 }
 
 /// `GET`/`PUT /v1/metrics/dashboards`: what the owner keeps, shared by web and desktop.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "metric_dashboards")]
 pub struct Saved {
     /// Pinned scope ids, in pin order.
     #[serde(default)]
+    #[table(list)]
     pub scopes: Vec<String>,
     /// Pinned panels.
     #[serde(default)]
+    #[table(child)]
     pub pins: Vec<Pin>,
     /// Recently visited scope ids, newest first (at most 6).
     #[serde(default)]
+    #[table(list)]
     pub recent: Vec<String>,
     /// True until the owner first changes the pins (the starter pins are shown).
     #[serde(default = "yes")]
@@ -209,7 +213,7 @@ fn yes() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Pin {
     pub tab: String,
     pub scope: String,

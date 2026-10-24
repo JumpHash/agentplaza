@@ -3,6 +3,7 @@
 // A new token is shown once, in the reveal box. It is never written to localStorage, and leaving the tab clears the
 // page, reveal box included.
 
+import { agentLabelIn } from '../roles';
 import '../styles/proto/settings-b.css';
 import {
   acpApi,
@@ -677,11 +678,11 @@ export function mountHubTab(root: HTMLElement): Cleanup {
   let sessions: AcpSession[] = [];
   let sessionsError: unknown = null;
 
-  const agentName = (cid: number): string => agents.get().find((a) => a.cid === cid)?.name ?? `agent ${cid}`;
+  const agentLabelOf = (cid: number): string => agentLabelIn(agents.get(), cid);
 
   const sessionCols: TblCol<AcpSession>[] = [
     { label: 'Title', cell: (s) => s.title || 'untitled' },
-    { label: 'Agent', cell: (s) => agentName(s.cid) },
+    { label: 'Agent', cell: (s) => agentLabelOf(s.cid) },
     { label: 'Client', cell: (s) => s.client || 'unknown' },
     { label: 'Folder', cell: (s) => h('span.mono', null, clip(s.cwd, 60)) },
     { label: 'Updated', cell: (s) => ago(s.updated_ms) },

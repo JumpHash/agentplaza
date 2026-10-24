@@ -17,12 +17,7 @@ use crate::state::App;
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct WipeRequest {
     #[serde(default)]
-    pub memory: bool,
-    #[serde(default)]
     pub transcript: bool,
-    /// Forget its chosen name (it picks a new one), its contacts and its reputation.
-    #[serde(default)]
-    pub identity: bool,
 }
 
 pub fn routes(router: Router<App>) -> Router<App> {
@@ -73,29 +68,9 @@ fn wipe_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return res;
     }
     let mut wiped = vec!["workspace"];
-    if wipe.memory {
-        app.memory.wipe(cid);
-        wiped.push("memory");
-    }
     if wipe.transcript {
-        app.transcripts.clear(cid);
-        app.db.delete_transcript(cid);
+        app.transcripts.wipe(cid);
         wiped.push("transcript");
-    }
-    if wipe.identity {
-        if let Err(err) = app.names.forget(cid) {
-            return Response::error(
-                500,
-                &format!("could not forget the name of agent {cid}: {err}"),
-            );
-        }
-        if let Err(err) = app.bonds.forget(cid) {
-            return Response::error(
-                500,
-                &format!("could not forget the bonds of agent {cid}: {err:?}"),
-            );
-        }
-        wiped.push("identity");
     }
     if let Some(agent) = app.agents.get(cid) {
         app.bus.publish("agent", &agent);

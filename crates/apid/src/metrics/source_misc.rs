@@ -1,5 +1,5 @@
 //! The parts of the hub's [`super::source::LiveSource`] that are not series reads: events, calls and traces in a
-//! scope, the "Metrics cost" rows, budgets, the treasury, rate-limit headroom, outside services, node links, and the
+//! scope, the "Metrics cost" rows, budgets, rate-limit headroom, outside services, node links, and the
 //! level in force.
 
 use std::cell::RefCell;
@@ -13,7 +13,6 @@ use apz_metrics_view::source::{Budget, CallRow, PriceRow, Prices, SelfCost};
 use super::scope;
 use super::source::LiveSource;
 use super::store::CallRecord;
-use crate::prices::USD_PER_CREDIT;
 use crate::state::App;
 
 /// The entity the hub's own series are keyed to (its service id).
@@ -171,12 +170,6 @@ pub fn self_cost(src: &LiveSource<'_>) -> SelfCost {
             "KB avg".to_string(),
         ),
         (
-            "Postgres growth".to_string(),
-            latest_or_zero(src, "self.pg_bytes_day", EntityKind::Hub, HUB) / 1e6,
-            100.0,
-            "MB / day".to_string(),
-        ),
-        (
             "alert rule evaluation".to_string(),
             latest_or_zero(src, "self.alert_eval_ms", EntityKind::Hub, HUB),
             200.0,
@@ -231,12 +224,6 @@ pub fn budgets(src: &LiveSource<'_>) -> Vec<Budget> {
             }
         })
         .collect()
-}
-
-/// The plaza's budget balance in credits, and what one credit is worth in USD.
-pub fn treasury(src: &LiveSource<'_>) -> Option<(f64, f64)> {
-    let credits = src.app.plaza.treasury.plaza_budget_balance();
-    Some((credits as f64, USD_PER_CREDIT))
 }
 
 /// The providers the metrics system has rate-limit readings for, with the requests and tokens left (in percent).

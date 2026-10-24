@@ -21,7 +21,7 @@ pub enum Tier {
     Constitution,
     Statute,
     System,
-    Town,
+    Plaza,
     Contract,
     Agent,
 }
@@ -31,7 +31,7 @@ impl Tier {
         Tier::Constitution,
         Tier::Statute,
         Tier::System,
-        Tier::Town,
+        Tier::Plaza,
         Tier::Contract,
         Tier::Agent,
     ];
@@ -40,7 +40,7 @@ impl Tier {
             Tier::Constitution => "constitution",
             Tier::Statute => "statute",
             Tier::System => "system",
-            Tier::Town => "town",
+            Tier::Plaza => "plaza",
             Tier::Contract => "contract",
             Tier::Agent => "agent",
         }
@@ -134,7 +134,7 @@ pub struct Explanation {
     pub source: Source,
     pub decided_by: Vec<String>,
     /// Rules that matched but did not change the result (lost on priority, or weaker than a
-    /// higher tier, e.g. a town trying to loosen a system limit).
+    /// higher tier, e.g. a plaza tier trying to loosen a system limit).
     pub no_effect: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -509,9 +509,9 @@ mod tests {
                     int(150),
                 ),
                 cand(
-                    "Research towns keep fewer contacts",
-                    "town.research",
-                    Tier::Town,
+                    "Research projects keep fewer contacts",
+                    "project.research",
+                    Tier::Plaza,
                     10,
                     int(60),
                 ),
@@ -521,17 +521,20 @@ mod tests {
         assert_eq!(ex.value, Some(int(60)));
         assert_eq!(
             ex.decided_by,
-            vec!["Research towns keep fewer contacts".to_string()]
+            vec!["Research projects keep fewer contacts".to_string()]
         );
         assert_eq!(ex.tiers.len(), 2);
         assert_eq!(
             (ex.tiers[0].tier, ex.tiers[0].value),
             (Tier::System, int(150))
         );
-        assert_eq!((ex.tiers[1].tier, ex.tiers[1].value), (Tier::Town, int(60)));
+        assert_eq!(
+            (ex.tiers[1].tier, ex.tiers[1].value),
+            (Tier::Plaza, int(60))
+        );
         assert!(ex
             .render()
-            .contains("decided by Research towns keep fewer contacts"));
+            .contains("decided by Research projects keep fewer contacts"));
     }
 
     #[test]
@@ -543,13 +546,13 @@ mod tests {
             Some(int(150)),
             vec![
                 cand("Fleet contact limit", "sys", Tier::System, 0, int(150)),
-                cand("Big town", "town", Tier::Town, 0, int(500)),
+                cand("Big project", "project", Tier::Plaza, 0, int(500)),
             ],
         )
         .unwrap();
         assert_eq!(ex.value, Some(int(150)));
         assert_eq!(ex.decided_by, vec!["Fleet contact limit".to_string()]);
-        assert_eq!(ex.no_effect, vec!["Big town".to_string()]);
+        assert_eq!(ex.no_effect, vec!["Big project".to_string()]);
     }
 
     #[test]
@@ -620,7 +623,7 @@ mod tests {
                 None,
                 vec![
                     cand("wide", "s", Tier::System, 0, win(10, 20)),
-                    cand("narrow", "t", Tier::Town, 0, win(12, 30)),
+                    cand("narrow", "t", Tier::Plaza, 0, win(12, 30)),
                 ],
             )
             .unwrap();
@@ -632,7 +635,7 @@ mod tests {
                 None,
                 vec![
                     cand("low", "s", Tier::System, 0, win(1, 2)),
-                    cand("high", "t", Tier::Town, 0, win(5, 6)),
+                    cand("high", "t", Tier::Plaza, 0, win(5, 6)),
                 ],
             )
             .unwrap_err();
@@ -652,7 +655,7 @@ mod tests {
                 Some(int(5)),
                 vec![
                     cand("sys", "s", Tier::System, 0, int(5)),
-                    cand("town", "t", Tier::Town, 0, int(9)),
+                    cand("project", "t", Tier::Plaza, 0, int(9)),
                 ],
             )
             .unwrap();

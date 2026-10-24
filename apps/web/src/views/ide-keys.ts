@@ -1,5 +1,6 @@
 // The IDE's keyboard and command palette: the shortcuts (Ctrl/Cmd keys, the drawer's Ctrl+`, Escape), the palette's items
 // (agents, repositories, files, tasks and commands) and what running one of them does.
+import { agentName } from '../roles';
 import { api } from '../api';
 import { consoleOrigin } from '../ide/open';
 import { projectOf } from '../ide/groups';
@@ -24,7 +25,7 @@ export function paletteItems(c: IdeCtx): PaletteItem[] {
   const items: PaletteItem[] = [];
   for (const a of c.agentList) {
     const project = projectOf(a, c.projects, c.tasks);
-    items.push({ id: `agent:${a.cid}`, group: 'agent', label: a.name, hint: `${rowStatus(a, null)}${project ? ` · ${project.title}` : ''}` });
+    items.push({ id: `agent:${a.cid}`, group: 'agent', label: agentName(a), hint: `${rowStatus(a, null)}${project ? ` · ${project.title}` : ''}` });
   }
   for (const w of c.wsList) {
     if (w.kind === 'repo') items.push({ id: `ws:${w.id}`, group: 'agent', label: repoNameOf(w), hint: `repository ${refOf(w)}` });

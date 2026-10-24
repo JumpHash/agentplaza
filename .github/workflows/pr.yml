@@ -8,7 +8,6 @@
 #   changes     what the change touches (.github/ci/changes.sh): a change with no code in it
 #               (Markdown, docs, .gitignore and the like) builds and tests nothing
 #   lint        rustfmt, clippy with warnings as errors, cargo deny (advisories, licences, sources)
-#   migrations  applied migrations unchanged, new ones numbered in order (scripts/check-migrations.sh)
 #   console     the web console's type-check, build and tests (console.yml)
 #   linux       the Linux tests (linux.yml): x86_64 and arm64, each on its own runners
 #   windows     the Windows tests (windows.yml), when platform code changes
@@ -114,32 +113,6 @@ jobs:
         if: always()
         with: { name: results-lint, path: results, retention-days: 7 }
 
-  migrations:
-    name: Migrations
-    needs: changes
-    if: needs.changes.outputs.build == 'true'
-    # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.
-    runs-on: [self-hosted, light]
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { fetch-depth: 0, persist-credentials: false }
-      - name: applied migrations are immutable, new ones numbered in order
-        id: check
-        shell: bash
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-        run: scripts/check-migrations.sh "$BASE" 2>&1 | tee migrations.log
-      # Shown in the pull request's Lint comment (check-results.yml).
-      - name: Results for the pull request
-        if: always()
-        run: >-
-          python3 .github/ci/results.py results lint Migrations
-          --part "migrations (applied ones unchanged, new ones in order)=${{ steps.check.outcome }}:migrations.log"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with: { name: results-migrations, path: results, retention-days: 7 }
-
   console:
     name: Web console
     needs: changes
@@ -241,8 +214,6 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hetzner]
     # A cold instrumented build of the workspace takes most of it; a later run rebuilds only what changed.
     timeout-minutes: 120
-    env:
-      NET: apz-cov-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false }
@@ -253,17 +224,6 @@ jobs:
         run: echo "APZ_CI_CACHE=$HOME/.cache/agentplaza-ci-untrusted" >> "$GITHUB_ENV"
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
-      # The Rust tests need the same Postgres as the Linux tests.
-      - name: Postgres for the tests
-        run: |
-          docker network create "$NET"
-          docker run -d --rm --name "$NET-pg" --network "$NET" \
-            -e POSTGRES_USER=apz -e POSTGRES_PASSWORD=apz -e POSTGRES_DB=apz_test postgres:17
-          for _ in $(seq 60); do docker exec "$NET-pg" pg_isready -U apz -q && break; sleep 1; done
-          echo "APZ_CI_NETWORK=$NET" >> "$GITHUB_ENV"
-          # The tests' Postgres is a container on this job's own network: sslmode=disable says the unencrypted
-          # connection is meant (the hub refuses one to a host off its machine otherwise).
-          echo "APZ_TEST_DATABASE_URL=postgres://apz:apz@$NET-pg:5432/apz_test?sslmode=disable" >> "$GITHUB_ENV"
       # Its output is kept (tee, with pipefail from `shell: bash`) for the Coverage comment.
       - name: Coverage of every test type
         id: measure
@@ -285,8 +245,6 @@ jobs:
       - name: Clean up
         if: always()
         run: |
-          docker rm -f "$NET-pg" >/dev/null 2>&1 || true
-          docker network rm "$NET" >/dev/null 2>&1 || true
           # The instrumented build is part of the build directory, so the same pruning as the other jobs.
           if [ -f .github/ci/build-cache.py ]; then
             python3 .github/ci/build-cache.py prune "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}/target" --max-gb 40
@@ -297,7 +255,7 @@ jobs:
   # passed, so a cancelled run would otherwise look green. It then says which jobs never finished.
   ci-ok:
     name: All checks passed
-    needs: [changes, lint, migrations, console, linux, windows, macos, api]
+    needs: [changes, lint, console, linux, windows, macos, api]
     # Not on a draft, which runs nothing (and cannot merge); its run comes when it is marked ready for review.
     if: always() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     # The light runner (1 vCPU): seconds of git and jq, so they never wait behind a build.

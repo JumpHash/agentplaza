@@ -1,19 +1,9 @@
-//! `agents memory` and `agents proposals`: what an agent has written down, and the agents an
-//! orchestrator proposes to spawn (the owner decides them).
+//! `agents proposals`: the agents an orchestrator proposes to spawn (the owner decides them).
 
 use clap::Subcommand;
 use serde_json::{Value, json};
 
 use crate::ctx::{self, Ctx};
-
-#[derive(Subcommand, Debug)]
-pub enum MemoryAction {
-    /// One memory note, with its body.
-    Show {
-        /// The note's slug (from `agents memory`).
-        slug: String,
-    },
-}
 
 #[derive(Subcommand, Debug)]
 pub enum ProposalAction {
@@ -30,78 +20,6 @@ pub enum ProposalAction {
         #[arg(long)]
         reason: String,
     },
-}
-
-/// `agents memory CID`: the agent's notes (`--search` narrows them); `show SLUG` reads one.
-pub fn memory(
-    ctx: &Ctx,
-    cid: u64,
-    search: Option<&str>,
-    action: Option<MemoryAction>,
-) -> Result<(), String> {
-    match action {
-        None => {
-            let v = ctx.client.get(&format!("/v1/agents/{cid}/memory"))?;
-            let notes: Vec<Value> = super::items(&v["notes"])
-                .iter()
-                .filter(|n| matches_search(n, search))
-                .cloned()
-                .collect();
-            ctx.out(&Value::Array(notes.clone()), |_| {
-                let rows: Vec<Vec<String>> = notes
-                    .iter()
-                    .map(|n| {
-                        vec![
-                            ctx::text(n, "slug"),
-                            ctx::text(n, "kind"),
-                            ctx::text(n, "title"),
-                            list_of(n, "tags"),
-                            ctx::when(&n["updated_ms"]),
-                        ]
-                    })
-                    .collect();
-                ctx::table(&["slug", "kind", "title", "tags", "updated"], &rows);
-            });
-            Ok(())
-        }
-        Some(MemoryAction::Show { slug }) => {
-            if search.is_some() {
-                return Err("--search narrows the list of notes; it does not go with show".into());
-            }
-            let doc = ctx
-                .client
-                .get(&format!("/v1/agents/{cid}/memory/{}", ctx::seg(&slug)))?;
-            ctx.out(&doc, |d| {
-                ctx::fields(&[
-                    ("title", ctx::text(d, "title")),
-                    ("kind", ctx::text(d, "kind")),
-                    ("updated", ctx::when(&d["updated_ms"])),
-                    ("tags", list_of(d, "tags")),
-                    ("links", list_of(d, "links")),
-                    ("backlinks", list_of(d, "backlinks")),
-                ]);
-                println!();
-                println!("{}", ctx::text(d, "body"));
-            });
-            Ok(())
-        }
-    }
-}
-
-/// Whether a note matches the `--search` text: a case-insensitive part of its slug, title, kind
-/// or one of its tags. No text (or blank text) matches every note.
-pub fn matches_search(note: &Value, search: Option<&str>) -> bool {
-    let Some(query) = search
-        .map(|q| q.trim().to_lowercase())
-        .filter(|q| !q.is_empty())
-    else {
-        return true;
-    };
-    let hit = |text: &str| text.to_lowercase().contains(&query);
-    hit(ctx::s(note, "slug"))
-        || hit(ctx::s(note, "title"))
-        || hit(ctx::s(note, "kind"))
-        || strings_of(note, "tags").iter().any(|tag| hit(tag))
 }
 
 /// `agents proposals`: the proposals waiting for the owner; `approve` or `reject` one.
@@ -161,17 +79,4 @@ fn role_name(p: &Value) -> String {
     } else {
         title.to_string()
     }
-}
-
-/// The strings of an array field, as they are (none when the field is missing).
-fn strings_of<'a>(v: &'a Value, key: &str) -> Vec<&'a str> {
-    v[key]
-        .as_array()
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default()
-}
-
-/// The strings of an array field, joined with commas.
-fn list_of(v: &Value, key: &str) -> String {
-    strings_of(v, key).join(", ")
 }

@@ -1,9 +1,9 @@
-//! Harness controls: what the orchestrator and the mayor (and the owner) can do to agents'
+//! Harness controls: what the orchestrator (and the owner) can do to agents'
 //! running work and routines — compress a long conversation, steer it with a note, give it
 //! more turns, change an agent's limits, and run loops (a prompt sent to an agent on a
 //! schedule until it says it is done or a run count is reached).
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
@@ -15,7 +15,7 @@ use crate::agents::Agent;
 use crate::scheduler::Origin;
 use crate::state::App;
 
-/// The host tools this module serves (offered to the orchestrator tier and the mayor roles).
+/// The host tools this module serves (offered to the orchestrator tier).
 pub const TOOLS: &[&str] = &["plaza_agent_control", "plaza_loop"];
 
 /// Compress a conversation past this many serialized bytes (about 60k tokens).
@@ -24,16 +24,16 @@ pub const DEFAULT_COMPRESS_AT: u64 = 240_000;
 pub const DEFAULT_KEEP_RECENT: u32 = 6;
 /// What a looped prompt's result must contain for the loop to end itself.
 pub const LOOP_DONE: &str = "LOOP DONE";
+/// The longest interval a loop can have: its run times (in milliseconds) must fit the store's integers.
+const MAX_EVERY_SECS: u64 = i64::MAX as u64 / 2_000;
 
-/// Who may use the controls: the orchestrator tier, the mayor and the mayor's office.
+/// Who may use the controls: the orchestrator tier.
 pub fn may_control(role: &str) -> bool {
     crate::settings::tier_of(role) == crate::settings::Tier::Orchestrator
-        || role == "mayor"
-        || role == "mayor-office"
 }
 
 /// Per-agent limits that override the plaza's defaults.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Limits {
     #[serde(default)]
     pub max_turns: Option<u32>,
@@ -43,7 +43,7 @@ pub struct Limits {
     pub keep_recent: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 pub struct Loop {
     /// `l<seq>`.
     pub id: String,
@@ -67,72 +67,57 @@ pub struct Loop {
     pub last_summary: Option<String>,
 }
 
-/// (loops oldest first, limits by cid).
-type Inner = (Vec<Loop>, std::collections::BTreeMap<u64, Limits>);
-
-/// The on-disk shape of `harness.json`.
-#[derive(Default, Serialize, Deserialize)]
-struct Saved {
-    #[serde(default)]
-    loops: Vec<Loop>,
-    #[serde(default)]
-    limits: std::collections::BTreeMap<u64, Limits>,
+/// The harness's state: its loops (oldest first) and each agent's limits by cid. It is the `harness` table: one row,
+/// with the loops and the limits as child tables.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "harness")]
+pub struct Harness {
+    #[table(child)]
+    pub loops: Vec<Loop>,
+    #[table(map)]
+    pub limits: BTreeMap<u64, Limits>,
 }
 
-/// Loops and per-agent limits, kept in `<state>/harness.json`.
+/// Loops and per-agent limits, in memory: the hub's saver writes them to the `harness` table.
+#[derive(Default)]
 pub struct Store {
-    path: PathBuf,
-    inner: Mutex<Inner>,
+    inner: Mutex<Harness>,
+}
+
+/// Checks a loop's own fields (its prompt and interval, before the agent it runs for is looked at) and returns the
+/// trimmed prompt.
+pub fn check_loop(prompt: &str, every_secs: u64) -> Result<&str, String> {
+    let prompt = prompt.trim();
+    let chars = prompt.chars().count();
+    if chars == 0 || chars > 4000 {
+        return Err("a loop's prompt must be 1 to 4000 characters".into());
+    }
+    if every_secs < 60 {
+        return Err("a loop runs at most once a minute (every_minutes >= 1)".into());
+    }
+    if every_secs > MAX_EVERY_SECS {
+        return Err("every_minutes is too large".into());
+    }
+    Ok(prompt)
 }
 
 impl Store {
-    /// A missing or unreadable file starts empty.
-    pub fn load(state_dir: &Path) -> Self {
-        let path = state_dir.join("harness.json");
-        let saved: Saved = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
-        Self {
-            path,
-            inner: Mutex::new((saved.loops, saved.limits)),
-        }
-    }
-
-    fn locked(&self) -> MutexGuard<'_, Inner> {
+    fn locked(&self) -> MutexGuard<'_, Harness> {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Writes the state to a temp file, then renames it over `harness.json`.
-    fn save(
-        &self,
-        loops: &[Loop],
-        limits: &std::collections::BTreeMap<u64, Limits>,
-    ) -> Result<(), String> {
-        let saved = Saved {
-            loops: loops.to_vec(),
-            limits: limits.clone(),
-        };
-        let bytes = serde_json::to_vec_pretty(&saved).map_err(|err| err.to_string())?;
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)
-            .and_then(|_| std::fs::rename(&tmp, &self.path))
-            .map_err(|err| format!("could not save the harness state: {err}"))
-    }
-
     /// Newest first.
     pub fn loops(&self) -> Vec<Loop> {
-        self.locked().0.iter().rev().cloned().collect()
+        self.locked().loops.iter().rev().cloned().collect()
     }
 
     pub fn limits(&self, cid: u64) -> Limits {
-        self.locked().1.get(&cid).cloned().unwrap_or_default()
+        self.locked().limits.get(&cid).cloned().unwrap_or_default()
     }
 
-    /// Validates the given fields, merges them over the agent's stored limits, saves, and
-    /// returns the merged limits.
+    /// Validates the given fields, merges them over the agent's stored limits, and returns the merged limits.
     pub fn set_limits(&self, cid: u64, limits: Limits) -> Result<Limits, String> {
         if let Some(v) = limits.max_turns
             && !(1..=500).contains(&v)
@@ -151,7 +136,7 @@ impl Store {
             return Err("keep_recent must be 1 to 50".into());
         }
         let mut guard = self.locked();
-        let mut next = guard.1.get(&cid).cloned().unwrap_or_default();
+        let mut next = guard.limits.get(&cid).cloned().unwrap_or_default();
         if limits.max_turns.is_some() {
             next.max_turns = limits.max_turns;
         }
@@ -161,10 +146,7 @@ impl Store {
         if limits.keep_recent.is_some() {
             next.keep_recent = limits.keep_recent;
         }
-        let mut all = guard.1.clone();
-        all.insert(cid, next.clone());
-        self.save(&guard.0, &all)?;
-        guard.1 = all;
+        guard.limits.insert(cid, next.clone());
         Ok(next)
     }
 
@@ -177,17 +159,10 @@ impl Store {
         by: &str,
         by_cid: u64,
     ) -> Result<Loop, String> {
-        let prompt = prompt.trim();
-        let chars = prompt.chars().count();
-        if chars == 0 || chars > 4000 {
-            return Err("a loop's prompt must be 1 to 4000 characters".into());
-        }
-        if every_secs < 60 {
-            return Err("a loop runs at most once a minute (every_minutes >= 1)".into());
-        }
+        let prompt = check_loop(prompt, every_secs)?;
         let mut guard = self.locked();
         let running = guard
-            .0
+            .loops
             .iter()
             .filter(|l| l.cid == cid && l.state == "running")
             .count();
@@ -196,7 +171,7 @@ impl Store {
         }
         let now = now_ms();
         let lp = Loop {
-            id: next_id(&guard.0),
+            id: next_id(&guard.loops),
             cid,
             prompt: prompt.to_string(),
             every_secs,
@@ -210,29 +185,22 @@ impl Store {
             last_work: None,
             last_summary: None,
         };
-        let mut loops = guard.0.clone();
-        loops.push(lp.clone());
-        self.save(&loops, &guard.1)?;
-        guard.0 = loops;
+        guard.loops.push(lp.clone());
         Ok(lp)
     }
 
     pub fn stop_loop(&self, id: &str) -> Result<Loop, String> {
         let mut guard = self.locked();
         let index = guard
-            .0
+            .loops
             .iter()
             .position(|l| l.id == id)
             .ok_or_else(|| format!("no loop {id}"))?;
-        if guard.0[index].state != "running" {
-            return Ok(guard.0[index].clone());
+        if guard.loops[index].state != "running" {
+            return Ok(guard.loops[index].clone());
         }
-        let mut loops = guard.0.clone();
-        loops[index].state = "stopped".into();
-        let stopped = loops[index].clone();
-        self.save(&loops, &guard.1)?;
-        guard.0 = loops;
-        Ok(stopped)
+        guard.loops[index].state = "stopped".into();
+        Ok(guard.loops[index].clone())
     }
 }
 
@@ -263,14 +231,14 @@ pub fn tick(app: &App) {
     let due: Vec<Loop> = app
         .harness
         .locked()
-        .0
+        .loops
         .iter()
         .filter(|l| l.state == "running" && l.next_at_ms <= now)
         .cloned()
         .collect();
     for l in due {
-        // An agent on the bench, or on a paused project, is not prompted: the loop waits until it works again.
-        if crate::membership::held_cid(app, l.cid).is_some() {
+        // An agent whose project is paused or over is not prompted: the loop waits until it works again.
+        if crate::projects::held_cid(app, l.cid).is_some() {
             continue;
         }
         // The agent is still busy with the previous run of this loop: wait for it.
@@ -302,21 +270,17 @@ pub fn tick(app: &App) {
         );
         let updated = {
             let mut guard = app.harness.locked();
-            let Some(index) = guard.0.iter().position(|x| x.id == l.id) else {
+            let Some(index) = guard.loops.iter().position(|x| x.id == l.id) else {
                 continue;
             };
-            if guard.0[index].state != "running" {
+            if guard.loops[index].state != "running" {
                 continue;
             }
-            let mut loops = guard.0.clone();
-            let lp = &mut loops[index];
+            let lp = &mut guard.loops[index];
             lp.last_work = Some(work);
             lp.runs += 1;
             lp.next_at_ms = now.saturating_add(lp.every_secs.saturating_mul(1000));
-            let out = lp.clone();
-            let _ = app.harness.save(&loops, &guard.1);
-            guard.0 = loops;
-            out
+            lp.clone()
         };
         app.bus.publish("loop", &updated);
     }
@@ -328,23 +292,19 @@ pub fn work_ended(app: &App, cid: u64, work: u64, summary: &str) {
     let ended = {
         let mut guard = app.harness.locked();
         let Some(index) = guard
-            .0
+            .loops
             .iter()
             .position(|l| l.cid == cid && l.last_work == Some(work))
         else {
             return;
         };
-        let mut loops = guard.0.clone();
-        let lp = &mut loops[index];
+        let lp = &mut guard.loops[index];
         lp.last_summary = Some(summary.chars().take(2000).collect());
         let finished = summary.contains(LOOP_DONE) || (lp.max_runs > 0 && lp.runs >= lp.max_runs);
         if finished && lp.state == "running" {
             lp.state = "done".into();
         }
-        let out = lp.clone();
-        let _ = app.harness.save(&loops, &guard.1);
-        guard.0 = loops;
-        out
+        lp.clone()
     };
     app.bus.publish("loop", &ended);
 }
@@ -365,7 +325,7 @@ pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
         .work
         .current(cid)
         .ok_or_else(|| format!("agent {cid} has no running work"))?;
-    let data = json!({ "control": control.clone() });
+    let data = serde_json::to_value(&control).unwrap_or(Value::Null);
     let message = apz_proto::wire::HostMessage::Control {
         work: item.id,
         control,
@@ -375,12 +335,16 @@ pub fn control(app: &App, cid: u64, control: Control) -> Result<u64, String> {
         Ok((code, _)) => return Err(format!("agent {cid} refused the control (HTTP {code})")),
         Err(e) => return Err(format!("agent {cid} is unreachable: {e}")),
     }
-    app.transcripts
-        .record(&app.bus, cid, item.id, "control", data);
+    app.transcripts.record(
+        &app.bus,
+        cid,
+        item.id,
+        crate::transcript::Entry::Control { control: data },
+    );
     Ok(item.id)
 }
 
-/// One harness action, shared by the tool (`by` is the calling agent's name) and the owner's
+/// One harness action, shared by the tool (`by` is the calling agent's label) and the owner's
 /// route (`by` is "owner"). `input` carries `action` and the action's fields.
 fn act(app: &App, cid: u64, input: &Value, by: &str) -> Result<String, String> {
     let agent = app
@@ -465,7 +429,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
     let obj = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false});
     Some(match name {
         "plaza_agent_control" => (
-            "Manage an agent's harness (orchestrator and mayor): compress its running work's conversation, steer it with a note, give it more turns, or set its limits (max_turns per work item, compress_at bytes, keep_recent turns).",
+            "Manage an agent's harness (orchestrator): compress its running work's conversation, steer it with a note, give it more turns, or set its limits (max_turns per work item, compress_at bytes, keep_recent turns).",
             obj(
                 json!({
                     "cid": {"type": "integer"},
@@ -480,7 +444,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             ),
         ),
         "plaza_loop" => (
-            "Run a prompt on an agent repeatedly (orchestrator and mayor): start (cid, prompt, every_minutes, max_runs — 0 runs until the agent's answer contains \"LOOP DONE\"), stop (id), or list.",
+            "Run a prompt on an agent repeatedly (orchestrator): start (cid, prompt, every_minutes, max_runs — 0 runs until the agent's answer contains \"LOOP DONE\"), stop (id), or list.",
             obj(
                 json!({
                     "action": {"type": "string", "enum": ["start", "stop", "list"]},
@@ -499,7 +463,7 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
 
 pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String, String> {
     if !may_control(&agent.role) {
-        return Err("only the orchestrator and the mayor manage harnesses".into());
+        return Err("only the orchestrator manages harnesses".into());
     }
     match name {
         "plaza_agent_control" => {
@@ -507,7 +471,6 @@ pub fn run(app: &App, agent: &Agent, name: &str, input: &Value) -> Result<String
             if cid == agent.cid {
                 return Err("an agent may not control itself".into());
             }
-            same_project(app, agent, cid)?;
             act(app, cid, input, caller(agent))
         }
         "plaza_loop" => run_loop(app, agent, input),
@@ -523,7 +486,6 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
                 return Err("an agent may not loop itself".into());
             }
             loop_target(app, cid)?;
-            same_project(app, agent, cid)?;
             let prompt = input["prompt"]
                 .as_str()
                 .map(str::trim)
@@ -581,43 +543,24 @@ fn run_loop(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
 }
 
 /// Checks that a loop can run for agent `cid`: it is on a project, or it is the orchestrator. A loop for an agent on
-/// the bench would never run.
+/// no project would never run.
 fn loop_target(app: &App, cid: u64) -> Result<(), String> {
     let agent = app
         .agents
         .get(cid)
         .ok_or_else(|| format!("no agent {cid}"))?;
-    if !crate::membership::plaza_wide(&agent.role) && app.members.project_of(cid).is_none() {
+    if !crate::settings::plaza_wide(&agent.role) && crate::projects::project_of(app, cid).is_none()
+    {
         return Err(format!(
-            "agent {cid} is on the bench: a loop runs only for an agent on a project"
+            "agent {cid} has no project: a loop runs only for an agent on a project"
         ));
     }
     Ok(())
 }
 
-/// A mayor manages only its own project's agents; the orchestrator manages every project's.
-fn same_project(app: &App, agent: &Agent, cid: u64) -> Result<(), String> {
-    if crate::membership::plaza_wide(&agent.role)
-        || app
-            .members
-            .project_of(agent.cid)
-            .is_some_and(|own| app.members.project_of(cid).as_deref() == Some(own.as_str()))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "agent {cid} is not on your project: you manage only your project's agents"
-        ))
-    }
-}
-
-/// The name a tool call acts under (the role when the agent has no name).
+/// The role a tool call acts under.
 fn caller(agent: &Agent) -> &str {
-    if agent.name.is_empty() {
-        &agent.role
-    } else {
-        &agent.name
-    }
+    &agent.role
 }
 
 fn cid_of(input: &Value) -> Result<u64, String> {
@@ -661,13 +604,18 @@ fn start_route(app: &App, req: &Request, _: &Params<'_>) -> Response {
         Ok(body) => body,
         Err(err) => return Response::error(400, &format!("bad body: {err}")),
     };
+    // The loop's own fields are checked first: a bad prompt or interval is refused whoever the agent is.
+    let every_secs = body.every_minutes.saturating_mul(60);
+    if let Err(err) = check_loop(&body.prompt, every_secs) {
+        return Response::error(400, &err);
+    }
     if let Err(err) = loop_target(app, body.cid) {
         return Response::error(400, &err);
     }
     match app.harness.start_loop(
         body.cid,
         &body.prompt,
-        body.every_minutes.saturating_mul(60),
+        every_secs,
         body.max_runs,
         "owner",
         0,
@@ -728,23 +676,25 @@ fn control_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     }
 }
 
+/// The harness's tables: `harness` (one row), with `harness_loops` and `harness_limits` as its child tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(Harness)
+}
+
 impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        let inner = self.locked();
-        serde_json::to_string_pretty(&Saved {
-            loops: inner.0.clone(),
-            limits: inner.1.clone(),
-        })
-        .unwrap_or_default()
+    /// The harness's row as its state is now (the saver writes what changed).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        let state = self.locked();
+        apz_store::RowSet::one(def(), &*state)
     }
 
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let saved: Saved = serde_json::from_str(json).map_err(|err| err.to_string())?;
-        let mut inner = self.locked();
-        self.save(&saved.loops, &saved.limits)?;
-        *inner = (saved.loops, saved.limits);
+    /// Replaces the state with what the store holds (at start); no row yet means an empty state.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let stored: Option<Harness> = apz_store::table::load_one(conn, def())?;
+        *self.locked() = stored.unwrap_or_default();
         Ok(())
     }
 }
@@ -754,31 +704,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_restores_into_a_fresh_store() {
-        let a = Store::load(&fresh_dir("snapshot"));
-        a.start_loop(1, "check the queue", 60, 3, "alpha", 1)
-            .unwrap();
-        let b = Store::load(&fresh_dir("snapshot-restored"));
-        b.restore(&a.snapshot()).unwrap();
-        assert_eq!(b.snapshot(), a.snapshot());
-        assert_eq!(b.loops().len(), 1);
+    fn a_loops_prompt_and_interval_are_checked_before_its_agent() {
+        assert_eq!(check_loop("  Check  ", 60), Ok("Check"));
+        assert!(
+            check_loop("   ", 60)
+                .unwrap_err()
+                .contains("1 to 4000 characters")
+        );
+        assert!(check_loop(&"x".repeat(4001), 60).is_err());
+        assert!(check_loop("ok", 59).unwrap_err().contains("once a minute"));
+        assert!(check_loop("ok", MAX_EVERY_SECS + 1).is_err());
     }
 
-    fn fresh_dir(tag: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let dir =
-            std::env::temp_dir().join(format!("harness-{tag}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// A database holding the harness's tables, as the migration creates them.
+    fn migrated() -> apz_store::rusqlite::Connection {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let problems = apz_store::lint::schema(&conn).unwrap();
+        assert!(
+            problems.is_empty(),
+            "the harness's tables fail the lint: {problems:?}"
+        );
+        conn
+    }
+
+    /// The store as a restart leaves it: its rows written to a database, then loaded into a fresh store.
+    fn restarted(store: &Store) -> Store {
+        let conn = migrated();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = Store::default();
+        loaded.load(&conn).unwrap();
+        loaded
+    }
+
+    fn state(store: &Store) -> Value {
+        serde_json::to_value(&*store.locked()).unwrap()
+    }
+
+    #[test]
+    fn the_state_comes_back_whole_from_its_tables() {
+        let a = Store::default();
+        a.start_loop(1, "check the queue", 60, 3, "alpha", 1)
+            .unwrap();
+        a.set_limits(
+            1,
+            Limits {
+                max_turns: Some(40),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let b = restarted(&a);
+        assert_eq!(state(&b), state(&a));
+        assert_eq!(b.loops().len(), 1);
+        assert_eq!(b.limits(1).max_turns, Some(40));
     }
 
     #[test]
     fn harness_limits_are_validated_and_merged() {
-        let dir = fresh_dir("limits");
-        let store = Store::load(&dir);
+        let store = Store::default();
         let first = store
             .set_limits(
                 7,
@@ -882,8 +866,8 @@ mod tests {
                 .compress_at,
             Some(0)
         );
-        // Rejected values changed nothing; the accepted ones survive a reload.
-        let reloaded = Store::load(&dir);
+        // Rejected values changed nothing; the accepted ones survive a restart.
+        let reloaded = restarted(&store);
         assert_eq!(
             reloaded.limits(7),
             Limits {
@@ -892,13 +876,11 @@ mod tests {
                 keep_recent: Some(3)
             }
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn harness_loops_persist_across_load() {
-        let dir = fresh_dir("loops");
-        let store = Store::load(&dir);
+        let store = Store::default();
         let a = store
             .start_loop(5, "  check the build  ", 60, 3, "owner", 0)
             .unwrap();
@@ -913,12 +895,14 @@ mod tests {
                 .start_loop(5, &"x".repeat(4001), 60, 0, "owner", 0)
                 .is_err()
         );
-        let b = store.start_loop(6, "second", 120, 0, "mayor", 9).unwrap();
+        let b = store
+            .start_loop(6, "second", 120, 0, "orchestrator", 9)
+            .unwrap();
         assert_eq!(b.id, "l2");
         assert_eq!(store.stop_loop("l1").unwrap().state, "stopped");
         assert!(store.stop_loop("l99").is_err());
 
-        let reloaded = Store::load(&dir);
+        let reloaded = restarted(&store);
         let loops = reloaded.loops();
         assert_eq!(
             loops.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
@@ -933,16 +917,32 @@ mod tests {
                 .id,
             "l3"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn harness_bad_file_loads_empty() {
-        let dir = fresh_dir("bad");
-        std::fs::write(dir.join("harness.json"), b"{not json").unwrap();
-        let store = Store::load(&dir);
+    fn the_longest_interval_is_stored_whole() {
+        let store = Store::default();
+        assert!(
+            store
+                .start_loop(7, "no end", u64::MAX, 0, "owner", 0)
+                .is_err()
+        );
+        assert!(
+            store
+                .start_loop(7, "too far", MAX_EVERY_SECS + 1, 0, "owner", 0)
+                .is_err()
+        );
+        let far = store
+            .start_loop(7, "far away", MAX_EVERY_SECS, 0, "owner", 0)
+            .unwrap();
+        assert_eq!(restarted(&store).loops(), [far]);
+    }
+
+    #[test]
+    fn a_database_with_no_row_loads_empty() {
+        let store = Store::default();
+        store.load(&migrated()).unwrap();
         assert!(store.loops().is_empty());
         assert_eq!(store.limits(1), Limits::default());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

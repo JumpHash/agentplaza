@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # coverage.sh OUT: measures the code coverage of each kind of test on this checkout, into OUT (data only:
 # the reports .github/ci/coverage.py reads). Run from the repository root, in the CI image (pr.yml, job
-# `coverage`), with the tests' Postgres as APZ_TEST_DATABASE_URL, as the Linux tests have it.
+# `coverage`).
 #
 #   Rust unit tests         the lib and bin targets' tests (nextest), instrumented by cargo-llvm-cov
 #   Rust integration tests  the tests/ targets, the same way; and both runs together

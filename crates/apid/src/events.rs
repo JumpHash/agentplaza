@@ -1,11 +1,15 @@
 //! The event stream: `GET /v1/ws`, a WebSocket fed by every module and by relays of the plaza's
-//! domain events and noded's VM events. One text message per event, `{"event": <kind>, "data":
-//! <data>}`. The socket is read-only and bounded: a client that falls [`QUEUE`] events behind is
+//! domain events and noded's VM events. One text message per event, `{"event": <kind>, "seq": <n>, "data":
+//! <data>}`. `seq` grows by one per event published; a socket opens with a `hello` event naming the hub's boot, its
+//! version and the schema of its store and the `seq` it starts after (PLAN 30.4): a console that sees a gap in `seq`,
+//! a new boot, version or schema revalidates every list it shows (with `If-None-Match`), because events are hints
+//! and the bus keeps no backlog. The socket is read-only and bounded: a client that falls [`QUEUE`] events behind is
 //! closed (1013, too slow), and the caps are [`PER_PEER`] sockets per peer address and [`TOTAL`]
 //! in all, refused with 429 before the upgrade.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -43,16 +47,18 @@ pub struct Frame {
     pub kind: String,
     pub data: String,
     pub queued: Instant,
+    /// The bus's sequence number of this event (1, 2, …; gaps tell a console it missed events).
+    pub seq: u64,
 }
 
 impl Frame {
-    /// The socket's text message: `{"event": <kind>, "data": <data>}`. Data that is not JSON goes
+    /// The socket's text message: `{"event": <kind>, "seq": <n>, "data": <data>}`. Data that is not JSON goes
     /// out as `null`, so a message is always one valid JSON object.
     pub fn wire(&self) -> String {
         let data = serde_json::from_str::<serde_json::Value>(&self.data)
             .unwrap_or(serde_json::Value::Null);
         let kind = serde_json::to_string(&self.kind).unwrap_or_else(|_| "\"\"".into());
-        format!("{{\"event\":{kind},\"data\":{data}}}")
+        format!("{{\"event\":{kind},\"seq\":{},\"data\":{data}}}", self.seq)
     }
 }
 
@@ -62,6 +68,10 @@ impl Frame {
 pub struct Bus {
     subscribers: Mutex<Vec<SyncSender<Frame>>>,
     instruments: OnceLock<Instruments>,
+    /// The last sequence number given out.
+    seq: AtomicU64,
+    /// This boot of the hub (a random id): a console that sees another reloads what it shows.
+    boot: OnceLock<String>,
 }
 
 /// The bus's own series, handed over by [`instrument_bus`].
@@ -95,11 +105,6 @@ impl Bus {
 
     /// `data` must already be one line of JSON.
     pub fn publish_raw(&self, kind: &str, data: String) {
-        let frame = Frame {
-            kind: kind.to_string(),
-            data,
-            queued: Instant::now(),
-        };
         if let Some(instruments) = self.instruments.get() {
             instruments.events.inc();
         }
@@ -107,6 +112,13 @@ impl Bus {
             .subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // Numbered under the subscribers' lock, so every subscriber receives events in their seq order.
+        let frame = Frame {
+            kind: kind.to_string(),
+            data,
+            queued: Instant::now(),
+            seq: self.seq.fetch_add(1, Ordering::AcqRel) + 1,
+        };
         subscribers.retain(|s| s.try_send(frame.clone()).is_ok());
         if let Some(instruments) = self.instruments.get() {
             instruments.clients.set(subscribers.len() as f64);
@@ -115,16 +127,33 @@ impl Bus {
 
     /// A subscription with a queue of [`QUEUE`] events.
     pub fn subscribe(&self) -> Receiver<Frame> {
+        self.subscribe_from().0
+    }
+
+    /// A subscription, and the sequence number of the last event published before it: the first event it receives
+    /// is the next one.
+    pub fn subscribe_from(&self) -> (Receiver<Frame>, u64) {
         let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE);
         let mut subscribers = self
             .subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         subscribers.push(tx);
+        let seq = self.seq.load(Ordering::Acquire);
         if let Some(instruments) = self.instruments.get() {
             instruments.clients.set(subscribers.len() as f64);
         }
-        rx
+        (rx, seq)
+    }
+
+    /// This boot's id: random, fixed for the life of the process.
+    pub fn boot(&self) -> &str {
+        self.boot.get_or_init(|| {
+            let mut bytes = [0u8; 8];
+            // Zeros only if the OS gives no randomness: a boot id still, just not a distinct one.
+            let _ = apz_os::random::fill(&mut bytes);
+            bytes.iter().map(|b| format!("{b:02x}")).collect()
+        })
     }
 }
 
@@ -225,15 +254,30 @@ pub fn routes(router: Router<App>) -> Router<App> {
             let Some(slot) = SOCKETS.take(req.peer) else {
                 return Response::error(429, "too many open event sockets; close one first");
             };
-            let events = app.bus.subscribe();
+            let (events, after) = app.bus.subscribe_from();
             let lag = app.bus.lag();
+            let hello = Frame {
+                kind: "hello".to_string(),
+                data: serde_json::json!({
+                    "boot": app.bus.boot(),
+                    "version": apz_os::version(),
+                    "schema": app.store.db(crate::store::PLAZA).schema(),
+                    "seq": after,
+                })
+                .to_string(),
+                queued: Instant::now(),
+                seq: after,
+            };
             ws::accept(
                 req,
                 Origins::SameHost,
                 Some(PROTOCOL),
                 Limits::default(),
-                move |socket| {
+                move |mut socket| {
                     let _slot = slot;
+                    if socket.send(&Message::Text(hello.wire())).is_err() {
+                        return;
+                    }
                     serve(socket, events, lag);
                 },
             )
@@ -399,8 +443,16 @@ mod tests {
         let frame = rx.try_recv().expect("the subscriber got the event");
         assert_eq!(
             frame.wire(),
-            r#"{"event":"run","data":{"id":"r1","state":"running"}}"#
+            r#"{"event":"run","seq":1,"data":{"id":"r1","state":"running"}}"#
         );
+        bus.publish_raw("run", "{}".to_string());
+        assert_eq!(
+            rx.try_recv().unwrap().seq,
+            2,
+            "each event gets the next number"
+        );
+        let (_late, after) = bus.subscribe_from();
+        assert_eq!(after, 2, "a subscriber learns the seq it starts after");
     }
 
     #[test]

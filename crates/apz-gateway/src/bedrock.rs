@@ -16,7 +16,10 @@ const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 fn region(ctx: &Ctx) -> Result<String, GatewayError> {
     ctx.p
-        .option("region")
+        .options
+        .as_ref()
+        .and_then(|o| o.region.as_deref())
+        .filter(|s| !s.is_empty())
         .map(str::to_string)
         .or_else(|| ctx.env("AWS_REGION"))
         .or_else(|| ctx.env("AWS_DEFAULT_REGION"))
@@ -322,7 +325,7 @@ mod tests {
             ),
         ]);
         let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
-        p.options = json!({"region": "us-west-2"});
+        p.options = Some(serde_json::from_value(json!({"region": "us-west-2"})).unwrap());
         p.models = vec!["us.anthropic.claude-sonnet-4-5-20250929-v1:0".into()];
         let pair = [
             ("bedrock", "AWS_ACCESS_KEY_ID", "AKIDTEST"),
@@ -459,7 +462,7 @@ mod tests {
             &json!({"output": {"message": {"content": [{"text": "ok"}]}}, "stopReason": "end_turn"}),
         )]);
         let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
-        p.options = json!({"region": "eu-west-1"});
+        p.options = Some(serde_json::from_value(json!({"region": "eu-west-1"})).unwrap());
         let pair = [
             ("bedrock", "AWS_ACCESS_KEY_ID", AWS_KEY),
             ("bedrock", "AWS_SECRET_ACCESS_KEY", AWS_SECRET),
@@ -500,7 +503,7 @@ mod tests {
         {
             let server = FakeServer::start(vec![]);
             let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
-            p.options = json!({"region": "eu-west-1"});
+            p.options = Some(serde_json::from_value(json!({"region": "eu-west-1"})).unwrap());
             let (gw, _) = gateway_with_secrets(
                 vec![p],
                 &[("bedrock", "AWS_ACCESS_KEY_ID", AWS_KEY)],
@@ -528,7 +531,7 @@ mod tests {
         {
             let server = FakeServer::start(vec![]);
             let mut other = provider("aws-b", ProviderKind::Bedrock, &server, Auth::None);
-            other.options = json!({"region": "eu-west-1"});
+            other.options = Some(serde_json::from_value(json!({"region": "eu-west-1"})).unwrap());
             let (gw, _) = gateway_with_secrets(
                 vec![other],
                 &[
@@ -565,9 +568,9 @@ mod tests {
     fn each_bedrock_provider_signs_with_the_pair_bound_to_its_own_id() {
         let server = FakeServer::start(vec![converse_ok(), converse_ok()]);
         let mut eu = provider("bedrock-eu", ProviderKind::Bedrock, &server, Auth::None);
-        eu.options = json!({"region": "eu-west-1"});
+        eu.options = Some(serde_json::from_value(json!({"region": "eu-west-1"})).unwrap());
         let mut us = provider("aws", ProviderKind::Bedrock, &server, Auth::None);
-        us.options = json!({"region": "us-east-1"});
+        us.options = Some(serde_json::from_value(json!({"region": "us-east-1"})).unwrap());
         let (gw, _) = gateway_with_secrets(
             vec![eu, us],
             &[
@@ -628,7 +631,7 @@ mod tests {
     fn a_refused_pair_fails_with_the_refusal_not_with_a_missing_key() {
         let server = FakeServer::start(vec![]);
         let mut p = provider("bedrock", ProviderKind::Bedrock, &server, Auth::None);
-        p.options = json!({"region": "eu-west-1"});
+        p.options = Some(serde_json::from_value(json!({"region": "eu-west-1"})).unwrap());
         let gw = Gateway::builder()
             .providers(vec![p])
             .secrets(Sealed)

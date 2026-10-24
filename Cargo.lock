@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "agent-harness"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-acp",
  "apz-ide",
@@ -82,13 +82,13 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "ureq",
 ]
 
 [[package]]
 name = "agentplaza-cli"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-ide",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "agentplaza-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-engine",
  "apz-graph",
@@ -327,10 +327,13 @@ checksum = "fb5dfbc6d8d2675589ccbe4d0fd61df2419075625f8c1a62325e718e2b0049f9"
 
 [[package]]
 name = "apid"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-acp",
  "apz-artifact",
+ "apz-blobs",
+ "apz-cache",
+ "apz-egress-rules",
  "apz-gateway",
  "apz-http",
  "apz-ide",
@@ -341,10 +344,13 @@ dependencies = [
  "apz-prompt",
  "apz-proto",
  "apz-rich",
+ "apz-sandbox",
  "apz-skill",
  "apz-station",
+ "apz-store",
  "apz-theme",
  "apz-trust",
+ "apz-uds",
  "apz-view",
  "argon2",
  "base64 0.22.1",
@@ -353,18 +359,19 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "hkdf",
- "hmac 0.12.1",
+ "hmac",
  "jhrl",
  "libc",
- "postgres",
  "rcgen",
  "ring",
  "schemars 1.2.3",
  "secrecy",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "sysinfo",
+ "tar",
+ "tempfile",
  "tokenizers",
  "toml 1.1.8+spec-1.1.0",
  "tract-onnx",
@@ -372,6 +379,7 @@ dependencies = [
  "ureq",
  "weft",
  "zeroize",
+ "zip",
 ]
 
 [[package]]
@@ -385,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "apz-acp"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol-schema",
  "serde",
@@ -395,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "apz-artifact"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-view",
  "oxc_allocator",
@@ -409,8 +417,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-blobs"
+version = "1.0.0"
+dependencies = [
+ "apz-store",
+ "blake3",
+ "fastcdc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
+name = "apz-cache"
+version = "1.0.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "apz-desktop"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-station",
  "image",
@@ -420,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-atspi"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -431,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-macos"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -443,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-wayland"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -454,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-windows"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -463,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "apz-desktop-x11"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-station",
@@ -472,8 +500,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "apz-egress-rules"
+version = "1.0.0"
+
+[[package]]
 name = "apz-engine"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ab_glyph",
  "apz-os",
@@ -495,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "apz-engine-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-engine",
  "js-sys",
@@ -509,21 +541,22 @@ dependencies = [
 
 [[package]]
 name = "apz-gateway"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-proto",
- "hmac 0.12.1",
+ "apz-store",
+ "hmac",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.21",
  "ureq",
 ]
 
 [[package]]
 name = "apz-graph"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -531,7 +564,7 @@ dependencies = [
 
 [[package]]
 name = "apz-graph-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-graph",
  "serde_json",
@@ -540,8 +573,9 @@ dependencies = [
 
 [[package]]
 name = "apz-http"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-cache",
  "apz-trust",
  "base64 0.22.1",
  "rcgen",
@@ -555,7 +589,7 @@ dependencies = [
 
 [[package]]
 name = "apz-ide"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -563,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "apz-ide-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-ide",
  "serde",
@@ -573,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "apz-kit"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "glam 0.30.10",
  "gltf",
@@ -585,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "apz-link"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-os",
@@ -600,8 +634,9 @@ dependencies = [
 
 [[package]]
 name = "apz-metrics"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-store",
  "base64 0.22.1",
  "flate2",
  "serde",
@@ -610,9 +645,10 @@ dependencies = [
 
 [[package]]
 name = "apz-metrics-view"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-metrics",
+ "apz-store",
  "apz-view",
  "serde",
  "serde_json",
@@ -620,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "apz-ops"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-ide",
  "apz-proto",
@@ -629,13 +665,13 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "apz-os"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "getrandom 0.3.4",
  "windows 0.58.0",
@@ -643,39 +679,42 @@ dependencies = [
 
 [[package]]
 name = "apz-pack"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-theme",
  "brotli",
  "flate2",
  "naga",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "wasm-bindgen-cli-support",
  "wasm-opt",
 ]
 
 [[package]]
 name = "apz-plaza"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "apz-prompt"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "apz-proto"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-os",
+ "apz-store",
  "apz-uds",
  "serde",
  "serde_json",
@@ -683,15 +722,24 @@ dependencies = [
 
 [[package]]
 name = "apz-rich"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "apz-sandbox"
+version = "1.0.0"
+dependencies = [
+ "landlock",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "apz-setup"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-os",
  "serde_json",
@@ -699,9 +747,10 @@ dependencies = [
 
 [[package]]
 name = "apz-skill"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-prompt",
+ "apz-store",
  "serde",
  "serde_json",
  "zip",
@@ -709,16 +758,38 @@ dependencies = [
 
 [[package]]
 name = "apz-station"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "apz-theme"
-version = "0.1.0"
+name = "apz-store"
+version = "1.0.0"
 dependencies = [
+ "apz-store-derive",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "apz-store-derive"
+version = "1.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "apz-theme"
+version = "1.0.0"
+dependencies = [
+ "apz-store",
  "serde",
  "serde_json",
  "zip",
@@ -726,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "apz-theme-web"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-theme",
  "serde_json",
@@ -735,7 +806,7 @@ dependencies = [
 
 [[package]]
 name = "apz-trust"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -744,12 +815,12 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
 ]
 
 [[package]]
 name = "apz-uds"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "vm-memory",
  "windows-sys 0.61.2",
@@ -757,7 +828,7 @@ dependencies = [
 
 [[package]]
 name = "apz-view"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ab_glyph",
  "apz-metrics",
@@ -769,14 +840,14 @@ dependencies = [
 
 [[package]]
 name = "apz-vt"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "vte",
 ]
 
 [[package]]
 name = "apz-workstation"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-desktop",
  "apz-desktop-atspi",
@@ -790,10 +861,10 @@ dependencies = [
  "apz-station",
  "apz-trust",
  "base64 0.22.1",
+ "blake3",
  "libc",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "windows 0.58.0",
  "windows-sys 0.61.2",
  "zbus",
@@ -1972,12 +2043,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmov"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
-
-[[package]]
 name = "cobs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2321,7 +2386,7 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde",
  "serde_derive",
- "sha2 0.10.9",
+ "sha2",
  "smallvec",
  "target-lexicon 0.13.5",
  "wasmtime-internal-core",
@@ -2567,15 +2632,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83cf0d42651b16c6dfe68685716d18480d18a9c39c62d76e8cf3eb6ed5d8bcbf"
 dependencies = [
  "dtor",
-]
-
-[[package]]
-name = "ctutils"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03bb0e1cc970d482d121d9a1744999169b69a07470b3d644a7894e53fcaf4574"
-dependencies = [
- "cmov",
 ]
 
 [[package]]
@@ -2904,7 +2960,6 @@ dependencies = [
  "block-buffer 0.12.1",
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
- "ctutils",
 ]
 
 [[package]]
@@ -2948,7 +3003,7 @@ dependencies = [
 
 [[package]]
 name = "dispatchd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "serde",
@@ -3088,7 +3143,7 @@ dependencies = [
  "ed25519",
  "rand_core 0.6.4",
  "serde",
- "sha2 0.10.9",
+ "sha2",
  "subtle",
  "zeroize",
 ]
@@ -3261,15 +3316,15 @@ dependencies = [
 
 [[package]]
 name = "fallible-iterator"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
-
-[[package]]
-name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+
+[[package]]
+name = "fallible-streaming-iterator"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
@@ -3732,7 +3787,7 @@ checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
  "libc",
- "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasi",
 ]
 
 [[package]]
@@ -3785,7 +3840,7 @@ version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 dependencies = [
- "fallible-iterator 0.3.0",
+ "fallible-iterator",
  "indexmap 2.14.2",
  "stable_deref_trait",
 ]
@@ -4184,6 +4239,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hashlink"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a596f1b20ed2cc5ecac41a164aaebc7258057060f06c0cf7a2ba3991ee7990fb"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "heapless"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4230,7 +4294,7 @@ version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
 dependencies = [
- "hmac 0.12.1",
+ "hmac",
 ]
 
 [[package]]
@@ -4240,15 +4304,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest 0.10.7",
-]
-
-[[package]]
-name = "hmac"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
-dependencies = [
- "digest 0.11.3",
 ]
 
 [[package]]
@@ -4304,7 +4359,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.58.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4469,7 +4524,7 @@ dependencies = [
  "iced_selector",
  "nom 8.0.0",
  "png 0.18.1",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 2.0.21",
 ]
 
@@ -4935,7 +4990,7 @@ dependencies = [
 
 [[package]]
 name = "jhrl"
-version = "0.1.0"
+version = "1.0.0"
 
 [[package]]
 name = "jiff"
@@ -5192,6 +5247,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf36173d4167ed999940f804952e6b08197cae5ad5d572eb4db150ce8ad5d58f"
 
 [[package]]
+name = "landlock"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cca98e95f35b29d469dade6724c6f96cec9236640f745a0e99b0334ec320ab1"
+dependencies = [
+ "enumflags2",
+ "libc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5284,6 +5350,17 @@ dependencies = [
  "bindgen",
  "cc",
  "system-deps 7.0.8",
+]
+
+[[package]]
+name = "libsqlite3-sys"
+version = "0.38.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8"
+dependencies = [
+ "cc",
+ "pkg-config",
+ "vcpkg",
 ]
 
 [[package]]
@@ -5528,20 +5605,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcp-relay"
-version = "0.1.0"
-
-[[package]]
-name = "md-5"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
-dependencies = [
- "cfg-if",
- "digest 0.11.3",
-]
-
-[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5645,7 +5708,7 @@ checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
 dependencies = [
  "libc",
  "log",
- "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasi",
  "windows-sys 0.61.2",
 ]
 
@@ -5825,17 +5888,18 @@ dependencies = [
 
 [[package]]
 name = "noded"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-http",
  "apz-metrics",
  "apz-os",
+ "apz-sandbox",
  "apz-station",
  "apz-uds",
  "base64 0.22.1",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2",
  "sysinfo",
  "vmm",
 ]
@@ -6319,15 +6383,6 @@ checksum = "0a684efe3dec1b305badae1a28f6555f6ddd3bb2c2267896782858d5a78404dc"
 dependencies = [
  "objc2 0.5.3",
  "objc2-foundation 0.2.2",
-]
-
-[[package]]
-name = "objc2-system-configuration"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
-dependencies = [
- "objc2-core-foundation",
 ]
 
 [[package]]
@@ -7352,51 +7407,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "postgres"
-version = "0.19.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33ad20e0aa0b24f5a394eab4f78c781d248982b22b25cecc7e3aa46a681605bd"
-dependencies = [
- "bytes",
- "fallible-iterator 0.2.0",
- "futures-util",
- "log",
- "tokio",
- "tokio-postgres",
-]
-
-[[package]]
-name = "postgres-protocol"
-version = "0.6.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08808e3c483c46e999108051c78334f473d5adb59d78bb80a1268c7e6aa6c514"
-dependencies = [
- "base64 0.22.1",
- "byteorder",
- "bytes",
- "fallible-iterator 0.2.0",
- "hmac 0.13.0",
- "md-5",
- "memchr",
- "rand 0.10.3",
- "sha2 0.11.0",
- "stringprep",
-]
-
-[[package]]
-name = "postgres-types"
-version = "0.2.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
-dependencies = [
- "bytes",
- "fallible-iterator 0.2.0",
- "postgres-protocol",
- "serde_core",
- "serde_json",
-]
-
-[[package]]
 name = "potential_utf"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7541,7 +7551,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -8208,6 +8218,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
+name = "rusqlite"
+version = "0.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3"
+dependencies = [
+ "bitflags 2.13.2",
+ "fallible-iterator",
+ "fallible-streaming-iterator",
+ "hashlink",
+ "libsqlite3-sys",
+ "smallvec",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8632,17 +8656,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
-]
-
-[[package]]
-name = "sha2"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.3.1",
- "digest 0.11.3",
 ]
 
 [[package]]
@@ -9082,17 +9095,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "stringprep"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b4df3d392d81bd458a8a621b8bffbd2302a12ffe288a9d931670948749463b1"
-dependencies = [
- "unicode-bidi",
- "unicode-normalization",
- "unicode-properties",
-]
-
-[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9326,7 +9328,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.52.0",
@@ -9419,7 +9421,7 @@ dependencies = [
  "pest",
  "pest_derive",
  "phf 0.11.3",
- "sha2 0.10.9",
+ "sha2",
  "signal-hook",
  "siphasher",
  "terminfo",
@@ -9633,9 +9635,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.2"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e95f91fcc7a621e8b030f6aa23c71fe9838ae2fb4d8118b75602a328f5144044"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -9645,46 +9647,6 @@ dependencies = [
  "socket2",
  "tracing",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "tokio-postgres"
-version = "0.7.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a528f7d280f6d5b9cd149635c8705b0dd049754bc67d81d31fa25169a93809d3"
-dependencies = [
- "async-trait",
- "byteorder",
- "bytes",
- "fallible-iterator 0.2.0",
- "futures-channel",
- "futures-util",
- "log",
- "parking_lot",
- "percent-encoding",
- "phf 0.13.1",
- "pin-project-lite",
- "postgres-protocol",
- "postgres-types",
- "rand 0.10.3",
- "socket2",
- "tokio",
- "tokio-util",
- "whoami",
-]
-
-[[package]]
-name = "tokio-util"
-version = "0.7.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
-dependencies = [
- "bytes",
- "futures-core",
- "futures-sink",
- "libc",
- "pin-project-lite",
- "tokio",
 ]
 
 [[package]]
@@ -10144,15 +10106,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b09c83c3c29d37506a3e260c08c03743a6bb66a9cd432c6934ab501a190571f"
 
 [[package]]
-name = "unicode-normalization"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
-dependencies = [
- "tinyvec",
-]
-
-[[package]]
 name = "unicode-normalization-alignments"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10355,6 +10308,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10391,7 +10350,7 @@ checksum = "503041e3dca68fbd5425c04e4c2ad63c57a31da5b6eb13aaafbcaaf2b9cdc74f"
 
 [[package]]
 name = "vmctl"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "apz-os",
  "vmm",
@@ -10399,7 +10358,7 @@ dependencies = [
 
 [[package]]
 name = "vmm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "acpi_tables",
  "apz-os",
@@ -10437,8 +10396,9 @@ checksum = "5c3082ca00d5a5ef149bb8b555a72ae84c9c59f7250f013ac822ac2e49b19c64"
 
 [[package]]
 name = "vsockd"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-egress-rules",
  "apz-http",
  "apz-metrics",
  "apz-os",
@@ -10518,30 +10478,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
-name = "wasi"
-version = "0.14.7+wasi-0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "883478de20367e224c0090af9cf5f9fa85bed63a95c1abf3afc5c083ebc06e8c"
-dependencies = [
- "wasip2",
-]
-
-[[package]]
 name = "wasip2"
 version = "1.0.4+wasi-0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487"
 dependencies = [
  "wit-bindgen",
-]
-
-[[package]]
-name = "wasite"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66fe902b4a6b8028a753d5424909b764ccf79b7a209eac9bf97e59cda9f71a42"
-dependencies = [
- "wasi 0.14.7+wasi-0.2.4",
 ]
 
 [[package]]
@@ -10785,7 +10727,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_derive",
- "sha2 0.10.9",
+ "sha2",
  "smallvec",
  "target-lexicon 0.13.5",
  "wasm-encoder 0.254.2",
@@ -11184,8 +11126,9 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
+ "apz-blobs",
  "apz-http",
  "base64 0.22.1",
  "blake3",
@@ -11196,7 +11139,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.10.7",
- "sha2 0.10.9",
+ "sha2",
  "similar",
  "toml 1.1.8+spec-1.1.0",
  "tree-sitter",
@@ -11222,7 +11165,7 @@ checksum = "692daff6d93d94e29e4114544ef6d5c942a7ed998b37abdc19b17136ea428eb7"
 dependencies = [
  "getrandom 0.3.4",
  "mac_address",
- "sha2 0.10.9",
+ "sha2",
  "thiserror 1.0.69",
  "uuid",
 ]
@@ -11435,19 +11378,6 @@ dependencies = [
  "log",
  "serde",
  "thiserror 2.0.21",
- "web-sys",
-]
-
-[[package]]
-name = "whoami"
-version = "2.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "626c4bac6755d76ffc12cb01b2eac751db1996b9e0041de9aa02c8c211ddc82c"
-dependencies = [
- "libc",
- "libredox",
- "objc2-system-configuration",
- "wasite",
  "web-sys",
 ]
 
@@ -12109,7 +12039,7 @@ dependencies = [
  "once_cell",
  "percent-encoding",
  "raw-window-handle",
- "sha2 0.10.9",
+ "sha2",
  "soup3",
  "tao-macros",
  "thiserror 2.0.21",

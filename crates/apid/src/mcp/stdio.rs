@@ -1,338 +1,371 @@
-//! Stdio servers: a container (or, in tests, a plain child process) the hub keeps the pipes of.
+//! Stdio servers: a pinned package run under the OS sandbox, with the hub's pipes to its stdin and stdout.
 //!
-//! The docker launcher runs `docker run` with the hardened flags of docs/design/mcp.md. A secret reaches
-//! the container as `-e NAME` with no value: the docker client reads the value from its own environment,
-//! which apid sets for that child only. Values never appear in argv or on disk.
+//! The sandbox (`apz_sandbox`) gives the child a deny-by-default filesystem and network: it reads its runtime and
+//! its package, writes only its own directories, and reaches only the egress proxy's loopback port. Its environment
+//! is the one the hub builds here (secret values included, as the server's own env vars, never argv or a file).
+//! Each server has a directory `<state>/mcp/<id>/` (see [`Layout`]).
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use std::net::Ipv4Addr;
-
+use apz_sandbox::{Network, Sandboxed, Spec};
 use serde_json::Value;
 
-use super::config::volume_name;
+use super::client::{Error, Transport};
 use super::egress::Lease;
 
-use super::client::{Error, Transport};
-
-/// The network a stdio server's container joins; its egress follows the hub's rules.
-pub const NETWORK: &str = "apz-mcp";
 /// The longest line a server may send (a larger one ends the connection).
 const MAX_LINE: usize = 4 << 20;
-/// Environment the docker client needs to find its daemon, passed through from apid.
-const PASSTHROUGH: [&str; 5] = [
-    "PATH",
-    "HOME",
-    "DOCKER_HOST",
-    "DOCKER_CONFIG",
-    "XDG_RUNTIME_DIR",
-];
+/// The most stderr a failed install keeps for its message.
+const TAIL_BYTES: usize = 4096;
+/// How long an npm install may take.
+pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// The text `apz_sandbox` support reports when the kernel cannot confine the network (no proxy guarantee).
+const UNCONFINED: &str = "NETWORK IS NOT CONFINED";
 
-/// What a launch needs: the image, the command after it, and the env the child gets.
-#[derive(Debug, Clone, PartialEq)]
-pub struct LaunchSpec {
-    pub server: String,
-    pub image: String,
-    pub command: Vec<String>,
-    pub workdir: Option<String>,
-    /// Name and value of every env var the server gets (secrets and literals).
-    pub env: Vec<(String, String)>,
-    /// The container's address on the apz-mcp network (`--ip`), when the proxy is in use.
-    pub ip: Option<Ipv4Addr>,
-    /// The docker volume mounted at /data, when the server keeps storage.
-    pub volume: Option<String>,
-}
-
-/// Starts a server's process and hands back the child whose pipes the hub keeps.
+/// Starts a sandboxed process with its three pipes. The stdio launcher uses the real sandbox; tests use the same.
 pub trait Launcher: Send + Sync {
-    fn launch(&self, spec: &LaunchSpec) -> Result<Child, String>;
+    fn launch(&self, spec: &Spec) -> Result<Sandboxed, String>;
 }
 
-/// The docker argv for `spec`: the hardened flags, `-e NAME` for each env var, then the image and command.
-/// No value appears here.
-pub fn docker_args(spec: &LaunchSpec) -> Vec<String> {
-    let mut args: Vec<String> = [
-        "run",
-        "--rm",
-        "-i",
-        "--init",
-        "--read-only",
-        "--tmpfs",
-        "/tmp:size=64m",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--user",
-        "65534:65534",
-        "--memory",
-        "512m",
-        "--cpus",
-        "1",
-        "--pids-limit",
-        "256",
-        "--network",
-        NETWORK,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-    if let Some(ip) = spec.ip {
-        args.push("--ip".into());
-        args.push(ip.to_string());
-    }
-    if let Some(volume) = &spec.volume {
-        args.push("--mount".into());
-        args.push(format!("type=volume,source={volume},target=/data"));
-    }
-    if let Some(dir) = &spec.workdir {
-        args.push("-w".into());
-        args.push(dir.clone());
-    }
-    for (name, _) in &spec.env {
-        args.push("-e".into());
-        args.push(name.clone());
-    }
-    args.push(spec.image.clone());
-    args.extend(spec.command.iter().cloned());
-    args
+/// A started server process, as the transport holds it: its three pipes, and its end. The sandbox's child
+/// ([`Sandboxed`]) and a microVM's (`vm::VmChild`) both are one.
+pub trait Child: Send {
+    fn stdin(&mut self) -> Option<Box<dyn Write + Send>>;
+    fn stdout(&mut self) -> Option<Box<dyn Read + Send>>;
+    fn stderr(&mut self) -> Option<Box<dyn Read + Send>>;
+    /// Whether the process has ended.
+    fn try_wait(&mut self) -> std::io::Result<bool>;
+    fn kill(&mut self) -> std::io::Result<()>;
+    /// Waits until the process has ended.
+    fn wait(&mut self) -> std::io::Result<()>;
 }
 
-/// The environment the docker client runs with: the passthrough variables and the server's env, nothing else.
-pub fn child_env(spec: &LaunchSpec) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = PASSTHROUGH
-        .iter()
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| (name.to_string(), value))
-        })
-        .collect();
-    env.extend(spec.env.iter().cloned());
+impl Child for Sandboxed {
+    fn stdin(&mut self) -> Option<Box<dyn Write + Send>> {
+        Sandboxed::stdin(self)
+    }
+
+    fn stdout(&mut self) -> Option<Box<dyn Read + Send>> {
+        Sandboxed::stdout(self)
+    }
+
+    fn stderr(&mut self) -> Option<Box<dyn Read + Send>> {
+        Sandboxed::stderr(self)
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<bool> {
+        Ok(Sandboxed::try_wait(self)?.is_some())
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        Sandboxed::kill(self)
+    }
+
+    fn wait(&mut self) -> std::io::Result<()> {
+        Sandboxed::wait(self).map(|_| ())
+    }
+}
+
+/// The OS sandbox ([`apz_sandbox::spawn`]).
+pub struct SandboxLauncher;
+
+impl Launcher for SandboxLauncher {
+    fn launch(&self, spec: &Spec) -> Result<Sandboxed, String> {
+        if matches!(spec.network, Network::LoopbackPort(_)) {
+            let support = apz_sandbox::support();
+            if support.detail.contains(UNCONFINED) {
+                return Err(format!(
+                    "this system cannot confine a server's network ({}), so an MCP server that uses the network cannot run; remote (http) servers still work",
+                    support.kind
+                ));
+            }
+        }
+        apz_sandbox::spawn(
+            spec,
+            std::process::Stdio::piped(),
+            std::process::Stdio::piped(),
+            std::process::Stdio::piped(),
+        )
+        .map_err(|e| format!("cannot start the server under the sandbox: {e}"))
+    }
+}
+
+/// The directories a server owns, under `<state>/mcp/<id>/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    pub root: PathBuf,
+    /// The npm prefix (`node_modules` lives here).
+    pub pkg: PathBuf,
+    /// Downloaded binaries, by SHA-256.
+    pub bin: PathBuf,
+    /// The server's working directory. Kept between runs with `storage.volume`, emptied at each start otherwise.
+    pub data: PathBuf,
+    pub home: PathBuf,
+    pub tmp: PathBuf,
+    /// npm's and uv's caches.
+    pub cache: PathBuf,
+    /// uv's tool environments and its managed Pythons.
+    pub tools: PathBuf,
+    pub python: PathBuf,
+}
+
+impl Layout {
+    pub fn new(state_dir: &Path, server: &str) -> Layout {
+        let root = state_dir.join("mcp").join(server);
+        Layout {
+            pkg: root.join("pkg"),
+            bin: root.join("bin"),
+            data: root.join("data"),
+            home: root.join("home"),
+            tmp: root.join("tmp"),
+            cache: root.join("cache"),
+            tools: root.join("tools"),
+            python: root.join("python"),
+            root,
+        }
+    }
+
+    /// Creates the directories. `data` is emptied first unless the server keeps its storage.
+    pub fn prepare(&self, keep_data: bool) -> Result<(), String> {
+        if !keep_data {
+            let _ = std::fs::remove_dir_all(&self.data);
+        }
+        for dir in [
+            &self.pkg,
+            &self.bin,
+            &self.data,
+            &self.home,
+            &self.tmp,
+            &self.cache,
+            &self.tools,
+            &self.python,
+        ] {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+        }
+        Ok(())
+    }
+
+    /// The directories a sandboxed process may write: its own, and nothing of another server's.
+    pub fn writable(&self) -> Vec<PathBuf> {
+        vec![
+            self.data.clone(),
+            self.home.clone(),
+            self.tmp.clone(),
+            self.cache.clone(),
+            self.tools.clone(),
+            self.python.clone(),
+        ]
+    }
+}
+
+/// The environment a sandboxed process gets: its own home and temp, its search path, and (when it reaches the
+/// network) the proxy variables. Secret values are added by the caller.
+pub fn base_env(
+    layout: &Layout,
+    path_dirs: &[PathBuf],
+    proxy: Option<&str>,
+) -> Vec<(String, String)> {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let mut dirs = path_dirs.to_vec();
+    if cfg!(windows) {
+        dirs.push(PathBuf::from(&system_root));
+    } else {
+        dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
+    }
+    let path = std::env::join_paths(dirs)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut env = vec![
+        ("PATH".to_string(), path),
+        (
+            "HOME".to_string(),
+            layout.home.to_string_lossy().into_owned(),
+        ),
+        (
+            "TMPDIR".to_string(),
+            layout.tmp.to_string_lossy().into_owned(),
+        ),
+        ("TMP".to_string(), layout.tmp.to_string_lossy().into_owned()),
+        (
+            "TEMP".to_string(),
+            layout.tmp.to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_CONFIG_HOME".to_string(),
+            layout.home.join(".config").to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_CACHE_HOME".to_string(),
+            layout.cache.to_string_lossy().into_owned(),
+        ),
+        (
+            "XDG_DATA_HOME".to_string(),
+            layout
+                .home
+                .join(".local/share")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ];
+    if cfg!(windows) {
+        // What a Windows process is started with besides its PATH: the system's folders, and the user profile's, here
+        // inside the server's own home. Starting a process in an AppContainer reads the profile's folders from the
+        // environment it is given.
+        let home = layout.home.clone();
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        env.extend([
+            ("SystemRoot".to_string(), system_root.clone()),
+            ("windir".to_string(), system_root),
+            ("SystemDrive".to_string(), drive),
+            (
+                "USERPROFILE".to_string(),
+                home.to_string_lossy().into_owned(),
+            ),
+            (
+                "APPDATA".to_string(),
+                home.join("AppData")
+                    .join("Roaming")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                "LOCALAPPDATA".to_string(),
+                home.join("AppData")
+                    .join("Local")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ]);
+    }
+    if let Some(proxy) = proxy {
+        env.extend(super::egress::proxy_env(proxy));
+    }
     env
 }
 
-/// The subnet of the apz-mcp network, and its gateway: the address the egress proxy listens on.
-pub const SUBNET: &str = "172.29.250.0/24";
-pub const GATEWAY: Ipv4Addr = Ipv4Addr::new(172, 29, 250, 1);
-
-/// `docker network create` for the apz-mcp network: internal, so it has no route out.
-pub fn network_create_args() -> Vec<String> {
-    [
-        "network",
-        "create",
-        "--internal",
-        "--driver",
-        "bridge",
-        "--subnet",
-        SUBNET,
-        "--gateway",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .chain([GATEWAY.to_string(), NETWORK.to_string()])
-    .collect()
-}
-
-/// `docker network inspect` for the apz-mcp network: "<internal> <subnet> <gateway>".
-pub fn network_inspect_args() -> Vec<String> {
-    [
-        "network",
-        "inspect",
-        "-f",
-        "{{.Internal}} {{range .IPAM.Config}}{{.Subnet}} {{.Gateway}}{{end}}",
-        NETWORK,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
-}
-
-/// `docker volume rm` for a server's storage volume.
-pub fn volume_remove_args(server: &str) -> Vec<String> {
+/// The arguments for npm's CLI, run under node: a pinned package installed into `prefix`. Lifecycle scripts are
+/// not run (the package's own install code stays out of the process).
+pub fn npm_install_args(npm_cli: &Path, prefix: &Path, name: &str, version: &str) -> Vec<String> {
     vec![
-        "volume".into(),
-        "rm".into(),
-        "-f".into(),
-        volume_name(server),
+        npm_cli.to_string_lossy().into_owned(),
+        "install".into(),
+        "--prefix".into(),
+        prefix.to_string_lossy().into_owned(),
+        "--ignore-scripts".into(),
+        "--no-audit".into(),
+        "--no-fund".into(),
+        "--no-update-notifier".into(),
+        format!("{name}@{version}"),
     ]
 }
 
-/// What apid says when docker cannot run: the container servers are stopped, the remote ones still work.
-pub const NO_DOCKER: &str = "docker is not available: install Docker to run container MCP servers; remote (http) servers still work";
-/// What apid says when the docker client runs but its daemon is not reachable.
-pub const NO_DAEMON: &str = "docker is installed but its daemon is not reachable: start Docker to run container MCP servers; remote (http) servers still work";
-
-/// The docker client as apid runs it. Tests replace it with a mock that answers from a script.
-pub trait Docker: Send + Sync {
-    /// Runs `docker <args>` with `env` added to its environment (the values are never in `args`). An `Err` means
-    /// the client itself could not run (docker is not installed).
-    fn run(&self, args: &[String], env: &[(&str, &str)]) -> std::io::Result<Ran>;
-    /// Runs `docker start -a -i <name>` as a child whose stdin apid holds: the container runs while it is open.
-    fn start_attached(&self, name: &str) -> std::io::Result<Child>;
+/// The arguments for `uv tool run` of a pinned PyPI package: its command (`entry`, default the package name) with
+/// the server's own arguments.
+pub fn uv_run_args(name: &str, version: &str, entry: Option<&str>, args: &[String]) -> Vec<String> {
+    let mut out = vec![
+        "tool".to_string(),
+        "run".to_string(),
+        "--from".to_string(),
+        format!("{name}=={version}"),
+        entry.unwrap_or(name).to_string(),
+    ];
+    out.extend(args.iter().cloned());
+    out
 }
 
-/// The outcome of one docker command.
-#[derive(Debug, Clone, Default)]
-pub struct Ran {
-    pub ok: bool,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-/// The real docker client.
-pub struct SystemDocker;
-
-impl Docker for SystemDocker {
-    fn start_attached(&self, name: &str) -> std::io::Result<Child> {
-        Command::new("docker")
-            .args(["start", "-a", "-i", name])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
+/// The script an installed npm package runs: the `bin` its `package.json` names. A package with several bins
+/// must name the one that matches the package, or be given one.
+pub fn npm_bin(package_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let text = std::fs::read_to_string(package_dir.join("package.json"))
+        .map_err(|e| format!("the package {name} has no package.json: {e}"))?;
+    let json: Value = serde_json::from_str(&text).map_err(|e| format!("bad package.json: {e}"))?;
+    let bin = match json.get("bin") {
+        Some(Value::String(path)) => path.clone(),
+        Some(Value::Object(map)) => {
+            let plain = name.rsplit('/').next().unwrap_or(name);
+            let picked = match map.len() {
+                1 => map.values().next(),
+                _ => map.get(plain),
+            };
+            picked
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("the package {name} names no single bin"))?
+        }
+        _ => return Err(format!("the package {name} names no bin")),
+    };
+    let path = Path::new(&bin);
+    if path.is_absolute() || path.components().any(|c| c.as_os_str() == "..") {
+        return Err(format!("the package {name} names a bin outside itself"));
     }
+    Ok(package_dir.join(path))
+}
 
-    fn run(&self, args: &[String], env: &[(&str, &str)]) -> std::io::Result<Ran> {
-        let out = Command::new("docker")
-            .args(args)
-            .envs(env.iter().copied())
-            .output()?;
-        Ok(Ran {
-            ok: out.status.success(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        })
+/// Runs a sandboxed process to its end. Its stdout is drained and its stderr's last lines kept, so a failure can
+/// say what it printed. It is killed at `timeout`.
+pub fn run_to_end(launcher: &dyn Launcher, spec: &Spec, timeout: Duration) -> Result<(), String> {
+    let mut child = launcher.launch(spec)?;
+    drop(child.stdin());
+    if let Some(mut out) = child.stdout() {
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut out, &mut std::io::sink());
+        });
     }
-}
-
-fn daemon_down(stderr: &str) -> bool {
-    stderr.contains("Cannot connect to the Docker daemon")
-        || stderr.contains("Is the docker daemon running")
-}
-
-fn first_line(text: &str) -> String {
-    text.lines().next().unwrap_or("").trim().to_string()
-}
-
-/// What `docker network inspect` found: the network's line, or nothing.
-enum Found {
-    Line(String),
-    Absent,
-}
-
-fn inspect(docker: &dyn Docker) -> Result<Found, String> {
-    let ran = docker
-        .run(&network_inspect_args(), &[])
-        .map_err(|_| NO_DOCKER.to_string())?;
-    if ran.ok {
-        Ok(Found::Line(ran.stdout.trim().to_string()))
-    } else if daemon_down(&ran.stderr) {
-        Err(NO_DAEMON.to_string())
-    } else {
-        Ok(Found::Absent)
-    }
-}
-
-/// Makes the apz-mcp network if it is missing, then checks it is internal with the fixed subnet. Returns the
-/// gateway address. The gateway is not yet checked on the host: the proxy binds it only after this succeeds
-/// (see `egress::start_gateway`).
-pub fn ensure_network(docker: &dyn Docker) -> Result<Ipv4Addr, String> {
-    let line = match inspect(docker)? {
-        Found::Line(line) => line,
-        Found::Absent => {
-            let created = docker
-                .run(&network_create_args(), &[])
-                .map_err(|_| NO_DOCKER.to_string())?;
-            if !created.ok {
-                return Err(if daemon_down(&created.stderr) {
-                    NO_DAEMON.to_string()
-                } else {
-                    format!(
-                        "the {NETWORK} network could not be created ({}); remote (http) servers still work",
-                        first_line(&created.stderr)
-                    )
-                });
-            }
-            match inspect(docker)? {
-                Found::Line(line) => line,
-                Found::Absent => {
-                    return Err(format!(
-                        "the {NETWORK} network was created but cannot be found; remote (http) servers still work"
-                    ));
+    let tail = child.stderr().map(|mut err| {
+        std::thread::spawn(move || {
+            let mut kept: VecDeque<u8> = VecDeque::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = err.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                for byte in &buf[..n] {
+                    if kept.len() == TAIL_BYTES {
+                        kept.pop_front();
+                    }
+                    kept.push_back(*byte);
                 }
             }
+            String::from_utf8_lossy(&kept.into_iter().collect::<Vec<u8>>()).into_owned()
+        })
+    });
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let text = tail.and_then(|t| t.join().ok()).unwrap_or_default();
+                if status.success() {
+                    return Ok(());
+                }
+                let last = text
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .trim();
+                return Err(if last.is_empty() {
+                    format!("the install exited with {status}")
+                } else {
+                    format!("the install exited with {status}: {last}")
+                });
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "the install did not finish in {} s",
+                    timeout.as_secs()
+                ));
+            }
+            Err(e) => return Err(format!("cannot wait for the install: {e}")),
         }
-    };
-    let mut fields = line.split_whitespace();
-    let internal = fields.next() == Some("true");
-    let subnet = fields.next();
-    let gateway = fields.next().and_then(|g| g.parse::<Ipv4Addr>().ok());
-    if !internal {
-        return Err(format!(
-            "the {NETWORK} network exists but is not --internal; run `docker network rm {NETWORK}` and try again; remote (http) servers still work"
-        ));
-    }
-    if subnet != Some(SUBNET) {
-        return Err(format!(
-            "the {NETWORK} network has subnet {}, apid needs {SUBNET}; run `docker network rm {NETWORK}` and try again; remote (http) servers still work",
-            subnet.unwrap_or("none")
-        ));
-    }
-    gateway.ok_or_else(|| format!("the {NETWORK} network has no gateway; run `docker network rm {NETWORK}` and try again; remote (http) servers still work"))
-}
-
-/// Removes a server's storage volume (`DELETE /v1/mcp/servers/{id}?purge=1`).
-pub fn purge_volume(server: &str) -> Result<(), String> {
-    let ran = SystemDocker
-        .run(&volume_remove_args(server), &[])
-        .map_err(|_| NO_DOCKER.to_string())?;
-    if ran.ok {
-        Ok(())
-    } else {
-        Err(first_line(&ran.stderr))
-    }
-}
-
-/// Runs the server in a container through the `docker` client.
-pub struct DockerLauncher;
-
-impl Launcher for DockerLauncher {
-    fn launch(&self, spec: &LaunchSpec) -> Result<Child, String> {
-        Command::new("docker")
-            .args(docker_args(spec))
-            .env_clear()
-            .envs(child_env(spec))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("cannot start docker: {e}"))
-    }
-}
-
-/// Runs `spec.image` as a plain process with `spec.command` as its arguments. Tests only: no container.
-#[cfg(test)]
-pub struct PlainLauncher;
-
-#[cfg(test)]
-impl Launcher for PlainLauncher {
-    fn launch(&self, spec: &LaunchSpec) -> Result<Child, String> {
-        // Under the target's runner when cargo has one (an arm64 fixture on the x86_64 CI host).
-        apz_os::runner::command(std::path::Path::new(&spec.image))
-            .args(&spec.command)
-            .env_clear()
-            .envs(spec.env.iter().cloned())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("cannot start {}: {e}", spec.image))
     }
 }
 
@@ -368,24 +401,24 @@ pub(crate) fn read_line_capped(
 /// The stdio transport: writes JSON lines to the child's stdin, reads its stdout on a thread, and gives
 /// each stderr line to `on_stderr`.
 pub struct StdioTransport {
-    child: Child,
-    stdin: Option<ChildStdin>,
+    child: Box<dyn Child>,
+    stdin: Option<Box<dyn Write + Send>>,
     lines: Receiver<Result<String, ()>>,
     closed: bool,
-    /// The container's address, freed when the transport drops.
+    /// The proxy credential the process holds, freed when the transport drops.
     _lease: Option<Lease>,
 }
 
 impl StdioTransport {
-    /// Takes over a started child. `on_stderr` gets every stderr line, as the child wrote it.
+    /// Takes over a started process. `on_stderr` gets every stderr line, as the child wrote it.
     pub fn new(
-        mut child: Child,
+        mut child: Box<dyn Child>,
         on_stderr: Arc<dyn Fn(String) + Send + Sync>,
         lease: Option<Lease>,
     ) -> Result<StdioTransport, String> {
-        let stdin = child.stdin.take().ok_or("no stdin")?;
-        let stdout = child.stdout.take().ok_or("no stdout")?;
-        let stderr = child.stderr.take().ok_or("no stderr")?;
+        let stdin = child.stdin().ok_or("no stdin")?;
+        let stdout = child.stdout().ok_or("no stdout")?;
+        let stderr = child.stderr().ok_or("no stderr")?;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -465,7 +498,7 @@ impl Transport for StdioTransport {
     }
 
     fn alive(&mut self) -> bool {
-        !self.closed && matches!(self.child.try_wait(), Ok(None))
+        !self.closed && matches!(self.child.try_wait(), Ok(false))
     }
 
     fn close(&mut self) {
@@ -496,72 +529,6 @@ pub fn push_capped<T>(lines: &mut VecDeque<T>, item: T, cap: usize) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-
-    fn spec() -> LaunchSpec {
-        LaunchSpec {
-            server: "github".into(),
-            image: "ghcr.io/github/github-mcp-server".into(),
-            command: vec!["stdio".into()],
-            workdir: None,
-            env: vec![(
-                "GITHUB_PERSONAL_ACCESS_TOKEN".into(),
-                "SENTINEL-TOKEN-7731".into(),
-            )],
-            ip: None,
-            volume: None,
-        }
-    }
-
-    #[test]
-    fn docker_argv_has_the_hardened_flags_in_order() {
-        let args = docker_args(&spec());
-        let joined = args.join(" ");
-        assert!(joined.starts_with(
-            "run --rm -i --init --read-only --tmpfs /tmp:size=64m --cap-drop ALL --security-opt no-new-privileges \
-             --user 65534:65534 --memory 512m --cpus 1 --pids-limit 256 --network apz-mcp"
-        ));
-        assert!(joined.ends_with("ghcr.io/github/github-mcp-server stdio"));
-    }
-
-    #[test]
-    fn secrets_are_named_in_argv_and_never_valued() {
-        let args = docker_args(&spec());
-        assert!(
-            args.windows(2)
-                .any(|w| w[0] == "-e" && w[1] == "GITHUB_PERSONAL_ACCESS_TOKEN")
-        );
-        assert!(!args.iter().any(|a| a.contains("SENTINEL")));
-    }
-
-    #[test]
-    fn the_child_env_carries_the_value_and_no_other_apid_variable() {
-        let env = child_env(&spec());
-        assert!(
-            env.iter()
-                .any(|(k, v)| k == "GITHUB_PERSONAL_ACCESS_TOKEN" && v == "SENTINEL-TOKEN-7731")
-        );
-        assert!(
-            env.iter()
-                .all(|(k, _)| PASSTHROUGH.contains(&k.as_str())
-                    || k == "GITHUB_PERSONAL_ACCESS_TOKEN")
-        );
-    }
-
-    #[test]
-    fn workdir_becomes_dash_w_before_the_image() {
-        let mut with_dir = spec();
-        with_dir.workdir = Some("/workspace".into());
-        let args = docker_args(&with_dir);
-        let at = args.iter().position(|a| a == "-w").unwrap();
-        assert_eq!(args[at + 1], "/workspace");
-        assert!(
-            at < args
-                .iter()
-                .position(|a| a == "ghcr.io/github/github-mcp-server")
-                .unwrap()
-        );
-    }
 
     #[test]
     fn a_capped_line_reader_splits_lines_and_refuses_an_endless_one() {
@@ -580,183 +547,96 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_network_is_internal_and_has_the_fixed_subnet_and_gateway() {
-        let create = network_create_args().join(" ");
-        assert_eq!(
-            create,
-            "network create --internal --driver bridge --subnet 172.29.250.0/24 --gateway 172.29.250.1 apz-mcp"
-        );
-        assert!(network_inspect_args().join(" ").ends_with(" apz-mcp"));
-    }
-
-    #[test]
-    fn a_container_gets_its_address_and_its_volume_and_no_host_path() {
-        let mut with = spec();
-        with.ip = Some(Ipv4Addr::new(172, 29, 250, 7));
-        with.volume = Some("apz-mcp-memory".into());
-        let args = docker_args(&with);
-        let at = args.iter().position(|a| a == "--ip").unwrap();
-        assert_eq!(args[at + 1], "172.29.250.7");
+    fn a_server_keeps_its_directories_under_its_own_root() {
+        let layout = Layout::new(Path::new("/state"), "github");
+        assert_eq!(layout.root, PathBuf::from("/state/mcp/github"));
+        assert_eq!(layout.data, PathBuf::from("/state/mcp/github/data"));
         assert!(
-            args.iter()
-                .any(|a| a == "type=volume,source=apz-mcp-memory,target=/data")
-        );
-        assert!(
-            !args
+            layout
+                .writable()
                 .iter()
-                .any(|a| a.starts_with("/") && a != "/tmp:size=64m"),
-            "{args:?}"
+                .all(|p| p.starts_with(&layout.root))
         );
+        assert!(!layout.writable().contains(&layout.pkg));
     }
 
     #[test]
-    fn the_purge_removes_the_named_volume_only() {
+    fn npm_installs_a_pinned_package_without_scripts_and_names_its_bin() {
+        let args = npm_install_args(
+            Path::new("/rt/node/npm-cli.js"),
+            Path::new("/state/mcp/memory/pkg"),
+            "@modelcontextprotocol/server-memory",
+            "2.0.0",
+        );
+        assert_eq!(args[0], "/rt/node/npm-cli.js");
+        assert!(args.contains(&"--ignore-scripts".to_string()));
         assert_eq!(
-            volume_remove_args("memory"),
-            ["volume", "rm", "-f", "apz-mcp-memory"]
+            args.last().unwrap(),
+            "@modelcontextprotocol/server-memory@2.0.0"
         );
-    }
-
-    fn ran(ok: bool, stdout: &str, stderr: &str) -> std::io::Result<Ran> {
-        Ok(Ran {
-            ok,
-            stdout: stdout.into(),
-            stderr: stderr.into(),
-        })
+        let dir = std::env::temp_dir().join(format!("apz-npm-bin-{}", std::process::id()));
+        let pkg = dir.join("node_modules/@modelcontextprotocol/server-memory");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("package.json"),
+            r#"{"name":"x","bin":{"mcp-server-memory":"dist/index.js"}}"#,
+        )
+        .unwrap();
+        let bin = npm_bin(&pkg, "@modelcontextprotocol/server-memory").unwrap();
+        assert_eq!(bin, pkg.join("dist/index.js"));
+        std::fs::write(pkg.join("package.json"), r#"{"bin":"../escape.js"}"#).unwrap();
+        assert!(npm_bin(&pkg, "x").unwrap_err().contains("outside itself"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn a_missing_docker_or_an_uncreatable_network_gives_one_actionable_line() {
-        // A missing or unreachable docker gives one actionable line.
-        {
-            let missing = MockDocker::new(Default::default(), |_: &[String]| {
-                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
-            });
-            assert_eq!(ensure_network(&missing).unwrap_err(), NO_DOCKER);
-            assert!(
-                NO_DOCKER.contains("install Docker")
-                    && NO_DOCKER.contains("remote (http) servers still work")
-            );
-            let unreachable = MockDocker::new(Default::default(), |_: &[String]| {
-                ran(
-                    false,
-                    "",
-                    "Cannot connect to the Docker daemon at unix:///var/run/docker.sock.",
-                )
-            });
-            assert_eq!(ensure_network(&unreachable).unwrap_err(), NO_DAEMON);
-        }
-        // A network that cannot be created names docker's reason and no socket error.
-        {
-            let docker = MockDocker::new(Default::default(), |args: &[String]| {
-                if args.get(1).map(String::as_str) == Some("create") {
-                    ran(
-                        false,
-                        "",
-                        "Error response from daemon: permission denied while trying to connect\nmore",
-                    )
-                } else {
-                    ran(false, "", "Error: No such network: apz-mcp")
-                }
-            });
-            let err = ensure_network(&docker).unwrap_err();
-            assert!(
-                err.contains("could not be created") && err.contains("permission denied"),
-                "{err}"
-            );
-            assert!(!err.contains("os error") && !err.contains("\n"), "{err}");
-        }
-    }
-
-    #[test]
-    fn an_existing_network_must_be_internal_with_the_fixed_subnet() {
-        let not_internal = MockDocker::new(Default::default(), |_: &[String]| {
-            ran(true, "false 172.29.250.0/24 172.29.250.1", "")
-        });
-        assert!(
-            ensure_network(&not_internal)
-                .unwrap_err()
-                .contains("not --internal")
+    fn uv_runs_the_pinned_version_of_its_entry() {
+        assert_eq!(
+            uv_run_args("mcp-server-time", "2026.10.19", None, &[]),
+            [
+                "tool",
+                "run",
+                "--from",
+                "mcp-server-time==2026.10.19",
+                "mcp-server-time"
+            ]
         );
-        let other_subnet = MockDocker::new(Default::default(), |_: &[String]| {
-            ran(true, "true 10.9.0.0/24 10.9.0.1", "")
-        });
-        assert!(
-            ensure_network(&other_subnet)
-                .unwrap_err()
-                .contains("subnet 10.9.0.0/24")
+        assert_eq!(
+            uv_run_args(
+                "mcp-server-time",
+                "2026.10.19",
+                Some("other"),
+                &["--local".into()]
+            ),
+            [
+                "tool",
+                "run",
+                "--from",
+                "mcp-server-time==2026.10.19",
+                "other",
+                "--local"
+            ]
         );
     }
 
     #[test]
-    fn a_created_network_is_inspected_again_before_its_gateway_is_used() {
-        let created = Arc::new(Mutex::new(false));
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let flag = Arc::clone(&created);
-        let docker = MockDocker::new(Arc::clone(&log), move |args: &[String]| {
-            if args.get(1).map(String::as_str) == Some("create") {
-                *flag.lock().unwrap() = true;
-                ran(true, "apz-mcp", "")
-            } else if *flag.lock().unwrap() {
-                ran(true, "true 172.29.250.0/24 172.29.250.1", "")
-            } else {
-                ran(false, "", "Error: No such network: apz-mcp")
-            }
-        });
-        assert_eq!(ensure_network(&docker).unwrap(), GATEWAY);
-        let calls = log.lock().unwrap().clone();
-        assert_eq!(calls.len(), 3, "{calls:?}");
-        assert!(
-            calls[0].starts_with("network inspect")
-                && calls[1].starts_with("network create")
-                && calls[2].starts_with("network inspect")
+    fn the_base_env_points_home_and_temp_into_the_server_and_proxies_the_network() {
+        let layout = Layout::new(Path::new("/state"), "fetch");
+        let env = base_env(
+            &layout,
+            &[PathBuf::from("/rt/node/bin")],
+            Some("http://apz:t@127.0.0.1:19128"),
         );
-    }
-
-    /// A docker client that answers each command through a closure, and logs each command line. Starting the
-    /// relay runs a stand-in child that reports `ready` and then waits on its stdin.
-    pub(crate) struct MockDocker {
-        pub(crate) log: Arc<Mutex<Vec<String>>>,
-        answer: Box<dyn Fn(&[String]) -> std::io::Result<Ran> + Send + Sync>,
-    }
-
-    impl MockDocker {
-        pub(crate) fn new(
-            log: Arc<Mutex<Vec<String>>>,
-            answer: impl Fn(&[String]) -> std::io::Result<Ran> + Send + Sync + 'static,
-        ) -> MockDocker {
-            MockDocker {
-                log,
-                answer: Box::new(answer),
-            }
-        }
-
-        /// Every command succeeds, and nothing is logged anywhere that matters.
-        pub(crate) fn silent() -> MockDocker {
-            MockDocker::new(Default::default(), |_: &[String]| {
-                Ok(Ran {
-                    ok: true,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                })
-            })
-        }
-    }
-
-    impl Docker for MockDocker {
-        fn run(&self, args: &[String], _env: &[(&str, &str)]) -> std::io::Result<Ran> {
-            self.log.lock().unwrap().push(args.join(" "));
-            (self.answer)(args)
-        }
-
-        fn start_attached(&self, name: &str) -> std::io::Result<Child> {
-            self.log.lock().unwrap().push(format!("start -a -i {name}"));
-            Command::new("sh")
-                .args(["-c", "echo ready; exec cat"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-        }
+        let get = |k: &str| {
+            env.iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.clone())
+        };
+        let home = Path::new("/state").join("mcp").join("fetch").join("home");
+        assert_eq!(get("HOME").unwrap(), home.display().to_string());
+        assert!(get("PATH").unwrap().starts_with("/rt/node/bin"));
+        assert_eq!(get("HTTPS_PROXY").unwrap(), "http://apz:t@127.0.0.1:19128");
+        let offline = base_env(&layout, &[], None);
+        assert!(!offline.iter().any(|(k, _)| k == "HTTPS_PROXY"));
     }
 }

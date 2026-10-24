@@ -12,9 +12,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::history::{Connection, RepoRow, Tab};
-use crate::console::Ctx;
 use crate::console::client::{self, Client, enc};
 use crate::console::ui::{self, Kind, Tone};
+use crate::console::{Ctx, roles};
 use crate::theme;
 
 // ---- Data (the hub's answers) -------------------------------------------------------------------------------------
@@ -62,7 +62,6 @@ pub struct Key {
 #[serde(default)]
 pub struct Holder {
     pub actor: Actor,
-    pub name: Option<String>,
 }
 
 /// Who signed or did a thing: the owner, the hub, or an agent by its cid.
@@ -136,12 +135,12 @@ pub struct Commit {
     pub files: u64,
 }
 
-/// An agent's name by its cid (`GET /v1/agents`).
+/// An agent's cid and role (`GET /v1/agents`): its label is its role and its cid.
 #[derive(Deserialize)]
-struct AgentName {
+struct AgentRole {
     cid: u64,
     #[serde(default)]
-    name: String,
+    role: String,
 }
 
 /// What a load fetched for the tab it answers.
@@ -150,8 +149,8 @@ pub struct Data {
     queue: Queue,
     keys: Keys,
     ops: Vec<Op>,
-    /// The agents' names by cid; an agent without a name shows as `agent N`.
-    names: BTreeMap<u64, String>,
+    /// The agents' labels by cid; an agent the list does not have shows as `agent #N`.
+    labels: BTreeMap<u64, String>,
 }
 
 /// Fetches what one of the four tabs shows (the others fetch nothing here).
@@ -163,25 +162,24 @@ pub fn fetch(client: &Client, repo: &str, tab: Tab) -> Result<Data, String> {
         }
         Tab::Keys => {
             data.keys = client.get("/v1/weft/keys")?;
-            data.names = names(client);
+            data.labels = labels(client);
         }
         Tab::Ops => {
             data.ops = client.get::<OpsList>("/v1/weft/ops?limit=200")?.ops;
-            data.names = names(client);
+            data.labels = labels(client);
         }
         Tab::Changes | Tab::Releases | Tab::Sync => {}
     }
     Ok(data)
 }
 
-/// The agents' names: a missing list leaves the names out, and each agent shows as `agent N` until it has one.
-fn names(client: &Client) -> BTreeMap<u64, String> {
+/// The agents' labels: a missing list leaves them out, and each agent shows as `agent #N` until the list has it.
+fn labels(client: &Client) -> BTreeMap<u64, String> {
     client
-        .get::<Vec<AgentName>>("/v1/agents")
+        .get::<Vec<AgentRole>>("/v1/agents")
         .unwrap_or_default()
         .into_iter()
-        .filter(|a| !a.name.trim().is_empty())
-        .map(|a| (a.cid, a.name))
+        .map(|a| (a.cid, roles::agent_label(&a.role, a.cid)))
         .collect()
 }
 
@@ -640,12 +638,7 @@ fn keys_view<'a>(ui: &'a State, data: &'a Data) -> Element<'a, Msg> {
             let revoked = k.revoked_seq.is_some();
             let ink = if revoked { p.ink_3 } else { p.ink };
             let (kind, tone) = key_kind(&k.holder.actor.kind);
-            let holder = k
-                .holder
-                .name
-                .clone()
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| actor_name(&k.holder.actor, &data.names));
+            let holder = actor_name(&k.holder.actor, &data.labels);
             let signs = if k.caps.is_empty() {
                 "—".to_string()
             } else {
@@ -707,7 +700,7 @@ fn keys_view<'a>(ui: &'a State, data: &'a Data) -> Element<'a, Msg> {
     .align_y(Alignment::End);
     let mut verify_items: Vec<Element<'a, Msg>> = vec![verify_row.into()];
     if let Some(v) = &ui.verify {
-        verify_items.extend(verify_view(v, &data.names));
+        verify_items.extend(verify_view(v, &data.labels));
     }
     let verify_panel = ui::card(
         "Verify a signature",
@@ -718,7 +711,7 @@ fn keys_view<'a>(ui: &'a State, data: &'a Data) -> Element<'a, Msg> {
 }
 
 /// What the hub signed under a subject, record by record, each walked to the owner key.
-fn verify_view<'a>(v: &'a Verify, names: &BTreeMap<u64, String>) -> Vec<Element<'a, Msg>> {
+fn verify_view<'a>(v: &'a Verify, labels: &BTreeMap<u64, String>) -> Vec<Element<'a, Msg>> {
     let p = theme::palette();
     let head = row![
         ui::badge_dot(
@@ -751,7 +744,7 @@ fn verify_view<'a>(v: &'a Verify, names: &BTreeMap<u64, String>) -> Vec<Element<
             plain(vec![
                 ui::mono(r.seq.to_string(), 12.0, p.ink).into(),
                 ui::sans(r.kind.clone(), 13.0, p.ink).into(),
-                ui::sans(signer_name(&r.actor, names), 13.0, p.ink).into(),
+                ui::sans(signer_name(&r.actor, labels), 13.0, p.ink).into(),
                 ui::mono(r.key.chars().take(8).collect::<String>(), 12.0, p.ink).into(),
                 ui::mono(r.chain.join(" → "), 11.0, p.ink_2).into(),
                 ui::sans(if r.via_console { "Yes" } else { "No" }, 13.0, p.ink).into(),
@@ -994,7 +987,7 @@ fn ops_view<'a>(ui: &'a State, data: &'a Data) -> Element<'a, Msg> {
             .map(|o| {
                 plain(vec![
                     ui::sans(ago(o.at_ms), 13.0, p.ink).into(),
-                    ui::sans(actor_name(&o.actor, &data.names), 13.0, p.ink).into(),
+                    ui::sans(actor_name(&o.actor, &data.labels), 13.0, p.ink).into(),
                     ui::badge(&o.kind, op_tone(op_group(&o.kind))),
                     ui::prose(o.summary.clone()).size(13.0).color(p.ink).into(),
                 ])
@@ -1042,35 +1035,35 @@ fn op_tone(group: &str) -> Tone {
 
 // ---- Names and times ----------------------------------------------------------------------------------------------
 
-/// A hub actor as a name: the owner and the hub keep their words, an agent is its name.
-fn actor_name(a: &Actor, names: &BTreeMap<u64, String>) -> String {
+/// A hub actor as a name: the owner and the hub keep their words, an agent is its label.
+fn actor_name(a: &Actor, labels: &BTreeMap<u64, String>) -> String {
     match a.kind.as_str() {
         "owner" => "Owner".into(),
         "hub" => "Hub".into(),
         _ => match a.cid {
             None => a.kind.clone(),
-            Some(cid) => names
+            Some(cid) => labels
                 .get(&cid)
                 .cloned()
-                .unwrap_or_else(|| format!("agent {cid}")),
+                .unwrap_or_else(|| roles::agent_label("", cid)),
         },
     }
 }
 
-/// A signer of a record as a name: `agent:301` is the agent's name; the owner and the hub keep their words.
-fn signer_name(label: &str, names: &BTreeMap<u64, String>) -> String {
-    match label {
+/// A signer of a record as a name: `agent:301` is the agent's label; the owner and the hub keep their words.
+fn signer_name(signer: &str, labels: &BTreeMap<u64, String>) -> String {
+    match signer {
         "owner" => "Owner".into(),
         "hub" => "Hub".into(),
-        _ => match label
+        _ => match signer
             .strip_prefix("agent:")
             .and_then(|n| n.parse::<u64>().ok())
         {
-            Some(cid) => names
+            Some(cid) => labels
                 .get(&cid)
                 .cloned()
-                .unwrap_or_else(|| format!("agent {cid}")),
-            None => label.to_string(),
+                .unwrap_or_else(|| roles::agent_label("", cid)),
+            None => signer.to_string(),
         },
     }
 }
@@ -1160,12 +1153,12 @@ mod tests {
     }
 
     #[test]
-    fn a_signer_is_named_by_its_agent() {
-        let mut names = BTreeMap::new();
-        names.insert(301, "Ada".to_string());
-        assert_eq!(signer_name("agent:301", &names), "Ada");
-        assert_eq!(signer_name("agent:9", &names), "agent 9");
-        assert_eq!(signer_name("hub", &names), "Hub");
+    fn a_signer_is_labelled_by_its_agent() {
+        let mut labels = BTreeMap::new();
+        labels.insert(301, "QA #301".to_string());
+        assert_eq!(signer_name("agent:301", &labels), "QA #301");
+        assert_eq!(signer_name("agent:9", &labels), "agent #9");
+        assert_eq!(signer_name("hub", &labels), "Hub");
     }
 
     #[test]

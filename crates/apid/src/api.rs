@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 
 use crate::agents::Status;
 use crate::state::App;
-use crate::{agents, decisions, events, internal, memory, plaza, providers, settings};
+use crate::{agents, decisions, events, internal, plaza, providers, settings};
 
 pub fn router() -> Router<App> {
     let router = Router::<App>::new()
@@ -78,6 +78,7 @@ pub fn router() -> Router<App> {
         })
         .doc(RouteDoc::new("Delete a warm template"));
     let router = events::routes(router);
+    let router = crate::work_routes::routes(router);
     let router = crate::acp::routes(router);
     let router = settings::routes(router);
     let router = providers::routes(router);
@@ -89,25 +90,22 @@ pub fn router() -> Router<App> {
     let router = plaza::routes(router);
     let router = crate::owner_board::routes(router);
     let router = internal::routes(router);
-    let router = crate::society::routes(router);
     let router = crate::connectors::routes(router);
     let router = crate::mcp::routes::routes(router);
     let router = crate::llm_proxy::routes(router);
     let router = crate::vendor_relay::routes(router);
     let router = crate::approvals::routes(router);
-    let router = crate::sanctions::routes(router);
     let router = crate::vault::routes::routes(router);
     let router = crate::hub_mcp::owner::routes(router);
     let router = crate::library::routes(router);
     let router = crate::deliverables::routes(router);
+    let router = crate::storage::routes(router);
     let router = crate::toolbox::routes(router);
     let router = crate::adopt::routes(router);
     let router = crate::projects::routes(router);
     let router = crate::maintenance::routes(router);
     let router = crate::environments::routes(router);
     let router = crate::project_files::routes(router);
-    let router = crate::membership::routes(router);
-    let router = crate::conversations::routes(router);
     let router = crate::drafts::routes(router);
     let router = crate::project_settings::routes(router);
     let router = crate::harness_control::routes(router);
@@ -145,23 +143,12 @@ pub fn router() -> Router<App> {
     let router = crate::node_link::routes(router);
     let router = crate::hub_auth::routes(router);
     let router = crate::hub_mcp::routes(router);
-    let router = memory::routes(router);
     let router = crate::prompts::routes::routes(router);
     // The import, GitHub and export paths first: `/v1/skills/export` must not match `/v1/skills/{id}`.
     let router = crate::skills::import::routes(router);
     let router = crate::skills::routes::routes(router);
     let router = crate::foundry::routes::routes(router);
     let router = crate::foundry::registry::routes(router);
-    // The species dealt to agents (`looks`): the list with counts, and the owner's choice of one.
-    let router = router
-        .get("/v1/robots/species", |app, _, _| {
-            crate::looks::species_list(app)
-        })
-        .doc(RouteDoc::new("List the robot species with counts"))
-        .route("PUT", "/v1/agents/{cid}/species", |app, req, p| {
-            crate::looks::set_species(app, req, p)
-        })
-        .doc(RouteDoc::new("Give an agent a robot species").errors(&[400, 404]));
     router
         .get("/", |app, req, _| start_page(app, req))
         .doc(RouteDoc::new("Serve the console's start page").errors(&[404]))
@@ -194,7 +181,9 @@ fn machines(app: &App) -> Response {
             &json!([{"id": HUB_MACHINE_ID, "name": "local", "kind": null, "reachable": false}]),
         )
     };
-    let Ok((200, machine)) = app.noded.get("/v1/machine") else {
+    // The latest probe round (probes.rs): a slow or stopped noded does not hold the list.
+    let probed = crate::probes::latest(app);
+    let Some(machine) = probed.machine.clone() else {
         return unreachable();
     };
     let runs = match app.noded.get("/v1/runs") {
@@ -219,16 +208,13 @@ fn machines(app: &App) -> Response {
     entry.insert("noded_port".into(), json!(app.noded.port));
     entry.insert("runs".into(), runs);
     entry.insert("agents".into(), json!(agents));
-    let stats = match app.noded.get("/v1/machine/stats") {
-        Ok((200, body)) => body,
-        _ => Value::Null,
-    };
-    entry.insert("stats".into(), stats);
+    entry.insert("stats".into(), probed.stats.clone().unwrap_or(Value::Null));
     Response::json(200, &json!([entry]))
 }
 
 /// `GET /v1/overview`: counts and health at a glance.
 pub(crate) fn overview_value(app: &App) -> Value {
+    let probed = crate::probes::latest(app);
     let agents = app.agents.list();
     let count = |s: Status| agents.iter().filter(|a| a.status == s).count();
     let mut tasks = serde_json::Map::new();
@@ -248,8 +234,8 @@ pub(crate) fn overview_value(app: &App) -> Value {
         "default_model": settings.default_model,
         "orchestrator_model": settings.orchestrator_model,
         "dev_models": app.settings.dev_models(),
-        "noded": app.noded.get("/v1/machine").map(|(s, _)| s == 200).unwrap_or(false),
-        "hub": app.hub.get("/healthz").map(|(s, _)| s == 200).unwrap_or(false),
+        "noded": probed.noded_up(),
+        "hub": probed.hub_up,
     })
 }
 

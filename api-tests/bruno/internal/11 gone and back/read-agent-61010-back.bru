@@ -19,7 +19,7 @@ tests {
   test("the agent reads back as offline", function () {
     expect(res.getBody().status).to.equal("offline");
   });
-  test("the agent is on its project", function () {
-    expect(res.getBody().project).to.equal(bru.getVar("int_proj_gon"));
+  test("no session, so no project", function () {
+    expect(res.getBody().project).to.be.null;
   });
 }

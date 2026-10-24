@@ -1,5 +1,5 @@
 meta {
-  name: Refuse a file given both its bytes and its sha256
+  name: Refuse a file given both its bytes and its hash
   type: http
   seq: 7
 }
@@ -21,7 +21,7 @@ body:json {
       {
         "path": "reference.md",
         "content_b64": "IyBSZWZlcmVuY2UK",
-        "sha256": "{{lifeRefSha}}"
+        "hash": "{{lifeRefHash}}"
       }
     ],
     "note": "more",

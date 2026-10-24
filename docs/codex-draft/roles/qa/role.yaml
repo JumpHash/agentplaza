@@ -1,7 +1,6 @@
 # Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
 role: qa
 variant: ''
-council_seat: false
 permits:
 - statutes/S-010
 model:
@@ -26,7 +25,7 @@ tools:
 outputs:
 - test-suite
 budget:
-  default_credits: 1500
+  default_budget: 1500
 compaction:
   trigger_fraction: 0.75
   keep_recent_turns: 10

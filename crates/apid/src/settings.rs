@@ -1,12 +1,12 @@
-//! Plaza settings and the owner's model policy (`settings.json`).
+//! Plaza settings and the owner's model policy: one document, kept in the hub's store (component `settings`).
 //!
 //! OWNER: slice "providers". Signatures used by other modules are marked
 //! `// contract` — keep them.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use apz_cache::Generations;
 use apz_gateway::ModelRef;
 use apz_http::{Response, RouteDoc, Router};
 use apz_plaza::social::{self, Prune};
@@ -36,11 +36,19 @@ pub fn tier_of(role: &str) -> Tier {
     }
 }
 
+/// Whether `role` works across projects without a session on one: only the orchestrator, which opens the projects
+/// and runs them.
+pub fn plaza_wide(role: &str) -> bool {
+    matches!(tier_of(role), Tier::Orchestrator)
+}
+
 /// The models each tier's list names (canonical `provider/model[@effort]`). The orchestrator may run
 /// only its list. Workers may run any model: their list is the presets offered first, plus the default.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
 pub struct ModelPolicy {
+    #[table(list)]
     pub orchestrator: Vec<String>,
+    #[table(list)]
     pub worker: Vec<String>,
 }
 
@@ -66,8 +74,8 @@ impl Default for ModelPolicy {
     }
 }
 
-/// Price per million tokens, in credits (1 credit = $0.001).
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+/// Price per million tokens, in US dollars.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, apz_store::Table)]
 pub struct Price {
     pub input: f64,
     pub output: f64,
@@ -94,14 +102,10 @@ pub struct Settings {
     /// Whether the hub checkpoints an agent's whole VM before an irreversible tool call runs (see
     /// `vm_snapshots.rs`). Off: only the owner's explicit checkpoints are taken.
     pub vm_auto_checkpoints: bool,
-    /// How much of the plaza's conversations and board is kept, and for how long.
+    /// How much of the plaza's board is kept, and for how long.
     pub retention: Retention,
-    /// What the plaza does to an agent that breaks a law (see `sanctions.rs`).
-    pub sanctions: Sanctions,
     /// How the plaza's laws are applied (see `laws.rs`).
     pub laws: LawsSettings,
-    /// How payments and model calls are gated and charged (see `payments.rs`, `llm_proxy.rs`).
-    pub payments: Payments,
     /// The Lab's settings (`docs/design/foundry.md`, "Hugging Face").
     pub foundry: FoundrySettings,
     /// The owner's explicit confirmation that a contributor model (one that trains its provider's
@@ -161,12 +165,13 @@ pub const MAX_FAVOURITE_MODELS: usize = 200;
 
 /// The owner's pauses of the board's deliveries: the whole board, and the projects whose boards are
 /// paused. A paused board's posts are stored, and their mentions are not delivered until it resumes.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct BoardPauses {
     /// Whether the whole board is paused.
     pub all: bool,
     /// The projects whose boards are paused.
+    #[table(set)]
     pub projects: BTreeSet<String>,
 }
 
@@ -207,7 +212,7 @@ pub const DEFAULT_DOZE_IDLE_S: u32 = 0;
 pub const MAX_DOZE_IDLE_S: u32 = 86_400;
 
 /// A workstation's recording settings, as the hub's defaults hold them (the same fields as `StationSettings`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct RecordingDefaults {
     /// Whether a lease on the station is recorded.
@@ -233,7 +238,7 @@ impl Default for RecordingDefaults {
 }
 
 /// The Lab's settings. `hf_max_gb`: the most a Hugging Face import may download, in GiB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct FoundrySettings {
     pub hf_max_gb: u32,
@@ -260,9 +265,7 @@ impl Default for Settings {
             memory_autoscale: true,
             vm_auto_checkpoints: true,
             retention: Retention::default(),
-            sanctions: Sanctions::default(),
             laws: LawsSettings::default(),
-            payments: Payments::default(),
             foundry: FoundrySettings::default(),
             allow_training_models: false,
             review_timeout_minutes: DEFAULT_REVIEW_TIMEOUT_MINUTES,
@@ -283,63 +286,13 @@ impl Default for Settings {
     }
 }
 
-/// The most credits fines may take from one agent in seven days, and the most one fine may take
-/// (sanctions.yaml, `caps.max_fine_per_week`).
-pub const FINES_PER_WEEK_MAX: u64 = 1000;
-
-/// Sanctions for law violations, by the schedule in sanctions.yaml.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Sanctions {
-    /// Whether violations are sanctioned at all. Off: nothing is applied and no suspension holds.
-    pub enabled: bool,
-    /// Whether the schedule's fines are taken from agents' earnings.
-    pub fines: bool,
-    /// Whether probation and lockout refuse the offending tool for their duration.
-    pub suspensions: bool,
-    /// The most one fine may take, in credits (`0..=FINES_PER_WEEK_MAX`).
-    pub max_fine: u64,
-}
-
-impl Default for Sanctions {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            fines: true,
-            suspensions: true,
-            max_fine: 300,
-        }
-    }
-}
-
 /// How the laws are applied (`laws.rs`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct LawsSettings {
     /// Whether an operation that has permit laws is refused unless one of them allows it. Off: only
     /// forbids refuse, and a permit only allows.
     pub strict_permits: bool,
-}
-
-/// How payments and model calls are gated and charged. Any `u64` is a valid threshold, so
-/// there is nothing to refuse at save time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Payments {
-    /// A payment over this many credits waits for the owner's approval. `0` means every payment asks.
-    pub approve_over: u64,
-    /// Whether model calls are charged to the agent's task escrow (or its wallet when it has no
-    /// task), and refused when it cannot pay.
-    pub charge_models: bool,
-}
-
-impl Default for Payments {
-    fn default() -> Self {
-        Self {
-            approve_over: 500,
-            charge_models: true,
-        }
-    }
 }
 
 /// The fewest a retention count may be, so the plaza keeps a usable window.
@@ -351,19 +304,13 @@ pub const RETENTION_DAYS_MAX: u32 = 3650;
 
 // A retention count may never ask for more than the store holds.
 const _: () = assert!(RETENTION_MAX as usize <= social::MAX_POSTS);
-const _: () = assert!(RETENTION_MAX as usize <= social::MAX_CONVERSATIONS);
 
-/// What the plaza keeps of its conversations and board: a count of each (the
-/// oldest go first past it) and an age in days (`0` keeps them whatever their
-/// age). Logs are kept until these say otherwise; the store never refuses a new
-/// one for room.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What the plaza keeps of its board: a count of posts (the oldest go first past
+/// it) and an age in days (`0` keeps them whatever their age). The board is kept
+/// until these say otherwise; the store never refuses a new post for room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct Retention {
-    /// The most exchanges the conversation record keeps (`RETENTION_MIN..=RETENTION_MAX`).
-    pub conversations_max: u32,
-    /// Exchanges older than this many days go; `0` keeps them whatever their age.
-    pub conversations_days: u32,
     /// The most posts the board keeps (`RETENTION_MIN..=RETENTION_MAX`).
     pub posts_max: u32,
     /// Posts older than this many days go; `0` keeps them whatever their age.
@@ -377,8 +324,6 @@ pub struct Retention {
 impl Default for Retention {
     fn default() -> Self {
         Self {
-            conversations_max: 4096,
-            conversations_days: 30,
             posts_max: 1024,
             posts_days: 0,
             usage_calls_max: 20_000,
@@ -393,18 +338,167 @@ impl Retention {
         const DAY_MS: u64 = 86_400_000;
         let age = |days: u32| (days > 0).then(|| u64::from(days) * DAY_MS);
         Prune {
-            conversations_max: usize::try_from(self.conversations_max).unwrap_or(usize::MAX),
-            conversations_older_than_ms: age(self.conversations_days),
             posts_max: usize::try_from(self.posts_max).unwrap_or(usize::MAX),
             posts_older_than_ms: age(self.posts_days),
         }
     }
 }
 
+/// One role's shared volumes, as the store keeps them: a child list of the role's entry.
+#[derive(Debug, Clone, Default, PartialEq, apz_store::Table)]
+struct RoleVolumes {
+    #[table(list)]
+    volumes: Vec<String>,
+}
+
+/// The settings' document as the store holds it: the fields of [`Settings`], except that the sub-structs holding
+/// lists or sets are optional child tables (a plain struct cannot hold child tables) and the role volumes are a map
+/// to lists. [`From`] converts between the two.
+#[derive(Debug, Clone, apz_store::Table)]
+#[table(name = "settings")]
+struct SettingsRow {
+    default_model: String,
+    orchestrator_model: String,
+    #[table(map_value)]
+    role_models: BTreeMap<String, String>,
+    #[table(child)]
+    model_policy: Option<ModelPolicy>,
+    effort: Option<String>,
+    max_turns: u32,
+    max_tokens: u32,
+    #[table(list)]
+    fetch_block: Vec<String>,
+    #[table(map)]
+    prices: BTreeMap<String, Price>,
+    memory_autoscale: bool,
+    vm_auto_checkpoints: bool,
+    #[table(flatten)]
+    retention: Retention,
+    #[table(flatten)]
+    laws: LawsSettings,
+    #[table(flatten)]
+    foundry: FoundrySettings,
+    allow_training_models: bool,
+    review_timeout_minutes: u32,
+    #[table(flatten)]
+    workstation_recordings: RecordingDefaults,
+    #[table(child)]
+    board_pauses: Option<BoardPauses>,
+    #[table(list)]
+    engines_enabled: Vec<String>,
+    engines_mode: String,
+    acp_enabled: bool,
+    acp_write_back: bool,
+    acp_v2: bool,
+    idle_sleep_min: u32,
+    #[table(list)]
+    sleep_never_roles: Vec<String>,
+    doze_idle_s: u32,
+    #[table(map)]
+    role_volumes: BTreeMap<String, RoleVolumes>,
+    health_interval_s: u32,
+    #[table(list)]
+    favourite_models: Vec<String>,
+}
+
+impl From<&Settings> for SettingsRow {
+    fn from(s: &Settings) -> Self {
+        SettingsRow {
+            default_model: s.default_model.clone(),
+            orchestrator_model: s.orchestrator_model.clone(),
+            role_models: s.role_models.clone(),
+            model_policy: Some(s.model_policy.clone()),
+            effort: s.effort.clone(),
+            max_turns: s.max_turns,
+            max_tokens: s.max_tokens,
+            fetch_block: s.fetch_block.clone(),
+            prices: s.prices.clone(),
+            memory_autoscale: s.memory_autoscale,
+            vm_auto_checkpoints: s.vm_auto_checkpoints,
+            retention: s.retention,
+            laws: s.laws,
+            foundry: s.foundry,
+            allow_training_models: s.allow_training_models,
+            review_timeout_minutes: s.review_timeout_minutes,
+            workstation_recordings: s.workstation_recordings,
+            board_pauses: Some(s.board_pauses.clone()),
+            engines_enabled: s.engines_enabled.clone(),
+            engines_mode: s.engines_mode.clone(),
+            acp_enabled: s.acp_enabled,
+            acp_write_back: s.acp_write_back,
+            acp_v2: s.acp_v2,
+            idle_sleep_min: s.idle_sleep_min,
+            sleep_never_roles: s.sleep_never_roles.clone(),
+            doze_idle_s: s.doze_idle_s,
+            role_volumes: s
+                .role_volumes
+                .iter()
+                .map(|(role, volumes)| {
+                    (
+                        role.clone(),
+                        RoleVolumes {
+                            volumes: volumes.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            health_interval_s: s.health_interval_s,
+            favourite_models: s.favourite_models.clone(),
+        }
+    }
+}
+
+impl From<SettingsRow> for Settings {
+    /// A child every document has (the policy, the pauses) that is missing reads as its default.
+    fn from(r: SettingsRow) -> Self {
+        Settings {
+            default_model: r.default_model,
+            orchestrator_model: r.orchestrator_model,
+            role_models: r.role_models,
+            model_policy: r.model_policy.unwrap_or_default(),
+            effort: r.effort,
+            max_turns: r.max_turns,
+            max_tokens: r.max_tokens,
+            fetch_block: r.fetch_block,
+            prices: r.prices,
+            memory_autoscale: r.memory_autoscale,
+            vm_auto_checkpoints: r.vm_auto_checkpoints,
+            retention: r.retention,
+            laws: r.laws,
+            foundry: r.foundry,
+            allow_training_models: r.allow_training_models,
+            review_timeout_minutes: r.review_timeout_minutes,
+            workstation_recordings: r.workstation_recordings,
+            board_pauses: r.board_pauses.unwrap_or_default(),
+            engines_enabled: r.engines_enabled,
+            engines_mode: r.engines_mode,
+            acp_enabled: r.acp_enabled,
+            acp_write_back: r.acp_write_back,
+            acp_v2: r.acp_v2,
+            idle_sleep_min: r.idle_sleep_min,
+            sleep_never_roles: r.sleep_never_roles,
+            doze_idle_s: r.doze_idle_s,
+            role_volumes: r
+                .role_volumes
+                .into_iter()
+                .map(|(role, volumes)| (role, volumes.volumes))
+                .collect(),
+            health_interval_s: r.health_interval_s,
+            favourite_models: r.favourite_models,
+        }
+    }
+}
+
+/// The settings' tables.
+pub fn def() -> &'static apz_store::TableDef {
+    apz_store::root_def!(SettingsRow)
+}
+
 pub struct Store {
-    path: PathBuf,
     dev_models: bool,
     inner: Mutex<Settings>,
+    /// The hub's generations: a save bumps `settings`.
+    gens: Arc<Generations<String>>,
 }
 
 /// The model in canonical `provider/model[@effort]` form.
@@ -430,34 +524,45 @@ fn is_bare_host(host: &str) -> bool {
 }
 
 impl Store {
-    /// Loads `settings.json` (defaults on first start; dev defaults in dev mode).
-    pub fn load(state_dir: &Path, dev_models: bool) -> std::io::Result<Self> {
-        // contract
-        let path = state_dir.join("settings.json");
-        let loaded: Settings = match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(settings) => settings,
-                Err(e) => {
-                    eprintln!(
-                        "settings: {} is not valid settings JSON ({e}); using the defaults",
-                        path.display()
-                    );
-                    fresh(dev_models)
-                }
-            },
-            Err(_) => fresh(dev_models),
-        };
-        // A hand-edited file gets the same checks a save gets; what fails is repaired, and named.
-        let (settings, notes) = repair(loaded, dev_models);
-        for note in &notes {
-            eprintln!("settings: {} repaired on load: {note}", path.display());
-        }
-        crate::laws::global().set_strict(settings.laws.strict_permits);
-        Ok(Self {
-            path,
+    /// An empty store holding the defaults (the dev defaults in dev mode); [`Store::load`] fills it at start.
+    pub fn new(dev_models: bool) -> Self {
+        Self {
             dev_models,
-            inner: Mutex::new(settings),
-        })
+            inner: Mutex::new(fresh(dev_models)),
+            gens: Arc::default(),
+        }
+    }
+
+    /// Counts this store's saves in `gens` (the hub's generations).
+    pub fn with_generations(mut self, gens: Arc<Generations<String>>) -> Self {
+        self.gens = gens;
+        self
+    }
+
+    /// Replaces the settings with what the store holds (at start; the defaults when nothing is stored). A stored
+    /// value gets the same checks a save gets: what fails is repaired, and named.
+    pub fn load(
+        &self,
+        conn: &apz_store::rusqlite::Connection,
+    ) -> Result<(), apz_store::StoreError> {
+        let settings = match apz_store::table::load_one::<SettingsRow>(conn, def())? {
+            Some(row) => {
+                let (settings, notes) = repair(row.into(), self.dev_models);
+                for note in &notes {
+                    eprintln!("settings: repaired on load: {note}");
+                }
+                settings
+            }
+            None => fresh(self.dev_models),
+        };
+        crate::laws::global().set_strict(settings.laws.strict_permits);
+        *self.lock() = settings;
+        Ok(())
+    }
+
+    /// The settings as rows of the settings' tables (for the hub's store).
+    pub fn rows(&self) -> Result<apz_store::RowSet, apz_store::StoreError> {
+        apz_store::RowSet::one(def(), &SettingsRow::from(&self.get()))
     }
 
     pub fn get(&self) -> Settings {
@@ -480,13 +585,14 @@ impl Store {
         allowed_under(&self.get().model_policy, self.dev_models, tier, model)
     }
 
-    /// Validates `new`, writes `settings.json` atomically and replaces the
-    /// in-memory settings. Returns the saved value.
+    /// Validates `new` and replaces the settings with it (the store saves them). Returns the saved value.
     pub fn put(&self, mut new: Settings) -> Result<Settings, String> {
         self.check(&new)?;
         let mut guard = self.lock();
         new.board_pauses = guard.board_pauses.clone();
-        self.write(&mut guard, new)
+        let saved = install(&mut guard, new);
+        crate::sources::bump(&self.gens, crate::sources::SETTINGS);
+        Ok(saved)
     }
 
     /// Pauses (`on`) or resumes the deliveries of one project's board, or of the whole board (`project`
@@ -509,7 +615,8 @@ impl Store {
             }
         }
         let changed = next.board_pauses != before;
-        let saved = self.write(&mut guard, next)?;
+        let saved = install(&mut guard, next);
+        crate::sources::bump(&self.gens, crate::sources::SETTINGS);
         Ok((changed, saved.board_pauses))
     }
 
@@ -522,23 +629,6 @@ impl Store {
     /// The checks every saved settings value passes (`put` and `restore`).
     fn check(&self, new: &Settings) -> Result<(), String> {
         check_settings(new, self.dev_models)
-    }
-
-    /// Writes `settings.json` atomically and swaps the in-memory settings.
-    fn replace(&self, new: Settings) -> Result<Settings, String> {
-        let mut guard = self.lock();
-        self.write(&mut guard, new)
-    }
-
-    /// [`Store::replace`] with the lock already held: `guard` is the in-memory settings.
-    fn write(&self, guard: &mut Settings, new: Settings) -> Result<Settings, String> {
-        let bytes = serde_json::to_vec_pretty(&new).map_err(|e| e.to_string())?;
-        let tmp = self.path.with_file_name("settings.json.tmp");
-        std::fs::write(&tmp, &bytes).map_err(|e| format!("write settings: {e}"))?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| format!("replace settings: {e}"))?;
-        *guard = new.clone();
-        crate::laws::global().set_strict(new.laws.strict_permits);
-        Ok(new)
     }
 
     /// The model an agent of `role` runs: its own override, else the role's
@@ -737,7 +827,6 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
     }
     let retention = &new.retention;
     for (name, max) in [
-        ("conversations_max", retention.conversations_max),
         ("posts_max", retention.posts_max),
         ("usage_calls_max", retention.usage_calls_max),
     ] {
@@ -748,7 +837,6 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
         }
     }
     for (name, days) in [
-        ("conversations_days", retention.conversations_days),
         ("posts_days", retention.posts_days),
         ("usage_days", retention.usage_days),
     ] {
@@ -757,12 +845,6 @@ fn check_settings(new: &Settings, dev_models: bool) -> Result<(), String> {
                 "retention.{name} must be 0..={RETENTION_DAYS_MAX} (0 keeps everything), got {days}"
             ));
         }
-    }
-    if new.sanctions.max_fine > FINES_PER_WEEK_MAX {
-        return Err(format!(
-            "sanctions.max_fine must be 0..={FINES_PER_WEEK_MAX}, got {}",
-            new.sanctions.max_fine
-        ));
     }
     Ok(())
 }
@@ -984,20 +1066,6 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
     let count_ok = |v: u32| (RETENTION_MIN..=RETENTION_MAX).contains(&v);
     let days_ok = |v: u32| v <= RETENTION_DAYS_MAX;
     s.retention = Retention {
-        conversations_max: or_default(
-            &mut notes,
-            "retention.conversations_max",
-            r.conversations_max,
-            rd.conversations_max,
-            count_ok(r.conversations_max),
-        ),
-        conversations_days: or_default(
-            &mut notes,
-            "retention.conversations_days",
-            r.conversations_days,
-            rd.conversations_days,
-            days_ok(r.conversations_days),
-        ),
         posts_max: or_default(
             &mut notes,
             "retention.posts_max",
@@ -1027,13 +1095,6 @@ fn repair(mut s: Settings, dev_models: bool) -> (Settings, Vec<String>) {
             days_ok(r.usage_days),
         ),
     };
-    s.sanctions.max_fine = or_default(
-        &mut notes,
-        "sanctions.max_fine",
-        s.sanctions.max_fine,
-        d.sanctions.max_fine,
-        s.sanctions.max_fine <= FINES_PER_WEEK_MAX,
-    );
 
     if let Err(e) = check_settings(&s, dev_models) {
         notes.push(format!(
@@ -1076,19 +1137,11 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Save the hub's settings"))
 }
 
-impl Store {
-    /// The whole state as JSON, for Postgres (`crate::db`); "" when there is nothing to save.
-    pub fn snapshot(&self) -> String {
-        serde_json::to_string_pretty(&self.get()).unwrap_or_default()
-    }
-
-    /// Replaces the state with a [`Store::snapshot`]; a refusal changes nothing.
-    pub fn restore(&self, json: &str) -> Result<(), String> {
-        let new: Settings =
-            serde_json::from_str(json).map_err(|e| format!("bad settings snapshot: {e}"))?;
-        self.check(&new)?;
-        self.replace(new).map(|_| ())
-    }
+/// Installs `new` as the settings (`guard` is the locked in-memory settings) and applies its laws. Returns it.
+fn install(guard: &mut Settings, new: Settings) -> Settings {
+    *guard = new.clone();
+    crate::laws::global().set_strict(new.laws.strict_permits);
+    new
 }
 
 /// The most shared data volumes one agent mounts (noded's limit, `vmm::spawner::MAX_DATA_VOLUMES`).
@@ -1180,20 +1233,21 @@ mod tests {
         assert!(check_settings(&settings, false).is_err());
     }
 
-    /// A fresh, empty state directory under the system temp dir.
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("apz-settings-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// The store as a restart reads it back: its rows written to an in-memory database, then loaded into a new store.
+    fn reloaded(store: &Store, dev_models: bool) -> Store {
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        apz_store::table::replace(&conn, def(), &store.rows().unwrap()).unwrap();
+        let loaded = Store::new(dev_models);
+        loaded.load(&conn).unwrap();
+        loaded
     }
 
     #[test]
     fn allowed_follows_the_tier_rules() {
         // allowed_is_per_tier_and_canonical: each tier admits its own entries, names are canonical, and an unparseable name fails with the parser text.
         {
-            let dir = temp_dir("allowed");
-            let store = Store::load(&dir, false).unwrap();
+            let store = Store::new(false);
             // Worker tier: the effort-suffixed entry passes, the plain one does not.
             assert!(
                 store
@@ -1257,13 +1311,11 @@ mod tests {
             );
             // Unparseable names fail with the parser's text.
             assert!(store.allowed(Tier::Worker, "no-slash-here").is_err());
-            let _ = std::fs::remove_dir_all(&dir);
         }
 
         // the_orchestrator_is_restricted_and_workers_may_run_any_model: the orchestrator is held to its list, and workers may run any model.
         {
-            let dir = temp_dir("tier-rules");
-            let store = Store::load(&dir, false).unwrap();
+            let store = Store::new(false);
             // The orchestrator is held to its list, and the error names it.
             assert!(
                 store
@@ -1307,58 +1359,48 @@ mod tests {
             let mut open = Settings::default();
             open.model_policy.worker.clear();
             assert!(store.put(open).is_ok());
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
     #[test]
     fn dev_mode_allows_mock_and_defaults_to_it() {
-        let dir = temp_dir("dev");
-        let store = Store::load(&dir, true).unwrap();
+        let store = Store::new(true);
         assert!(store.allowed(Tier::Worker, "mock/agent").is_ok());
         assert!(store.allowed(Tier::Orchestrator, "anything/at-all").is_ok());
         let s = store.get();
         assert_eq!(s.default_model, "mock/agent");
         assert_eq!(s.orchestrator_model, "mock/agent");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn snapshot_round_trips_and_a_refusal_changes_nothing() {
-        let dir = temp_dir("snapshot");
-        let store = Store::load(&dir, false).unwrap();
+    fn rows_round_trip_and_a_refused_save_changes_nothing() {
+        let store = Store::new(false);
         let s = Settings {
             max_turns: 50,
             ..Settings::default()
         };
         store.put(s.clone()).unwrap();
-        let json = store.snapshot();
-
-        let other_dir = temp_dir("snapshot-other");
-        let other = Store::load(&other_dir, false).unwrap();
-        other.restore(&json).unwrap();
-        assert_eq!(other.get(), s);
-        assert_eq!(Store::load(&other_dir, false).unwrap().get(), s);
+        // A pause is kept by the store beside the saved settings; it comes back with them.
+        store.set_board_pause(Some("pr4"), true).unwrap();
+        let saved = store.get();
+        assert_eq!(saved.max_turns, 50);
+        assert_eq!(
+            reloaded(&store, false).get(),
+            saved,
+            "a restart reads back what was saved"
+        );
 
         let bad = Settings {
             max_turns: 0,
             ..Settings::default()
         };
-        assert!(
-            other
-                .restore(&serde_json::to_string(&bad).unwrap())
-                .is_err()
-        );
-        assert_eq!(other.get(), s);
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_dir_all(&other_dir);
+        assert!(store.put(bad).is_err());
+        assert_eq!(store.get(), saved);
     }
 
     #[test]
     fn put_rejects_bad_fetch_block_entries() {
-        let dir = temp_dir("fetch");
-        std::fs::create_dir_all(&dir).unwrap();
-        let store = Store::load(&dir, false).unwrap();
+        let store = Store::new(false);
         for bad in [
             "https://example.com",
             "example.com/path",
@@ -1378,13 +1420,11 @@ mod tests {
             ..Settings::default()
         };
         assert!(store.put(ok).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn put_validates_and_persists() {
-        let dir = temp_dir("persist");
-        let store = Store::load(&dir, false).unwrap();
+        let store = Store::new(false);
         // A worker default may be any model; an orchestrator model outside its list is refused.
         let any = Settings {
             default_model: "anthropic/claude-fable-5-1".into(),
@@ -1410,32 +1450,16 @@ mod tests {
         let saved = store.put(s.clone()).unwrap();
         assert_eq!(saved, s);
         assert_eq!(store.get(), s);
-        assert!(!dir.join("settings.json.tmp").exists());
-        // A fresh store reads the same values back from disk.
-        let reloaded = Store::load(&dir, false).unwrap();
-        assert_eq!(reloaded.get(), s);
-        let _ = std::fs::remove_dir_all(&dir);
+        // A fresh store reads the same values back from the store's rows.
+        assert_eq!(reloaded(&store, false).get(), s);
     }
 
     #[test]
     fn retention_is_validated_and_settings_saved_without_it_load_the_defaults() {
-        let dir = temp_dir("retention");
-        let store = Store::load(&dir, false).unwrap();
+        let store = Store::new(false);
         for bad in [
             Retention {
-                conversations_max: RETENTION_MIN - 1,
-                ..Retention::default()
-            },
-            Retention {
-                conversations_max: RETENTION_MAX + 1,
-                ..Retention::default()
-            },
-            Retention {
                 posts_max: 0,
-                ..Retention::default()
-            },
-            Retention {
-                conversations_days: RETENTION_DAYS_MAX + 1,
                 ..Retention::default()
             },
             Retention {
@@ -1451,8 +1475,6 @@ mod tests {
         }
         let ok = Settings {
             retention: Retention {
-                conversations_max: RETENTION_MIN,
-                conversations_days: 0,
                 posts_max: RETENTION_MAX,
                 posts_days: RETENTION_DAYS_MAX,
                 usage_calls_max: RETENTION_MIN,
@@ -1467,21 +1489,16 @@ mod tests {
         old.as_object_mut().unwrap().remove("retention");
         let loaded: Settings = serde_json::from_value(old).unwrap();
         assert_eq!(loaded.retention, Retention::default());
-        assert_eq!(loaded.retention.conversations_max, 4096);
 
-        // The default keeps a month of exchanges and every post until its count goes.
+        // The default keeps posts up to their count, whatever their age.
         let policy = Retention::default().policy();
-        assert_eq!(policy.conversations_max, 4096);
-        assert_eq!(policy.conversations_older_than_ms, Some(30 * 86_400_000));
         assert_eq!(policy.posts_max, 1024);
         assert_eq!(policy.posts_older_than_ms, None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_contributor_model_is_refused_as_a_default_or_role_model_until_confirmed() {
-        let dir = temp_dir("training");
-        let store = Store::load(&dir, false).unwrap();
+        let store = Store::new(false);
         assert!(!Settings::default().allow_training_models);
         // No default names a contributor model.
         assert!(!Settings::default().default_model.contains("contributor"));
@@ -1513,7 +1530,7 @@ mod tests {
         as_default.allow_training_models = true;
         assert!(store.put(as_default.clone()).is_ok());
         assert_eq!(
-            Store::load(&dir, false).unwrap().get().default_model,
+            reloaded(&store, false).get().default_model,
             "meta/muse-spark-1.3-contributor"
         );
 
@@ -1529,12 +1546,10 @@ mod tests {
                 .allowed(Tier::Worker, "meta/muse-spark-1.3-contributor@low")
                 .is_ok()
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_hand_edited_file_is_repaired_on_load_and_named() {
-        let dir = temp_dir("repair");
         let mut edited = serde_json::to_value(Settings::default()).unwrap();
         {
             let obj = edited.as_object_mut().unwrap();
@@ -1558,7 +1573,7 @@ mod tests {
             );
             obj.insert(
                 "retention".into(),
-                json!({"conversations_max": 5, "posts_max": 1024, "usage_calls_max": 20000}),
+                json!({"posts_max": 1024, "usage_calls_max": 20000}),
             );
             obj.insert(
                 "sanctions".into(),
@@ -1569,13 +1584,14 @@ mod tests {
                 .unwrap()
                 .push(json!("meta/muse-spark-1.3-contributor"));
         }
-        std::fs::write(
-            dir.join("settings.json"),
-            serde_json::to_vec(&edited).unwrap(),
-        )
-        .unwrap();
-
-        let store = Store::load(&dir, false).unwrap();
+        // The hand-edited values are what the store holds: they are written as rows, then loaded.
+        let hand_edited: Settings = serde_json::from_value(edited).unwrap();
+        let conn = apz_store::rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(&def().ddl()).unwrap();
+        let rows = apz_store::RowSet::one(def(), &SettingsRow::from(&hand_edited)).unwrap();
+        apz_store::table::replace(&conn, def(), &rows).unwrap();
+        let store = Store::new(false);
+        store.load(&conn).unwrap();
         let s = store.get();
         assert_eq!(
             s.default_model, "deepseek/deepseek-flash",
@@ -1607,20 +1623,13 @@ mod tests {
         assert_eq!(s.max_turns, 24);
         assert_eq!(s.effort, None);
         assert_eq!(s.fetch_block, vec!["ok.example".to_string()]);
-        assert_eq!(
-            s.retention.conversations_max,
-            Retention::default().conversations_max
-        );
-        assert_eq!(s.sanctions.max_fine, 300);
         assert!(
             check_settings(&s, false).is_ok(),
             "what loads passes the save checks"
         );
 
         // The notes name what changed.
-        let mut edited_again =
-            serde_json::from_slice::<Settings>(&std::fs::read(dir.join("settings.json")).unwrap())
-                .unwrap();
+        let mut edited_again = hand_edited;
         edited_again.allow_training_models = false;
         edited_again
             .model_policy
@@ -1634,10 +1643,11 @@ mod tests {
             "{notes:?}"
         );
 
-        // A file that is not settings JSON loads the defaults rather than failing.
-        std::fs::write(dir.join("settings.json"), b"{ not json").unwrap();
-        assert_eq!(Store::load(&dir, false).unwrap().get(), Settings::default());
-        let _ = std::fs::remove_dir_all(&dir);
+        // Nothing stored loads the defaults.
+        assert_eq!(
+            reloaded(&Store::new(false), false).get(),
+            Settings::default()
+        );
     }
 
     #[test]
@@ -1675,36 +1685,6 @@ mod tests {
             assert!(
                 !on.acp_write_back,
                 "the other ACP switches keep their defaults"
-            );
-        }
-
-        // payments_default_and_settings_saved_without_them_load_the_defaults: payments default, and settings saved without them load the defaults.
-        {
-            assert_eq!(
-                Payments::default(),
-                Payments {
-                    approve_over: 500,
-                    charge_models: true
-                }
-            );
-            assert_eq!(Settings::default().payments, Payments::default());
-
-            // Settings saved before payments existed carry no such key: they load the defaults.
-            let mut old = serde_json::to_value(Settings::default()).unwrap();
-            old.as_object_mut().unwrap().remove("payments");
-            let loaded: Settings = serde_json::from_value(old).unwrap();
-            assert_eq!(loaded.payments, Payments::default());
-
-            // A partial block keeps the fields it names and defaults the rest.
-            let partial: Settings =
-                serde_json::from_value(serde_json::json!({"payments": {"approve_over": 0}}))
-                    .unwrap();
-            assert_eq!(
-                partial.payments,
-                Payments {
-                    approve_over: 0,
-                    charge_models: true
-                }
             );
         }
     }
@@ -1813,8 +1793,7 @@ mod tests {
         assert_eq!(d.sleep_never_roles, vec!["orchestrator".to_string()]);
         assert_eq!(d.doze_idle_s, 0);
 
-        let dir = temp_dir("idle-sleep");
-        let store = Store::load(&dir, false).unwrap();
+        let store = Store::new(false);
         let too_long = Settings {
             idle_sleep_min: MAX_IDLE_SLEEP_MIN + 1,
             ..Settings::default()
@@ -1846,26 +1825,17 @@ mod tests {
             saved, never,
             "0 (agents never sleep) and no never-roles are kept"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn payments_round_trip_through_the_store() {
-        let dir = temp_dir("payments");
-        let store = Store::load(&dir, false).unwrap();
-        let s = Settings {
-            payments: Payments {
-                approve_over: 0,
-                charge_models: false,
-            },
-            ..Settings::default()
-        };
-        assert_eq!(store.put(s.clone()).unwrap(), s);
-        assert_eq!(Store::load(&dir, false).unwrap().get().payments, s.payments);
-
-        let json = serde_json::to_string(&s).unwrap();
-        let back: Settings = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, s);
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_save_moves_the_settings_source() {
+        let gens: std::sync::Arc<apz_cache::Generations<String>> = Default::default();
+        let store = Store::new(false).with_generations(std::sync::Arc::clone(&gens));
+        let key = crate::sources::SETTINGS.to_string();
+        store.put(store.get()).expect("put");
+        let saved = gens.get(&key);
+        assert!(saved > 0, "a put moves the settings");
+        store.set_board_pause(None, true).expect("pause");
+        assert!(gens.get(&key) > saved, "a board pause moves the settings");
     }
 }

@@ -28,6 +28,7 @@ use apz_http::{Request, Response, RouteDoc, Router};
 use apz_station::{Event, InputAction, Op, SessionId, Takeover};
 use serde_json::{Value, json};
 
+use super::audit::StationAudit;
 use super::ops::{self, RPC_TIMEOUT, TAKEOVER_AUDIT_MS};
 use super::screen::{LIMITS, Pick, SOCKETS, Wire, parse_pick, send_text};
 use super::takeover;
@@ -115,14 +116,13 @@ impl Desk for Live<'_> {
                 .ok()
                 .and_then(|v| v["action"].as_str().map(str::to_string))
                 .unwrap_or_default();
-            ops::audit(
-                app,
-                Some(self.station),
-                None,
-                "owner_input",
-                "owner",
-                json!({"session": self.session, "source": "control", "action": kind}),
-            )?;
+            let event = StationAudit::OwnerInput {
+                lease: None,
+                session: self.session,
+                source: Some("control".into()),
+                action: Some(kind),
+            };
+            ops::audit(app, Some(self.station), None, "owner", event)?;
         }
         let link = app
             .stations

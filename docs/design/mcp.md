@@ -1,12 +1,14 @@
 # MCP servers: outside tools for agents, run by the hub
 
-Status (2026-10-14): built. The hub side is `crates/apid/src/mcp/` (config, client, runtime, stdio, http, egress, catalog,
-relay, routes), the relay is `crates/mcp-relay/`, and the console flow is `apps/web/src/views/mcp.ts` and
-`apps/desktop/src/console/screens/mcp.rs`. The tests named at the end are in `mcp/tests.rs`, and the fixture server is `mcp/fixture.rs`.
+Status (2026-10-22): the hub side is `crates/apid/src/mcp/` (config, client, runtime, runtimes, stdio, http, egress,
+catalog, routes). The config is the typed component `mcp` (`crates/apid/src/store/components.rs`). The console flow is
+`apps/web/src/views/mcp.ts` and `apps/desktop/src/console/screens/mcp.rs`. The tests named at the end are in
+`mcp/tests.rs`; the fixture server is `mcp/fixture.rs`, built as the `mcp_fixture` binary.
 
 The owner adds Model Context Protocol servers. Agents then get their tools as ordinary plaza tools. As with
-connectors, every call is made by the hub: agents never hold a server's credentials, and no server runs on
-the host itself.
+connectors, every call is made by the hub: agents never hold a server's credentials. A stdio server runs under the
+OS sandbox, with no network except the hub's egress proxy. No server runs on the host unconfined, and no platform
+needs Docker.
 
 ## A server
 
@@ -14,125 +16,128 @@ the host itself.
 McpServer {
   id: "github",                       // [a-z][a-z0-9-]{1,31}; tools appear as mcp__<id>__<tool> (see "Tool names")
   name, enabled,
-  transport: {kind: "stdio", image: "ghcr.io/…:tag" | preset image, command: [..], workdir?}
+  transport: {kind: "stdio", package: Package, args: ["stdio"], workdir?}
            | {kind: "http",  url: "https://…/mcp"},
   env:     {VAR: {secret: "GITHUB_TOKEN"} | {value: "non-secret literal"}},      // stdio
   headers: {Header: {secret: "LINEAR_KEY", format: "Bearer {}"} | {value: "…"}}, // http
-  storage: {volume: true},            // stdio: a docker volume apz-mcp-<id> at /data (never a host path)
+  storage: {volume: true},            // stdio: keep the server's data/ directory between runs
   tools:   {allow: "all" | ["search_issues", …], risk: {tool: "read"|"write"|"irreversible"}},
-  access:  {roles: ["builder", …] | "all", nodes: ["n0", …] | "all"},
+  access:  {roles: ["builder", …] | "all", nodes: ["n0", …] | "all", projects: "all" | [..]},
   limits:  {timeout_s: 60, max_output_kb: 256, idle_stop_min: 10},
   allow_private: false,               // lets the server reach private and loopback addresses
   created_ms, updated_ms,
 }
+Package = {kind: "npm",    name: "@scope/pkg", version: "1.2.3"}          // an exact version, no ranges
+        | {kind: "pypi",   name: "mcp-server-time", version: "2026.10.19", entry?: "mcp-server-time"}
+        | {kind: "binary", url: "https://…/server.tar.gz", sha256: "<64 hex>", entry: "server"}
 ```
 
-- **Storage.** `storage.volume` mounts the named docker volume `apz-mcp-<id>` at `/data`. A host path is
-  never mounted: agents have their own VM filesystems, and nothing in a container reaches the host.
-  - Deleting the server keeps the volume. `DELETE /v1/mcp/servers/{id}?purge=1` removes it.
+- **Packages are pinned.** A stdio server names its package and its exact version (npm, PyPI) or its URL and SHA-256
+  (a binary). A config holding an `image` is refused with a sentence saying to pick the package: a container image no
+  longer runs a server.
+- **The wire shape.** The console sends `transport` as above. Its tool listings are not in the server's JSON.
+- **Storage.** `storage.volume` keeps the server's `data/` directory from one start to the next. Without it, `data/`
+  is emptied at each start. A host path is never mounted; the server's files live under the hub's state directory.
+  - Deleting the server keeps its data. `DELETE /v1/mcp/servers/{id}?purge=1` removes `data/`; installed packages stay.
   - http servers have no storage; a config that asks for it is refused.
-- **Storage.** The config is a Postgres component `mcp` with the file fallback `mcp.json`. It never holds a
-  secret value, only vault names.
-- **Secrets.** Every `{secret}` reference resolves through the vault with binding `mcp:<id>`, on behalf of
-  the calling agent, so node scopes apply. When the config flow creates a secret inline, the entry gets
-  that binding. Referencing an existing secret adds the binding only after the owner confirms it in the
-  flow ("allow the github server to use GITHUB_TOKEN").
-  - Deleting the server removes `mcp:<id>` from every vault entry (`vault::Store::remove_binding`, which
-    re-encrypts each entry under the new AAD and audits `bindings`). An entry left with no bindings stays
-    in the vault; nothing can resolve it.
-- **Reserved env.** `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `NODE_USE_ENV_PROXY` and `NODE_OPTIONS` are set by
-  the hub on stdio containers; a config may not name them.
+- **The component.** The config is the typed table `mcp_server` in `plaza.db` (its children: the transport, its
+  package, its args, the env and headers, the tool policy, the access picks, and the tools it last offered). It is saved
+  with the other components. No file holds it. It never holds a secret value, only vault names.
+- **Secrets.** Every `{secret}` reference resolves through the vault with binding `mcp:<id>`, on behalf of the calling
+  agent, so node scopes apply. When the config flow creates a secret inline, the entry gets that binding. Referencing an
+  existing secret adds the binding only after the owner confirms it in the flow.
+  - Deleting the server removes `mcp:<id>` from every vault entry (`vault::Store::remove_binding`).
+- **Reserved env.** `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy`, `NO_PROXY`, `NODE_USE_ENV_PROXY`,
+  `NODE_OPTIONS`, `PATH`, `HOME` and `TMPDIR` are set by the hub on stdio servers; a config may not name them.
+- **`{data}`.** A literal env value may name the server's data directory as `{data}`, expanded at each start (the memory
+  preset keeps its graph at `{data}/memory.jsonl`).
 
 ## Running a server
 
-- **Instances.** One instance per (server, node). An agent's call uses the instance of the node the agent
-  lives on. Node-scoped secrets can differ per node, so each node runs its own instance with its own
-  environment.
-- **stdio servers run in a container,** never as a host process.
-  - Flags: `docker run --rm -i --init --read-only --tmpfs /tmp:size=64m --cap-drop ALL
-    --security-opt no-new-privileges --user 65534:65534 --memory 512m --cpus 1 --pids-limit 256
-    --network apz-mcp --ip <address> [--mount type=volume,source=apz-mcp-<id>,target=/data] <image> <command…>`.
-  - Secrets reach the container as `-e VAR` with no value: the docker client reads the value from its own
-    environment, which apid sets only for that child. Values never appear in argv or on disk.
-  - The hub keeps the stdio pipes. The server starts on first use and stops after `idle_stop_min` without
-    use. It restarts with backoff (1 s, 2 s, 4 s … 60 s) and gives up after 5 failures in 10 minutes, with
-    status `error` and the last stderr lines.
-- **The networks.** Two docker networks:
-  - `apz-mcp` (`--internal`, 172.29.250.0/24). MCP containers attach only to it. It has no route out and no
-    address on the host.
-  - `apz-mcp-uplink` (a normal bridge, 172.29.251.0/24). The relay attaches to it to reach the host. apid refuses
-    a network of either name that does not have this shape.
-- **The relay.** The relay is the container `apz-mcp-relay`. It is attached to `apz-mcp` at the fixed address
-  172.29.250.2 (the proxy address the MCP containers get), and to `apz-mcp-uplink`.
-  - It runs `mcp_relay`, our static binary: std only, built for musl (`cargo build -p mcp-relay --release --target
-    x86_64-unknown-linux-musl`, or `aarch64-unknown-linux-musl`). It is copied into apid's state directory
-    (`<state>/mcp/mcp_relay`) at each start and mounted read-only into `alpine:latest` from there, because Docker
-    Desktop mounts only shared paths and the home directory is shared. The image must already be present
-    (`--pull never`; apid never pulls).
-  - The container runs read-only, with `--cap-drop ALL`, `--security-opt no-new-privileges`, uid 65534, and a memory
-    and pids limit.
-  - It is created with `--add-host=host.docker.internal:host-gateway`, so it reaches the host as
-    `host.docker.internal`. Docker Desktop provides that name; a native Linux engine maps it to the bridge gateway.
-  - It has no policy. For each connection it sends apid the session token, then a PROXY protocol v1 line carrying
-    the connection's source address (the container's address on `apz-mcp`), then copies bytes both ways.
-  - A stale relay container (stopped, or left by an apid that was killed) is removed before a new one is created.
-  - Started with `docker start -a -i`, the relay's stdin is a pipe apid holds: when apid exits, the pipe closes and
-    the relay exits. The relay is restarted on the next start if it has died.
-- **The proxy.** apid listens on `127.0.0.1:<port>` (default 19128, `--mcp-proxy-port`), which Docker Desktop
-  delivers `host.docker.internal` to. On a native Linux engine it also listens on the bridge gateway, found with
-  `docker network inspect bridge`, when the host has that address; where it does not, loopback is enough.
-  - The relay is authenticated by a 256-bit token, generated fresh at each start. apid passes it only to the relay
-    container's environment, and the relay sends it as the mandatory first line; then the PROXY line. The token is
-    compared in constant time. The relay's address is not checked, because NAT on Docker Desktop hides it.
-  - Handshake bounds. A valid token is always accepted, whatever has failed before: nothing counts failures against
-    it, so no local container can lock out the servers.
-    - A failed handshake (no token, a wrong one, or no valid PROXY line) is logged without the token, and held
-      until 2 s after it was accepted before it is closed (a tarpit).
-    - At most 16 unauthenticated connections are pending at once. When a new one arrives with the set full, the
-      oldest pending connection is closed to make room, and the new one is accepted. A real relay authenticates
-      within milliseconds, so it is never the oldest for long; an attacker holding slots is churned out. A tarpitted
-      connection counts as pending and is evictable. Authenticated connections are not counted.
-    - The handshake's reads time out after 2 s, so a connection that sends nothing or part of a line cannot hold
-      a slot. After the handshake the request has the usual idle timeout.
-    - A connection's slot is released when it authenticates or when it is closed. An evicted connection is closed
-      and never served, even if its handshake completes just after the eviction.
-  - The PROXY source address names the calling container, and so the server (its lease on `apz-mcp`). That address
-    is internal-only and assigned by apid, so it is reported truthfully. The policy then applies to that server:
-    - The fetch blocklist always applies.
-    - The host is resolved. A private, loopback, link-local or metadata address (any resolved address) is refused,
-      unless the server has `allow_private`.
-  - Containers get `HTTP_PROXY`, `HTTPS_PROXY`, `http_proxy`, `https_proxy` set to `http://172.29.250.2:3128`,
-    `NO_PROXY` empty and `NODE_USE_ENV_PROXY=1`.
-  - A server that ignores the proxy has no network at all. That is the secure default.
-  - It logs one line per server and host and verdict: `apid: mcp <server>: allowed|refused <host> (reason)`. No
-    URL, path or query is logged.
-- **Ordering and failures.** Before any stdio server starts, apid binds the proxy, ensures `apz-mcp` and the uplink,
-  installs the relay binary, and starts the relay. A failure leaves the server in `status: error` with a clear
-  `last_error`, for example:
-  - docker is missing, or its daemon is not reachable;
-  - a network cannot be created, or exists with the wrong shape;
-  - the relay image is not on this machine ("pull it yourself with `docker pull alpine:latest`");
-  - the relay binary is not found ("build it with `cargo build -p mcp-relay`");
-  - the relay does not report ready in time.
+- **Instances.** One instance per (server, node). An agent's call uses the instance of the node the agent lives on.
+  Node-scoped secrets can differ per node, so each node runs its own instance with its own environment.
+- **Runtimes.** Two runtimes are provisioned by the hub on first use, under `<state>/runtimes/`:
+  - Node v24.22.1 (the LTS line), from nodejs.org/dist, runs npm packages.
+  - uv 0.13.5 (github.com/astral-sh/uv/releases) runs PyPI packages.
+  Each is pinned in code per platform (darwin-arm64, darwin-x64, linux-x64, linux-arm64, win-x64) by the SHA-256 the
+  publisher lists (the nodejs.org `SHASUMS256.txt`, the GitHub release digests). A download goes through the hub's own
+  HTTP client, https only, is checked against its SHA-256 before anything is unpacked, and is unpacked once. A missing
+  or mismatched hash refuses with a sentence, and nothing is installed. A platform with no pin says so, and the remote
+  (http) servers keep working.
+- **Layout.** Each server has `<state>/mcp/<id>/` with `pkg/` (its npm prefix), `bin/` (downloaded binaries, by SHA-256),
+  `data/` (its working directory), `home/`, `tmp/`, `cache/`, `tools/` and `python/`. A sandboxed process writes only
+  under its own server's directory and the runtimes are read-only to it.
+- **npm packages.** The first start installs the pinned package, sandboxed the same way as the server, with
+  `node npm-cli.js install --prefix pkg --ignore-scripts --no-audit --no-fund --no-update-notifier name@version`. A marker
+  (`pkg/.apz-installed`) records the install, so later starts skip it. The server then runs as `node <the package's bin>`.
+  Lifecycle scripts do not run.
+- **PyPI packages.** `uv tool run --from name==version <entry> <args>`, sandboxed. uv keeps its cache, its tools and its
+  managed Pythons under the server's directory. The first start may take a while (the handshake allows 120 s).
+- **Binary packages.** The URL is downloaded, checked against its SHA-256, unpacked if it is a `.tar.gz` or `.zip`, and
+  the `entry` file is run directly, sandboxed. A raw file is the file itself.
+- **The sandbox.** Every stdio process runs under `apz_sandbox`: the macOS Seatbelt profile (deny by default), Landlock
+  on Linux (where the kernel has network rules, Linux 6.7 and later; an older kernel cannot confine the network, so
+  a server that uses the network is refused there), and an AppContainer on Windows. The child's environment is the one
+  the hub builds: nothing is inherited. Secret values are env vars of the server's own process, never argv or a file.
+  - Memory and CPU caps are not set: macOS offers no per-process memory cap, and a process cap counts every process of
+    the user.
+  - **Windows** refuses the loopback port a server needs for the proxy, so stdio servers that use the network do not
+    run there yet. Remote (http) servers work.
+- **The network.** A stdio process reaches only the hub's egress proxy: the sandbox allows TCP to that loopback port and
+  nothing else (`Network::LoopbackPort`). A server that ignores the proxy has no network at all.
+- **Lifecycle.** The server starts on first use and stops after `idle_stop_min` without use. It restarts with backoff
+  (1 s, 2 s, 4 s … 60 s) and gives up after 5 failures in 10 minutes, with status `error` and the last stderr lines.
+  Stopping kills the server's process (the sandbox's child; a child process it started with `uv` may outlive it, but
+  without network and with its proxy credential gone).
+
+## microVMs
+
+Where the local node can boot a microVM (its `GET /v1/mcp-vm`: a KVM host, a guest kernel, initrd and workspace base),
+a stdio server runs in one instead of under the sandbox. The server's status says which: `launcher` is `vm`, or
+`sandbox: <why>` (no KVM, a node that is not the hub's, no egress proxy). The install of an npm package still runs
+sandboxed on the hub.
+
+- **Volumes.** Each read-only directory the sandbox would have (the runtimes, the package, a binary's directory) is a
+  read-only node volume, mounted at `/data/ro-<hash>`. The volume is copied from the directory once per change of that
+  directory. The server's own directory is the guest's `/workspace`: `storage.volume` keeps its image on the node under
+  `<persist>/mcp/<server>/`, and otherwise each run starts from a fresh copy.
+- **Stdio.** The guest's initrd runs `/mcp-bridge` (the `vsockd` crate's bin) instead of the agent harness when the
+  command line has `plaza.mcp=1`. The node sends the bridge one JSON line on vsock port 5200 (program, args, env with
+  the secrets, cwd), then relays the server's stdin and stdout on that port; stderr goes on 5201. The hub reaches each
+  through a Unix socket the node opens for the run.
+- **Egress.** The guest has no network device. Its proxy variables name the lease's proxy URL on `127.0.0.1:3128`; the
+  bridge tunnels each connection over vsock port 5202, and the node dials the hub's egress proxy port and nothing else.
+  The lease's token is the server's own proxy credential, as in the sandbox.
+- **Routes.** On the node: `GET /v1/mcp-vm`, `POST /v1/mcp-runs`, `GET` and `DELETE /v1/mcp-runs/{id}`,
+  `DELETE /v1/mcp-storage/{server}`. The hub and its node share a machine: the sockets are local paths.
+- **Tests.** The relays, the request and the lifecycle run without KVM. The full boot of a server is a test in the node
+  that is skipped with a printed reason when `/dev/kvm` is missing.
+
+## The egress proxy
+
+- **Listener.** apid listens on `127.0.0.1:<port>` (default 19128, `--mcp-proxy-port`). It binds when the first stdio
+  server starts.
+- **Leases.** Each start of a stdio server takes a lease: a new 256-bit token, which the server holds as the password of
+  its proxy URL (`http://apz:<token>@127.0.0.1:<port>`). Every request therefore says `Proxy-Authorization: Basic`, and
+  the token names the server the request is policed for. The lease is forgotten when the process's lease drops, so the
+  next start gets a new token. The token is never logged.
+- **Handshake bounds.** A valid credential is always accepted, whatever has failed before: nothing counts failures
+  against it.
+  - A request with no credential, or a wrong one, is logged without the token and held until 2 s after it was accepted,
+    then answered 407 (a tarpit).
+  - At most 16 unauthenticated connections are pending at once. When a new one arrives with the set full, the oldest
+    pending connection is closed to make room. Authenticated connections are not counted.
+  - The request head's reads time out after 2 s, so a connection that sends nothing cannot hold a slot.
+- **Policy.** For the server a credential names:
+  - The fetch blocklist always applies.
+  - The host is resolved. A private, loopback, link-local or metadata address (any resolved address) is refused, unless
+    the server has `allow_private`.
+  - It logs one line per server and host and verdict: `apid: mcp <server>: allowed|refused <host> (reason)`. No URL, path
+    or query is logged.
+- **Failures.** A failure leaves the server in `status: error` with a clear `last_error`: the runtime cannot be
+  downloaded or does not match its pin; the package's install fails (its last stderr line is named); the sandbox cannot
+  start the process (Windows for a network server; a kernel that cannot confine the network); the proxy cannot listen.
   Remote (http) servers keep working in every case.
-- **Lifecycle.** The relay container is removed when apid's egress state is dropped. If apid is killed instead, the
-  relay exits because its stdin closes, and the stopped container is removed at the next start.
-- **Architecture.** A Docker engine runs containers of its own architecture, and Docker Desktop's VM decides it on
-  macOS and Windows. apid asks `docker info --format '{{.Architecture}}'` at each start and uses the relay for that
-  architecture: `x86_64` or `aarch64`. Anything else is an error, and the remote servers keep working.
-- **Packaging.** Every bundle that can run container servers carries both relays beside apid, as `mcp_relay-x86_64`
-  and `mcp_relay-aarch64` (in the macOS app, in `Contents/Resources/relay/`: `Contents/MacOS` holds only signed
-  Mach-O code). These are the static musl builds from the relay job (`.github/workflows/relay.yml`), which builds
-  both for every release and hands them to the platform jobs through the Actions cache. Linux, macOS, Windows and
-  Raspberry Pi packages all carry them, so each platform's container servers have a relay for both architectures.
-  `packaging/scripts/stage.sh` copies them from `APZ_RELAY_DIR`, or from `target/<musl>/release/` in a dev tree.
-  apid finds the relay in this order: the musl build in a development tree (`target/<musl>/release/mcp_relay`), then
-  `APZ_MCP_RELAY`, then the bundle beside apid (`mcp_relay-<arch>`, or `mcp_relay`).
-- **Environment notes (Docker Desktop 29.8.2, where the end-to-end runs were done).**
-  - Docker Desktop keeps bridges inside its own VM: a new network got no host address, so apid cannot bind a bridge
-    gateway there. It uses loopback, which Docker Desktop connects to `host.docker.internal`.
-  - Containers cannot take their bridge's own gateway address (Docker reserves it).
-  - Docker Desktop mounts only shared host paths, so the relay binary is copied under the home directory first.
 
 ## Tool names
 
@@ -149,29 +154,29 @@ McpServer {
 - **How tools appear.** Each allowed tool becomes a plaza tool, with the server's own JSON schema and
   description, prefixed `[MCP <name>]`. It is offered only to agents whose role and node pass `access`.
 - **Risk.** The owner's override, else the tool's annotations (`destructiveHint` → irreversible,
-  `readOnlyHint` → read, otherwise write). Irreversible calls go through the owner's approvals, as connector
+  `readOnlyHint` → read, otherwise write). The annotations are typed (the MCP hints: title, readOnlyHint,
+  destructiveHint, idempotentHint, openWorldHint). Irreversible calls go through the owner's approvals, as connector
   actions do: C-004a withholds them from offers, and `approvals::gate` holds any that run.
-  - The law engine sees an MCP call as operation `mcp.call`, with `server`, `tool` and `risk`, so the
-    owner's rules can forbid or limit them.
-- **Results.** Text content is joined and image or audio content goes to the file store (as with
-  connectors). Output is capped at `max_output_kb`, and `isError` becomes a tool error.
-- **Metering.** Each call that reaches the server is a transcript event `mcp_call` with `server`, `tool`,
-  `ms`, `ok` and `output_bytes`. The host tool's own `tool_request` and `tool_decision` events record the
-  call as for connectors. Usage (`usage.rs`) counts model tokens only and has no notion of connector calls,
-  so MCP calls are not counted there.
+  - The law engine sees an MCP call as operation `mcp.call`, with `server`, `tool` and `risk`, so the owner's rules
+    can forbid or limit them.
+- **Results.** Text content is joined and image or audio content goes to the file store (as with connectors). Output is
+  capped at `max_output_kb`, and `isError` becomes a tool error.
+- **Metering.** Each call that reaches the server is a transcript event `mcp_call` with `server`, `tool`, `ms`, `ok` and
+  `output_bytes`. The host tool's own `tool_request` and `tool_decision` events record the call as for connectors.
 
 ## Routes (owner auth)
 
 ```
-GET    /v1/mcp/catalog                 → presets: id, name, description, transport, image|url, env/header specs
-                                          (name, secret?, required, help), fixed_env, volume, docs URL
+GET    /v1/mcp/catalog                 → presets: id, name, description, transport, package (for this platform),
+                                          args, url, env/header specs (name, secret?, required, help), fixed_env,
+                                          volume, docs URL, status ("verified" | "binary needed"), note
 GET    /v1/mcp/servers                 → [ServerView] (config + status: stopped|starting|running|error,
                                           tools count, last_error, last_used_ms)
 POST   /v1/mcp/servers                 {config} → ServerView   (400 names the bad field; 409 on a duplicate id)
 GET    /v1/mcp/servers/{id}            → ServerView
 PATCH  /v1/mcp/servers/{id}            {partial config} → ServerView
 DELETE /v1/mcp/servers/{id}[?purge=1]  → 204 (stops it; removes the vault bindings `mcp:<id>`; keeps the
-                                          storage volume unless purge=1)
+                                          data unless purge=1)
 POST   /v1/mcp/servers/{id}/test       {node?} → {ok, server_info, tools:[{name, agent_name, description, annotations, auto_risk, risk}],
                                           resources, prompts, ms, error?}   (starts, lists, stops if idle)
 POST   /v1/mcp/servers/{id}/start | /stop → ServerView
@@ -179,60 +184,66 @@ GET    /v1/mcp/servers/{id}/tools      → [{name, tool, agent_name, description
 GET    /v1/mcp/servers/{id}/logs?limit= → [{ts_ms, stream, line}] (redacted)
 ```
 
-In every tool view: `agent_name` is the `mcp__<id>__<tool>` name agents see; `auto_risk` is the risk the
-annotations give, before any owner override; `risk` is the effective risk (the override, else `auto_risk`);
-`tool` repeats `agent_name` for the earlier console; `allowed` is whether the server's allow list offers the tool.
+In every tool view: `agent_name` is the `mcp__<id>__<tool>` name agents see; `auto_risk` is the risk the annotations
+give, before any owner override; `risk` is the effective risk (the override, else `auto_risk`); `tool` repeats
+`agent_name` for the earlier console; `allowed` is whether the server's allow list offers the tool.
 
 Changes are pushed on the plaza's WebSocket as `mcp.changed` and `mcp.status`.
 
 ## The console's configuration flow (web and desktop)
 
-The MCP screen sits under Setup, after Tools. It lists the servers with their status, tool counts and last
-use. "Add server" walks through these steps:
+The MCP screen sits under Setup, after Tools. It lists the servers with their status, tool counts and last use. "Add
+server" walks through these steps:
 
-1. **Source.** A catalog preset, a custom container image and command, or a remote URL.
-2. **Credentials.** For each env var or header the server needs, pick a vault secret from a list filtered
-   to plausible names, or enter a new value. A new value goes straight into the vault with binding `mcp:<id>`
-   and a scope chosen here (plaza or nodes). Non-secret settings are plain fields. A preset's `fixed_env`
-   and `volume` fill in the config.
-3. **Test.** Run `test`. The flow shows the server's name, version and tools with their annotations, or
-   the error and stderr tail.
+1. **Source.** A catalog preset (its package for this platform is filled in), a custom package (npm, PyPI or a binary
+   URL with its SHA-256), or a remote URL.
+2. **Credentials.** For each env var or header the server needs, pick a vault secret from a list filtered to plausible
+   names, or enter a new value. A new value goes straight into the vault with binding `mcp:<id>` and a scope chosen here
+   (plaza or nodes). Non-secret settings are plain fields. A preset's `fixed_env` and `volume` fill in the config.
+3. **Test.** Run `test`. The flow shows the server's name, version and tools with their annotations, or the error and
+   stderr tail.
 4. **Tools.** Allow all or pick some, and adjust the risk per tool.
-5. **Access.** Choose roles and nodes.
+5. **Access.** Choose roles, nodes and projects.
 6. **Enable.**
 
 Editing a server reopens the same steps.
 
 ## Presets
 
-Filesystem is not a preset: a host folder mount would put a host path inside a container. Memory keeps its
-graph in the server's storage volume (`MEMORY_FILE_PATH=/data/memory.json`, `storage.volume` true).
+Filesystem is not a preset: a host folder mount would put a host path inside the server. Each preset pins its package:
+
+- GitHub: the release binary of github/github-mcp-server v2.0.3 for the platform, pinned by its SHA-256 from the GitHub
+  release digests (darwin-arm64, darwin-x64, linux-x64, linux-arm64, win-x64), run as `github-mcp-server stdio`. The file
+  name inside the archive and the `stdio` argument come from the project's README and GoReleaser config; they were not
+  run offline.
+- Fetch: PyPI `mcp-server-fetch` 2026.10.19. Time: PyPI `mcp-server-time` 2026.10.19.
+- Memory: npm `@modelcontextprotocol/server-memory` 2.0.0, with `MEMORY_FILE_PATH={data}/memory.jsonl` and
+  `storage.volume` true.
+- Brave Search: npm `@brave/brave-search-mcp-server` 2.1.4 (`BRAVE_API_KEY`).
+- Linear and Context7: hosted http endpoints.
 
 ## Tests
 
-- A fixture MCP server lives in the repo (`crates/apid/src/mcp/fixture.rs`, built as the `mcp_fixture`
-  binary, with no third-party packages). Tests run it as a plain child process; the container launch is
-  behind a trait.
-- Covered: the handshake, tool listing with paging, a call, an error, a timeout, and an output cap.
+- A fixture MCP server lives in the repo (`crates/apid/src/mcp/fixture.rs`, built as the `mcp_fixture` binary, with no
+  third-party packages). The runtime tests run it as a pinned binary package under the sandbox: its URL is served by a
+  fake fetch from the built file, and its SHA-256 is computed in the test. Build it with `cargo build -p apid --bin
+  mcp_fixture` before `cargo test -p apid --bins mcp` (the test binaries do not rebuild it).
+- Covered: the handshake, tool listing with paging, a call, an error, a timeout, an output cap, a server that exits at
+  start (backoff and give-up), an idle stop, and the start failure whose reason stays on the server.
+- Sandbox: the fixture's `connect` mode runs under the sandbox with the proxy's port as its only reachable port: the
+  proxy connects, another local listener and an address beyond loopback are refused.
 - Redaction: a sentinel secret echoed by the fixture never comes back.
 - Tool names: sanitising, the 64-character limit with its suffix, collisions, and the mapping back.
 - `access` and risk gating, and approval for irreversible calls.
-- Vault bindings: a server cannot resolve a secret not bound to it, and node scope applies through the
-  calling agent.
-- Redirects: a redirect to loopback is refused, a redirect to a blocklisted host is refused, an allowed hop
-  works end to end (the endpoint moves), more than three hops are refused, and headers stay on the origin. The
-  connection resolver refuses a loopback address it would connect to.
-- Relay: the relay binary's hello (token, then PROXY line) and its loopback round trip; the networks' and the relay's
-  argv (fixed address, the token by name only, `--pull never`, the read-only binary, hardening, `--add-host`, the
-  upstream `host.docker.internal:<port>`); the installed copy in the state directory; and the start order (networks,
-  relay create, connect, start), with the token never in a command line.
-- Proxy: the token gate (a wrong, missing or forged token is dropped without an answer, in constant time), the PROXY
-  line, the tarpit (a failed handshake is held until 2 s), the eviction of the oldest pending connection (a relay among sixteen attackers is served at once, 50 times),
-  the handshake timeout (a silent or partial connection is closed), 100 bad handshakes followed by a valid one, the policy by the PROXY source (blocklist, private and metadata
-  refusal, `allow_private`), the forwarded request over loopback, and the listeners (loopback always; the bridge
-  gateway when the host has it, and optional).
-- Egress: the proxy policy (blocklist, private and metadata refusal, `allow_private`), the proxy's answers
-  to CONNECT and forwarded requests over loopback, and the network-create argv. Docker is never run in tests.
-- Container argv and env: the hardened flags, `-e` names without values, `--ip`, the storage volume and no
-  host path, the proxy variables.
+- Vault bindings: a server cannot resolve a secret not bound to it, and node scope applies through the calling agent.
+- Config: validation names each bad field; a package must be pinned (an exact version, a hash, an https URL); a workdir
+  stays inside the data directory; an `image` is refused; the wire shape is tagged. The store round-trips its rows.
+- Runtimes: a download that does not match its pin is refused and named; a missing pin refuses before any download; a
+  runtime unpacks once and is reused; a zip unpacks; a binary's entry must exist in the download. One ignored test
+  downloads uv for the host from github.com and runs it (`cargo test -p apid --bins -- --ignored uv_really`).
+- Proxy: a request without a lease credential gets 407; a lease is policed for its own server (loopback refused without
+  `allow_private`); a lease is forgotten when it drops; the egress and env variables are set for the children.
+- Redirects: a redirect to loopback is refused, a redirect to a blocklisted host is refused, an allowed hop works end to
+  end, more than three hops are refused, and headers stay on the origin. The connection resolver refuses a loopback
+  address it would connect to.
 - Restart backoff and give-up.

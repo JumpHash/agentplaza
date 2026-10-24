@@ -5,12 +5,12 @@
 //! POST   /v1/agents/{cid}/vm-checkpoints  {label?}       → checkpoint
 //! POST   /v1/agents/{cid}/vm-checkpoints/{name}/restore  → {ok, safety: checkpoint}
 //! DELETE /v1/agents/{cid}/vm-checkpoints/{name}          → {ok}
-//! POST   /v1/agents/{cid}/fork            {n}            → {forks: [{cid, run, name}], checkpoint}
+//! POST   /v1/agents/{cid}/fork            {n}            → {forks: [{cid, run}], checkpoint}
 //!
 //! A checkpoint is noded's snapshot view (`noded::snapshots::SnapshotView`). Rolling back first takes
 //! a safety checkpoint (`before-restore`), so a rollback can itself be undone — CubeSandbox's rollback
 //! deletes the VM before it restores, and a failed restore loses it. Forks are new agents of the same
-//! role, each with a copy of the source agent's VM at the fork's checkpoint and a name of its own.
+//! role, each with a copy of the source agent's VM at the fork's checkpoint and a CID of its own.
 //!
 //! The laws decide when a checkpoint is taken on their own: before a tool call whose risk class is
 //! high, the hub asks for one (see [`auto_checkpoint`]), so "undo the last risky step" restores the
@@ -107,8 +107,11 @@ pub fn auto_checkpoint(app: &App, cid: u64, tool: &str) {
                 &app.bus,
                 cid,
                 0,
-                "vm_checkpoint",
-                json!({ "checkpoint": view, "auto": true }),
+                crate::transcript::Entry::VmCheckpoint {
+                    checkpoint: Some(view),
+                    auto: Some(true),
+                    deleted: None,
+                },
             );
             publish_agent(app, cid);
         }
@@ -215,21 +218,6 @@ pub(crate) fn check_fork_count(n: u32) -> Result<u32, String> {
     }
 }
 
-/// The names of `count` forks of an agent called `base`: `<base>-fork-1`, `<base>-fork-2`, … skipping
-/// any name `taken` reports, so a second fork round does not reuse a name.
-pub(crate) fn fork_names(base: &str, count: usize, taken: impl Fn(&str) -> bool) -> Vec<String> {
-    let mut names: Vec<String> = Vec::with_capacity(count);
-    let mut k = 1u32;
-    while names.len() < count {
-        let candidate = format!("{base}-fork-{k}");
-        if !names.contains(&candidate) && !taken(&candidate) {
-            names.push(candidate);
-        }
-        k += 1;
-    }
-    names
-}
-
 fn list_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
     let cid = match cid_of(p) {
         Ok(cid) => cid,
@@ -284,8 +272,11 @@ fn create_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "vm_checkpoint",
-        json!({ "checkpoint": view, "auto": false }),
+        crate::transcript::Entry::VmCheckpoint {
+            checkpoint: Some(view.clone()),
+            auto: Some(false),
+            deleted: None,
+        },
     );
     publish_agent(app, cid);
     Response::json(200, &view)
@@ -326,8 +317,10 @@ fn restore_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "vm_restore",
-        json!({ "name": name, "safety": safety }),
+        crate::transcript::Entry::VmRestore {
+            name: name.to_string(),
+            safety: safety.clone(),
+        },
     );
     publish_agent(app, cid);
     Response::json(200, &json!({ "ok": true, "safety": safety }))
@@ -361,8 +354,11 @@ fn delete_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
         &app.bus,
         cid,
         0,
-        "vm_checkpoint",
-        json!({ "deleted": name }),
+        crate::transcript::Entry::VmCheckpoint {
+            checkpoint: None,
+            auto: None,
+            deleted: Some(name.to_string()),
+        },
     );
     Response::json(200, &json!({ "ok": true }))
 }
@@ -402,43 +398,31 @@ fn fork_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Ok(reply) => reply,
         Err(err) => return Response::error(502, &format!("noded fork answer: {err}")),
     };
-    let base = if agent.name.is_empty() {
-        format!("agent-{cid}")
-    } else {
-        agent.name.clone()
-    };
-    let names = fork_names(&base, reply.forks.len(), |candidate| {
-        app.names.used_by_other(u64::MAX, candidate)
-    });
     let mut forks = Vec::with_capacity(reply.forks.len());
-    for (fork, name) in reply.forks.iter().zip(names) {
-        // The fork's first hello is matched to its own CID with this model (see `Store::expect_cid`), and it
-        // works on its parent's project.
-        app.spawned.expect_cid(
-            fork.cid,
-            &agent.role,
-            agent.model_override.clone(),
-            app.members.project_of(cid),
-        );
-        if let Err(err) = app.names.set(fork.cid, &name) {
-            eprintln!("apid: name of fork {} not saved: {err}", fork.cid);
-        }
-        app.agents.update(fork.cid, |a| a.name.clone_from(&name));
+    for fork in &reply.forks {
+        // The fork's first hello is matched to its own CID with this model (see `Store::expect_cid`). It works on no
+        // project until a session puts it on one.
+        app.spawned
+            .expect_cid(fork.cid, &agent.role, agent.model_override.clone());
         app.transcripts.record(
             &app.bus,
             fork.cid,
             0,
-            "forked_from",
-            json!({ "cid": cid, "checkpoint": reply.checkpoint }),
+            crate::transcript::Entry::ForkedFrom {
+                cid,
+                checkpoint: reply.checkpoint.clone(),
+            },
         );
-        forks.push(json!({ "cid": fork.cid, "run": fork.run, "name": name }));
+        forks.push(json!({ "cid": fork.cid, "run": fork.run }));
     }
     app.transcripts.record(
         &app.bus,
         cid,
         0,
-        "fork",
-        json!({ "forks": forks, "checkpoint": reply.checkpoint }),
+        crate::transcript::Entry::Fork {
+            forks: serde_json::to_value(&forks).unwrap_or(Value::Null),
+            checkpoint: reply.checkpoint.clone(),
+        },
     );
     publish_agent(app, cid);
     Response::json(
@@ -569,19 +553,6 @@ mod tests {
         assert_eq!(check_fork_count(1).unwrap(), 1);
         assert_eq!(check_fork_count(8).unwrap(), 8);
         assert!(check_fork_count(9).is_err());
-    }
-
-    #[test]
-    fn fork_names_count_up_and_skip_taken_names() {
-        assert_eq!(
-            fork_names("Ada", 2, |_| false),
-            vec!["Ada-fork-1", "Ada-fork-2"]
-        );
-        assert_eq!(
-            fork_names("Ada", 2, |name| name == "Ada-fork-1"),
-            vec!["Ada-fork-2", "Ada-fork-3"]
-        );
-        assert!(fork_names("Ada", 0, |_| false).is_empty());
     }
 
     #[test]

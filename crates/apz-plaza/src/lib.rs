@@ -1,18 +1,12 @@
-//! The plaza's domain state: the task ledger, the treasury (double-entry
-//! journal), the agora (calls, bids, awards), the social layer (board, read
-//! cursors, contacts, conversations) and the council (motions, votes, the
-//! owner's decision). No I/O and no threads: `apid` owns the instances, wraps
-//! them in locks and publishes their [`events::Event`]s.
+//! The plaza's domain state: the task ledger and the board (posts, comments,
+//! read cursors, in [`social`]). No I/O and no threads: `apid` owns the
+//! instances, wraps them in locks and publishes their [`events::Event`]s.
 
 #![forbid(unsafe_code)]
 
-pub mod agora;
-pub mod bonds;
-pub mod council;
 pub mod events;
 pub mod social;
 pub mod tasks;
-pub mod treasury;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

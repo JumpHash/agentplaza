@@ -31,7 +31,9 @@ pub fn slack() -> f64 {
 const APID: &str = env!("CARGO_BIN_EXE_apid");
 /// Ports the owner's own hub and daemons use. A test never picks one of them.
 const OWNER_PORTS: [u16; 3] = [7700, 8899, 19080];
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// A hub's start, to its listening line. Generous: the first hubs of a coverage run start cold, all at once, and took
+/// about thirty seconds there.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// One request's answer. Generous: a busy CI runner (thousands of tests at once) can take over ten seconds for a
 /// call that compiles a Weft language pack on its first use (review_tree), and a hang still fails.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -49,18 +51,6 @@ impl Scratch {
         let dir = std::env::temp_dir().join(format!("apid-{name}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create the scratch directory");
         Scratch(dir)
-    }
-
-    /// Names agents before their hub starts (its `names.json`), so the hub never asks them to choose one. The hub asks
-    /// an unnamed idle agent two seconds after it connects, and a fake agent never answers: on a slow build (coverage's
-    /// instrumented one) that ask goes out ahead of the work a test sends, and holds the agent.
-    pub fn name_agents(&self, names: &[(u64, &str)]) {
-        let map: serde_json::Map<String, Value> = names
-            .iter()
-            .map(|(cid, name)| (cid.to_string(), Value::from(*name)))
-            .collect();
-        std::fs::write(self.0.join("names.json"), Value::Object(map).to_string())
-            .expect("write the agents' names");
     }
 }
 
@@ -100,6 +90,17 @@ impl Hub {
         noded: Option<u16>,
         roles: Option<&Value>,
     ) -> Hub {
+        Hub::start_with_env(scratch, gateway, noded, roles, &[])
+    }
+
+    /// [`Hub::start_with_roles`] with environment variables of its own (`WEFT_BIN` to a missing file: no Weft).
+    pub fn start_with_env(
+        scratch: &Scratch,
+        gateway: Option<u16>,
+        noded: Option<u16>,
+        roles: Option<&Value>,
+        env: &[(&str, &str)],
+    ) -> Hub {
         (1..=ATTEMPTS)
             .find_map(|attempt| {
                 boot(
@@ -107,6 +108,7 @@ impl Hub {
                     gateway,
                     noded,
                     roles,
+                    env,
                 )
             })
             .expect("a scratch hub comes up")
@@ -152,17 +154,6 @@ impl Hub {
             json!({ "type": "work_done", "work": work, "status": status, "summary": summary });
         let (code, body) = self.guest(cid, "message", message);
         assert_eq!(code, 200, "{body}");
-    }
-
-    /// Agent `cid` names itself with plaza_set_name, as an agent does when the hub asks. The hub asks an unnamed idle
-    /// agent two seconds after it connects, and a fake agent never answers: on a slow runner that ask is queued ahead
-    /// of the work a test waits for, so a test whose agents must take work names them first.
-    pub fn name_agent(&self, cid: u64, name: &str) {
-        let request = json!({ "type": "tool_request", "work": 0, "call": format!("toolu_name_{cid}"), "name": "plaza_set_name", "input": { "name": name } });
-        let (code, body) = self.guest(cid, "message", request);
-        assert_eq!(code, 200, "{body}");
-        let (_, agent) = self.call("GET", &format!("/v1/agents/{cid}"), None);
-        assert_eq!(agent["name"], name, "{body}\n{agent}");
     }
 
     /// Waits up to `timeout` (times [`slack`]) for `ready` to hold of the owner's `GET path`; the last answer
@@ -253,18 +244,12 @@ fn boot(
     gateway: Option<u16>,
     noded: Option<u16>,
     roles: Option<&Value>,
+    env: &[(&str, &str)],
 ) -> Option<Hub> {
     let port = free_port();
     let state = dir.join("state");
     let config = dir.join("config");
     std::fs::create_dir_all(&config).expect("create the config directory");
-    // The names the test gave its agents ([`Scratch::name_agents`]), in this attempt's state.
-    if let Some(names) = dir.parent().map(|scratch| scratch.join("names.json"))
-        && names.exists()
-    {
-        std::fs::create_dir_all(&state).expect("create the state directory");
-        std::fs::copy(&names, state.join("names.json")).expect("copy the agents' names");
-    }
     let env_file = dir.join("empty.env");
     std::fs::write(&env_file, "").expect("write the empty env file");
     let manifest = dir.join("roles.json");
@@ -297,6 +282,7 @@ fn boot(
         .env("XDG_CONFIG_HOME", dir.join("xdg-config"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
         .env("APZ_SHARE", dir.join("no-share"))
+        .envs(env.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

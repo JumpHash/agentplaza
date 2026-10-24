@@ -1,7 +1,6 @@
 # Generated from roles/build/roles_src.py (0113). Owner-signed in the real Codex repo (0099).
 role: librarian
 variant: ''
-council_seat: false
 permits:
 - statutes/S-014
 model:
@@ -20,7 +19,7 @@ tools:
 outputs:
 - memory-change
 budget:
-  default_credits: 800
+  default_budget: 800
   period: weekly
 compaction:
   trigger_fraction: 0.75

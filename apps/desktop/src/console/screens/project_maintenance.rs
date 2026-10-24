@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::Id;
-use crate::console::{Ctx, client, ui};
+use crate::console::{Ctx, client, roles, ui};
 use crate::theme;
 
 /// The signals the inbox lists (the newest); the hub keeps 200. Under Expert, all of the newest 200 show.
@@ -163,7 +163,6 @@ pub struct Worth {
 pub struct Effort {
     /// `s`, `m`, `l` or `xl`.
     pub size: String,
-    pub budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -235,12 +234,12 @@ pub struct Ingest {
     pub url: String,
 }
 
-/// `GET /v1/agents`, for the names of the watchers.
+/// `GET /v1/agents`, for the labels of the watchers.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-struct AgentName {
+struct AgentRole {
     cid: u64,
-    name: String,
+    role: String,
 }
 
 // ---- The tab's state and messages ----------------------------------------------------------------------------------
@@ -249,8 +248,8 @@ struct AgentName {
 pub struct State {
     /// The view; None until the first load.
     pub data: Option<Maintenance>,
-    /// The names of the agents, by cid (a watcher without one shows as "agent N").
-    pub names: BTreeMap<u64, String>,
+    /// The labels of the agents, by cid (a watcher the list does not have shows as "agent #N").
+    pub labels: BTreeMap<u64, String>,
     pub error: Option<String>,
     /// A line for the last action ("Approved.").
     pub note: Option<String>,
@@ -282,7 +281,7 @@ pub enum Selection {
 /// The dialog open over the tab. Only one is open at a time.
 #[derive(Debug)]
 pub enum Dialog {
-    /// Do it: the note, and the budget for a proposal that has none of its own.
+    /// Do it: the note.
     Approve(Approving),
     /// Not this: the reason, optional.
     Decline(Declining),
@@ -300,10 +299,6 @@ pub struct Approving {
     pub title: String,
     /// The line under the title: what the dialog says the answer does.
     pub line: String,
-    /// The proposal names a connector or MCP the owner sets up, so it needs no budget.
-    pub known_tool: bool,
-    pub budget_hint: String,
-    pub budget: String,
     pub note: Content,
 }
 
@@ -337,7 +332,7 @@ impl Default for NewSignal {
 pub enum Msg {
     Go(Id),
     Loaded(Result<Maintenance, String>),
-    Names(Result<Vec<(u64, String)>, String>),
+    Labels(Result<Vec<(u64, String)>, String>),
     /// Sweep now.
     Sweep,
     Focus(String),
@@ -354,7 +349,6 @@ pub enum Msg {
     ToggleSummary,
     OpenApprove(String),
     ApproveNote(text_editor::Action),
-    ApproveBudget(String),
     Approve,
     Later(String),
     OpenDecline(String),
@@ -390,22 +384,22 @@ fn maintenance_path(project: &str) -> String {
     format!("/v1/projects/{}/maintenance", client::enc(project))
 }
 
-/// Reads the project's maintenance view, and the agents' names for its watchers.
+/// Reads the project's maintenance view, and the agents' labels for its watchers.
 pub fn load(project: &str, ctx: &Ctx) -> Task<Msg> {
     let c = ctx.client.clone();
     let path = maintenance_path(project);
-    let names = ctx.client.clone();
+    let agents = ctx.client.clone();
     Task::batch([
         client::task(move || c.get::<Maintenance>(&path), Msg::Loaded),
         client::task(
             move || {
-                names.get::<Vec<AgentName>>("/v1/agents").map(|list| {
+                agents.get::<Vec<AgentRole>>("/v1/agents").map(|list| {
                     list.into_iter()
-                        .map(|a| (a.cid, a.name))
+                        .map(|a| (a.cid, roles::agent_label(&a.role, a.cid)))
                         .collect::<Vec<(u64, String)>>()
                 })
             },
-            Msg::Names,
+            Msg::Labels,
         ),
     ])
 }
@@ -424,12 +418,12 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             state.error = Some(e);
             Task::none()
         }
-        Msg::Names(Ok(list)) => {
-            state.names = list.into_iter().collect();
+        Msg::Labels(Ok(list)) => {
+            state.labels = list.into_iter().collect();
             Task::none()
         }
-        // The names are a courtesy: without them the watchers show by number.
-        Msg::Names(Err(_)) => Task::none(),
+        // The labels are a courtesy: without them the watchers show as `agent #N`.
+        Msg::Labels(Err(_)) => Task::none(),
         Msg::Sweep => write(
             state,
             ctx,
@@ -527,12 +521,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
                 id: p.id.clone(),
                 title: p.title.clone(),
                 line,
-                known_tool,
-                budget_hint: p
-                    .effort
-                    .budget
-                    .map_or("The project’s default".to_string(), |b| b.to_string()),
-                budget: String::new(),
                 note: Content::new(),
             }));
             Task::none()
@@ -540,12 +528,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
         Msg::ApproveNote(action) => {
             if let Some(Dialog::Approve(a)) = state.dialog.as_mut() {
                 a.note.perform(action);
-            }
-            Task::none()
-        }
-        Msg::ApproveBudget(budget) => {
-            if let Some(Dialog::Approve(a)) = state.dialog.as_mut() {
-                a.budget = budget;
             }
             Task::none()
         }
@@ -557,10 +539,6 @@ pub fn update(state: &mut State, msg: Msg, project: &str, ctx: &Ctx) -> Task<Msg
             let note = a.note.text().trim().to_string();
             if !note.is_empty() {
                 body["note"] = json!(note);
-            }
-            // A budget is credits, at least 200; under that, the project's default stands.
-            if let Some(credits) = a.budget.trim().parse::<i64>().ok().filter(|c| *c >= 200) {
-                body["budget"] = json!(credits);
             }
             let path = format!("{root}/proposals/{}/approve", a.id);
             write(
@@ -1004,17 +982,17 @@ fn evidence_text(e: &Evidence) -> String {
 }
 
 /// The sweep in a line: under way, or when it last ran and when the next is due, then the interval.
-fn sweep_line(data: &Maintenance, names: &BTreeMap<u64, String>, now: i64) -> String {
-    let name = |cid: u64| {
-        names
+fn sweep_line(data: &Maintenance, labels: &BTreeMap<u64, String>, now: i64) -> String {
+    let label = |cid: u64| {
+        labels
             .get(&cid)
             .cloned()
-            .unwrap_or_else(|| format!("agent {cid}"))
+            .unwrap_or_else(|| roles::agent_label("", cid))
     };
     let s = &data.sweep;
     let every = every_text(data.config.every_hours);
     if let Some(r) = &s.running {
-        return format!("{} is sweeping now", name(r.cid));
+        return format!("{} is sweeping now", label(r.cid));
     }
     if s.runs == 0 {
         let line = if data.watchers.is_empty() {
@@ -1052,7 +1030,7 @@ fn sweep_line(data: &Maintenance, names: &BTreeMap<u64, String>, now: i64) -> St
     }
     format!(
         "Last sweep {ago_text} by {}{next} · {every}",
-        name(s.last_cid)
+        label(s.last_cid)
     )
 }
 
@@ -1180,8 +1158,8 @@ pub fn view<'a>(state: &'a State, _project: &'a str, in_maintenance: bool) -> El
             .into(),
         );
     }
-    let names = &state.names;
-    parts.push(strip(state, data, names));
+    let labels = &state.labels;
+    parts.push(strip(state, data, labels));
     parts.push(focus_row(state, data));
     parts.push(stage(state, data));
     if !data.sweep.last_summary.is_empty() && data.sweep.runs > 0 {
@@ -1288,22 +1266,11 @@ fn dialog_view<'a>(state: &'a State, data: &'a Maintenance) -> Option<Element<'a
                 text(a.title.clone()).font(ui::SANS_SEMIBOLD).size(theme::TYPE_ITEM).color(pal.ink).into(),
                 ui::faint(a.line.clone()).into(),
             ];
-            if !a.known_tool {
-                body.push(field(
-                    "Budget (credits)",
-                    text_input(&a.budget_hint, &a.budget)
-                        .on_input(Msg::ApproveBudget)
-                        .padding(8)
-                        .style(theme::input)
-                        .into(),
-                    None,
-                ));
-            }
             body.push(field(
                 "Note",
                 text_editor(&a.note)
                     .style(crate::theme::editor)
-                    .placeholder("Anything the team should know (optional)")
+                    .placeholder("Anything the agents should know (optional)")
                     .size(13.0)
                     .height(Length::Fixed(60.0))
                     .on_action(Msg::ApproveNote)
@@ -1396,14 +1363,20 @@ fn dialog_view<'a>(state: &'a State, data: &'a Maintenance) -> Option<Element<'a
         Dialog::Sweeps(hours) => {
             let choices: Vec<Every> = EVERY_CHOICES.iter().map(|&h| Every(h)).collect();
             let watchers = if data.watchers.is_empty() {
-                "No agent watches it yet: add a planner or a researcher on the Team tab.".to_string()
+                "No agent watches it yet.".to_string()
             } else {
-                let names: Vec<String> = data
+                let labels: Vec<String> = data
                     .watchers
                     .iter()
-                    .map(|cid| state.names.get(cid).cloned().unwrap_or_else(|| format!("agent {cid}")))
+                    .map(|&cid| {
+                        state
+                            .labels
+                            .get(&cid)
+                            .cloned()
+                            .unwrap_or_else(|| roles::agent_label("", cid))
+                    })
                     .collect();
-                format!("Watchers, in turn: {}.", names.join(", "))
+                format!("Watchers, in turn: {}.", labels.join(", "))
             };
             modal_of(
                 state,
@@ -1520,7 +1493,7 @@ fn kfield<'a>(label: &str, value: String) -> Element<'a, Msg> {
 fn strip<'a>(
     state: &'a State,
     data: &'a Maintenance,
-    names: &BTreeMap<u64, String>,
+    labels: &BTreeMap<u64, String>,
 ) -> Element<'a, Msg> {
     let pal = theme::palette();
     let waiting = waiting_count(&data.proposals);
@@ -1538,7 +1511,7 @@ fn strip<'a>(
     );
     let titles = column![
         row(head).spacing(8).align_y(Alignment::Center),
-        ui::faint(sweep_line(data, names, now_ms())).size(theme::TYPE_META),
+        ui::faint(sweep_line(data, labels, now_ms())).size(theme::TYPE_META),
     ]
     .spacing(4);
     let acts = row![

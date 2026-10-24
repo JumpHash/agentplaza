@@ -47,9 +47,9 @@ pub fn items(st: &State) -> Vec<Item> {
         if let Some(info) = st.workspaces.iter().find(|w| w.id == id) {
             out.push(Item {
                 group: "Agents",
-                label: format!("Agent {}", agent.name),
+                label: format!("Agent {}", agent.label),
                 detail: format!("{} · {}", agent.role_label, agent.status),
-                run: Msg::Pick(ide::choice(info)),
+                run: Msg::Pick(ide::choice(info, &st.roster)),
             });
         }
     }
@@ -63,7 +63,7 @@ pub fn items(st: &State) -> Vec<Item> {
             group: "Agents",
             label: format!("Workstation {name}"),
             detail: format!("{} · online", ide_model::os_label(info.os.as_deref())),
-            run: Msg::Pick(ide::choice(info)),
+            run: Msg::Pick(ide::choice(info, &st.roster)),
         });
     }
     for entry in st
@@ -87,7 +87,7 @@ pub fn items(st: &State) -> Vec<Item> {
             run: Msg::Right(RightTab::Tasks),
         });
     }
-    let commands: [(&str, &str, Msg); 14] = [
+    let commands: [(&str, &str, Msg); 13] = [
         ("Show the chat", "Centre", Msg::Centre(Centre::Chat)),
         ("Show the terminal", "Centre", Msg::Centre(Centre::Terminal)),
         ("Show the editor", "Centre", Msg::Centre(Centre::Editor)),
@@ -109,7 +109,6 @@ pub fn items(st: &State) -> Vec<Item> {
         ),
         ("Refresh the workspace", "Command", Msg::RefreshAll),
         ("Show only changed files", "Command", Msg::ChangedOnly),
-        ("New agent", "Command", Msg::NewAgent),
     ];
     for (label, detail, run) in commands {
         out.push(Item {

@@ -4,17 +4,16 @@
 
 import '../styles/proto/overview.css';
 import { inScope, projectTitle, scope } from '../scope';
-import { api, type AgentProposal, type Approval, type ApprovalAction } from '../api';
+import { api, type AgentProposal, type Approval } from '../api';
 import { review, type ReviewReading } from '../api-review';
 import { href } from '../router';
-import { agentName } from '../roles';
+import { agentLabelIn } from '../roles';
 import { agents, on } from '../store';
 import { ago, attempt, badge, button, dot, empty, modal, textarea, type Tone } from '../ui/components';
 import { embedContextFromStore } from '../ui/embeds';
 import { h, lu, replace } from '../ui/dom';
 import type { LucideName } from '../ui/icons.gen';
 import { renderMarkdown } from '../ui/markdown';
-import { openAgentWizard } from './agent-wizard';
 import type { Cleanup } from './index';
 import { reviewPanel } from './review-graph';
 import { readingTone } from './review-model';
@@ -64,12 +63,6 @@ function shareOptions(a: Approval): { title: string; reason: string; options: st
   };
 }
 
-/** The sanction a sanction escalation is about: `sanction_id` in its detail. */
-function sanctionIdOf(a: Approval): number | null {
-  const d = a.detail as { sanction_id?: unknown } | null;
-  return typeof d?.sanction_id === 'number' ? d.sanction_id : null;
-}
-
 const TONE: Record<Approval['state'], Tone> = {
   pending: 'warn',
   approved: 'ok',
@@ -89,7 +82,7 @@ const PROPOSAL_TONE: Record<AgentProposal['state'], 'ok' | 'danger' | 'warn'> = 
   approved: 'ok',
   rejected: 'danger',
 };
-const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket', payment: 'credit-card', sanction: 'gavel' };
+const KIND_ICON: Record<string, LucideName> = { review: 'git-pull-request', tool: 'terminal', deploy: 'rocket' };
 
 type Item = Approval | AgentProposal;
 const isProposal = (x: Item): x is AgentProposal => 'role' in x;
@@ -112,14 +105,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   const drafts = new Map<string, string>();
   // The review cards whose review is open under them, so a redraw keeps it open.
   const openReviews = new Set<string>();
-  // The sanctions in force as suspensions, by sanction id: only these can be lifted from here.
-  let suspended = new Set<number>();
 
-  const nameOf = (cid: number): string => {
-    const agent = agents.get().find((a) => a.cid === cid);
-    return agent ? agentName(agent) : `agent ${cid}`;
-  };
-  const agentLink = (cid: number): HTMLElement => h('a.ap-agent', { href: href('agents', cid) }, nameOf(cid));
+  const nameOf = (cid: number): string => agentLabelIn(agents.get(), cid);
+  const agentLink = (cid: number): HTMLElement => h('a.ap-agent', { href: href('sessions', cid) }, nameOf(cid));
 
   const shownHere = (a: Approval): boolean => {
     if (!inProject || a.cid === 0) return true;
@@ -256,25 +244,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   };
 
-  // The sanction: Retire, Lift while the suspension stands, and Acknowledge.
-  const sanctionCard = (a: Approval): HTMLElement => {
-    const group: HTMLButtonElement[] = [];
-    const reason = reasonBox(a);
-    const sid = sanctionIdOf(a);
-    const decide = (action: ApprovalAction, approve: boolean) => () => api.decideApproval(a.id, approve, reason.value.trim() || undefined, action);
-    const lift = sid !== null && suspended.has(sid) ? ruling(group, a, 'Lift', undefined, decide('lift', false), 'Lifted') : null;
-    const retire = ruling(group, a, 'Retire', 'danger', decide('retire', false), 'Recorded');
-    const acknowledge = ruling(group, a, 'Acknowledge', 'primary', decide('acknowledge', true), 'Acknowledged');
-    return h(
-      'article.card.ap-card.ibd',
-      { 'data-key': a.id },
-      detailHead(a.created_ms, 'gavel', 'sanction', waitTitle(a), [agentLink(a.cid)]),
-      h('div.ibd-body', null, h('p.ap-foot', null, 'Retire only records your decision. apid does not retire the agent.')),
-      h('footer.ibd-foot', null, reason, h('div.ap-actions', null, retire, lift, acknowledge)),
-    );
-  };
-
-  // A tool call, a payment or a share: Deny and Approve, with what the agent asked for above them.
+  // A tool call or a share: Deny and Approve, with what the agent asked for above them.
   const plainCard = (a: Approval, chips: Node[], body: Node): HTMLElement => {
     const group: HTMLButtonElement[] = [];
     const reason = reasonBox(a);
@@ -290,11 +260,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
   };
 
   const waitingCard = (a: Approval): HTMLElement => {
-    const d = a.detail;
     const rv = reviewOf(a);
     if (rv) return reviewCard(a, rv);
-    if (a.kind === 'sanction') return sanctionCard(a);
-    if (a.kind === 'payment') return plainCard(a, [agentLink(a.cid)], h('pre.ap-pre', null, JSON.stringify(d, null, 2) ?? 'null'));
     if (a.kind === 'artifact.share') {
       const ask = shareOptions(a);
       return plainCard(
@@ -323,7 +290,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       (x): x is HTMLElement => x !== null,
     );
     const reject = button('Reject', () => void rejectProposal(p), { kind: 'danger' });
-    const reviewIt = button('Review…', () => openAgentWizard({ proposal: p, prefill: p.role, onDone: () => void loadProposals() }), { kind: 'primary' });
+    const approve = button('Approve', () => approveProposal(p), { kind: 'primary' });
     return h(
       'article.card.ap-card.ibd',
       { 'data-key': `pp-${p.id}` },
@@ -336,7 +303,7 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
         p.instruction ? h('blockquote.ap-quote', null, `“${p.instruction}”`) : null,
         h('p.ap-by', null, `Proposed by ${p.by}`),
       ),
-      h('footer.ibd-foot', null, h('div.ap-actions', null, reject, reviewIt)),
+      h('footer.ibd-foot', null, h('div.ap-actions', null, reject, approve)),
     );
   };
 
@@ -352,7 +319,12 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     );
   };
 
-  // A rejection needs a reason, as the wizard requires: a blank answer keeps the dialog open, and Cancel gives up.
+  /** Approves the orchestrator's proposal as it was written (the hub spawns the agents it asks for). */
+  const approveProposal = (p: AgentProposal): void => {
+    void attempt(() => api.approveAgentProposal(p.id), 'Approved').then(() => void loadProposals());
+  };
+
+  // A rejection needs a reason: a blank answer keeps the dialog open, and Cancel gives up.
   const rejectProposal = (p: AgentProposal): void => {
     const title = p.role.title || p.role.id;
     const ta = textarea({ rows: 3, 'aria-label': 'Reason' });
@@ -387,9 +359,6 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
     } catch {
       failed = true;
     }
-    // A failed register read hides every Lift until the next load, which is the safe side.
-    const register = await api.sanctions().catch(() => null);
-    suspended = new Set(register?.suspensions.filter((s) => s.active).map((s) => s.id) ?? []);
     loaded = true;
     if (alive) render();
   };

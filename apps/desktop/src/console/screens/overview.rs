@@ -1,7 +1,7 @@
 //! The Overview screen (parity with the web console's `overview` view, in the prototype's bare page): the
 //! orchestrator's composer under the plaza's question, the three ways in, the figures, what waits on the owner
 //! beside the live activity, the projects in progress and the fleet. Under a project it is that project's: its
-//! agents, its tasks, its stage and budget, its activity.
+//! agents, its tasks, its stage, its activity.
 //!
 //! The web view is pushed the transcript bus. A screen has no event stream here, so the feed is
 //! polled: every load reads each agent's transcript after the last entry seen.
@@ -20,7 +20,7 @@ use serde_json::{Map, Value, json};
 use super::Id;
 use super::approvals::{self, Approval, Proposal};
 use super::work_model::{self as model};
-use crate::console::{Ctx, chat_tools, client, ui};
+use crate::console::{Ctx, chat_tools, client, roles, ui};
 use crate::theme::{self, TYPE_META, TYPE_PROSE, TYPE_UI};
 
 const FEED_MAX: usize = 40;
@@ -50,8 +50,6 @@ pub struct State {
     /// A load is in flight; hub events that arrive meanwhile only mark `again`.
     loading: bool,
     again: bool,
-    /// Under a project, the credits left in its own budget (None: it is funded from the plaza's).
-    budget: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +80,6 @@ pub struct Snapshot {
     projects: Option<(Vec<model::Project>, Vec<model::Task>)>,
     approvals: Vec<Approval>,
     proposals: Vec<Proposal>,
-    budget: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,7 +99,7 @@ struct Counts {
 #[derive(Debug, Clone, Deserialize)]
 struct Agent {
     cid: u64,
-    name: String,
+    role: String,
     role_label: String,
     tier: String,
     status: String,
@@ -111,7 +108,7 @@ struct Agent {
     /// What it is doing now: a step waiting on an approval makes its task the owner's square.
     #[serde(default)]
     step: Option<model::Step>,
-    /// The project it works on (None: the bench, or the orchestrator).
+    /// The project its live session is on (None: no live session, or the orchestrator).
     #[serde(default)]
     project: Option<String>,
     #[serde(default)]
@@ -119,13 +116,13 @@ struct Agent {
 }
 
 impl Agent {
-    /// Shown under `project` (None: All projects): its member, or the orchestrator.
+    /// Shown under `project` (None: All projects): one working on it, or the orchestrator.
     fn in_scope(&self, project: Option<&str>) -> bool {
         project.is_none_or(|p| self.project.as_deref() == Some(p) || self.tier == "orchestrator")
     }
 
-    /// On no project, and neither the orchestrator nor a model-only agent.
-    fn on_bench(&self) -> bool {
+    /// On no project, and neither the orchestrator (it works on every project) nor a model-only agent.
+    fn no_project(&self) -> bool {
         self.project.as_deref().is_none_or(str::is_empty)
             && self.tier != "orchestrator"
             && self.kind != "model"
@@ -198,13 +195,6 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 .get::<Value>("/v1/agent-proposals")
                 .map(|v| approvals::list(&v, Proposal::from_value))
                 .unwrap_or_default();
-            let budget = scope.as_deref().and_then(|p| {
-                let b: Value = client.get(&format!("/v1/projects/{p}/budget")).ok()?;
-                b["own"]
-                    .as_bool()
-                    .unwrap_or(false)
-                    .then(|| b["balance"].as_i64().unwrap_or(0))
-            });
             Ok(Snapshot {
                 overview,
                 agents,
@@ -212,7 +202,6 @@ pub fn load(state: &mut State, ctx: &Ctx) -> Task<Msg> {
                 projects: read_projects(&client, scope.as_deref()),
                 approvals,
                 proposals,
-                budget,
             })
         },
         Msg::Loaded,
@@ -243,7 +232,6 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             state.projects = snap.projects;
             state.approvals = snap.approvals;
             state.proposals = snap.proposals;
-            state.budget = snap.budget;
             // The roster was read after the steps the events brought, so its own are as new.
             state.steps.clear();
             state.error = None;
@@ -364,7 +352,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     let sub = match orch {
         Some(o) => format!(
             "{} plans the work and delegates it to the fleet · {} · Ctrl+Enter to send",
-            name(o),
+            roles::agent_label(&o.role, o.cid),
             o.model
         ),
         None => String::new(),
@@ -395,7 +383,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
 
     let stats = match (&state.overview, scope) {
         (Some(_), Some(s)) => project_stats(state, s),
-        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.on_bench()).count()),
+        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.no_project()).count()),
         (None, _) => boxed_card(ui::empty(
             "alert",
             "apid is unreachable",
@@ -458,14 +446,14 @@ fn read_projects(
     Some((projects, tasks))
 }
 
-/// Under a project, its figures: its agents, its open tasks, its stage, its budget.
+/// Under a project, its figures: its agents, its open tasks, its stage.
 fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
-    let team: Vec<&Agent> = state
+    let agents: Vec<&Agent> = state
         .agents
         .iter()
         .filter(|a| a.project.as_deref() == Some(project))
         .collect();
-    let working = team.iter().filter(|a| a.status == "working").count();
+    let working = agents.iter().filter(|a| a.status == "working").count();
     let (tasks, p) = match &state.projects {
         Some((list, tasks)) => (tasks.as_slice(), list.iter().find(|x| x.id == project)),
         None => (&[][..], None),
@@ -488,14 +476,10 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
         ),
         None => ("—".to_string(), ""),
     };
-    let (budget, budget_sub) = match state.budget {
-        Some(b) => (ui::thousands(b), "credits left"),
-        None => ("—".to_string(), "from the plaza"),
-    };
     row![
         stat(
             "Agents",
-            figure(team.len().to_string()),
+            figure(agents.len().to_string()),
             format!("{working} working")
         ),
         stat(
@@ -504,13 +488,12 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
             format!("{done} done")
         ),
         stat("Stage", figure(stage), life.to_string()),
-        stat("Budget", figure(budget), budget_sub.to_string()),
     ]
     .spacing(16)
     .into()
 }
 
-fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
+fn stat_row<'a>(o: &Overview, no_project: usize) -> Element<'a, Msg> {
     let open =
         o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
     let done = o.tasks.get("done").copied().unwrap_or(0);
@@ -518,7 +501,10 @@ fn stat_row<'a>(o: &Overview, bench: usize) -> Element<'a, Msg> {
         stat(
             "Agents",
             figure(o.agents.total.to_string()),
-            format!("{} working · {bench} on the bench", o.agents.working)
+            format!(
+                "{} working · {no_project} with no project",
+                o.agents.working
+            )
         ),
         stat(
             "Open tasks",
@@ -615,7 +601,7 @@ fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
         .width(Length::Fixed(360.0));
     let pick = row![
         ui::dot::<Msg>(tone),
-        text(name(orch))
+        text(roles::agent_label(&orch.role, orch.cid))
             .font(SANS_MEDIUM)
             .size(TYPE_UI)
             .color(p.ink)
@@ -824,7 +810,7 @@ fn waiting<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
     let mut rows = column![].spacing(0);
     let mut lines: Vec<(&str, String, String)> = Vec::new();
     for a in &list {
-        let who = name_of(state, a.cid);
+        let who = label_of(state, a.cid);
         lines.push((
             kind_icon(&a.kind),
             wait_title(a),
@@ -840,7 +826,11 @@ fn waiting<'a>(state: &'a State, scope: Option<&str>) -> Element<'a, Msg> {
         lines.push((
             "user-plus",
             title,
-            format!("{} · {}", p.by, approvals::ago(p.created_ms)),
+            format!(
+                "{} · {}",
+                label_of(state, p.by_cid),
+                approvals::ago(p.created_ms)
+            ),
         ));
     }
     for (i, (icon, title, sub)) in lines.into_iter().enumerate() {
@@ -905,7 +895,7 @@ fn wait_row<'a>(icon: &str, title: String, sub: String) -> Element<'a, Msg> {
         .into()
 }
 
-/// The line of a waiting approval: its goal, its escalation, its payment, or the tool call.
+/// The line of a waiting approval: its goal, or the tool call.
 fn wait_title(a: &Approval) -> String {
     let goal = a.detail.get("goal").and_then(Value::as_str);
     let task = a.detail.get("task").and_then(Value::as_str);
@@ -913,8 +903,6 @@ fn wait_title(a: &Approval) -> String {
         "review" => goal
             .map(str::to_string)
             .unwrap_or_else(|| format!("Review of {}", task.unwrap_or(""))),
-        "sanction" => format!("Escalation: {}", a.subject),
-        "payment" => format!("Payment awaiting approval: {}", a.subject),
         "deploy" => a.subject.clone(),
         "artifact.share" => format!("Share {}", a.subject),
         _ => {
@@ -935,17 +923,15 @@ fn kind_icon(kind: &str) -> &'static str {
         "review" => "git-pull-request",
         "tool" => "terminal",
         "deploy" => "rocket",
-        "payment" => "credit-card",
-        "sanction" => "gavel",
         _ => "shield-check",
     }
 }
 
-/// An agent's name for the waiting list: "Unnamed" while blank, "agent <cid>" when unknown.
-fn name_of(state: &State, cid: u64) -> String {
+/// An agent's label for the waiting list and the feed: its role and cid, "agent #<cid>" when unknown.
+fn label_of(state: &State, cid: u64) -> String {
     match state.agents.iter().find(|x| x.cid == cid) {
-        Some(a) => name(a),
-        None => format!("agent {cid}"),
+        Some(a) => roles::agent_label(&a.role, a.cid),
+        None => roles::agent_label("", cid),
     }
 }
 
@@ -961,12 +947,7 @@ fn activity<'a>(state: &'a State) -> Element<'a, Msg> {
         let now = now_ms();
         let mut list = column![].spacing(8);
         for item in &state.feed {
-            let who = state
-                .agents
-                .iter()
-                .find(|a| a.cid == item.cid)
-                .map(name)
-                .unwrap_or_else(|| format!("agent {}", item.cid));
+            let who = label_of(state, item.cid);
             list = list.push(
                 row![
                     container(
@@ -1081,7 +1062,7 @@ fn projects<'a>(state: &'a State) -> Element<'a, Msg> {
     ov_card(vec![head_title("Projects")], column(rows).into(), true)
 }
 
-/// The Fleet card: a tile per agent (its dot, its name, its work or state), opening its transcript.
+/// The Fleet card: a tile per agent (its dot, its label, its work or state), opening its transcript.
 fn fleet<'a>(agents: Vec<&'a Agent>) -> Element<'a, Msg> {
     if agents.is_empty() {
         return ov_card(
@@ -1130,7 +1111,7 @@ fn tile<'a>(a: &'a Agent) -> Element<'a, Msg> {
         ui::dot::<Msg>(tone),
         column![
             container(
-                text(name(a))
+                text(roles::agent_label(&a.role, a.cid))
                     .font(SANS_MEDIUM)
                     .size(TYPE_UI)
                     .color(p.ink)
@@ -1256,15 +1237,6 @@ fn rule<'a>(color: Color) -> Element<'a, Msg> {
             ..Default::default()
         })
         .into()
-}
-
-/// The name an agent chose for itself, or "Unnamed" while it has none.
-fn name(a: &Agent) -> String {
-    if a.name.trim().is_empty() {
-        "Unnamed".to_string()
-    } else {
-        a.name.clone()
-    }
 }
 
 /// The feed line for a transcript entry, if the feed shows that kind.
