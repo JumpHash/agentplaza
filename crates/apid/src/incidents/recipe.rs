@@ -1,15 +1,17 @@
 //! The incident recipe's four steps (PLAN 24.1, 12.1): triage, act, tell and after. The run is the engine's (`recipes::runs`)
-//! and each step is settled as it ends; the steps themselves are plain code, because the work is the hub's own: the
-//! deploy path, the task planner, the chat, Weft's docs and project memory. The two outside reads are ports: the logs a
-//! source's connector can fetch ([`Logs`]) and the project's notify connector ([`Notify`]). Production answers them from
-//! the connectors (Sentry's latest event; Telegram's `send`, when that connector is enabled); a test gives its own.
+//! and each step is settled as it ends; the steps are plain code, because the work is the hub's own: the deploy path, the
+//! task planner, the chat, Weft's docs and project memory. The outside reads are ports: the logs a source's connector can
+//! fetch ([`Logs`]), the project's notify connector ([`Notify`]) and the recipe's model, which distils the postmortem into
+//! memory proposals ([`Model`]; the template of [`template_lessons`] is the fallback when no model answers). Production
+//! answers the ports from the connectors (Sentry's latest event, Loki's query_range, Telegram's `send`) where they are
+//! connected; a test gives its own.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
 
-use super::{DEPLOY_HEALTH, Incident, RECIPE, Step};
+use super::{DEPLOY_HEALTH, Incident, Landing, RECIPE, Step};
 use crate::cards::{Kind, NewCard};
 use crate::environments;
 use crate::project_memory;
@@ -25,9 +27,9 @@ pub enum Trigger {
     Breach,
 }
 
-/// The logs a source's connector can fetch for an alert: a text excerpt, or none when the connector fetches none.
+/// The logs a source's connector can fetch for an incident: a text excerpt, or None when none is connected for it.
 pub trait Logs: Send + Sync {
-    fn fetch(&self, source: &str, fingerprint: &str) -> Result<Option<String>, String>;
+    fn fetch(&self, incident: &Incident) -> Result<Option<String>, String>;
 }
 
 /// The project's notify connector: a notice sent out of the hub, when one is connected.
@@ -35,12 +37,23 @@ pub trait Notify: Send + Sync {
     fn send(&self, project: &str, text: &str) -> Result<(), String>;
 }
 
+/// The recipe's model: asked to distil a postmortem. Ok(None) (or an error) means no model answered.
+pub trait Model: Send + Sync {
+    fn answer(&self, prompt: &str) -> Result<Option<String>, String>;
+}
+
+/// The most lessons a postmortem proposes.
+const MAX_LESSONS: usize = 5;
+/// A lesson's text and its why, within the memory's limits.
+const LESSON_MAX: usize = 2000;
+const WHY_MAX: usize = 500;
+
 /// Runs incident `id` through its recipe: triage, act, tell, after. Returns the act's outcome.
 pub fn run(app: &Arc<App>, id: &str, trigger: Trigger) -> String {
     let ports = Connected {
         app: Arc::clone(app),
     };
-    run_with(app, id, trigger, &ports, &ports)
+    run_with(app, id, trigger, &ports, &ports, &ports)
 }
 
 /// [`run`] with the outside reads given (a test's fakes; production passes [`Connected`]).
@@ -50,6 +63,7 @@ pub fn run_with(
     trigger: Trigger,
     logs: &dyn Logs,
     notify: &dyn Notify,
+    model: &dyn Model,
 ) -> String {
     let Some(incident) = app.incidents.get(id) else {
         return "none".into();
@@ -73,7 +87,13 @@ pub fn run_with(
     let suspect = triaged
         .suspect
         .as_ref()
-        .map(|s| format!("{}@{}", s.env, s.version));
+        .map(|s| format!("{}@{}", s.env, s.version))
+        .or_else(|| {
+            triaged
+                .landing
+                .as_ref()
+                .map(|(l, _)| format!("landing {}", l.change))
+        });
     app.incidents.update(id, |i| {
         i.suspect = suspect.clone().unwrap_or_default();
         i.logs = triaged.logs.clone().unwrap_or_default();
@@ -94,7 +114,7 @@ pub fn run_with(
     record(app, id, run, "tell", true, told);
 
     let incident = app.incidents.get(id).unwrap_or(incident);
-    let (after_ok, after_text) = after(app, &incident, &acted);
+    let (after_ok, after_text) = after(app, &incident, &acted, model);
     record(app, id, run, "after", after_ok, after_text);
 
     app.incidents.get(id).map(|i| i.outcome).unwrap_or_default()
@@ -142,16 +162,18 @@ pub struct Suspect {
     pub rolled_back: bool,
 }
 
-/// What the triage found: the suspect deploy, the notes on what was correlated, and the logs fetched.
+/// What the triage found: the suspect deploy, the landing that correlates (with why), the notes on what was correlated,
+/// and the logs fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Triage {
     pub suspect: Option<Suspect>,
+    pub landing: Option<(Landing, String)>,
     pub notes: Vec<String>,
     pub logs: Option<String>,
 }
 
-/// Correlates the incident with the deploys, the releases (their landings) and the signals before it started, and reads
-/// the logs the source's connector can fetch.
+/// Correlates the incident with the deploys, the landings (the changes that landed before it, their files and areas), the
+/// releases and the signals before it started, and reads the logs the source's connector can fetch.
 pub fn triage(app: &App, incident: &Incident, logs: &dyn Logs) -> Triage {
     if incident.source == DEPLOY_HEALTH {
         let (env, version) = incident.suspect.split_once('@').unwrap_or(("", ""));
@@ -163,6 +185,7 @@ pub fn triage(app: &App, incident: &Incident, logs: &dyn Logs) -> Triage {
                 live: false,
                 rolled_back: true,
             }),
+            landing: None,
             notes: vec![format!(
                 "The health watch rolled {version} back on {env} when it breached ({}).",
                 incident.detail
@@ -228,22 +251,94 @@ pub fn triage(app: &App, incident: &Incident, logs: &dyn Logs) -> Triage {
     notes.push(format!(
         "{signals} error signal(s) in the hour before the alert."
     ));
-    let fetched = match logs.fetch(&incident.source, &incident.fingerprint) {
+    let fetched = match logs.fetch(incident) {
         Ok(Some(text)) => {
-            notes.push("The source's latest event is in the logs.".into());
+            notes.push(format!(
+                "The logs ({}) are in the incident.",
+                incident.source
+            ));
             Some(text)
         }
-        Ok(None) => None,
+        Ok(None) => {
+            notes.push("No logs: nothing connected fetches them for this source here.".into());
+            None
+        }
         Err(why) => {
             notes.push(format!("The logs could not be fetched: {why}."));
             None
         }
     };
+    let landing = correlate_landing(app, incident, fetched.as_deref());
+    match &landing {
+        Some((l, why)) => notes.push(format!(
+            "Change {} (\"{}\") by {} landed {} minute(s) before the alert and {why}; it touched {}.",
+            l.change,
+            l.title,
+            l.author,
+            started.saturating_sub(l.at_ms) / 60_000,
+            if l.files.is_empty() {
+                "no files it can read".to_string()
+            } else {
+                l.files.join(", ")
+            }
+        )),
+        None => notes.push("No landing in the hour before the alert.".into()),
+    }
     Triage {
         suspect: best,
+        landing,
         notes,
         logs: fetched,
     }
+}
+
+/// The landing of the hour before the alert that fits it best: one whose file the alert's text or logs name, then one in
+/// an area they name, then the latest of those that landed in the window.
+fn correlate_landing(
+    app: &App,
+    incident: &Incident,
+    logs: Option<&str>,
+) -> Option<(Landing, String)> {
+    let started = incident.started_ms;
+    let from = started.saturating_sub(super::CORRELATE_MS);
+    let until = started + super::SLACK_MS;
+    let text = format!(
+        "{} {} {}",
+        incident.title,
+        incident.detail,
+        logs.unwrap_or("")
+    );
+    app.incidents
+        .landings_of(&incident.project)
+        .into_iter()
+        .filter(|l| l.at_ms >= from && l.at_ms <= until)
+        .map(|l| {
+            let (rank, why) = match_landing(&text, &l);
+            (rank, l, why)
+        })
+        .max_by(|a, b| (a.0, a.1.at_ms).cmp(&(b.0, b.1.at_ms)))
+        .map(|(_, l, why)| (l, why))
+}
+
+/// How a landing fits an alert's text: rank 2 when the text names one of its files (or its basename), 1 when it names one
+/// of its areas, 0 for a landing in the window alone. The reason says which.
+pub fn match_landing(text: &str, landing: &Landing) -> (u8, String) {
+    let text = text.to_lowercase();
+    if let Some(file) = landing.files.iter().find(|f| {
+        let f = f.to_lowercase();
+        let base = f.rsplit('/').next().unwrap_or("");
+        text.contains(&f) || (base.len() >= 4 && text.contains(base))
+    }) {
+        return (2, format!("touched {file}, which the alert names"));
+    }
+    if let Some(area) = landing
+        .areas
+        .iter()
+        .find(|a| !a.is_empty() && text.contains(&a.to_lowercase()))
+    {
+        return (1, format!("is in the {area} area the alert names"));
+    }
+    (0, "landed in the window before it".into())
 }
 
 // ---- Act ------------------------------------------------------------------------------------------------------------
@@ -259,8 +354,9 @@ pub struct Acted {
     pub ok: bool,
 }
 
-/// A correlating deploy is rolled back through the deploy path (the previous release is deployed again, with its
-/// stages and checks, and a protected environment waits for the owner). Without one, a fix task is opened.
+/// A correlating deploy is rolled back through the deploy path (the previous release is deployed again, with its stages
+/// and checks, and a protected environment waits for the owner). Without one, a fix task is opened: naming the landing
+/// that correlates, when there is one.
 pub fn act(app: &Arc<App>, incident: &Incident, triage: &Triage) -> Acted {
     let Some(suspect) = &triage.suspect else {
         return fix_task(app, incident, triage, "no deploy correlates with the alert");
@@ -355,11 +451,31 @@ fn previous(app: &App, project: &str, suspect: &Suspect) -> Option<String> {
         .map(|d| d.version.clone())
 }
 
-/// Opens a fix task with a spec drawn from the alert, its triage and its logs.
+/// Opens a fix task with a spec drawn from the alert, its triage, its logs and the landing that correlates.
 fn fix_task(app: &Arc<App>, incident: &Incident, triage: &Triage, why: &str) -> Acted {
     let logs = triage.logs.as_deref().unwrap_or("(no logs were fetched)");
+    let suspect_change = match &triage.landing {
+        Some((l, reason)) => format!(
+            "Suspect change: {} \"{}\" by {} (task {}, session {}), which {reason}. Its files: {}.",
+            l.change,
+            l.title,
+            l.author,
+            if l.task.is_empty() { "none" } else { &l.task },
+            if l.session.is_empty() {
+                "none"
+            } else {
+                &l.session
+            },
+            if l.files.is_empty() {
+                "none readable".to_string()
+            } else {
+                l.files.join(", ")
+            }
+        ),
+        None => "Suspect change: none correlates.".to_string(),
+    };
     let goal = format!(
-        "Fix the cause of incident {id}: {title} ({severity}, from {source}).\n\n{detail}\n\nLinks:\n{links}\n\nTriage:\n{notes}\n\nLogs:\n{logs}\n\nNo rollback was made: {why}.",
+        "Fix the cause of incident {id}: {title} ({severity}, from {source}).\n\n{detail}\n\nLinks:\n{links}\n\nTriage:\n{notes}\n\n{suspect_change}\n\nLogs:\n{logs}\n\nNo rollback was made: {why}.",
         id = incident.id,
         title = incident.title,
         severity = incident.severity,
@@ -387,9 +503,14 @@ fn fix_task(app: &Arc<App>, incident: &Incident, triage: &Triage, why: &str) -> 
         Ok(posted) => {
             let task = posted.first().map(|p| p.id.clone()).unwrap_or_default();
             app.work.dispatch_idle(app);
+            let named = triage
+                .landing
+                .as_ref()
+                .map(|(l, _)| format!("; suspect change {}", l.change))
+                .unwrap_or_default();
             Acted {
                 outcome: "fix_task".into(),
-                detail: format!("Opened fix task {task}: {why}."),
+                detail: format!("Opened fix task {task}: {why}{named}."),
                 rollback: String::new(),
                 task,
                 ok: true,
@@ -456,11 +577,21 @@ fn tell(app: &App, incident: &Incident, acted: &Acted, notify: &dyn Notify) -> S
 
 // ---- After ----------------------------------------------------------------------------------------------------------
 
-/// Writes the postmortem to the project's docs in Weft and proposes its lessons into the project's memory as pitfalls
-/// and decisions. Returns whether the postmortem was written, and the step's text.
-fn after(app: &App, incident: &Incident, acted: &Acted) -> (bool, String) {
+/// A lesson the postmortem proposes into the project's memory: its type (`pitfall` or `decision`), its text and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lesson {
+    pub kind: String,
+    pub text: String,
+    pub why: String,
+}
+
+/// Writes the postmortem to the project's docs in Weft and proposes its lessons into the project's memory. The lessons
+/// are the model's, when it answers with some; otherwise the template's. Returns whether the postmortem was written, and
+/// the step's text.
+fn after(app: &App, incident: &Incident, acted: &Acted, model: &dyn Model) -> (bool, String) {
     let path = format!("docs/incidents/{}.md", incident.id);
-    let lessons = lessons(incident, acted);
+    let draft = postmortem(incident, acted, &[]);
+    let (lessons, source) = lessons_for(incident, acted, model, &draft);
     let text = postmortem(incident, acted, &lessons);
     let written = write_doc(
         app,
@@ -472,15 +603,20 @@ fn after(app: &App, incident: &Incident, acted: &Acted) -> (bool, String) {
     let now = now();
     let ids: Vec<String> = lessons
         .iter()
-        .map(|(kind, text)| {
+        .map(|lesson| {
+            let why = if lesson.why.is_empty() {
+                format!("Lesson of incident {}", incident.id)
+            } else {
+                lesson.why.clone()
+            };
             app.project_memory
                 .add_proposal(project_memory::Proposal {
                     id: String::new(),
                     project: incident.project.clone(),
-                    kind: kind.clone(),
-                    text: text.clone(),
+                    kind: lesson.kind.clone(),
+                    text: lesson.text.clone(),
                     anchors: Vec::new(),
-                    why: format!("Lesson of incident {}", incident.id),
+                    why: format!("{why} (distilled by {source})"),
                     by_cid: 0,
                     by: "incident".into(),
                     created_ms: now,
@@ -495,73 +631,116 @@ fn after(app: &App, incident: &Incident, acted: &Acted) -> (bool, String) {
         }
         i.lessons = ids.clone();
     });
+    let proposed = format!(
+        "{} lesson(s) proposed to memory, distilled by {source}",
+        ids.len()
+    );
     match written {
-        Ok(()) => (
-            true,
-            format!(
-                "Postmortem at {path}; {} lesson(s) proposed to memory.",
-                ids.len()
-            ),
-        ),
+        Ok(()) => (true, format!("Postmortem at {path}; {proposed}.")),
         Err(why) => (
             false,
-            format!(
-                "The postmortem was not written ({why}); {} lesson(s) proposed to memory.",
-                ids.len()
-            ),
+            format!("The postmortem was not written ({why}); {proposed}."),
         ),
     }
 }
 
-/// The lessons, as (memory type, text): a pitfall for what went wrong, a decision for a rollback's rule.
-fn lessons(incident: &Incident, acted: &Acted) -> Vec<(String, String)> {
+/// The lessons of a postmortem: the model's answer when it gives valid ones (the source is `the model`), else the template
+/// (`the template`). The prompt is the postmortem's draft and the format the memory takes.
+pub fn lessons_for(
+    incident: &Incident,
+    acted: &Acted,
+    model: &dyn Model,
+    draft: &str,
+) -> (Vec<Lesson>, &'static str) {
+    let prompt = format!(
+        "{draft}\n\nDistil the lessons of this postmortem into at most {MAX_LESSONS} memory proposals for the project. \
+         Reply with only a JSON array of objects, each with \"kind\" (\"pitfall\" for what went wrong, \"decision\" for a \
+         rule the project follows), \"text\" (one or two sentences) and \"why\" (one sentence)."
+    );
+    match model.answer(&prompt) {
+        Ok(Some(answer)) => match parse_lessons(&answer) {
+            Some(lessons) => (lessons, "the model"),
+            None => (template_lessons(incident, acted), "the template"),
+        },
+        _ => (template_lessons(incident, acted), "the template"),
+    }
+}
+
+/// A model's answer as lessons: the JSON array in it, each item with a kind of `pitfall` or `decision` and a text within
+/// the memory's limits. Items that do not fit are dropped; no valid item is None.
+pub fn parse_lessons(answer: &str) -> Option<Vec<Lesson>> {
+    let start = answer.find('[')?;
+    let end = answer.rfind(']')?;
+    if end < start {
+        return None;
+    }
+    let items: Vec<Value> = serde_json::from_str(&answer[start..=end]).ok()?;
+    let lessons: Vec<Lesson> = items
+        .iter()
+        .filter_map(|item| {
+            let kind = item["kind"].as_str()?.trim();
+            if !matches!(kind, "pitfall" | "decision") {
+                return None;
+            }
+            let text = item["text"].as_str()?.trim();
+            let why = item["why"].as_str().unwrap_or("").trim();
+            if text.is_empty() || text.chars().count() > LESSON_MAX || why.chars().count() > WHY_MAX
+            {
+                return None;
+            }
+            Some(Lesson {
+                kind: kind.to_string(),
+                text: text.to_string(),
+                why: why.to_string(),
+            })
+        })
+        .take(MAX_LESSONS)
+        .collect();
+    (!lessons.is_empty()).then_some(lessons)
+}
+
+/// The template's lessons, for when no model answers: a pitfall for what went wrong, and for a rollback the rule it
+/// followed.
+pub fn template_lessons(incident: &Incident, acted: &Acted) -> Vec<Lesson> {
     let env = if incident.environment.is_empty() {
         "the service".to_string()
     } else {
         incident.environment.clone()
     };
-    let mut out = Vec::new();
+    let pitfall = |text: String| Lesson {
+        kind: "pitfall".into(),
+        text,
+        why: String::new(),
+    };
     match acted.outcome.as_str() {
-        "rollback" | "rollback_waiting" => {
-            out.push((
-                "pitfall".to_string(),
-                format!(
-                    "{}: {env} ran a deploy that fired the alert; it was rolled back to {} while the cause was found. Check its signals before the next promotion.",
-                    incident.title, acted.rollback
-                ),
-            ));
-            out.push((
-                "decision".to_string(),
-                format!(
+        "rollback" | "rollback_waiting" => vec![
+            pitfall(format!(
+                "{}: {env} ran a deploy that fired the alert; it was rolled back to {} while the cause was found. Check its signals before the next promotion.",
+                incident.title, acted.rollback
+            )),
+            Lesson {
+                kind: "decision".into(),
+                text: format!(
                     "An alert that correlates with a deploy is answered by rolling that deploy back first, through the deploy path (incident {}).",
                     incident.id
                 ),
-            ));
-        }
-        "rolled_back" => out.push((
-            "pitfall".to_string(),
-            format!(
-                "{}: the health window caught the breach and rolled the release back on its own; the breach numbers are in the incident card.",
-                incident.title
-            ),
-        )),
-        "fix_task" => out.push((
-            "pitfall".to_string(),
-            format!(
-                "{} on {env} had no correlating deploy, so its cause is in the code or its configuration; fix task {} carries the alert and the logs.",
-                incident.title, acted.task
-            ),
-        )),
-        _ => out.push((
-            "pitfall".to_string(),
-            format!("{}: {}", incident.title, incident.detail),
-        )),
+                why: String::new(),
+            },
+        ],
+        "rolled_back" => vec![pitfall(format!(
+            "{}: the health window caught the breach and rolled the release back on its own; the breach numbers are in the incident card.",
+            incident.title
+        ))],
+        "fix_task" => vec![pitfall(format!(
+            "{} on {env} had no correlating deploy, so its cause is in the code or its configuration; fix task {} carries the alert and the logs.",
+            incident.title, acted.task
+        ))],
+        _ => vec![pitfall(format!("{}: {}", incident.title, incident.detail))],
     }
-    out
 }
 
 /// The postmortem's text: the alert, the timeline of the steps, the correlation, the logs, the action and the lessons.
-fn postmortem(incident: &Incident, acted: &Acted, lessons: &[(String, String)]) -> String {
+fn postmortem(incident: &Incident, acted: &Acted, lessons: &[Lesson]) -> String {
     let mut out = format!("# Incident {}: {}\n\n", incident.id, incident.title);
     out.push_str(&format!("- Severity: {}\n", incident.severity));
     out.push_str(&format!("- Source: {}\n", incident.source));
@@ -593,7 +772,7 @@ fn postmortem(incident: &Incident, acted: &Acted, lessons: &[(String, String)]) 
     }
     if !incident.suspect.is_empty() {
         out.push_str(&format!(
-            "\n## Correlation\n\nThe deploy before the alert: {}.\n",
+            "\n## Correlation\n\nThe suspect: {}.\n",
             incident.suspect
         ));
     }
@@ -604,9 +783,11 @@ fn postmortem(incident: &Incident, acted: &Acted, lessons: &[(String, String)]) 
         "\n## Action\n\n{}: {}\n",
         acted.outcome, acted.detail
     ));
-    out.push_str("\n## Lessons\n\n");
-    for (kind, text) in lessons {
-        out.push_str(&format!("- {kind}: {text}\n"));
+    if !lessons.is_empty() {
+        out.push_str("\n## Lessons\n\n");
+        for lesson in lessons {
+            out.push_str(&format!("- {}: {}\n", lesson.kind, lesson.text));
+        }
     }
     out
 }
@@ -633,16 +814,19 @@ fn write_doc(app: &App, project: &str, path: &str, text: &str, title: &str) -> R
 
 // ---- The connected ports ----------------------------------------------------------------------------------------------
 
-/// The production ports: Sentry's latest event through the `sentry` connector, and `send` through the `telegram`
-/// connector, each when it is enabled.
+/// The production ports. Logs: Sentry's latest event through the `sentry` connector, and Loki's lines for a Grafana or
+/// Alertmanager alert when its environment names the `loki` connector. Notify: `send` through the `telegram` connector,
+/// when it is enabled. Model: no hub-side model call is wired for one-shot completions yet, so no model answers and the
+/// template is written (the port is what a model plugs into; tests give a mock).
 pub struct Connected {
     app: Arc<App>,
 }
 
 impl Logs for Connected {
-    fn fetch(&self, source: &str, fingerprint: &str) -> Result<Option<String>, String> {
-        match source {
-            "sentry" => sentry_latest(&self.app, fingerprint),
+    fn fetch(&self, incident: &Incident) -> Result<Option<String>, String> {
+        match incident.source.as_str() {
+            "sentry" => sentry_latest(&self.app, &incident.fingerprint),
+            "grafana" | "alertmanager" => loki_lines(&self.app, incident),
             _ => Ok(None),
         }
     }
@@ -662,6 +846,12 @@ impl Notify for Connected {
             &json!({ "text": text }),
         )
         .map(|_| ())
+    }
+}
+
+impl Model for Connected {
+    fn answer(&self, _prompt: &str) -> Result<Option<String>, String> {
+        Ok(None)
     }
 }
 
@@ -727,6 +917,83 @@ fn excerpt(event: &Value) -> String {
     clip(&lines.join("\n"), 2000)
 }
 
+/// The lines Loki holds for an alert's service over its window (`query_range`, the 10 minutes before the alert to a
+/// minute after it), when the incident's environment names the `loki` connector. The token is a bearer header only.
+fn loki_lines(app: &App, incident: &Incident) -> Result<Option<String>, String> {
+    let Some(env) = app
+        .environments
+        .of(&incident.project)
+        .into_iter()
+        .find(|e| e.name == incident.environment)
+    else {
+        return Ok(None);
+    };
+    if env.variables.get(super::LOGS_VAR).map(String::as_str) != Some("loki") {
+        return Ok(None);
+    }
+    let values = crate::connectors::hub_values(app, "loki")?;
+    let base = values
+        .get("url")
+        .map(|u| u.trim().trim_end_matches('/'))
+        .filter(|u| !u.is_empty())
+        .ok_or("the loki connector has no API address (LOKI_URL)")?;
+    if !(base.starts_with("https://") || base.starts_with("http://")) {
+        return Err("the Loki connector's address is an http or https address".into());
+    }
+    let service = env
+        .variables
+        .get(super::SERVICE_VAR)
+        .map(String::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or("the environment names no service to query (ALERT_SERVICE)")?;
+    let token = values.get("token").map(String::as_str).unwrap_or("").trim();
+    let query = format!("{{service=\"{service}\"}}");
+    let start = incident.started_ms.saturating_sub(10 * 60_000) * 1_000_000;
+    let end = (incident.started_ms + super::SLACK_MS) * 1_000_000;
+    let url = format!(
+        "{base}/loki/api/v1/query_range?query={}&start={start}&end={end}&limit=20&direction=backward",
+        percent(&query)
+    );
+    let headers: Vec<(&str, String)> = if token.is_empty() {
+        Vec::new()
+    } else {
+        vec![("Authorization", format!("Bearer {token}"))]
+    };
+    let http = crate::platforms::http::Ureq;
+    let reply = crate::platforms::http::Http::call(&http, "GET", &url, &headers, None)
+        .map_err(|e| e.replace(token, "[redacted]"))?;
+    if !(200..300).contains(&reply.status) {
+        return Err(format!("Loki answered {}", reply.status));
+    }
+    let lines = loki_text(&reply.body);
+    Ok((!lines.is_empty()).then(|| clip(&lines.join("\n"), 2000)))
+}
+
+/// The log lines of a Loki `query_range` answer: each stream's values, as their text.
+pub fn loki_text(answer: &Value) -> Vec<String> {
+    answer["data"]["result"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|stream| stream["values"].as_array().into_iter().flatten())
+        .filter_map(|pair| pair[1].as_str().map(str::to_string))
+        .take(20)
+        .collect()
+}
+
+/// Percent-encodes everything but the unreserved characters.
+fn percent(text: &str) -> String {
+    text.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
 // ---- Text helpers ---------------------------------------------------------------------------------------------------
 
 /// The first `max` characters of `text`.
@@ -766,6 +1033,67 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use super::*;
 
+    /// A model that answers what it was given (or nothing).
+    struct Mock(Option<String>);
+
+    impl Model for Mock {
+        fn answer(&self, _prompt: &str) -> Result<Option<String>, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn landing(files: &[&str], areas: &[&str]) -> Landing {
+        Landing {
+            key: "site/c1".into(),
+            project: "site".into(),
+            change: "c1".into(),
+            title: "Checkout".into(),
+            author: "owner".into(),
+            task: String::new(),
+            session: String::new(),
+            at_ms: 1,
+            files: files.iter().map(|s| s.to_string()).collect(),
+            areas: areas.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    fn incident() -> Incident {
+        Incident {
+            id: "i1".into(),
+            project: "site".into(),
+            environment: "production".into(),
+            source: "sentry".into(),
+            fingerprint: "sentry:1".into(),
+            severity: "high".into(),
+            title: "TypeError".into(),
+            detail: String::new(),
+            status: "open".into(),
+            started_ms: 1,
+            resolved_ms: 0,
+            last_ms: 1,
+            seen: 1,
+            links: Vec::new(),
+            suspect: String::new(),
+            outcome: "fix_task".into(),
+            rollback: String::new(),
+            task: "t1".into(),
+            postmortem: String::new(),
+            lessons: Vec::new(),
+            logs: String::new(),
+            steps: Vec::new(),
+        }
+    }
+
+    fn acted() -> Acted {
+        Acted {
+            outcome: "fix_task".into(),
+            detail: "Opened fix task t1".into(),
+            rollback: String::new(),
+            task: "t1".into(),
+            ok: true,
+        }
+    }
+
     #[test]
     fn a_time_is_stamped_in_utc_to_the_second() {
         assert_eq!(stamp(0), "1970-01-01T00:00:00Z");
@@ -787,6 +1115,89 @@ mod tests {
         assert_eq!(
             excerpt(&event),
             "TypeError: x\nTypeError: Cannot read properties of undefined"
+        );
+    }
+
+    #[test]
+    fn a_loki_answer_reads_its_lines_across_streams() {
+        let answer = json!({ "status": "success", "data": { "resultType": "streams", "result": [
+            { "stream": { "service": "site-web" }, "values": [["1", "placeOrder: stock 0"], ["2", "retry"]] },
+            { "stream": { "service": "site-web", "level": "error" }, "values": [["3", "checkout failed"]] }
+        ] } });
+        assert_eq!(
+            loki_text(&answer),
+            ["placeOrder: stock 0", "retry", "checkout failed"]
+        );
+        assert!(loki_text(&json!({ "data": { "result": [] } })).is_empty());
+        assert_eq!(
+            percent("{service=\"site-web\"}"),
+            "%7Bservice%3D%22site-web%22%7D"
+        );
+    }
+
+    #[test]
+    fn a_file_the_alert_names_is_a_stronger_landing_than_an_area_or_the_window() {
+        let l = landing(&["src/checkout.ts", "docs/readme.md"], &["src", "docs"]);
+        let (rank, why) = match_landing("TypeError in src/checkout.ts in placeOrder", &l);
+        assert_eq!(rank, 2);
+        assert!(why.contains("src/checkout.ts"), "{why}");
+        // The basename is enough when the path is shortened in the text.
+        assert_eq!(match_landing("error in checkout.ts", &l).0, 2);
+        assert_eq!(match_landing("the docs area is quiet", &l).0, 1);
+        assert_eq!(match_landing("unrelated", &l).0, 0);
+    }
+
+    #[test]
+    fn a_model_answer_becomes_lessons_and_a_bad_one_falls_back_to_the_template() {
+        let good = "Here you go: [{\"kind\":\"pitfall\",\"text\":\"Checkout reads a missing stock row.\",\"why\":\"from the logs\"},\
+                    {\"kind\":\"decision\",\"text\":\"Roll back before fixing.\",\"why\":\"\"},\
+                    {\"kind\":\"opinion\",\"text\":\"dropped: unknown kind\"}]";
+        let lessons = parse_lessons(good).expect("two valid lessons");
+        assert_eq!(lessons.len(), 2);
+        assert_eq!(lessons[1].kind, "decision");
+        assert!(parse_lessons("no array here").is_none());
+        assert!(
+            parse_lessons("[{\"kind\":\"opinion\",\"text\":\"x\"}]").is_none(),
+            "no valid item"
+        );
+
+        let (from_model, source) =
+            lessons_for(&incident(), &acted(), &Mock(Some(good.into())), "draft");
+        assert_eq!(source, "the model");
+        assert_eq!(from_model, lessons);
+
+        let (garbled, source) = lessons_for(
+            &incident(),
+            &acted(),
+            &Mock(Some("I cannot help".into())),
+            "draft",
+        );
+        assert_eq!(source, "the template", "a garbled answer falls back");
+        assert_eq!(garbled, template_lessons(&incident(), &acted()));
+
+        let (none, source) = lessons_for(&incident(), &acted(), &Mock(None), "draft");
+        assert_eq!(source, "the template", "no model answering falls back");
+        assert_eq!(none, template_lessons(&incident(), &acted()));
+        assert!(!none.is_empty());
+    }
+
+    #[test]
+    fn the_model_is_asked_for_the_memory_format_with_the_draft() {
+        struct Asked(std::sync::Mutex<String>);
+        impl Model for Asked {
+            fn answer(&self, prompt: &str) -> Result<Option<String>, String> {
+                *self.0.lock().unwrap() = prompt.to_string();
+                Ok(None)
+            }
+        }
+        let asked = Asked(std::sync::Mutex::new(String::new()));
+        let _ = lessons_for(&incident(), &acted(), &asked, "# Incident i1: TypeError");
+        let prompt = asked.0.lock().unwrap().clone();
+        assert!(prompt.starts_with("# Incident i1: TypeError"));
+        assert!(
+            prompt.contains("\"kind\"")
+                && prompt.contains("pitfall")
+                && prompt.contains("decision")
         );
     }
 }

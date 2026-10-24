@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The built-in manifests, in catalog order.
-const BUILTIN: [&str; 19] = [
+const BUILTIN: [&str; 20] = [
     include_str!("manifests/firecrawl.toml"),
     include_str!("manifests/elevenlabs.toml"),
     include_str!("manifests/unsplash.toml"),
@@ -27,6 +27,7 @@ const BUILTIN: [&str; 19] = [
     include_str!("manifests/grafana.toml"),
     include_str!("manifests/cloudwatch.toml"),
     include_str!("manifests/uptime.toml"),
+    include_str!("manifests/loki.toml"),
     include_str!("manifests/digitalocean.toml"),
     include_str!("manifests/github.toml"),
     include_str!("manifests/namecheap.toml"),

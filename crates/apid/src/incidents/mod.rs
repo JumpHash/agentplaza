@@ -16,7 +16,9 @@
 
 pub mod alert;
 mod recipe;
+mod sns;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use apz_http::{Response, RouteDoc, Router};
@@ -37,6 +39,8 @@ pub const RECIPE: &str = "incident";
 pub const DEPLOY_HEALTH: &str = "deploy-health";
 /// The environment variable that names the service an environment serves, as the alerts name it.
 pub const SERVICE_VAR: &str = "ALERT_SERVICE";
+/// The environment variable that names the logs connector an environment's incidents read (`loki`).
+pub const LOGS_VAR: &str = "LOGS_CONNECTOR";
 /// A deploy is the alert's suspect when it was recorded this long before the alert started (and a minute after).
 const CORRELATE_MS: u64 = 60 * 60 * 1000;
 const SLACK_MS: u64 = 60 * 1000;
@@ -123,10 +127,49 @@ pub fn def() -> &'static TableDef {
     apz_store::root_def!(Incident)
 }
 
+/// A change that landed on a project's repository (Weft's landing event): what it touched and who made it. The triage
+/// correlates an alert with the landings before it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "incident_landing")]
+pub struct Landing {
+    /// `<project>/<change>`.
+    #[table(key)]
+    pub key: String,
+    pub project: String,
+    pub change: String,
+    pub title: String,
+    /// Who made the change, as Weft names its author (an agent's label, or `owner`).
+    pub author: String,
+    /// The task the change landed for, when there was one.
+    #[serde(default)]
+    pub task: String,
+    /// The session the task was assigned to, when it was.
+    #[serde(default)]
+    pub session: String,
+    pub at_ms: u64,
+    /// The files the change touched, as the repository names them.
+    #[serde(default)]
+    #[table(list)]
+    pub files: Vec<String>,
+    /// The top-level directories of those files (their areas).
+    #[serde(default)]
+    #[table(list)]
+    pub areas: Vec<String>,
+}
+
+/// The table of recorded landings: `incident_landing`, one row per change per project.
+pub fn landing_def() -> &'static TableDef {
+    apz_store::root_def!(Landing)
+}
+
 /// The incidents, in the order they were opened.
 #[derive(Default)]
 pub struct Store {
     items: Mutex<Vec<Incident>>,
+    /// The landings the projects' repositories took.
+    landings: Mutex<Vec<Landing>>,
+    /// The SNS signing certificates read so far, by URL (`sns`).
+    certs: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -184,6 +227,35 @@ impl Store {
         RowSet::list(def(), lock(&self.items).iter())
     }
 
+    /// The project's recorded landings, newest first.
+    pub fn landings_of(&self, project: &str) -> Vec<Landing> {
+        let mut out: Vec<Landing> = lock(&self.landings)
+            .iter()
+            .filter(|l| l.project == project)
+            .cloned()
+            .collect();
+        out.sort_by_key(|l| std::cmp::Reverse(l.at_ms));
+        out
+    }
+
+    /// Records a landing (a change lands once per project: a repeat replaces the record).
+    fn add_landing(&self, landing: Landing) {
+        let mut items = lock(&self.landings);
+        items.retain(|l| l.key != landing.key);
+        items.push(landing);
+    }
+
+    /// The landing rows, as they are now (the saver writes what changed).
+    pub fn landing_rows(&self) -> Result<RowSet, StoreError> {
+        RowSet::list(landing_def(), lock(&self.landings).iter())
+    }
+
+    /// Replaces the landings with what plaza.db holds (at start).
+    pub fn load_landings(&self, conn: &Connection) -> Result<(), StoreError> {
+        *lock(&self.landings) = apz_store::table::load_list(conn, landing_def())?;
+        Ok(())
+    }
+
     /// Replaces the incidents with what plaza.db holds (at start).
     pub fn load(&self, conn: &Connection) -> Result<(), StoreError> {
         *lock(&self.items) = apz_store::table::load_list(conn, def())?;
@@ -236,6 +308,9 @@ pub fn delivery(
     if crate::connectors::hub_values(app, connector).is_err() {
         return Response::error(404, "no such webhook");
     }
+    if connector == "cloudwatch" {
+        return sns_delivery(&arc, header, body);
+    }
     let Some(secret) = app.vault.value_for(
         &crate::triggers::hooks::secret_name(connector),
         crate::triggers::BINDING,
@@ -254,6 +329,100 @@ pub fn delivery(
             let outcomes: Vec<Value> = list.iter().map(|a| handle(&arc, a, now)).collect();
             Response::json(202, &json!({ "alerts": outcomes }))
         }
+    }
+}
+
+/// A CloudWatch alarm's SNS delivery (`cloudwatch`): the signature is checked against SNS's certificate for the topic's
+/// region, a subscription is confirmed through its SubscribeURL, and an alarm is handled as any alert.
+fn sns_delivery(app: &Arc<App>, header: &dyn Fn(&str) -> Option<String>, body: &[u8]) -> Response {
+    let envelope: Value = match serde_json::from_slice(body) {
+        Ok(envelope) => envelope,
+        Err(e) => return Response::error(400, &format!("bad body: {e}")),
+    };
+    let kind = envelope["Type"].as_str().unwrap_or("");
+    if header("x-amz-sns-message-type").is_some_and(|sent| sent != kind) {
+        return Response::error(400, "the message type header and the body differ");
+    }
+    let http = crate::platforms::http::Ureq;
+    let client = sns::Sns {
+        http: &http,
+        certs: &app.incidents.certs,
+    };
+    if kind == "SubscriptionConfirmation" {
+        return match client.confirm(&envelope) {
+            Ok(()) => Response::json(202, &json!({ "subscription": "confirmed" })),
+            Err(why) => Response::error(401, &why),
+        };
+    }
+    if let Err(why) = client.verify(&envelope) {
+        return Response::error(401, &why);
+    }
+    match alert::parse("cloudwatch", header, body) {
+        Err(why) => Response::error(400, &why),
+        Ok(Parsed::Ignored(why)) => Response::json(202, &json!({ "ignored": why })),
+        Ok(Parsed::Alerts(list)) => {
+            let now = now();
+            let outcomes: Vec<Value> = list.iter().map(|a| handle(app, a, now)).collect();
+            Response::json(202, &json!({ "alerts": outcomes }))
+        }
+    }
+}
+
+/// A change landed on `repo` (Weft's landing event): each project on it records the landing, with the files the change
+/// touched, their areas, and who made it (Weft's author, the task it landed for and that task's session).
+pub fn landed(app: &App, repo: &str, change: &str) {
+    let projects: Vec<String> = app
+        .projects
+        .list()
+        .into_iter()
+        .filter(|p| p.repo.as_deref() == Some(repo))
+        .map(|p| p.id)
+        .collect();
+    if projects.is_empty() {
+        return;
+    }
+    let detail = match app.weft.get(&format!("/changes/{change}")) {
+        Ok(detail) => detail,
+        Err(why) => {
+            eprintln!("apid: incidents: the landing of {change} was not read: {why}");
+            return;
+        }
+    };
+    let files = match crate::project_memory::touched(app, change) {
+        Ok((files, _)) => files,
+        Err(why) => {
+            eprintln!("apid: incidents: the files of {change} were not read: {why}");
+            Vec::new()
+        }
+    };
+    let mut areas: Vec<String> = files
+        .iter()
+        .filter_map(|f| f.split_once('/').map(|(area, _)| area.to_string()))
+        .collect();
+    areas.sort();
+    areas.dedup();
+    let task = detail["task"].as_str().unwrap_or("").to_string();
+    let session = app
+        .plaza
+        .tasks
+        .find(&task)
+        .and_then(|t| t.view().assignee_id.clone())
+        .unwrap_or_default();
+    let title = detail["title"].as_str().unwrap_or("").to_string();
+    let author = detail["author"].as_str().unwrap_or("").to_string();
+    for project in projects {
+        app.incidents.add_landing(Landing {
+            key: format!("{project}/{change}"),
+            project,
+            change: change.to_string(),
+            title: title.clone(),
+            author: author.clone(),
+            task: task.clone(),
+            session: session.clone(),
+            at_ms: now(),
+            files: files.clone(),
+            areas: areas.clone(),
+        });
     }
 }
 
@@ -364,6 +533,20 @@ fn resolve(app: &App, id: &str, at_ms: u64, text: &str) -> Option<Incident> {
 
 pub fn routes(router: Router<App>) -> Router<App> {
     router
+        .get("/v1/projects/{id}/landings", |app, _, p| {
+            let project = p.get("id");
+            if app.projects.get(project).is_none() {
+                return Response::error(404, "no such project");
+            }
+            let list: Vec<Value> = app
+                .incidents
+                .landings_of(project)
+                .iter()
+                .map(|l| serde_json::to_value(l).unwrap_or(Value::Null))
+                .collect();
+            Response::json(200, &json!({ "landings": list }))
+        })
+        .doc(RouteDoc::new("A project's recorded landings, newest first: the change, its author and task, and the files and areas it touched").errors(&[404]))
         .get("/v1/projects/{id}/incidents", |app, _, p| {
             let project = p.get("id");
             if app.projects.get(project).is_none() {

@@ -25,6 +25,8 @@ const SENTRY_SECRET: &str = "sentry-test-secret";
 const SENTRY_ALERT: &[u8] = include_bytes!("../src/incidents/fixtures/sentry_issue_created.json");
 const SENTRY_RESOLVED: &[u8] =
     include_bytes!("../src/incidents/fixtures/sentry_issue_resolved.json");
+const SNS_V2: &str = include_str!("../src/incidents/fixtures/sns/notification_v2.json");
+const LOKI_TOKEN: &str = "loki-test-token-incidents";
 
 /// The fake Cloudflare's state: the version each Workers script serves at 100%, and the ids it hands out.
 #[derive(Default)]
@@ -68,6 +70,20 @@ fn cloudflare(cdn: &Cdn, method: &str, path: &str, body: &str) -> (u16, String) 
         }
         _ => refuse(&format!("{method} {path} is not expected")),
     }
+}
+
+/// The Loki query API: one log line for the service the alerts name, whatever the query.
+fn loki(path: &str) -> (u16, String) {
+    if !path.starts_with("/loki/api/v1/query_range") {
+        return (404, json!({ "status": "error" }).to_string());
+    }
+    ok(json!({
+        "status": "success",
+        "data": { "resultType": "streams", "result": [{
+            "stream": { "service": "site-web" },
+            "values": [["1792835900000000000", "placeOrder: stock row missing for sku 42"]]
+        }] }
+    }))
 }
 
 /// The Sentry API: the latest event of issue 4521187, with its exception.
@@ -238,6 +254,7 @@ struct World {
     pid: String,
     cdn: Arc<Cdn>,
     sentry_fake: FakeDaemon,
+    loki_fake: FakeDaemon,
     _scratch: Scratch,
 }
 
@@ -249,6 +266,8 @@ fn world(name: &str) -> World {
         FakeDaemon::serve(move |method, path, body| cloudflare(&cdn, method, path, body))
     };
     let sentry_fake = FakeDaemon::serve(|_, path, _| sentry(path));
+    let loki_fake = FakeDaemon::serve(|_, path, _| loki(path));
+    let loki_base = format!("http://127.0.0.1:{}", loki_fake.port);
     let artifact_path = scratch.0.join("site.bin");
     std::fs::create_dir_all(&scratch.0).unwrap();
     std::fs::write(
@@ -270,6 +289,8 @@ fn world(name: &str) -> World {
             ("CLOUDFLARE_ACCOUNT_ID", "acct-test"),
             ("SENTRY_URL", sentry_base.as_str()),
             ("SENTRY_AUTH_TOKEN", SENTRY_TOKEN),
+            ("LOKI_URL", loki_base.as_str()),
+            ("LOKI_TOKEN", LOKI_TOKEN),
             ("APZ_RELEASE_BUILD_STAND_IN", artifact.as_str()),
         ],
     );
@@ -288,6 +309,7 @@ fn world(name: &str) -> World {
         pid,
         cdn,
         sentry_fake,
+        loki_fake,
         _scratch: scratch,
     }
 }
@@ -688,4 +710,211 @@ fn project_messages(hub: &Hub, pid: &str) -> Vec<String> {
         texts.extend(list.iter().map(|m| text(&m["text"])));
     }
     texts
+}
+
+/// The production environment, naming a logs connector (`LOGS_CONNECTOR`) for its incidents.
+fn name_logs(hub: &Hub, pid: &str, logs: &str) {
+    let (status, env) = hub.call(
+        "PUT",
+        &format!("/v1/projects/{pid}/environments/production"),
+        Some(json!({
+            "kind": "production",
+            "track": "manual",
+            "protected": false,
+            "variables": {
+                "CLOUDFLARE_WORKER": "site",
+                "ALERT_SERVICE": "site-web",
+                "DEPLOY_WINDOW_SECS": "1",
+                "LOGS_CONNECTOR": logs
+            }
+        })),
+    );
+    assert_eq!(status, 200, "{env}\n{}", hub.log());
+}
+
+#[test]
+fn a_landing_the_alert_names_is_the_suspect_when_no_deploy_correlates() {
+    let w = world("incidents-landing");
+    let hub = &w.hub;
+    let pid = w.pid.clone();
+    // The owner's file drop lands src/checkout.ts on main: the landing is recorded with its file and author.
+    let (status, up) = hub.send_bytes(
+        "PUT",
+        &format!("/v1/projects/{pid}/uploads"),
+        b"export const placeOrder = () => {};\n",
+        "application/octet-stream",
+    );
+    assert_eq!(status, 201, "{up}");
+    let (status, added) = hub.call(
+        "POST",
+        &format!("/v1/projects/{pid}/files"),
+        Some(json!({ "folder": "", "files": [{ "path": "src/checkout.ts", "hash": up["hash"] }] })),
+    );
+    assert_eq!(status, 200, "{added}\n{}", hub.log());
+    let landings = hub.wait_for(&format!("/v1/projects/{pid}/landings"), WAIT, |l| {
+        l["landings"].as_array().is_some_and(|l| !l.is_empty())
+    });
+    let landing = &landings["landings"][0];
+    let change = text(&landing["change"]);
+    assert!(
+        landing["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == &json!("src/checkout.ts")),
+        "{landing}"
+    );
+    assert_eq!(landing["author"], json!("owner"), "{landing}");
+
+    // The Sentry alert names that file (its culprit) and no deploy happened: the landing is the suspect.
+    let path = sentry_path(hub);
+    let body = alert_body(SENTRY_ALERT, None);
+    let (status, answer) = hub.send_with_headers(
+        "POST",
+        &path,
+        &[
+            ("sentry-hook-resource", "issue"),
+            ("sentry-hook-signature", &sign(&body)),
+        ],
+        &body,
+    );
+    assert_eq!(status, 202, "{answer}\n{}", hub.log());
+    assert_eq!(
+        answer["alerts"][0]["outcome"],
+        json!("fix_task"),
+        "{answer}\n{}",
+        hub.log()
+    );
+    let (_, listed) = hub.call("GET", &format!("/v1/projects/{pid}/incidents"), None);
+    let incident = &listed["incidents"][0];
+    assert_eq!(
+        incident["suspect"],
+        json!(format!("landing {change}")),
+        "{incident}"
+    );
+    let task = text(&incident["task"]);
+    let (_, spec) = hub.call("GET", &format!("/v1/tasks/{task}"), None);
+    let goal = text(&spec["goal"]);
+    assert!(
+        goal.contains(&format!("Suspect change: {change}")),
+        "{goal}"
+    );
+    assert!(
+        goal.contains("src/checkout.ts"),
+        "the file is named: {goal}"
+    );
+    assert!(goal.contains("by owner"), "the author is named: {goal}");
+}
+
+#[test]
+fn an_alertmanager_alert_reads_its_service_lines_from_loki_when_the_environment_names_it() {
+    let w = world("incidents-loki");
+    let hub = &w.hub;
+    let pid = w.pid.clone();
+    let (status, _) = hub.call(
+        "PUT",
+        "/v1/connectors/loki",
+        Some(json!({ "enabled": true })),
+    );
+    assert_eq!(status, 200);
+    name_logs(hub, &pid, "loki");
+    let (status, made) = hub.call(
+        "POST",
+        "/v1/connectors/alertmanager/webhook",
+        Some(json!({ "secret": "am-secret" })),
+    );
+    assert!(status < 300, "{made}\n{}", hub.log());
+    let path = text(&made["path"]);
+    let (status, _) = hub.call(
+        "PUT",
+        "/v1/connectors/alertmanager",
+        Some(json!({ "enabled": true })),
+    );
+    assert_eq!(status, 200);
+    let firing = json!({
+        "status": "firing",
+        "alerts": [{
+            "status": "firing",
+            "labels": { "alertname": "HighErrorRate", "service": "site-web", "severity": "critical" },
+            "annotations": { "summary": "Error ratio above 5%" },
+            "startsAt": "2026-10-24T10:00:00Z",
+            "endsAt": "0001-01-01T00:00:00Z",
+            "fingerprint": "loki1"
+        }]
+    })
+    .to_string()
+    .into_bytes();
+    let (status, opened) = hub.send_with_headers(
+        "POST",
+        &path,
+        &[("authorization", "Bearer am-secret")],
+        &firing,
+    );
+    assert_eq!(status, 202, "{opened}\n{}", hub.log());
+    let (_, listed) = hub.call("GET", &format!("/v1/projects/{pid}/incidents"), None);
+    let incident = &listed["incidents"][0];
+    assert!(
+        text(&incident["logs"]).contains("placeOrder: stock row missing for sku 42"),
+        "{incident}"
+    );
+    let task = text(&incident["task"]);
+    let (_, spec) = hub.call("GET", &format!("/v1/tasks/{task}"), None);
+    assert!(
+        text(&spec["goal"]).contains("stock row missing"),
+        "the logs are in the spec: {spec}"
+    );
+    // Loki was asked for the service's lines over the window, its token only in the header.
+    let asked = w.loki_fake.seen();
+    assert!(
+        asked.iter().any(|(_, p, _)| {
+            p.starts_with("/loki/api/v1/query_range")
+                && p.contains("%7Bservice%3D%22site-web%22%7D")
+        }),
+        "{asked:?}"
+    );
+    assert!(
+        asked.iter().all(|(_, p, _)| !p.contains(LOKI_TOKEN)),
+        "the token is never in a query"
+    );
+    assert!(
+        !hub.log().contains(LOKI_TOKEN),
+        "the Loki token is in the hub's log"
+    );
+}
+
+#[test]
+fn a_cloudwatch_delivery_whose_certificate_is_on_a_foreign_host_is_refused_before_anything_is_fetched()
+ {
+    let w = world("incidents-sns-host");
+    let hub = &w.hub;
+    let pid = w.pid.clone();
+    let (status, _) = hub.call(
+        "PUT",
+        "/v1/connectors/cloudwatch",
+        Some(json!({ "enabled": true })),
+    );
+    assert_eq!(status, 200);
+    let (status, made) = hub.call("POST", "/v1/connectors/cloudwatch/webhook", Some(json!({})));
+    assert!(status < 300, "{made}\n{}", hub.log());
+    let path = text(&made["path"]);
+    let mut envelope: Value = serde_json::from_str(SNS_V2).unwrap();
+    envelope["SigningCertURL"] = json!("https://evil.example.com/SimpleNotificationService.pem");
+    let body = serde_json::to_vec(&envelope).unwrap();
+    let (status, answer) = hub.send_with_headers(
+        "POST",
+        &path,
+        &[("x-amz-sns-message-type", "Notification")],
+        &body,
+    );
+    assert_eq!(status, 401, "{answer}\n{}", hub.log());
+    assert!(
+        text(&answer["error"]).contains("not on sns.eu-west-1.amazonaws.com"),
+        "{answer}"
+    );
+    let (_, listed) = hub.call("GET", &format!("/v1/projects/{pid}/incidents"), None);
+    assert_eq!(
+        listed["incidents"].as_array().map(Vec::len),
+        Some(0),
+        "a refused alarm opens nothing"
+    );
 }
