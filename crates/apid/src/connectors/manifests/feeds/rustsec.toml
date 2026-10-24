@@ -1,0 +1,11 @@
+id = "rustsec"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["api.github.com", "raw.githubusercontent.com"]
+secrets = []
+events = []
+actions = ["advisories"]
+webhook = false
+auth_header = ""
+auth_format = ""

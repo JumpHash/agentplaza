@@ -70,6 +70,12 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.upgrades.rows(),
             load: |app, conn| app.upgrades.load(conn),
         },
+        Component {
+            name: "cves",
+            def: crate::cves::def,
+            rows: |app| app.cves.rows(),
+            load: |app, conn| app.cves.load(conn),
+        },
         // batch C2
         Component {
             name: "toolbox",

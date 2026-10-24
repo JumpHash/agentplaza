@@ -129,6 +129,7 @@ pub fn router() -> Router<App> {
     let router = crate::releases::routes::routes(router);
     let router = crate::triggers::routes::routes(router);
     let router = crate::upgrades::routes::routes(router);
+    let router = crate::cves::routes::routes(router);
     let router = crate::unfurl::routes(router);
     let router = crate::ide::routes(router);
     let router = crate::ide_term::routes(router);

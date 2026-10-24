@@ -66,6 +66,13 @@ const FARMS: [&str; 3] = [
     include_str!("manifests/farms/aws-device-farm.toml"),
 ];
 
+/// The advisory feeds' manifests (PLAN 24.3), one each: OSV's API and RustSec's advisory-db on GitHub. They are read by the
+/// CVE poll (`cves::feeds`), not the catalog; GitHub's advisories go through the catalog's `github` connector.
+const FEEDS: [&str; 2] = [
+    include_str!("manifests/feeds/osv.toml"),
+    include_str!("manifests/feeds/rustsec.toml"),
+];
+
 /// The kinds a manifest may name: what the connector does for the plaza.
 const KINDS: [&str; 4] = ["tool", "intake", "notify", "publish"];
 /// The scopes a manifest may name: the risk classes of connector actions.
@@ -121,6 +128,18 @@ pub fn stores() -> Vec<Manifest> {
         .iter()
         .map(|text| {
             let mut m = parse(text).expect("a shipped store manifest parses");
+            m.state = "approved".into();
+            m
+        })
+        .collect()
+}
+
+/// The advisory feeds' manifests, approved as shipped (24.3). Each file parses and passes [`check`] (a test holds that).
+pub fn feeds() -> Vec<Manifest> {
+    FEEDS
+        .iter()
+        .map(|text| {
+            let mut m = parse(text).expect("a shipped feed manifest parses");
             m.state = "approved".into();
             m
         })

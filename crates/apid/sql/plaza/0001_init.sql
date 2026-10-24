@@ -492,6 +492,92 @@ CREATE TABLE "upgrade_batch" (
     FOREIGN KEY ("project_upgrade_project") REFERENCES "project_upgrade" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component cves
+CREATE TABLE "project_cve" (
+    "project" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "polled_ms" INTEGER NOT NULL CHECK ("polled_ms" >= 0),
+    PRIMARY KEY ("project")
+) STRICT;
+CREATE TABLE "cve_feed" (
+    "project_cve_project" TEXT NOT NULL,
+    "feeds_pos" INTEGER NOT NULL CHECK ("feeds_pos" >= 0),
+    "feed" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "count" INTEGER NOT NULL CHECK ("count" >= 0),
+    "error" TEXT NOT NULL,
+    PRIMARY KEY ("project_cve_project", "feeds_pos"),
+    FOREIGN KEY ("project_cve_project") REFERENCES "project_cve" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "cve_finding" (
+    "project_cve_project" TEXT NOT NULL,
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "ecosystem" TEXT NOT NULL,
+    "package" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "severity" TEXT NOT NULL,
+    "priority" TEXT NOT NULL,
+    "cvss" TEXT NOT NULL,
+    "published" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "url" TEXT NOT NULL,
+    "main_version" TEXT NOT NULL,
+    "fixed" TEXT NOT NULL,
+    "reachability" TEXT NOT NULL,
+    "reach_note" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "fix_state" TEXT NOT NULL,
+    "fix_reason" TEXT NOT NULL,
+    "fix_task" TEXT NOT NULL,
+    "first_ms" INTEGER NOT NULL CHECK ("first_ms" >= 0),
+    "updated_ms" INTEGER NOT NULL CHECK ("updated_ms" >= 0),
+    PRIMARY KEY ("project_cve_project", "findings_pos"),
+    FOREIGN KEY ("project_cve_project") REFERENCES "project_cve" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "cve_finding_ids" (
+    "project_cve_project" TEXT NOT NULL,
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "ids_pos" INTEGER NOT NULL CHECK ("ids_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("project_cve_project", "findings_pos", "ids_pos"),
+    FOREIGN KEY ("project_cve_project", "findings_pos") REFERENCES "cve_finding" ("project_cve_project", "findings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "cve_finding_functions" (
+    "project_cve_project" TEXT NOT NULL,
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "functions_pos" INTEGER NOT NULL CHECK ("functions_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("project_cve_project", "findings_pos", "functions_pos"),
+    FOREIGN KEY ("project_cve_project", "findings_pos") REFERENCES "cve_finding" ("project_cve_project", "findings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "cve_finding_main_environments" (
+    "project_cve_project" TEXT NOT NULL,
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "main_environments_pos" INTEGER NOT NULL CHECK ("main_environments_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("project_cve_project", "findings_pos", "main_environments_pos"),
+    FOREIGN KEY ("project_cve_project", "findings_pos") REFERENCES "cve_finding" ("project_cve_project", "findings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "cve_release" (
+    "project_cve_project" TEXT NOT NULL,
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "releases_pos" INTEGER NOT NULL CHECK ("releases_pos" >= 0),
+    "release" TEXT NOT NULL,
+    "version" TEXT NOT NULL,
+    PRIMARY KEY ("project_cve_project", "findings_pos", "releases_pos"),
+    FOREIGN KEY ("project_cve_project", "findings_pos") REFERENCES "cve_finding" ("project_cve_project", "findings_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "cve_release_environments" (
+    "project_cve_project" TEXT NOT NULL,
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "releases_pos" INTEGER NOT NULL CHECK ("releases_pos" >= 0),
+    "environments_pos" INTEGER NOT NULL CHECK ("environments_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("project_cve_project", "findings_pos", "releases_pos", "environments_pos"),
+    FOREIGN KEY ("project_cve_project", "findings_pos", "releases_pos") REFERENCES "cve_release" ("project_cve_project", "findings_pos", "releases_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component toolbox
 CREATE TABLE "discovery" (
     "id" TEXT NOT NULL,
