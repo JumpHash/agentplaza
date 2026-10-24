@@ -17,13 +17,18 @@
 //! desktop target (desktop.rs) is a station's screen, leased for the run and driven through the station tools; the
 //! simulator and device targets of 8.4–8.5 implement the same trait.
 
+pub mod desk;
 pub mod desktop;
+#[cfg(test)]
+mod desktop_targets_test;
 #[cfg(test)]
 mod desktop_test;
 pub mod fork;
+pub mod macos;
 pub mod models;
 pub mod run;
 pub mod scenario;
+pub mod simulator;
 pub mod target;
 #[cfg(test)]
 mod targets_test;
@@ -431,11 +436,17 @@ fn placed_for<'h>(
     change: &str,
 ) -> Result<Option<Placed<'h>>, String> {
     let fork_gui = config.desktop.as_ref().is_some_and(|desk| desk.os == LINUX);
-    if config.stand_in.is_some() || (config.desktop.is_some() && !fork_gui) {
+    if config.stand_in.is_some()
+        || config.macos.is_some()
+        || config.simulator.is_some()
+        || (config.desktop.is_some() && !fork_gui)
+    {
         return Ok(None);
     }
     if config.web.is_none() && config.tui.is_none() && !fork_gui {
-        return Err("the step names no target (stand_in, web, tui or desktop)".into());
+        return Err(
+            "the step names no target (stand_in, web, tui, desktop, macos or simulator)".into(),
+        );
     }
     let rev = project_memory::landed_revision(app, change)?;
     let stack = project_stack::read(app, project)?
@@ -715,7 +726,11 @@ fn opener<'a, 'h>(
         });
         return Ok(open);
     }
-    let placed = placed.ok_or("the step names no target (stand_in, web, tui or desktop)")?;
+    if config.macos.is_some() || config.simulator.is_some() {
+        return desk::opener(app, config);
+    }
+    let placed = placed
+        .ok_or("the step names no target (stand_in, web, tui, desktop, macos or simulator)")?;
     if let Some(page) = &config.web {
         let url = format!(
             "http://127.0.0.1:{}/{}",
@@ -735,7 +750,9 @@ fn opener<'a, 'h>(
         return Ok(open);
     }
     let Some(tui) = &config.tui else {
-        return Err("the step names no target (stand_in, web, tui or desktop)".into());
+        return Err(
+            "the step names no target (stand_in, web, tui, desktop, macos or simulator)".into(),
+        );
     };
     let channel: &'a dyn Channel = &placed.fork;
     let (command, cols, rows) = (tui.command.clone(), tui.cols, tui.rows);
@@ -807,6 +824,15 @@ fn run_scenarios(
     }
 }
 
+/// A step's summary with a note the desktop target's end added (the recording's artifact, a failure to quit).
+fn with_note(summary: String, note: &str) -> String {
+    if note.is_empty() {
+        summary
+    } else {
+        format!("{summary}; {note}")
+    }
+}
+
 /// One `test:user` step of a run, from its config: the models, the target and the regressions of the project.
 fn run_step(
     app: &App,
@@ -837,18 +863,27 @@ fn run_step(
             now,
         )
     };
+    let setup = match desk::prepare(app, config) {
+        Ok(setup) => setup,
+        Err(why) => return Ok(no_target(why)),
+    };
     let host = Live(app);
     let placed = match placed_for(app, &host, config, project, change) {
         Ok(placed) => placed,
-        Err(why) => return Ok(no_target(why)),
+        Err(why) => {
+            let note = desk::finish(app, config, setup);
+            return Ok(no_target(with_note(why, &note)));
+        }
     };
     let actor = run_session(app, run);
     let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref(), actor);
+    // The desktop target's end: a Mac app is quit, the simulator's video lands, the simulator shuts down.
+    let note = desk::finish(app, config, setup);
     if let Some(placed) = placed {
         retire_placed(placed);
     }
     let execution = match ran {
-        Ran::NoTarget(why) => return Ok(no_target(why)),
+        Ran::NoTarget(why) => return Ok(no_target(with_note(why, &note))),
         Ran::Failed(why) => {
             return Ok(finish(
                 app,
@@ -858,7 +893,7 @@ fn run_step(
                     passed: false,
                     findings: 0,
                     commands: "the user test".into(),
-                    summary: format!("the user test did not run: {why}"),
+                    summary: with_note(format!("the user test did not run: {why}"), &note),
                 },
                 now,
             ));
@@ -875,7 +910,7 @@ fn run_step(
         .record_user_run(&review, change, project, change, found, now)?;
     let confirmed = execution.confirmed();
     let commands = format!("{} target", execution.target);
-    let summary = execution.summary();
+    let summary = with_note(execution.summary(), &note);
     app.recipe_runs
         .record_evidence(run, execution.evidence, now);
     Ok(finish(

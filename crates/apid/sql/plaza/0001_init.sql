@@ -4329,7 +4329,7 @@ CREATE TABLE "station_audit" (
     "event_settings_settings_work_folder" TEXT,
     "event_settings_settings_snapshot_reset" INTEGER CHECK ("event_settings_settings_snapshot_reset" IN (0, 1)),
     "event_lease_open_lease" TEXT,
-    "event_lease_open_lease_kind" TEXT CHECK ("event_lease_open_lease_kind" IN ('shared', 'pixel')),
+    "event_lease_open_lease_kind" TEXT CHECK ("event_lease_open_lease_kind" IN ('shared', 'pixel', 'owner_screen')),
     "event_lease_open_task" TEXT,
     "event_lease_released_lease" TEXT,
     "event_lease_released_session" INTEGER CHECK ("event_lease_released_session" >= 0),

@@ -338,6 +338,7 @@ dependencies = [
  "apz-artifact",
  "apz-blobs",
  "apz-cache",
+ "apz-desktop-macos",
  "apz-egress-rules",
  "apz-gateway",
  "apz-gui-agent",
@@ -486,6 +487,7 @@ dependencies = [
  "core-graphics",
  "foreign-types",
  "objc2-app-kit 0.3.2",
+ "tempfile",
 ]
 
 [[package]]

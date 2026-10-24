@@ -497,6 +497,8 @@ fn a_step_names_one_target_and_a_desktop_names_its_os_and_station() {
         web: None,
         tui: None,
         desktop: None,
+        macos: None,
+        simulator: None,
         acceptance: vec![],
         threshold: 0.6,
         actions: 8,

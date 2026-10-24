@@ -177,7 +177,7 @@ fn send(
         let ours = held.is_some_and(|held| {
             held.station == station
                 && held.agent == cid
-                && held.kind == Kind::Pixel
+                && held.kind.holds_session()
                 && held.state == State::Active
                 && held.session == Some(session)
         });
@@ -699,6 +699,29 @@ mod tests {
             "nothing was sent to the station"
         );
         assert_eq!(last_audit(&hub)["data"]["ok"], false);
+    }
+
+    #[test]
+    fn an_owner_screen_lease_runs_the_screen_operations_on_its_session() {
+        let (link, daemon) = online();
+        let hub = hub(Some(link));
+        let lease = hub
+            .leases
+            .open("w1", 7, None, Kind::OwnerScreen, 0)
+            .unwrap();
+        assert!(
+            hub.leases
+                .grant_next("w1", None)
+                .is_some_and(|granted| granted.id == lease.id)
+        );
+        assert!(hub.leases.granted(&lease.id, 11, 0));
+        let asked = answer(
+            daemon,
+            json!({"w": 1, "h": 1, "format": "png", "data_b64": "AA=="}),
+        );
+        run_op(&hub, 7, "builder", "w1", Some(&lease.id), screenshot(11)).unwrap();
+        let (op, _) = asked.join().unwrap();
+        assert!(matches!(op, Op::Screenshot { session: 11, .. }));
     }
 
     #[test]

@@ -19,6 +19,17 @@ use serde::{Deserialize, Serialize};
 pub enum Kind {
     Shared,
     Pixel,
+    /// The owner's own screen, as one session the agent works in alone (the macOS and Windows desktops, which have no
+    /// virtual display): it queues for the machine's one session like a pixel lease, and the station opens the owner's
+    /// screen for it (a shared session, under the agent's cid).
+    OwnerScreen,
+}
+
+impl Kind {
+    /// Whether a lease of this kind holds a screen session the station opens for it, and so queues for one.
+    pub fn holds_session(self) -> bool {
+        matches!(self, Kind::Pixel | Kind::OwnerScreen)
+    }
 }
 
 /// Where a lease is. Only pixel leases are ever `Queued` or `Opening`.
@@ -96,14 +107,14 @@ impl Leases {
         now: u64,
     ) -> Result<Lease, String> {
         let mut list = self.guard();
-        if kind == Kind::Pixel
+        if kind.holds_session()
             && list
                 .iter()
-                .any(|l| l.station == station && l.agent == agent && l.kind == Kind::Pixel)
+                .any(|l| l.station == station && l.agent == agent && l.kind.holds_session())
         {
-            return Err("this agent already holds a pixel lease on this workstation".into());
+            return Err("this agent already holds a screen lease on this workstation".into());
         }
-        let state = if kind == Kind::Pixel {
+        let state = if kind.holds_session() {
             State::Queued
         } else {
             State::Active
@@ -130,14 +141,14 @@ impl Leases {
         let mut list = self.guard();
         let busy = list
             .iter()
-            .filter(|l| l.station == station && l.kind == Kind::Pixel && l.state != State::Queued)
+            .filter(|l| l.station == station && l.kind.holds_session() && l.state != State::Queued)
             .count();
         if capacity.is_some_and(|cap| busy >= cap) {
             return None;
         }
         let next = list
             .iter_mut()
-            .find(|l| l.station == station && l.kind == Kind::Pixel && l.state == State::Queued)?;
+            .find(|l| l.station == station && l.kind.holds_session() && l.state == State::Queued)?;
         next.state = State::Opening;
         Some(next.clone())
     }
@@ -296,6 +307,25 @@ mod tests {
         }
         assert_eq!(leases.views("w1").len(), 5);
         assert!(leases.views("w1").iter().all(|v| v.position.is_none()));
+    }
+
+    #[test]
+    fn an_owner_screen_lease_queues_for_the_one_session_with_the_pixel_leases() {
+        let leases = Leases::default();
+        let owner = leases.open("w1", 1, None, Kind::OwnerScreen, 10).unwrap();
+        assert_eq!(owner.state, State::Queued);
+        let pixel = leases.open("w1", 2, None, Kind::Pixel, 11).unwrap();
+        assert_eq!(pixel.state, State::Queued);
+        assert!(
+            leases.open("w1", 1, None, Kind::Pixel, 12).is_err(),
+            "one screen lease per agent"
+        );
+        let granted = leases.grant_next("w1", Some(1)).expect("the first fits");
+        assert_eq!(granted.id, owner.id, "FIFO across both screen kinds");
+        assert!(
+            leases.grant_next("w1", Some(1)).is_none(),
+            "the one session is taken"
+        );
     }
 
     #[test]

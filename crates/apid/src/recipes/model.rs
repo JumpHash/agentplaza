@@ -151,6 +151,13 @@ pub struct UserTest {
     /// A desktop target (PLAN 19.3): a Linux or Windows station's screen, leased for the run and driven through its tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desktop: Option<DesktopTarget>,
+    /// A macOS app target (PLAN 19.3): an app on a Mac node, read through the macOS Accessibility API and driven through
+    /// the station's workstation tools, as the agent `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<MacTarget>,
+    /// An iOS simulator target (PLAN 19.3): a device of a Mac node, driven through `simctl` and an accessibility bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator: Option<SimTarget>,
     /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acceptance: Vec<String>,
@@ -197,12 +204,14 @@ impl UserTest {
             self.web.is_some(),
             self.tui.is_some(),
             self.desktop.is_some(),
+            self.macos.is_some(),
+            self.simulator.is_some(),
         ]
         .iter()
         .filter(|set| **set)
         .count();
         if named > 1 {
-            return Err("a test:user step names one target: stand_in, web, tui or desktop".into());
+            return Err("a test:user step names one target: stand_in, web, tui, desktop, macos or simulator".into());
         }
         if let Some(desk) = &self.desktop {
             crate::user_test::desktop::kind_of(&desk.os)?;
@@ -214,6 +223,12 @@ impl UserTest {
                 (_, Some(station)) if !station.trim().is_empty() => {}
                 _ => return Err("a Windows desktop names its station".into()),
             }
+        }
+        if let Some(mac) = &self.macos {
+            mac.check()?;
+        }
+        if let Some(sim) = &self.simulator {
+            sim.check()?;
         }
         if let Some(web) = &self.web
             && web.path.contains("://")
@@ -252,6 +267,106 @@ pub struct TuiTarget {
     pub cols: u16,
     #[serde(default = "rows")]
     pub rows: u16,
+}
+
+/// A macOS app target's configuration (PLAN 19.3). The app runs on the Mac node `station`, on the owner's screen (the lease
+/// is `owner_screen`: the Mac has no virtual display). The target acts as the agent `agent`, so the station's laws and audit
+/// apply to its calls as they do to that agent's. The lease is held for each scenario, and only the app's windows are read,
+/// captured and pointed at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacTarget {
+    pub station: String,
+    pub agent: u64,
+    /// The app, as the station lists it (its name): the scope of its tree, its pictures and its pointer input.
+    pub app: String,
+    /// Its bundle id: the app is quit by it at the end of the step, and brought to the front before keys and pointer input.
+    pub bundle: String,
+    /// Its bundle path on the node: the app is launched from it (`open -n -a`) for each scenario.
+    pub path: String,
+    /// The lease's task on the station, for its audit and its time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// How many levels of the app's tree each observation reads (1 to 8).
+    #[serde(default = "tree_depth")]
+    pub depth: u8,
+}
+
+fn tree_depth() -> u8 {
+    4
+}
+
+impl MacTarget {
+    fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "a macOS target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty() || self.app.trim().is_empty() {
+            return Err("a macOS target names its station and its app".into());
+        }
+        let bundle_id = !self.bundle.is_empty()
+            && self
+                .bundle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+        if !bundle_id {
+            return Err("a macOS target's bundle is a bundle id (letters, digits, dots, dashes, underscores)".into());
+        }
+        if !self.path.starts_with('/') {
+            return Err(
+                "a macOS target's path is the app's bundle, an absolute path on the Mac node"
+                    .into(),
+            );
+        }
+        if !(1..=8).contains(&self.depth) {
+            return Err("a macOS target reads between 1 and 8 levels of its tree".into());
+        }
+        Ok(())
+    }
+}
+
+/// An iOS simulator target's configuration (PLAN 19.3). The device is a simulator of the Mac node `station`, booted for the
+/// step and shut down after it; the app is installed from `app` (an absolute path on the node) when it is given, and
+/// launched fresh for each scenario. `video` (an absolute path on the node) records each scenario to that file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimTarget {
+    pub station: String,
+    pub agent: u64,
+    /// The device: a UDID, a name, or `booted`.
+    pub device: String,
+    /// The app's bundle id.
+    pub bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
+}
+
+impl SimTarget {
+    fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "a simulator target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty()
+            || self.device.trim().is_empty()
+            || self.bundle.trim().is_empty()
+        {
+            return Err(
+                "a simulator target names its station, its device and its app's bundle id".into(),
+            );
+        }
+        for (what, path) in [("the app", &self.app), ("the video", &self.video)] {
+            if path.as_deref().is_some_and(|p| !p.starts_with('/')) {
+                return Err(format!("{what} is an absolute path on the Mac node"));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn columns() -> u16 {
