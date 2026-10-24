@@ -340,6 +340,7 @@ dependencies = [
  "apz-cache",
  "apz-egress-rules",
  "apz-gateway",
+ "apz-gui-agent",
  "apz-http",
  "apz-ide",
  "apz-link",
@@ -596,6 +597,19 @@ dependencies = [
  "apz-graph",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "apz-gui-agent"
+version = "1.0.0"
+dependencies = [
+ "apz-desktop",
+ "apz-desktop-atspi",
+ "apz-desktop-x11",
+ "apz-station",
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

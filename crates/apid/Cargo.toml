@@ -104,5 +104,7 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# The desktop agent of a Linux desktop target, served on a loopback port by the fork tests (desktop_test.rs).
+apz-gui-agent = { path = "../apz-gui-agent" }
 # The glue tests build their components from WAT text (glue.rs).
 wat = "1"

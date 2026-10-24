@@ -14,8 +14,12 @@
 //! own thread (checks.rs is the same shape). The target is the one the step's config names (`opener`): the stand-in
 //! (target.rs, in-process data), or a web page or a terminal program placed in the lane's test fork (fork.rs): the browser
 //! and the program run in the fork, and the hub only drives them over the fork's exec channel and its port streams. The
-//! desktop, simulator and device targets of 8.3–8.5 implement the same trait.
+//! desktop target (desktop.rs) is a station's screen, leased for the run and driven through the station tools; the
+//! simulator and device targets of 8.4–8.5 implement the same trait.
 
+pub mod desktop;
+#[cfg(test)]
+mod desktop_test;
 pub mod fork;
 pub mod models;
 pub mod run;
@@ -45,7 +49,8 @@ use crate::review_graph::user::by;
 use crate::review_graph::{Finding, Verdict};
 use crate::state::App;
 use apz_blobs::Blobs;
-use fork::{Channel, DEVTOOLS_PORT, browser_command, port_dial};
+use desktop::{FORK_STATION, Forked, Gui, Hub, LINUX};
+use fork::{AGENT_PORT, Channel, DEVTOOLS_PORT, agent_command, browser_command, port_dial};
 use models::{GatewayModels, Judgement, Look, Models, Pick, PickRequest, PlanRequest, Roles, Tier};
 use run::{Ctx, Failure, Timed, run_scenario};
 use scenario::{Origin, Scenario, accessibility};
@@ -425,11 +430,12 @@ fn placed_for<'h>(
     project: &str,
     change: &str,
 ) -> Result<Option<Placed<'h>>, String> {
-    if config.stand_in.is_some() {
+    let fork_gui = config.desktop.as_ref().is_some_and(|desk| desk.os == LINUX);
+    if config.stand_in.is_some() || (config.desktop.is_some() && !fork_gui) {
         return Ok(None);
     }
-    if config.web.is_none() && config.tui.is_none() {
-        return Err("the step names no target (stand_in, web or tui)".into());
+    if config.web.is_none() && config.tui.is_none() && !fork_gui {
+        return Err("the step names no target (stand_in, web, tui or desktop)".into());
     }
     let rev = project_memory::landed_revision(app, change)?;
     let stack = project_stack::read(app, project)?
@@ -492,6 +498,10 @@ fn placed_for<'h>(
         retire_placed(placed);
         return Err(why);
     }
+    if fork_gui && let Err(why) = start_agent(host, &placed) {
+        retire_placed(placed);
+        return Err(why);
+    }
     Ok(Some(placed))
 }
 
@@ -506,6 +516,18 @@ fn start_browser(host: &Live<'_>, placed: &Placed<'_>) -> Result<(), String> {
         ));
     }
     publish_port(host, &placed.node, &placed.run, placed.cid, DEVTOOLS_PORT)
+}
+
+/// Starts the desktop agent in a Linux desktop target's fork and makes its port reachable, as the browser's is.
+fn start_agent(host: &Live<'_>, placed: &Placed<'_>) -> Result<(), String> {
+    let answer = placed.fork.borrow_mut().background(&agent_command())?;
+    if !answer.ok {
+        return Err(format!(
+            "the desktop agent did not start in the fork: {}",
+            answer.output.trim_end()
+        ));
+    }
+    publish_port(host, &placed.node, &placed.run, placed.cid, AGENT_PORT)
 }
 
 /// Retires a placed fork: its VM is stopped.
@@ -648,6 +670,7 @@ fn opener<'a, 'h>(
     app: &'a App,
     config: &'a UserTest,
     placed: Option<&'a Placed<'h>>,
+    actor: Option<u64>,
 ) -> Result<Opener<'a>, String> {
     if let Some(stand) = &config.stand_in {
         let stand = stand.clone();
@@ -656,7 +679,43 @@ fn opener<'a, 'h>(
         });
         return Ok(open);
     }
-    let placed = placed.ok_or("the step names no target (stand_in, web or tui)")?;
+    if let Some(desk) = &config.desktop {
+        if desk.os == LINUX {
+            let placed = placed.ok_or("the Linux desktop's fork is not placed")?;
+            let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+                let dial = port_dial(
+                    &app.nodes,
+                    &placed.node,
+                    placed.cid,
+                    AGENT_PORT,
+                    LOCAL_INBOUND,
+                );
+                Ok(Box::new(Gui::open(
+                    Box::new(Forked::new(dial)),
+                    FORK_STATION,
+                    LINUX,
+                )?))
+            });
+            return Ok(open);
+        }
+        let station = desk
+            .station
+            .clone()
+            .ok_or("a Windows desktop names its station")?;
+        let cid = actor.ok_or(
+            "the run has no agent on the station: a test step acts as its own session, and none is attached to this run",
+        )?;
+        let os = desk.os.clone();
+        let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+            Ok(Box::new(Gui::open(
+                Box::new(Hub { app, cid }),
+                &station,
+                &os,
+            )?))
+        });
+        return Ok(open);
+    }
+    let placed = placed.ok_or("the step names no target (stand_in, web, tui or desktop)")?;
     if let Some(page) = &config.web {
         let url = format!(
             "http://127.0.0.1:{}/{}",
@@ -676,7 +735,7 @@ fn opener<'a, 'h>(
         return Ok(open);
     }
     let Some(tui) = &config.tui else {
-        return Err("the step names no target (stand_in, web or tui)".into());
+        return Err("the step names no target (stand_in, web, tui or desktop)".into());
     };
     let channel: &'a dyn Channel = &placed.fork;
     let (command, cols, rows) = (tui.command.clone(), tui.cols, tui.rows);
@@ -693,6 +752,15 @@ enum Ran {
     Done(Execution),
 }
 
+/// The agent a step's station calls act as: the one attached to the run, so the laws and the audit name the session that
+/// runs the step. `None` when no agent is attached; the calls then refuse rather than act as anyone else.
+fn run_session(app: &App, run: &str) -> Option<u64> {
+    app.agents
+        .select(|agent| (agent.run.as_deref() == Some(run)).then_some(agent.cid))
+        .into_iter()
+        .min()
+}
+
 /// Runs the step's scenarios on its target, with the gateway's models and the project's regressions.
 fn run_scenarios(
     app: &App,
@@ -701,8 +769,9 @@ fn run_scenarios(
     change: &str,
     roles: &Roles,
     placed: Option<&Placed<'_>>,
+    actor: Option<u64>,
 ) -> Ran {
-    let mut open = match opener(app, config, placed) {
+    let mut open = match opener(app, config, placed, actor) {
         Ok(open) => open,
         Err(why) => return Ran::NoTarget(why),
     };
@@ -773,7 +842,8 @@ fn run_step(
         Ok(placed) => placed,
         Err(why) => return Ok(no_target(why)),
     };
-    let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref());
+    let actor = run_session(app, run);
+    let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref(), actor);
     if let Some(placed) = placed {
         retire_placed(placed);
     }

@@ -598,7 +598,7 @@ pub mod local {
                 &mut slave,
                 ptr::null_mut(),
                 ptr::null_mut(),
-                &mut size,
+                ptr::addr_of_mut!(size),
             )
         };
         if rc != 0 {

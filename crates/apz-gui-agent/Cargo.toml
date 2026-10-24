@@ -1,0 +1,27 @@
+[package]
+name = "apz-gui-agent"
+description = "The fork-side agent of a Linux desktop user test: serves a lane fork's X session (Xvfb, the AT-SPI tree, XTest input, XShm capture) to the hub's desktop target over a line protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "apz-gui-agent"
+path = "src/main.rs"
+
+[dependencies]
+apz-desktop = { path = "../apz-desktop" }
+apz-station = { path = "../apz-station" }
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# The session's X server and its accessibility tree are Linux services. Other targets build the protocol and the
+# scripted desktop, and their binary says it runs on Linux only.
+[target.'cfg(target_os = "linux")'.dependencies]
+apz-desktop-atspi = { path = "../apz-desktop-atspi" }
+apz-desktop-x11 = { path = "../apz-desktop-x11" }
+
+[lints]
+workspace = true
