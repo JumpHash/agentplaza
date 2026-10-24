@@ -489,7 +489,7 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     let spec_task = text(&big["task"]);
     // The work loop starts the task's run on its next tick (its seats open then).
     let runs = hub.wait_for(&format!("/v1/recipe-runs?task={spec_task}"), WAIT, |r| {
-        r.as_array().is_some_and(|l| !l.is_empty())
+        r["runs"].as_array().is_some_and(|l| !l.is_empty())
     });
     assert!(
         runs.to_string().contains("\"plan\""),
@@ -653,7 +653,7 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
     for planned_task in [&csv, &button] {
         let id = text(&planned_task["id"]);
         let run = hub.wait_for(&format!("/v1/recipe-runs?task={id}"), WAIT, |r| {
-            r.as_array().is_some_and(|l| !l.is_empty())
+            r["runs"].as_array().is_some_and(|l| !l.is_empty())
         });
         assert!(
             run.to_string().contains("\"change\""),
@@ -676,7 +676,7 @@ fn a_ticket_above_the_threshold_becomes_a_spec_and_a_plan_and_one_below_becomes_
         "the short ticket is its task: {task}"
     );
     let run = hub.wait_for(&format!("/v1/recipe-runs?task={small_task}"), WAIT, |r| {
-        r.as_array().is_some_and(|l| !l.is_empty())
+        r["runs"].as_array().is_some_and(|l| !l.is_empty())
     });
     assert!(
         run.to_string().contains("\"change\""),

@@ -602,7 +602,7 @@ fn a_second_session_on_a_task_starts_from_the_journal_and_the_handover_its_build
     assert_eq!(status, 201, "{task}");
     let tid = text(&task["id"]);
     hub.wait_for(&format!("/v1/tasks/{tid}/seats"), WAIT, |s| {
-        s.as_array().is_some_and(|s| s.len() == 2)
+        s.as_array().is_some_and(|s| !s.is_empty())
     });
     hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
         s.as_array()

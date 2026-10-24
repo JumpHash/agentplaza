@@ -204,7 +204,13 @@ impl Hub {
         let deadline = Instant::now() + timeout.mul_f64(slack());
         loop {
             let (_, body) = self.call("GET", path, None);
-            if ready(&body) || Instant::now() >= deadline {
+            if ready(&body) {
+                return body;
+            }
+            if Instant::now() >= deadline {
+                // The caller judges the last answer; a wait that ran out is said here, so one that can never be met
+                // (a condition on the wrong shape) shows as the time it costs.
+                eprintln!("wait_for {path}: not ready after {timeout:?}; the last answer: {body}");
                 return body;
             }
             thread::sleep(Duration::from_millis(100));
