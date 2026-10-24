@@ -377,6 +377,84 @@ CREATE TABLE "deploy" (
     FOREIGN KEY ("project_environment_project", "environments_pos") REFERENCES "environment" ("project_environment_project", "environments_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component incidents
+CREATE TABLE "incident" (
+    "id" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "environment" TEXT NOT NULL,
+    "source" TEXT NOT NULL,
+    "fingerprint" TEXT NOT NULL,
+    "severity" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "detail" TEXT NOT NULL,
+    "status" TEXT NOT NULL,
+    "started_ms" INTEGER NOT NULL CHECK ("started_ms" >= 0),
+    "resolved_ms" INTEGER NOT NULL CHECK ("resolved_ms" >= 0),
+    "last_ms" INTEGER NOT NULL CHECK ("last_ms" >= 0),
+    "seen" INTEGER NOT NULL CHECK ("seen" >= 0),
+    "suspect" TEXT NOT NULL,
+    "outcome" TEXT NOT NULL,
+    "rollback" TEXT NOT NULL,
+    "task" TEXT NOT NULL,
+    "postmortem" TEXT NOT NULL,
+    "logs" TEXT NOT NULL,
+    PRIMARY KEY ("id")
+) STRICT;
+CREATE TABLE "incident_links" (
+    "incident_id" TEXT NOT NULL,
+    "links_pos" INTEGER NOT NULL CHECK ("links_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("incident_id", "links_pos"),
+    FOREIGN KEY ("incident_id") REFERENCES "incident" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "incident_lessons" (
+    "incident_id" TEXT NOT NULL,
+    "lessons_pos" INTEGER NOT NULL CHECK ("lessons_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("incident_id", "lessons_pos"),
+    FOREIGN KEY ("incident_id") REFERENCES "incident" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "incident_step" (
+    "incident_id" TEXT NOT NULL,
+    "steps_pos" INTEGER NOT NULL CHECK ("steps_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "stage" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "outcome" TEXT NOT NULL,
+    "text" TEXT NOT NULL,
+    PRIMARY KEY ("incident_id", "steps_pos"),
+    FOREIGN KEY ("incident_id") REFERENCES "incident" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component incident_landings
+CREATE TABLE "incident_landing" (
+    "key" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "project" TEXT NOT NULL,
+    "change" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "author" TEXT NOT NULL,
+    "task" TEXT NOT NULL,
+    "session" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("key")
+) STRICT;
+CREATE TABLE "incident_landing_files" (
+    "incident_landing_key" TEXT NOT NULL,
+    "files_pos" INTEGER NOT NULL CHECK ("files_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("incident_landing_key", "files_pos"),
+    FOREIGN KEY ("incident_landing_key") REFERENCES "incident_landing" ("key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "incident_landing_areas" (
+    "incident_landing_key" TEXT NOT NULL,
+    "areas_pos" INTEGER NOT NULL CHECK ("areas_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("incident_landing_key", "areas_pos"),
+    FOREIGN KEY ("incident_landing_key") REFERENCES "incident_landing" ("key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component toolbox
 CREATE TABLE "discovery" (
     "id" TEXT NOT NULL,
