@@ -28,6 +28,9 @@ mod desktop_targets_test;
 mod desktop_test;
 pub mod farm;
 pub mod fork;
+pub mod iphone;
+#[cfg(test)]
+mod iphone_test;
 pub mod macos;
 pub mod models;
 pub mod run;
@@ -42,6 +45,7 @@ pub mod web;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use crate::artifacts::{Budget, Refusal};
 use crate::base_builds;
 use crate::base_recipe;
 use crate::base_vm::{Fork, Live};
@@ -444,6 +448,7 @@ fn placed_for<'h>(
         || config.macos.is_some()
         || config.simulator.is_some()
         || config.android.is_some()
+        || config.iphone.is_some()
         || (config.desktop.is_some() && !fork_gui)
     {
         return Ok(None);
@@ -734,6 +739,9 @@ fn opener<'a, 'h>(
     if let Some(android) = &config.android {
         return Ok(android::opener(app, android));
     }
+    if let Some(phone) = &config.iphone {
+        return Ok(iphone::opener(app, phone));
+    }
     if config.macos.is_some() || config.simulator.is_some() {
         return desk::opener(app, config);
     }
@@ -876,8 +884,17 @@ fn run_farm(app: &App, run: &str, step: &str, config: &FarmTest, now: u64) -> Ve
         Ok(report) => {
             let sessions = report.sessions.len();
             let passed = report.sessions.iter().filter(|s| s.passed).count();
-            app.recipe_runs
-                .record_evidence(run, farm::evidence(&report, &config.farm), now);
+            // Each artifact the farm gave is stored as a blob of the hub's object store, and its row names the blob.
+            let rows = farm::evidence(&report, &config.farm, |file| {
+                app.artifacts
+                    .put_blob_within(None, &file.mime, &file.bytes, &Budget::unlimited())
+                    .map(|blob| blob.id)
+                    .map_err(|refusal| match refusal {
+                        Refusal::Budget(why) => why,
+                        Refusal::Problems(problems) => problems.join("; "),
+                    })
+            });
+            app.recipe_runs.record_evidence(run, rows, now);
             settle(
                 report.passed(),
                 format!(

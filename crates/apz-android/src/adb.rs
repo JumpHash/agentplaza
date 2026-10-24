@@ -240,11 +240,19 @@ pub fn shell_line(argv: &[String]) -> String {
         .join(" ")
 }
 
-/// The `adb` found in a list of directories, run on this machine. Production runs adb on a node through its shell instead;
-/// this is the runner of the tests (a fake `adb` on a directory of its own) and of a machine that runs adb itself.
+/// The port the adb server listens on, on this machine: the one loopback port an adb client may reach when confined. The server
+/// holds the USB connections to the devices, so a client needs no device access of its own, and none is granted.
+pub const SERVER_PORT: u16 = 5037;
+
+/// The `adb` found in a list of directories, run on this machine. Production runs adb on a node through its shell instead
+/// (`user_test::android`); this is the runner of the tests (a fake `adb` on a directory of its own) and of a node that runs
+/// adb itself. A confined runner ([`Local::confined`]) runs each line under the operating system's sandbox (`apz_sandbox`:
+/// the Seatbelt profile on macOS, Landlock on Linux), the confinement noded gives its sessions.
 pub struct Local {
     program: PathBuf,
     background: RefCell<Vec<Child>>,
+    /// The work directory a confined line may write (its cwd and HOME). None when the runner does not confine.
+    workdir: Option<PathBuf>,
 }
 
 impl Local {
@@ -259,18 +267,65 @@ impl Local {
             })
     }
 
+    /// The `adb` in `dirs`, run confined to `workdir`.
+    pub fn confined_in_dirs(dirs: &[PathBuf], workdir: PathBuf) -> Result<Self, String> {
+        let mut local = Self::in_dirs(dirs)?;
+        local.workdir = Some(workdir);
+        Ok(local)
+    }
+
     /// The tool at `program`.
     pub fn at(program: PathBuf) -> Self {
         Self {
             program,
             background: RefCell::new(Vec::new()),
+            workdir: None,
         }
     }
 
-    fn command(&self, args: &[String]) -> Command {
-        let mut command = Command::new(&self.program);
-        command.args(args).stdin(Stdio::null());
-        command
+    /// The tool at `program`, run confined: its lines may read the program, write `workdir` (their cwd and HOME), and reach
+    /// the adb server on this machine ([`SERVER_PORT`]). Nothing else.
+    pub fn confined(program: PathBuf, workdir: PathBuf) -> Self {
+        Self {
+            workdir: Some(workdir),
+            ..Self::at(program)
+        }
+    }
+
+    /// The command a line runs as. Unconfined, the program with its arguments. Confined, the sandbox's command: on macOS
+    /// `sandbox-exec` with the profile, then the program. The profile is built by `apz_sandbox` from the work directory and
+    /// the server's port.
+    pub fn command_for(&self, args: &[String]) -> Result<Command, String> {
+        let mut command = match &self.workdir {
+            None => {
+                let mut command = Command::new(&self.program);
+                command.args(args);
+                command
+            }
+            Some(workdir) => {
+                let home = workdir.display().to_string();
+                let spec = apz_sandbox::Spec {
+                    program: self.program.clone(),
+                    args: args.to_vec(),
+                    env: vec![
+                        (
+                            "PATH".to_string(),
+                            "/usr/bin:/bin:/usr/sbin:/sbin".to_string(),
+                        ),
+                        ("HOME".to_string(), home.clone()),
+                        ("TMPDIR".to_string(), home),
+                    ],
+                    workdir: workdir.clone(),
+                    read_only: Vec::new(),
+                    read_write: Vec::new(),
+                    network: apz_sandbox::Network::LoopbackPort(SERVER_PORT),
+                    limits: apz_sandbox::Limits::default(),
+                };
+                apz_sandbox::command(&spec).map_err(|e| format!("adb cannot be confined: {e}"))?
+            }
+        };
+        command.stdin(Stdio::null());
+        Ok(command)
     }
 }
 
@@ -280,7 +335,7 @@ const STOP_WAIT: Duration = Duration::from_secs(15);
 impl Runner for Local {
     fn run(&self, args: &[String]) -> Result<String, String> {
         let output = self
-            .command(args)
+            .command_for(args)?
             .output()
             .map_err(|e| format!("cannot run adb: {e}"))?;
         if output.status.success() {
@@ -295,7 +350,7 @@ impl Runner for Local {
     }
 
     fn start(&self, args: &[String]) -> Result<u32, String> {
-        let mut command = self.command(args);
+        let mut command = self.command_for(args)?;
         command.stdout(Stdio::null()).stderr(Stdio::null());
         let child = command
             .spawn()
@@ -646,5 +701,83 @@ mod tests {
         assert!(why.contains("device offline"), "{why}");
         let empty = tempfile::tempdir().unwrap();
         assert!(Local::in_dirs(&[empty.path().to_path_buf()]).is_err());
+    }
+
+    #[test]
+    fn a_confined_line_is_the_sandbox_command_for_the_work_dir_and_the_server_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = fake_adb(dir.path(), &dir.path().join("argv.log"));
+        let runner = Local::confined(program.clone(), dir.path().to_path_buf());
+        let args = Adb::UiDump.args("emulator-5554").unwrap();
+        let command = runner.command_for(&args).unwrap();
+        let argv: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let real = std::fs::canonicalize(&program).unwrap();
+        if cfg!(target_os = "macos") {
+            // Seatbelt: sandbox-exec applies the profile, then runs the program.
+            assert_eq!(command.get_program(), "/usr/bin/sandbox-exec");
+            assert_eq!(argv[0], "-p");
+            let profile = &argv[1];
+            let work = std::fs::canonicalize(dir.path()).unwrap();
+            assert!(profile.contains("(deny default)"), "{profile}");
+            assert!(
+                profile.contains(&format!("(subpath \"{}\")", work.display())),
+                "{profile}"
+            );
+            assert!(
+                profile.contains("localhost:5037"),
+                "the adb server's port, and no other network: {profile}"
+            );
+            assert_eq!(argv[2], "--");
+            assert_eq!(argv[3], program.display().to_string());
+            assert_eq!(&argv[4..], args.as_slice());
+        } else {
+            // Landlock is applied in the child before exec: the program is the command, and the rules are the same spec.
+            assert_eq!(command.get_program(), real.as_os_str());
+            assert_eq!(argv, args);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_confined_adb_answers_inside_its_work_dir_and_cannot_write_outside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let escape = outside.path().join("escaped");
+        let log = dir.path().join("argv.log");
+        std::fs::write(
+            dir.path().join("screen.xml"),
+            "<hierarchy><node bounds=\"[0,0][1,1]\"/></hierarchy>",
+        )
+        .unwrap();
+        let program = dir.path().join(ADB);
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncat '{screen}'\nif touch '{escape}' 2>/dev/null; then echo wrote; else echo denied; fi\nexit 0\n",
+            log = log.display(),
+            screen = dir.path().join("screen.xml").display(),
+            escape = escape.display(),
+        );
+        std::fs::write(&program, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = Local::confined(program, dir.path().to_path_buf());
+        let answer = exec(&runner, "emulator-5554", &Adb::UiDump).unwrap();
+        assert!(
+            answer.contains("<hierarchy>"),
+            "the work dir is readable: {answer}"
+        );
+        assert!(
+            answer.contains("denied"),
+            "a write outside the work dir is refused: {answer}"
+        );
+        assert!(!escape.exists(), "nothing was written outside");
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("uiautomator dump"),
+            "the work dir is writable"
+        );
     }
 }

@@ -9,13 +9,16 @@
 //! `app_url` (`/app-automate/upload`) and `test_suite_url` (`/app-automate/espresso/v2/test-suite`); the build is a JSON
 //! `POST /app-automate/espresso/v2/build` with `app`, `testSuite` and `devices`, answering `build_id`; the build is read
 //! with `GET /app-automate/espresso/v2/builds/{build_id}`, whose `status` is `running` or `queued` until it ends, and whose
-//! `sessions` each name their `id`, `device`, `status` (`passed` for a pass), `public_url` and `test_cases` (`name`, `status`,
+//! `sessions` each name their `id`, `device`, `status` (`passed` for a pass), `public_url`, `video_url`, `logs_url` and `test_cases` (`name`, `status`,
 //! `reason`). Any of these that differs from the live API is a change to this file only.
 
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use super::{Api, Deps, Report, Session, TestResult, answered, credential, manifest_of, secrets};
+use super::{
+    Api, Artifact, Deps, Report, Session, TestResult, answered, collect, credential, manifest_of,
+    secrets,
+};
 use crate::recipes::model::FarmTest;
 
 const BASE: &str = "https://api-cloud.browserstack.com";
@@ -60,7 +63,7 @@ pub fn run(deps: &Deps, config: &FarmTest, app: &[u8], tests: &[u8]) -> Result<R
     for poll in 0..deps.pace.polls {
         let doc = api.json("GET", &url, None)?;
         if !running(&doc) {
-            return Ok(report(&build_id, &doc));
+            return Ok(collect(&api, report(&build_id, &doc)));
         }
         if poll + 1 < deps.pace.polls {
             std::thread::sleep(deps.pace.interval);
@@ -102,16 +105,13 @@ fn running(doc: &Value) -> bool {
     matches!(doc["status"].as_str(), Some("running") | Some("queued"))
 }
 
-/// The report of a finished build: its sessions, with each one's tests.
+/// The report of a finished build: its sessions, with each one's tests and artifacts.
 pub fn report(build_id: &str, doc: &Value) -> Report {
     let sessions = doc["sessions"]
         .as_array()
         .map(|list| list.iter().map(session).collect())
         .unwrap_or_default();
-    Report {
-        run: build_id.to_string(),
-        sessions,
-    }
+    Report::of(build_id.to_string(), sessions)
 }
 
 fn session(s: &Value) -> Session {
@@ -127,6 +127,16 @@ fn session(s: &Value) -> Session {
                 .collect()
         })
         .unwrap_or_default();
+    // The video and the log of a session are downloaded into the run (the names of these fields are assumed, see above).
+    let artifacts = [("video.mp4", "video_url"), ("logs.txt", "logs_url")]
+        .into_iter()
+        .filter_map(|(name, field)| {
+            s[field].as_str().map(|url| Artifact {
+                name: name.to_string(),
+                url: url.to_string(),
+            })
+        })
+        .collect();
     Session {
         id: s["id"].as_str().unwrap_or_default().to_string(),
         device: s["device"].as_str().unwrap_or_default().to_string(),
@@ -136,5 +146,6 @@ fn session(s: &Value) -> Session {
             .map(|u| vec![u.to_string()])
             .unwrap_or_default(),
         tests,
+        artifacts,
     }
 }

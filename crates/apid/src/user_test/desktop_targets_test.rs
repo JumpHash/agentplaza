@@ -956,6 +956,7 @@ fn a_desktop_target_acts_as_an_agent_and_names_one_target() {
         simulator: None,
         android: None,
         farm: None,
+        iphone: None,
         acceptance: vec![],
         threshold: 0.6,
         actions: 8,

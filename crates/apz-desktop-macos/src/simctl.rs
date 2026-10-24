@@ -129,6 +129,9 @@ pub enum Devicectl {
     Install { device: String, app: PathBuf },
     /// Launches a bundle on the device.
     Launch { device: String, bundle: String },
+    /// A picture of the device's screen, written to an absolute path on the machine. ASSUMED: `devicectl device screenshot`
+    /// with the path last; checked against no Xcode (none is on the machine that builds this), so the first real run decides it.
+    Screenshot { device: String, path: PathBuf },
 }
 
 impl Devicectl {
@@ -155,6 +158,11 @@ impl Devicectl {
                 Ok(words(&[
                     "device", "process", "launch", "--device", &device, &bundle,
                 ]))
+            }
+            Devicectl::Screenshot { device, path } => {
+                let device = name("device", device)?;
+                let path = absolute("the screenshot", path)?;
+                Ok(words(&["device", "screenshot", "--device", &device, &path]))
             }
         }
     }

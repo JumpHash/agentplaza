@@ -501,6 +501,7 @@ fn a_step_names_one_target_and_a_desktop_names_its_os_and_station() {
         simulator: None,
         android: None,
         farm: None,
+        iphone: None,
         acceptance: vec![],
         threshold: 0.6,
         actions: 8,

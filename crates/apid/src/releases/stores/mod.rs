@@ -14,7 +14,7 @@
 //! The real accounts are not run here: the tests put fake API servers behind the mediator (`tests.rs`).
 
 mod appstore;
-mod jwt;
+pub(crate) mod jwt;
 mod play;
 #[cfg(test)]
 mod tests;

@@ -1364,6 +1364,7 @@ mod tests {
             Ok(glue::Reply {
                 status: 200,
                 body: "{}".into(),
+                bytes: b"{}".to_vec(),
             })
         }
     }

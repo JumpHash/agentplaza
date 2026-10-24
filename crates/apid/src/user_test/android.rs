@@ -263,13 +263,13 @@ impl Target for Device<'_> {
 /// A lease of a device on a node, and the step's recording of it: what a step keeps from its setup to its end.
 #[derive(Debug, Default)]
 pub struct Held {
-    lease: String,
-    recording: Option<(u32, PathBuf)>,
+    pub(super) lease: String,
+    pub(super) recording: Option<(u32, PathBuf)>,
 }
 
 /// Leases the device `serial` on `station` for `task`. A device lease is active at once; one that another agent holds is
 /// refused, and the lease is released again if it does not come back active.
-fn open_device(
+pub(super) fn open_device(
     calls: &dyn Calls,
     station: &str,
     serial: &str,

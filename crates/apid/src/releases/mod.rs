@@ -27,7 +27,7 @@ pub mod sbom;
 #[cfg(test)]
 mod sign_tests;
 pub mod signing;
-pub mod stores;
+pub(crate) mod stores;
 pub mod sync;
 #[cfg(test)]
 mod sync_tests;

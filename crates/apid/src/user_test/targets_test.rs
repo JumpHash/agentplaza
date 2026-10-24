@@ -632,6 +632,7 @@ fn a_step_names_one_target_and_a_terminal_names_a_program() {
         simulator: None,
         android: None,
         farm: None,
+        iphone: None,
         acceptance: vec![],
         threshold: 0.6,
         actions: 8,

@@ -165,6 +165,9 @@ pub struct UserTest {
     /// results come back as the run's evidence, and the step has no scenarios.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub farm: Option<FarmTest>,
+    /// An iPhone target (PLAN 19.3, 8.5): a physical iPhone on a Mac node, leased for the step like an Android phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iphone: Option<IphoneTarget>,
     /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acceptance: Vec<String>,
@@ -215,6 +218,7 @@ impl UserTest {
             self.simulator.is_some(),
             self.android.is_some(),
             self.farm.is_some(),
+            self.iphone.is_some(),
         ]
         .iter()
         .filter(|set| **set)
@@ -227,6 +231,9 @@ impl UserTest {
         }
         if let Some(farm) = &self.farm {
             farm.check()?;
+        }
+        if let Some(phone) = &self.iphone {
+            phone.check()?;
         }
         if let Some(desk) = &self.desktop {
             crate::user_test::desktop::kind_of(&desk.os)?;
@@ -423,6 +430,47 @@ impl AndroidTarget {
         }
         if !self.component.contains('/') {
             return Err("an Android target's component is package/.Activity".into());
+        }
+        Ok(())
+    }
+}
+
+/// An iPhone target's configuration (PLAN 19.3, 8.5). The device is the physical iPhone `udid` (its UDID) attached to the Mac
+/// node `station`: leased for the step as an Android phone is (`device` kind), its app installed from `app` (an absolute path
+/// on the node) when given, and launched for each scenario (`bundle`). It needs Xcode on the node (`devicectl`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IphoneTarget {
+    pub station: String,
+    pub agent: u64,
+    pub udid: String,
+    pub bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+impl IphoneTarget {
+    pub fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "an iPhone target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty()
+            || self.udid.trim().is_empty()
+            || self.bundle.trim().is_empty()
+        {
+            return Err(
+                "an iPhone target names its station, its device's UDID and its app's bundle id"
+                    .into(),
+            );
+        }
+        if let Some(app) = &self.app
+            && !app.starts_with('/')
+        {
+            return Err("an iPhone target's app is an absolute path on the Mac node".into());
         }
         Ok(())
     }

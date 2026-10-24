@@ -259,8 +259,8 @@ pub fn opener<'a>(app: &'a App, config: &'a UserTest) -> Result<Opener<'a>, Stri
 #[derive(Debug, Default)]
 pub struct Setup {
     recording: Option<(u32, String)>,
-    /// An Android device's lease and recording (`android.rs`), held from the step's start to its end.
-    android: Option<super::android::Held>,
+    /// A device's lease (an Android phone's, with its recording, or an iPhone's), held from the step's start to its end.
+    device: Option<super::android::Held>,
 }
 
 /// Before a step's scenarios: a simulator is booted, the app installed when the step gives its path, and the step's video
@@ -269,7 +269,13 @@ pub fn prepare(app: &App, config: &UserTest) -> Result<Setup, String> {
     if let Some(android) = &config.android {
         return super::android::prepare(app, android).map(|held| Setup {
             recording: None,
-            android: Some(held),
+            device: Some(held),
+        });
+    }
+    if let Some(phone) = &config.iphone {
+        return super::iphone::prepare(app, phone).map(|held| Setup {
+            recording: None,
+            device: Some(held),
         });
     }
     let Some(sim) = &config.simulator else {
@@ -279,7 +285,7 @@ pub fn prepare(app: &App, config: &UserTest) -> Result<Setup, String> {
     match set_up(&runner, sim) {
         Ok(recording) => Ok(Setup {
             recording,
-            android: None,
+            device: None,
         }),
         Err(why) => {
             let _ = simctl::exec(
@@ -322,7 +328,10 @@ fn set_up(runner: &dyn Runner, sim: &SimTarget) -> Result<Option<(u32, String)>,
 /// simulator is shut down. Each step's failure is said in the answer, not raised: the step's result stands.
 pub fn finish(app: &App, config: &UserTest, setup: Setup) -> String {
     if let Some(android) = &config.android {
-        return super::android::finish(app, android, setup.android);
+        return super::android::finish(app, android, setup.device);
+    }
+    if let Some(phone) = &config.iphone {
+        return super::iphone::finish(app, phone, setup.device);
     }
     let mut notes = Vec::new();
     if let Some(mac) = &config.macos
