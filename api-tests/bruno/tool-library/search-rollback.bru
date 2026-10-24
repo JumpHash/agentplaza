@@ -1,0 +1,26 @@
+meta {
+  name: Search the tool library by words: rollback finds the deploy and the Kubernetes undo
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/tool-library/search?q=rollback
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the hits carry their path, summary and where they run", function () {
+    const b = res.getBody();
+    const paths = b.hits.map((h) => h.path);
+    expect(paths).to.include("deploy.rollback");
+    expect(paths).to.include("deploy.kubernetes.undo");
+    b.hits.forEach((h) => expect(["guest", "hub"]).to.include(h.runs));
+  });
+}

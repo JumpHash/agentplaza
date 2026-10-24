@@ -138,6 +138,7 @@ mod task_plan;
 mod test_lab;
 mod test_select;
 mod threads;
+mod tool_library;
 mod tool_life;
 mod toolbox;
 mod toolbox_survey;

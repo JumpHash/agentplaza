@@ -98,6 +98,7 @@ mod term;
 #[cfg(target_os = "linux")]
 mod tool_batch;
 #[cfg(target_os = "linux")]
+mod tool_library;
 mod tool_search;
 #[cfg(target_os = "linux")]
 mod tools;
