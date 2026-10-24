@@ -335,6 +335,7 @@ name = "apid"
 version = "1.0.0"
 dependencies = [
  "apz-acp",
+ "apz-android",
  "apz-artifact",
  "apz-blobs",
  "apz-cache",
@@ -419,6 +420,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "apz-android"
+version = "1.0.0"
+dependencies = [
+ "apz-sandbox",
+ "tempfile",
 ]
 
 [[package]]

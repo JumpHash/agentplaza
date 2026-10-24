@@ -49,6 +49,15 @@ const STORES: [&str; 2] = [
     include_str!("manifests/stores/google-play.toml"),
 ];
 
+/// The device farms' connectors (PLAN 19.3, 8.5), one manifest each: BrowserStack, Firebase Test Lab and AWS Device Farm.
+/// Like the stores', they are read by the user test's farm step (`user_test::farm`), not the catalog. AWS signs each request
+/// (SigV4), which one static header cannot carry: its manifest names no header, and the signing is the farm's own step.
+const FARMS: [&str; 3] = [
+    include_str!("manifests/farms/browserstack.toml"),
+    include_str!("manifests/farms/firebase-test-lab.toml"),
+    include_str!("manifests/farms/aws-device-farm.toml"),
+];
+
 /// The kinds a manifest may name: what the connector does for the plaza.
 const KINDS: [&str; 4] = ["tool", "intake", "notify", "publish"];
 /// The scopes a manifest may name: the risk classes of connector actions.
@@ -104,6 +113,18 @@ pub fn stores() -> Vec<Manifest> {
         .iter()
         .map(|text| {
             let mut m = parse(text).expect("a shipped store manifest parses");
+            m.state = "approved".into();
+            m
+        })
+        .collect()
+}
+
+/// The device farms' manifests, approved as shipped (8.5). Each file parses and passes [`check`] (a test holds that).
+pub fn farms() -> Vec<Manifest> {
+    FARMS
+        .iter()
+        .map(|text| {
+            let mut m = parse(text).expect("a shipped farm manifest parses");
             m.state = "approved".into();
             m
         })

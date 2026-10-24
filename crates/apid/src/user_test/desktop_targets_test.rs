@@ -24,7 +24,7 @@ use crate::recipes::model::{MacTarget, SimTarget, UserTest};
 
 /// A driver and planner that answer from code: one acceptance scenario that presses Pay and expects the receipt, a failure is
 /// a defect, and the driver presses the control named Pay when the screen has one.
-struct Fake;
+pub(super) struct Fake;
 
 impl Models for Fake {
     fn plan(&self, _req: &PlanRequest) -> Result<Vec<Scenario>, String> {
@@ -74,7 +74,7 @@ impl Models for Fake {
 }
 
 /// Pressing Pay reaches the receipt.
-fn scenario() -> Scenario {
+pub(super) fn scenario() -> Scenario {
     Scenario {
         id: "pay".into(),
         title: "Paying reaches the receipt".into(),
@@ -92,7 +92,7 @@ fn scenario() -> Scenario {
 }
 
 /// One scenario on the targets `open` makes (a fresh one for each run), through the loop.
-fn run<'a>(open: &mut dyn FnMut() -> Result<Box<dyn Target + 'a>, String>) -> Execution {
+pub(super) fn run<'a>(open: &mut dyn FnMut() -> Result<Box<dyn Target + 'a>, String>) -> Execution {
     let dir = tempfile::tempdir().unwrap();
     let blobs = Blobs::open(dir.path()).unwrap();
     let models = Fake;
@@ -954,6 +954,9 @@ fn a_desktop_target_acts_as_an_agent_and_names_one_target() {
         desktop: None,
         macos: None,
         simulator: None,
+        android: None,
+        farm: None,
+        iphone: None,
         acceptance: vec![],
         threshold: 0.6,
         actions: 8,

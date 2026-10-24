@@ -278,8 +278,15 @@ pub fn open_lease(
     agent: u64,
     task: Option<String>,
     kind: Kind,
+    device: Option<String>,
     actor: &str,
 ) -> Result<LeaseView, Failure> {
+    if (kind == Kind::Device) != device.is_some() {
+        return Err((
+            400,
+            "a device lease names its device, and only a device lease does".into(),
+        ));
+    }
     let station = app
         .stations
         .station(station_id)
@@ -300,11 +307,18 @@ pub fn open_lease(
         return Err((409, "this workstation is offline".into()));
     }
     super::vms::before_lease(app, station_id)?;
-    let lease = app
-        .stations
-        .leases
-        .open(station_id, agent, task.clone(), kind, now())
-        .map_err(|e| (409, e))?;
+    let opened = match &device {
+        Some(serial) => {
+            app.stations
+                .leases
+                .open_device(station_id, agent, task.clone(), serial, now())
+        }
+        None => app
+            .stations
+            .leases
+            .open(station_id, agent, task.clone(), kind, now()),
+    };
+    let lease = opened.map_err(|e| (409, e))?;
     let event = StationAudit::LeaseOpen {
         lease: lease.id.clone(),
         lease_kind: kind,
@@ -418,6 +432,8 @@ fn release_with(
 fn session_kind(kind: Kind) -> SessionKind {
     match kind {
         Kind::OwnerScreen | Kind::Shared => SessionKind::Shared,
+        // A device lease holds no session: it is never asked for one (`grant_next` takes only the session kinds).
+        Kind::Device => SessionKind::Shared,
         Kind::Pixel => SessionKind::Pixel,
     }
 }

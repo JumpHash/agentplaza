@@ -74,6 +74,43 @@ pub(crate) fn sign(
     req.set_secret(&creds.secret_key);
 }
 
+/// The headers AWS SigV4 adds to one request (`x-amz-date`, `x-amz-security-token` with a session token, and
+/// `authorization`), for a request with `method` to `url`, its own `headers` and its `body`. The caller sends the request
+/// with these headers added; only those three names are answered. The device farms (apid, PLAN 8.5) sign their calls with
+/// this, so the signing is this module's.
+pub fn signed_headers(
+    method: &'static str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    access_key: &str,
+    secret_key: &str,
+    session_token: Option<&str>,
+    region: &str,
+    service: &str,
+    now: SystemTime,
+) -> Vec<(String, String)> {
+    let mut req = Req::raw(method, url, body.to_vec());
+    for (name, value) in headers {
+        req.set_header(name, value);
+    }
+    let creds = Credentials {
+        access_key: access_key.to_string(),
+        secret_key: secret_key.to_string(),
+        session_token: session_token.map(str::to_string),
+    };
+    sign(&mut req, &creds, region, service, now);
+    req.headers
+        .into_iter()
+        .filter(|(name, _)| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "x-amz-date" | "x-amz-security-token" | "authorization"
+            )
+        })
+        .collect()
+}
+
 fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
     let k_date = hmac(format!("AWS4{secret}").as_bytes(), date.as_bytes());
     let k_region = hmac(&k_date, region.as_bytes());

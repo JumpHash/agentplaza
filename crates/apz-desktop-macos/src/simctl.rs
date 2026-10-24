@@ -115,6 +115,59 @@ fn absolute(what: &str, path: &Path) -> Result<String, String> {
     Ok(text.into_owned())
 }
 
+/// The command lines of a physical iPhone through Xcode's `devicectl` (PLAN 19.3, 8.5): an iPhone on a Mac node is leased as a
+/// device by its UDID, and its app is installed and launched with these lines. ASSUMED from Xcode 15's `xcrun devicectl`
+/// (`device install app --device <id> <path>`, `device process launch --device <id> <bundle>`): built and checked here, not
+/// run (there is no Xcode on the machine that builds this). Its tree and its pictures are not `devicectl`'s: a physical
+/// iPhone needs the accessibility bridge (`simulator::Bridge`) and a capture the bridge does not give, so a physical iPhone's
+/// scenarios are not run yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Devicectl {
+    /// Lists the devices Xcode can see.
+    List,
+    /// Installs a built `.app` bundle, at an absolute path, on the device.
+    Install { device: String, app: PathBuf },
+    /// Launches a bundle on the device.
+    Launch { device: String, bundle: String },
+    /// A picture of the device's screen, written to an absolute path on the machine. ASSUMED: `devicectl device screenshot`
+    /// with the path last; checked against no Xcode (none is on the machine that builds this), so the first real run decides it.
+    Screenshot { device: String, path: PathBuf },
+}
+
+impl Devicectl {
+    /// The arguments after `xcrun`, starting with `devicectl`. The same checks as [`Simctl::args`] apply to a device and a path.
+    pub fn args(&self) -> Result<Vec<String>, String> {
+        let words = |items: &[&str]| -> Vec<String> {
+            std::iter::once("devicectl")
+                .chain(items.iter().copied())
+                .map(str::to_string)
+                .collect()
+        };
+        match self {
+            Devicectl::List => Ok(words(&["list", "devices"])),
+            Devicectl::Install { device, app } => {
+                let device = name("device", device)?;
+                let app = absolute("the app", app)?;
+                Ok(words(&[
+                    "device", "install", "app", "--device", &device, &app,
+                ]))
+            }
+            Devicectl::Launch { device, bundle } => {
+                let device = name("device", device)?;
+                let bundle = name("bundle", bundle)?;
+                Ok(words(&[
+                    "device", "process", "launch", "--device", &device, &bundle,
+                ]))
+            }
+            Devicectl::Screenshot { device, path } => {
+                let device = name("device", device)?;
+                let path = absolute("the screenshot", path)?;
+                Ok(words(&["device", "screenshot", "--device", &device, &path]))
+            }
+        }
+    }
+}
+
 /// Runs the tool: a command to its end, a background process, a file a process wrote. The one seam between the command
 /// lines and the machine that runs them, so a test can answer from a script.
 pub trait Runner {
@@ -507,6 +560,56 @@ exit 0
         assert!(movie.exists(), "the recording wrote its file");
         xcrun.stop(pid).expect("the recording stops");
         assert!(xcrun.stop(pid).is_err(), "a stopped process is gone");
+    }
+
+    #[test]
+    fn the_devicectl_lines_for_a_physical_iphone_are_built_and_checked() {
+        let install = Devicectl::Install {
+            device: "00008110-001C2D3E4F5A6B7C".into(),
+            app: PathBuf::from("/Users/ci/Shop.app"),
+        }
+        .args()
+        .unwrap();
+        assert_eq!(
+            install,
+            vec![
+                "devicectl",
+                "device",
+                "install",
+                "app",
+                "--device",
+                "00008110-001C2D3E4F5A6B7C",
+                "/Users/ci/Shop.app"
+            ]
+        );
+        let launch = Devicectl::Launch {
+            device: "00008110-001C2D3E4F5A6B7C".into(),
+            bundle: "com.acme.shop".into(),
+        }
+        .args()
+        .unwrap();
+        assert_eq!(launch[..4], ["devicectl", "device", "process", "launch"]);
+        assert_eq!(
+            Devicectl::List.args().unwrap(),
+            vec!["devicectl", "list", "devices"]
+        );
+        assert!(
+            Devicectl::Install {
+                device: "-x".into(),
+                app: PathBuf::from("/a.app"),
+            }
+            .args()
+            .is_err()
+        );
+        assert!(
+            Devicectl::Install {
+                device: "d".into(),
+                app: PathBuf::from("a.app"),
+            }
+            .args()
+            .is_err(),
+            "the app is an absolute path"
+        );
     }
 
     #[test]

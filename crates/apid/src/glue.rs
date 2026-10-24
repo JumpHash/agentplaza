@@ -61,12 +61,18 @@ pub struct Outgoing {
     pub body: Vec<u8>,
 }
 
-/// What an upstream answered: the status, and the body cut at 256 KiB.
+/// What an upstream answered: the status, and the body cut at 256 KiB. `bytes` is the body as it came, cut at
+/// [`ARTIFACT_CAP`] plus one byte (so a caller can tell that it was larger): an artifact is binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
     pub status: u16,
     pub body: String,
+    pub bytes: Vec<u8>,
 }
+
+/// The most of an upstream body the reply keeps as bytes: a device farm's artifact (a video or a log) is downloaded whole up
+/// to this size, and a larger one is refused by its caller.
+pub const ARTIFACT_CAP: usize = 16 << 20;
 
 /// The way the hub reaches the network. Production uses [`HttpsOutbound`]; tests put a fake server behind it.
 pub trait Outbound: Send + Sync {
@@ -169,12 +175,14 @@ impl Outbound for HttpsOutbound {
         response
             .into_body()
             .into_reader()
-            .take(BODY_CAP as u64)
+            .take(ARTIFACT_CAP as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
+        let text = &bytes[..bytes.len().min(BODY_CAP)];
         Ok(Reply {
             status,
-            body: String::from_utf8_lossy(&bytes).into_owned(),
+            body: String::from_utf8_lossy(text).into_owned(),
+            bytes,
         })
     }
 }
@@ -438,6 +446,7 @@ impl Mediator<'_> {
         })?;
         Ok(Reply {
             status: reply.status,
+            bytes: reply.bytes,
             body: match self.secret {
                 Some(secret) if !secret.value.is_empty() => {
                     reply.body.replace(&secret.value, "[redacted]")

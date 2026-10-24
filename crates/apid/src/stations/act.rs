@@ -408,9 +408,10 @@ pub fn lease_open(
     station: &str,
     kind: Kind,
     task: Option<String>,
+    device: Option<String>,
 ) -> Result<LeaseView, Failure> {
     let role = role_of(app, cid)?;
-    let input = json!({"station": station, "kind": kind, "task": task});
+    let input = json!({"station": station, "kind": kind, "task": task, "device": device});
     if let Some(why) = app.laws.refusal(cid, &role, "station_lease", &input) {
         return Err(refused(
             app,
@@ -420,7 +421,7 @@ pub fn lease_open(
             why,
         ));
     }
-    let view = ops::open_lease(app, station, cid, task, kind, &actor_of(cid))?;
+    let view = ops::open_lease(app, station, cid, task, kind, device, &actor_of(cid))?;
     Ok(wait_for_grant(app, station, view))
 }
 
