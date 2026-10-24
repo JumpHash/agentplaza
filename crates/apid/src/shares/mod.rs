@@ -916,7 +916,7 @@ mod tests {
         drop(shares);
         drop(store);
 
-        let (_store, shares) = open(dir.path());
+        let (store, shares) = open(dir.path());
         let reloaded = shares.get(&share.id).expect("the share is back");
         assert_eq!(reloaded.title, "A");
         assert_eq!(reloaded.version, Some(2));
@@ -925,6 +925,9 @@ mod tests {
         assert!(shares.check_password(&share.id, password));
         assert_eq!(shares.counts(&share.id), (1, 0));
         assert_eq!(shares.events(&share.id, 10).len(), 1);
+        // Windows locks the bytes of an open database, so the folder is read once both handles are closed.
+        drop(shares);
+        drop(store);
 
         let mut bytes = Vec::new();
         for entry in std::fs::read_dir(dir.path()).expect("read the folder") {

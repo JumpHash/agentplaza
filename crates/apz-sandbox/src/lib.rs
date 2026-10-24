@@ -374,7 +374,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("apz-sbx-probe-bin");
         std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
-        let env = vec![("PATH".to_owned(), format!("relative-dir:{}", dir.display()))];
+        // PATH is joined with the host's separator: `:` on Unix, `;` on Windows.
+        let path = std::env::join_paths([Path::new("relative-dir"), dir.as_path()]).unwrap();
+        let env = vec![("PATH".to_owned(), path.to_string_lossy().into_owned())];
         let found = resolve_program(Path::new("apz-sbx-probe-bin"), &env).unwrap();
         assert_eq!(found, bin);
         assert!(resolve_program(Path::new("apz-sbx-missing"), &env).is_err());

@@ -171,11 +171,10 @@ pub fn base_env(
     path_dirs: &[PathBuf],
     proxy: Option<&str>,
 ) -> Vec<(String, String)> {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let mut dirs = path_dirs.to_vec();
     if cfg!(windows) {
-        dirs.push(PathBuf::from(
-            std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into()),
-        ));
+        dirs.push(PathBuf::from(&system_root));
     } else {
         dirs.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].map(PathBuf::from));
     }
@@ -214,6 +213,10 @@ pub fn base_env(
                 .into_owned(),
         ),
     ];
+    if cfg!(windows) {
+        // The child gets SystemRoot as a variable as well as on its PATH.
+        env.push(("SystemRoot".to_string(), system_root));
+    }
     if let Some(proxy) = proxy {
         env.extend(super::egress::proxy_env(proxy));
     }
@@ -603,7 +606,8 @@ pub(crate) mod tests {
                 .find(|(name, _)| name == k)
                 .map(|(_, v)| v.clone())
         };
-        assert_eq!(get("HOME").unwrap(), "/state/mcp/fetch/home");
+        let home = Path::new("/state").join("mcp").join("fetch").join("home");
+        assert_eq!(get("HOME").unwrap(), home.display().to_string());
         assert!(get("PATH").unwrap().starts_with("/rt/node/bin"));
         assert_eq!(get("HTTPS_PROXY").unwrap(), "http://apz:t@127.0.0.1:19128");
         let offline = base_env(&layout, &[], None);
