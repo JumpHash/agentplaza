@@ -132,6 +132,7 @@ CREATE TABLE "project_setting" (
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     "subscription_fallback" INTEGER NOT NULL CHECK ("subscription_fallback" IN (0, 1)),
+    "qualify_soak" INTEGER NOT NULL CHECK ("qualify_soak" IN (0, 1)),
     PRIMARY KEY ("project")
 ) STRICT;
 CREATE TABLE "project_setting_role_models" (
@@ -187,6 +188,13 @@ CREATE TABLE "project_setting_performance_limits" (
     "metric" TEXT NOT NULL,
     "max_tenths" INTEGER NOT NULL CHECK ("max_tenths" >= 0),
     PRIMARY KEY ("project_setting_project", "performance_limits_pos"),
+    FOREIGN KEY ("project_setting_project") REFERENCES "project_setting" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "project_setting_qualify_depth" (
+    "project_setting_project" TEXT NOT NULL,
+    "qualify_depth_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("project_setting_project", "qualify_depth_key"),
     FOREIGN KEY ("project_setting_project") REFERENCES "project_setting" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
@@ -1988,6 +1996,195 @@ CREATE TABLE "test_lab_verdict_cite" (
     FOREIGN KEY ("test_lab_pos", "verdicts_pos") REFERENCES "test_lab_verdict" ("test_lab_pos", "verdicts_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
+-- component qualification
+CREATE TABLE "qualification" (
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    PRIMARY KEY ("pos")
+) STRICT;
+CREATE TABLE "qualify_run" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "release" TEXT NOT NULL,
+    "project" TEXT NOT NULL,
+    "planner" TEXT NOT NULL,
+    "second" TEXT NOT NULL,
+    "channel" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "recipe_run" TEXT NOT NULL,
+    "verdict" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "review_run" TEXT NOT NULL,
+    "started_ms" INTEGER NOT NULL CHECK ("started_ms" >= 0),
+    "ended_ms" INTEGER CHECK ("ended_ms" >= 0),
+    PRIMARY KEY ("qualification_pos", "runs_pos"),
+    FOREIGN KEY ("qualification_pos") REFERENCES "qualification" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE INDEX "qualify_run_release" ON "qualify_run" ("release");
+CREATE TABLE "qualify_run_depth" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "depth_pos" INTEGER NOT NULL CHECK ("depth_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "depth_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_short" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "short_pos" INTEGER NOT NULL CHECK ("short_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "short_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_excluded" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "excluded_pos" INTEGER NOT NULL CHECK ("excluded_pos" >= 0),
+    "stage" TEXT NOT NULL CHECK ("stage" IN ('verify', 'topologies', 'functional', 'data', 'observe', 'performance', 'resilience', 'security', 'ux', 'soak', 'verdict')),
+    "why" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "excluded_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_lab_runs" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "lab_runs_pos" INTEGER NOT NULL CHECK ("lab_runs_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "lab_runs_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_stage" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "results_pos" INTEGER NOT NULL CHECK ("results_pos" >= 0),
+    "stage" TEXT NOT NULL,
+    "state" TEXT NOT NULL CHECK ("state" IN ('passed', 'accepted', 'failed', 'not_run')),
+    "reason" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("qualification_pos", "runs_pos", "results_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_stage_evidence" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "results_pos" INTEGER NOT NULL CHECK ("results_pos" >= 0),
+    "evidence_pos" INTEGER NOT NULL CHECK ("evidence_pos" >= 0),
+    "kind" TEXT NOT NULL,
+    "label" TEXT NOT NULL,
+    "href" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "results_pos", "evidence_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos", "results_pos") REFERENCES "qualify_run_stage" ("qualification_pos", "runs_pos", "results_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_stage_finding" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "results_pos" INTEGER NOT NULL CHECK ("results_pos" >= 0),
+    "findings_pos" INTEGER NOT NULL CHECK ("findings_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "text" TEXT NOT NULL,
+    "href" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "results_pos", "findings_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos", "results_pos") REFERENCES "qualify_run_stage" ("qualification_pos", "runs_pos", "results_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_stage_metric" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "results_pos" INTEGER NOT NULL CHECK ("results_pos" >= 0),
+    "metrics_pos" INTEGER NOT NULL CHECK ("metrics_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "value" REAL NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "results_pos", "metrics_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos", "results_pos") REFERENCES "qualify_run_stage" ("qualification_pos", "runs_pos", "results_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_stage_part" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "results_pos" INTEGER NOT NULL CHECK ("results_pos" >= 0),
+    "parts_pos" INTEGER NOT NULL CHECK ("parts_pos" >= 0),
+    "name" TEXT NOT NULL,
+    "state" TEXT NOT NULL CHECK ("state" IN ('passed', 'accepted', 'failed', 'not_run')),
+    "reason" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "results_pos", "parts_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos", "results_pos") REFERENCES "qualify_run_stage" ("qualification_pos", "runs_pos", "results_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_task" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "tasks_pos" INTEGER NOT NULL CHECK ("tasks_pos" >= 0),
+    "stage" TEXT NOT NULL,
+    "goal" TEXT NOT NULL,
+    "task" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "tasks_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_accepted" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "accepted_pos" INTEGER NOT NULL CHECK ("accepted_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "accepted_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_run_reasons" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "reasons_pos" INTEGER NOT NULL CHECK ("reasons_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "runs_pos", "reasons_pos"),
+    FOREIGN KEY ("qualification_pos", "runs_pos") REFERENCES "qualify_run" ("qualification_pos", "runs_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_test" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "tests_pos" INTEGER NOT NULL CHECK ("tests_pos" >= 0),
+    "project" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "quarantined_ms" INTEGER CHECK ("quarantined_ms" >= 0),
+    "fixed_ms" INTEGER CHECK ("fixed_ms" >= 0),
+    "fix_reason" TEXT NOT NULL,
+    "fix_task" TEXT NOT NULL,
+    PRIMARY KEY ("qualification_pos", "tests_pos"),
+    FOREIGN KEY ("qualification_pos") REFERENCES "qualification" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_test_run" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "tests_pos" INTEGER NOT NULL CHECK ("tests_pos" >= 0),
+    "runs_pos" INTEGER NOT NULL CHECK ("runs_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    "passed" INTEGER NOT NULL CHECK ("passed" IN (0, 1)),
+    "flaked" INTEGER NOT NULL CHECK ("flaked" IN (0, 1)),
+    "attempts" INTEGER NOT NULL CHECK ("attempts" >= 0),
+    PRIMARY KEY ("qualification_pos", "tests_pos", "runs_pos"),
+    FOREIGN KEY ("qualification_pos", "tests_pos") REFERENCES "qualify_test" ("qualification_pos", "tests_pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_acceptance" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "acceptances_pos" INTEGER NOT NULL CHECK ("acceptances_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "release" TEXT NOT NULL,
+    "stage" TEXT NOT NULL,
+    "key" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "planner" TEXT NOT NULL,
+    "planner_says" TEXT NOT NULL,
+    "second" TEXT NOT NULL,
+    "second_says" TEXT NOT NULL,
+    "tokens" INTEGER NOT NULL CHECK ("tokens" >= 0),
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("qualification_pos", "acceptances_pos"),
+    FOREIGN KEY ("qualification_pos") REFERENCES "qualification" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "qualify_lab_test" (
+    "qualification_pos" INTEGER NOT NULL CHECK ("qualification_pos" >= 0),
+    "lab_tests_pos" INTEGER NOT NULL CHECK ("lab_tests_pos" >= 0),
+    "run" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "passed" INTEGER NOT NULL CHECK ("passed" IN (0, 1)),
+    PRIMARY KEY ("qualification_pos", "lab_tests_pos"),
+    FOREIGN KEY ("qualification_pos") REFERENCES "qualification" ("pos") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
 -- component stations
 CREATE TABLE "stations" (
     "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
@@ -3130,6 +3327,7 @@ CREATE TABLE "chat_draft_settings" (
     "spec_over_words" INTEGER CHECK ("spec_over_words" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     "subscription_fallback" INTEGER NOT NULL CHECK ("subscription_fallback" IN (0, 1)),
+    "qualify_soak" INTEGER NOT NULL CHECK ("qualify_soak" IN (0, 1)),
     PRIMARY KEY ("chat_id"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
@@ -3186,6 +3384,13 @@ CREATE TABLE "chat_draft_settings_performance_limits" (
     "metric" TEXT NOT NULL,
     "max_tenths" INTEGER NOT NULL CHECK ("max_tenths" >= 0),
     PRIMARY KEY ("chat_id", "performance_limits_pos"),
+    FOREIGN KEY ("chat_id") REFERENCES "chat_draft_settings" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "chat_draft_settings_qualify_depth" (
+    "chat_id" TEXT NOT NULL,
+    "qualify_depth_key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("chat_id", "qualify_depth_key"),
     FOREIGN KEY ("chat_id") REFERENCES "chat_draft_settings" ("chat_id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 CREATE TABLE "chat_works" (
