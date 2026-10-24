@@ -893,7 +893,7 @@ fn run_step(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::user_test::target::{Element, Link, Screen, StandIn};
     use apz_blobs::Blobs;
@@ -905,7 +905,7 @@ mod tests {
     /// The gateway's scripted models: every test's answers are in one script, keyed by the markers of its prompts.
     // The test sets the process variable the mock provider reads, once, before any test reads it (as providers.rs does).
     #[allow(unsafe_code)]
-    fn script() -> &'static PathBuf {
+    pub(crate) fn script() -> &'static PathBuf {
         static PATH: OnceLock<PathBuf> = OnceLock::new();
         PATH.get_or_init(|| {
             let path = std::env::temp_dir().join(format!("apid-user-test-script-{}.json", std::process::id()));
@@ -916,6 +916,7 @@ mod tests {
                 { "when": ["ROLE: planner plan", "SYMBOL: cart-slow"], "turns": [{ "text": plan("press Pay", "Receipt", Some(500)) }] },
                 { "when": ["ROLE: planner plan", "SYMBOL: cart-escalate"], "turns": [{ "text": plan("settle the bill", "Receipt", None) }] },
                 { "when": ["ROLE: planner judge"], "turns": [{ "text": "{\"verdict\": \"defect\", \"reason\": \"the receipt is not shown\"}" }] },
+                { "when": ["ROLE: incident distil"], "turns": [{ "text": "[{\"kind\": \"pitfall\", \"text\": \"Checkout reads a stock row that is missing.\", \"why\": \"the logs name it\"}, {\"kind\": \"decision\", \"text\": \"Roll back the deploy before the fix.\", \"why\": \"the alert correlates with it\"}]" }] },
                 { "when": ["ROLE: driver tier fast", "GOAL: press Pay"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.9, \"why\": \"Pay is the button\"}" }] },
                 { "when": ["ROLE: driver tier fast", "GOAL: settle"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.2, \"why\": \"unsure\"}" }] },
                 { "when": ["ROLE: driver tier strong", "GOAL: settle", "IMAGE: image/png"], "turns": [{ "text": "{\"action\": \"click\", \"element\": \"pay\", \"confidence\": 0.95, \"why\": \"Pay settles it, from the picture\"}" }] },

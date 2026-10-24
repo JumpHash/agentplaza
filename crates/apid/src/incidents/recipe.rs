@@ -9,6 +9,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use apz_gateway::Gateway;
+use apz_proto::chat::{Block, ChatRequest, Message, Role, blocks_text};
 use serde_json::{Value, json};
 
 use super::{DEPLOY_HEALTH, Incident, Landing, RECIPE, Step};
@@ -37,9 +39,9 @@ pub trait Notify: Send + Sync {
     fn send(&self, project: &str, text: &str) -> Result<(), String>;
 }
 
-/// The recipe's model: asked to distil a postmortem. Ok(None) (or an error) means no model answered.
+/// The recipe's model: asked to distil a postmortem, for `project`. Ok(None) (or an error) means no model answered.
 pub trait Model: Send + Sync {
-    fn answer(&self, prompt: &str) -> Result<Option<String>, String>;
+    fn answer(&self, project: &str, prompt: &str) -> Result<Option<String>, String>;
 }
 
 /// The most lessons a postmortem proposes.
@@ -653,11 +655,11 @@ pub fn lessons_for(
     draft: &str,
 ) -> (Vec<Lesson>, &'static str) {
     let prompt = format!(
-        "{draft}\n\nDistil the lessons of this postmortem into at most {MAX_LESSONS} memory proposals for the project. \
+        "ROLE: incident distil\n{draft}\n\nDistil the lessons of this postmortem into at most {MAX_LESSONS} memory proposals for the project. \
          Reply with only a JSON array of objects, each with \"kind\" (\"pitfall\" for what went wrong, \"decision\" for a \
          rule the project follows), \"text\" (one or two sentences) and \"why\" (one sentence)."
     );
-    match model.answer(&prompt) {
+    match model.answer(&incident.project, &prompt) {
         Ok(Some(answer)) => match parse_lessons(&answer) {
             Some(lessons) => (lessons, "the model"),
             None => (template_lessons(incident, acted), "the template"),
@@ -850,8 +852,90 @@ impl Notify for Connected {
 }
 
 impl Model for Connected {
-    fn answer(&self, _prompt: &str) -> Result<Option<String>, String> {
-        Ok(None)
+    fn answer(&self, project: &str, prompt: &str) -> Result<Option<String>, String> {
+        let Some(model) = distil_model(&self.app, project) else {
+            return Ok(None);
+        };
+        let gateway = self.app.providers.gateway();
+        GatewayModel {
+            gateway: &gateway,
+            model,
+        }
+        .answer(project, prompt)
+    }
+}
+
+/// The model a project's incident is distilled on, as `provider/model`: the project's own model for the `incident` role,
+/// else the incident recipe's `after` step's model when it names one, else the project's default model. None when none
+/// of them names a model.
+pub fn distil_model(app: &App, project: &str) -> Option<String> {
+    let settings = app.project_settings.get(project);
+    let recipe = app.recipe_runs.recipe(RECIPE, None).and_then(|r| {
+        r.steps
+            .iter()
+            .find(|s| s.id == "after")
+            .and_then(|s| match &s.model {
+                crate::recipes::model::Model::Name(name) => Some(name.clone()),
+                crate::recipes::model::Model::List(_) => None,
+            })
+    });
+    choose_model(
+        settings.role_models.get("incident").map(String::as_str),
+        recipe.as_deref(),
+        settings.default_model.as_deref(),
+    )
+}
+
+/// The first of the three that names a `provider/model`.
+pub fn choose_model(
+    role: Option<&str>,
+    recipe: Option<&str>,
+    default: Option<&str>,
+) -> Option<String> {
+    [role, recipe, default]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|m| {
+            m.split_once('/')
+                .is_some_and(|(p, name)| !p.is_empty() && !name.is_empty())
+        })
+        .map(str::to_string)
+}
+
+/// The system line of the distillation: the answer is a JSON array and nothing else.
+const SYSTEM: &str = "You distil the lessons of an incident into a project's memory. Answer with one JSON array and nothing else.";
+
+/// A model reached through the gateway (the hub's providers, as user testing reaches its planner): the prompt as one user
+/// message, the answer's text. Its failure is the error (the template then answers).
+pub struct GatewayModel<'a> {
+    pub gateway: &'a Gateway,
+    pub model: String,
+}
+
+impl Model for GatewayModel<'_> {
+    fn answer(&self, _project: &str, prompt: &str) -> Result<Option<String>, String> {
+        let req = ChatRequest {
+            model: self.model.clone(),
+            system: Some(SYSTEM.to_string()),
+            system_parts: Vec::new(),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![Block::Text {
+                    text: prompt.to_string(),
+                }],
+            }],
+            tools: Vec::new(),
+            cache_last_message: false,
+            max_tokens: 0,
+            temperature: None,
+            effort: None,
+        };
+        let reply = self
+            .gateway
+            .complete(&req, &mut |_| {})
+            .map_err(|e| format!("{}: {e}", self.model))?;
+        Ok(Some(blocks_text(&reply.content)))
     }
 }
 
@@ -1037,7 +1121,7 @@ mod tests {
     struct Mock(Option<String>);
 
     impl Model for Mock {
-        fn answer(&self, _prompt: &str) -> Result<Option<String>, String> {
+        fn answer(&self, _project: &str, _prompt: &str) -> Result<Option<String>, String> {
             Ok(self.0.clone())
         }
     }
@@ -1181,11 +1265,79 @@ mod tests {
         assert!(!none.is_empty());
     }
 
+    /// The gateway with its `mock` provider, answering from the script the apid tests share (user testing's).
+    fn gateway() -> Gateway {
+        crate::user_test::tests::script();
+        Gateway::builder()
+            .providers(vec![apz_gateway::ProviderConfig::new(
+                "mock",
+                apz_gateway::ProviderKind::Mock,
+            )])
+            .build()
+    }
+
+    #[test]
+    fn the_production_port_asks_the_gateway_and_its_answer_becomes_the_lessons() {
+        let gateway = gateway();
+        let port = GatewayModel {
+            gateway: &gateway,
+            model: "mock/script".into(),
+        };
+        let (lessons, source) =
+            lessons_for(&incident(), &acted(), &port, "# Incident i1: TypeError");
+        assert_eq!(
+            source, "the model",
+            "the gateway's mock model distilled the postmortem"
+        );
+        assert_eq!(lessons.len(), 2);
+        assert_eq!(lessons[0].kind, "pitfall");
+        assert!(lessons[0].text.contains("stock row"), "{lessons:?}");
+        assert_eq!(lessons[1].kind, "decision");
+    }
+
+    #[test]
+    fn a_failed_gateway_call_falls_back_to_the_template() {
+        let gateway = gateway();
+        let port = GatewayModel {
+            gateway: &gateway,
+            model: "missing/model".into(),
+        };
+        assert!(
+            port.answer("site", "draft").is_err(),
+            "an unknown provider is an error"
+        );
+        let (lessons, source) = lessons_for(&incident(), &acted(), &port, "draft");
+        assert_eq!(source, "the template");
+        assert_eq!(lessons, template_lessons(&incident(), &acted()));
+    }
+
+    #[test]
+    fn the_distillation_model_is_the_first_named_provider_model() {
+        assert_eq!(
+            choose_model(Some("openai/gpt"), Some("mock/script"), Some("x/y")).as_deref(),
+            Some("openai/gpt"),
+            "the project's incident role first"
+        );
+        assert_eq!(
+            choose_model(None, Some("mock/script"), Some("x/y")).as_deref(),
+            Some("mock/script")
+        );
+        assert_eq!(
+            choose_model(Some("bad"), Some("any"), Some("x/y")).as_deref(),
+            Some("x/y")
+        );
+        assert_eq!(
+            choose_model(Some("  "), None, None),
+            None,
+            "nothing named: no model"
+        );
+    }
+
     #[test]
     fn the_model_is_asked_for_the_memory_format_with_the_draft() {
         struct Asked(std::sync::Mutex<String>);
         impl Model for Asked {
-            fn answer(&self, prompt: &str) -> Result<Option<String>, String> {
+            fn answer(&self, _project: &str, prompt: &str) -> Result<Option<String>, String> {
                 *self.0.lock().unwrap() = prompt.to_string();
                 Ok(None)
             }
@@ -1193,7 +1345,10 @@ mod tests {
         let asked = Asked(std::sync::Mutex::new(String::new()));
         let _ = lessons_for(&incident(), &acted(), &asked, "# Incident i1: TypeError");
         let prompt = asked.0.lock().unwrap().clone();
-        assert!(prompt.starts_with("# Incident i1: TypeError"));
+        assert!(
+            prompt.starts_with("ROLE: incident distil\n# Incident i1: TypeError"),
+            "{prompt}"
+        );
         assert!(
             prompt.contains("\"kind\"")
                 && prompt.contains("pitfall")
