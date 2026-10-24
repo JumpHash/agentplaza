@@ -214,8 +214,34 @@ pub fn base_env(
         ),
     ];
     if cfg!(windows) {
-        // The child gets SystemRoot as a variable as well as on its PATH.
-        env.push(("SystemRoot".to_string(), system_root));
+        // What a Windows process is started with besides its PATH: the system's folders, and the user profile's, here
+        // inside the server's own home. Starting a process in an AppContainer reads the profile's folders from the
+        // environment it is given.
+        let home = layout.home.clone();
+        let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        env.extend([
+            ("SystemRoot".to_string(), system_root.clone()),
+            ("windir".to_string(), system_root),
+            ("SystemDrive".to_string(), drive),
+            (
+                "USERPROFILE".to_string(),
+                home.to_string_lossy().into_owned(),
+            ),
+            (
+                "APPDATA".to_string(),
+                home.join("AppData")
+                    .join("Roaming")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            (
+                "LOCALAPPDATA".to_string(),
+                home.join("AppData")
+                    .join("Local")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ]);
     }
     if let Some(proxy) = proxy {
         env.extend(super::egress::proxy_env(proxy));
