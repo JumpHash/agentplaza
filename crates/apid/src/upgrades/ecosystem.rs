@@ -91,18 +91,33 @@ pub fn detect(paths: &[String]) -> Vec<Ecosystem> {
 
 /// The program `name` on `path_var` (a PATH value), when it is an executable file there.
 pub fn find_tool(name: &str, path_var: &str) -> Option<PathBuf> {
-    path_var
-        .split(':')
-        .filter(|dir| !dir.is_empty())
-        .map(|dir| Path::new(dir).join(name))
+    std::env::split_paths(path_var)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .flat_map(|dir| candidates(&dir, name))
         .find(|candidate| is_executable(candidate))
 }
 
+/// The files `name` may be in `dir`: the name itself, and on Windows its usual program extensions.
+fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
+    let mut files = vec![dir.join(name)];
+    if cfg!(windows) {
+        files.extend(["exe", "cmd", "bat"].map(|ext| dir.join(format!("{name}.{ext}"))));
+    }
+    files
+}
+
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+/// Windows has no execute bit: a file there is a program by its extension, which [`candidates`] chose.
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// Whether the ecosystem can run here: every one of its tools is on `path_var`. The reason names the first that is not.
@@ -141,6 +156,8 @@ mod tests {
         assert!(detect(&["web/package.json".into()]).is_empty());
     }
 
+    // The fake tools are shell scripts with the execute bit: Unix only.
+    #[cfg(unix)]
     #[test]
     fn a_missing_tool_is_a_reason_and_a_present_one_is_found() {
         let dir = std::env::temp_dir().join(format!("apid-tools-{}", std::process::id()));

@@ -632,7 +632,9 @@ mod tests {
         assert_eq!(line, r"'adb' 'input' 'text' 'it'\''s'");
     }
 
+    // The fake adb is a shell script with the execute bit: the tests that run it are Unix only.
     /// A fake adb: a script on a directory of its own, which records its argv and answers `uiautomator dump` from a fixture.
+    #[cfg(unix)]
     fn fake_adb(dir: &Path, log: &Path) -> PathBuf {
         let script = format!(
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\n\
@@ -651,6 +653,7 @@ mod tests {
         program
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_lines_run_through_the_adb_found_on_the_directories_and_answer_from_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -689,6 +692,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_line_says_what_adb_answered_and_no_adb_says_so() {
         let dir = tempfile::tempdir().unwrap();
@@ -703,6 +707,7 @@ mod tests {
         assert!(Local::in_dirs(&[empty.path().to_path_buf()]).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_confined_line_is_the_sandbox_command_for_the_work_dir_and_the_server_port() {
         let dir = tempfile::tempdir().unwrap();

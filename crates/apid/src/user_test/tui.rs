@@ -426,7 +426,7 @@ fn colour(color: Color, default: [u8; 3]) -> [u8; 3] {
 
 /// A program run on this machine in a pseudo-terminal the hub opens itself, for the tests: the same grid and the same
 /// keystrokes as the fork's, with the program's output read from the terminal's master.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub mod local {
     use std::fs::File;
     use std::io::{self, ErrorKind, Read, Write};

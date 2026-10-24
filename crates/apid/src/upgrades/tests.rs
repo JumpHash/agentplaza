@@ -412,6 +412,8 @@ fn the_spec_names_the_commands_each_ecosystem_runs() {
     );
 }
 
+// The fake cargo is a shell script with the execute bit: Unix only.
+#[cfg(unix)]
 #[test]
 fn the_schedules_are_made_per_detected_ecosystem_and_a_missing_tool_is_kept_as_its_skip() {
     let paths: Vec<String> = ["Cargo.toml", "package.json", "src/main.rs"]

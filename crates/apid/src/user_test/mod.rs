@@ -18,7 +18,8 @@
 //! simulator and device targets of 8.4–8.5 implement the same trait.
 
 pub mod android;
-#[cfg(test)]
+// The fake adb and xcrun are shell scripts: Unix only.
+#[cfg(all(test, unix))]
 mod android_test;
 pub mod desk;
 pub mod desktop;
@@ -29,7 +30,7 @@ mod desktop_test;
 pub mod farm;
 pub mod fork;
 pub mod iphone;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod iphone_test;
 pub mod macos;
 pub mod models;
