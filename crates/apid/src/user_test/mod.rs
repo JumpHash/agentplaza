@@ -44,11 +44,12 @@ use crate::recipes::{Move, Report};
 use crate::review_graph::user::by;
 use crate::review_graph::{Finding, Verdict};
 use crate::state::App;
+use apz_blobs::Blobs;
 use fork::{Channel, DEVTOOLS_PORT, browser_command, port_dial};
-use models::{GatewayModels, Models, PlanRequest, Roles};
+use models::{GatewayModels, Judgement, Look, Models, Pick, PickRequest, PlanRequest, Roles, Tier};
 use run::{Ctx, Failure, Timed, run_scenario};
 use scenario::{Origin, Scenario, accessibility};
-use target::Target;
+use target::{Screenshot, Target};
 use tui::ForkTui;
 use web::Web;
 
@@ -511,6 +512,133 @@ fn start_browser(host: &Live<'_>, placed: &Placed<'_>) -> Result<(), String> {
 fn retire_placed(placed: Placed<'_>) {
     if let Err(why) = placed.fork.into_inner().retire() {
         eprintln!("apid: a user test's fork: {why}");
+    }
+}
+
+/// A test fork of the project's base at `commit` with its browser started: the fork a web target's page is opened in when no
+/// app of the change is served (a deploy's smoke set, 23). Its node is one the pool can place the base on.
+fn browser_fork<'h>(
+    app: &App,
+    host: &'h Live<'h>,
+    project: &str,
+    commit: &str,
+) -> Result<Placed<'h>, String> {
+    let stack = project_stack::read(app, project)?
+        .ok_or_else(|| format!("{} is not on main", project_stack::FILE))?;
+    let repo = app
+        .projects
+        .get(project)
+        .and_then(|p| p.repo)
+        .ok_or_else(|| format!("{project} has no repo yet"))?;
+    let pool = base_builds::pool_keys(&stack)
+        .first()
+        .cloned()
+        .unwrap_or_default();
+    let node = placement::base_node(app, project, &pool, &base_recipe::volumes(&stack))
+        .ok_or_else(|| format!("no node in the pool {pool} has room for a fork"))?;
+    let steps = base_recipe::fork_steps(&stack, &repo, commit);
+    let fork = Fork::start(host, node.clone(), project.to_string(), &steps)?;
+    let Some((run, cid)) = fork.location() else {
+        let _ = fork.retire();
+        return Err("the test fork has no VM".into());
+    };
+    let placed = Placed {
+        fork: RefCell::new(fork),
+        node,
+        run,
+        cid,
+        app_port: 0,
+    };
+    if let Err(why) = start_browser(host, &placed) {
+        retire_placed(placed);
+        return Err(why);
+    }
+    Ok(placed)
+}
+
+/// The smoke set of a deploy (23, 8.2): its scenarios run through a web target at `url`, in a browser of the test fork of the
+/// release's `commit`. The first scenario that does not hold is the error. The fork is retired when the set is done.
+pub fn smoke(
+    app: &App,
+    project: &str,
+    url: &str,
+    commit: &str,
+    scenarios: &[Scenario],
+) -> Result<(), String> {
+    let host = Live(app);
+    let placed = browser_fork(app, &host, project, commit)?;
+    let result = {
+        let mut dial = port_dial(
+            &app.nodes,
+            &placed.node,
+            placed.cid,
+            DEVTOOLS_PORT,
+            LOCAL_INBOUND,
+        );
+        run_smoke(
+            app.blobs.as_ref(),
+            &mut || Ok::<Box<dyn Target>, String>(Box::new(Web::attach(&mut dial, url)?)),
+            scenarios,
+        )
+    };
+    retire_placed(placed);
+    result
+}
+
+/// Runs a smoke set on the targets `open` opens, a fresh one for each scenario. No driver and no checker is asked: a smoke
+/// scenario's expectations are read from the screen as it is, and one that does not hold fails (a step with actions, which
+/// a smoke set does not take, fails as the models refuse). The first failure is the error.
+pub fn run_smoke<'a>(
+    blobs: &Blobs,
+    open: &mut dyn FnMut() -> Result<Box<dyn Target + 'a>, String>,
+    scenarios: &[Scenario],
+) -> Result<(), String> {
+    let ctx = Ctx {
+        models: &NoDriver,
+        blobs,
+        threshold: 1.0,
+        actions: 0,
+    };
+    for scenario in scenarios {
+        let mut target = open()?;
+        let run = run_scenario(&ctx, target.as_mut(), scenario)?;
+        if let Some(failure) = run.failure {
+            return Err(format!("{}: {}", scenario.title, failure.text()));
+        }
+    }
+    Ok(())
+}
+
+/// The models of a smoke run, which asks none of them to act: a smoke set takes no action, and its checker reads a screen
+/// that has a tree (a screen with none fails its expectation).
+struct NoDriver;
+
+impl Models for NoDriver {
+    fn plan(&self, _req: &PlanRequest) -> Result<Vec<Scenario>, String> {
+        Err("a smoke set is written before its run, not planned by it".into())
+    }
+
+    fn judge(&self, _scenario: &Scenario, _failure: &str) -> Result<Judgement, String> {
+        Ok(Judgement {
+            defect: true,
+            reason: "a smoke scenario that fails is a defect of the deploy".into(),
+        })
+    }
+
+    fn pick(
+        &self,
+        _tier: Tier,
+        _req: &PickRequest,
+        _shot: Option<&Screenshot>,
+    ) -> Result<Pick, String> {
+        Err("a smoke set takes no action".into())
+    }
+
+    fn look(&self, _question: &str, _shot: &Screenshot) -> Result<Look, String> {
+        Ok(Look {
+            holds: false,
+            reason: "a smoke set reads the screen's tree, and this screen has none".into(),
+        })
     }
 }
 

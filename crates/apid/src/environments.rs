@@ -698,7 +698,16 @@ pub(crate) fn request(
             "cid": by_cid, "project": project, "environment": env, "version": version, "by": by, "why": why,
         }),
     );
-    record(app, project, env, version, by, Some(approval.id))
+    let deploy = record(app, project, env, version, by, Some(approval.id))?;
+    let now = now_ms();
+    let chat = crate::work_loop::project_chat(app, project, now);
+    crate::work_loop::notice(
+        app,
+        &chat,
+        &format!("Deploying {version} to {env} waits for the owner's approval in Approvals."),
+        now,
+    );
+    Ok(deploy)
 }
 
 /// The owner's decision on a `deploy` approval: approved, the deploy goes out; denied, it is refused.
@@ -730,6 +739,17 @@ pub fn decided(app: &App, item: &crate::approvals::Approval, approve: bool) -> R
             &deploy.id,
             "refused",
             "the owner declined",
+        );
+        let now = now_ms();
+        let chat = crate::work_loop::project_chat(app, project, now);
+        crate::work_loop::notice(
+            app,
+            &chat,
+            &format!(
+                "The owner declined the deploy of {} to {env}.",
+                deploy.version
+            ),
+            now,
         );
         return Ok(());
     }

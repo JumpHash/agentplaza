@@ -179,11 +179,7 @@ impl Api for Client {
                 (format!("/pages/projects/{project}/deployments"), ct, body)
             }
         };
-        let v = self.send(
-            "POST",
-            &path,
-            Some(Body::Bytes(content_type, body)),
-        )?;
+        let v = self.send("POST", &path, Some(Body::Bytes(content_type, body)))?;
         v["result"]["id"]
             .as_str()
             .map(str::to_string)

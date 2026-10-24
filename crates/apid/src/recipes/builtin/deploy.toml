@@ -1,8 +1,10 @@
 # The deploy recipe (PLAN 21.1, 23): a qualified, published release goes to an environment in stages. The rollout is the
 # deploy engine's (crates/apid/src/deploy): one item per target (fan_out per_target), each uploaded as a new version and
-# served at each stage's percentage, with the smoke scenarios and the environment's error signals checked after each
-# stage; a failed check restores the previous version. A protected environment deploys only after a passing staging
-# stage, through the owner's approval, and the project's chat is told how it ended.
+# served at each stage's percentage. After each stage the smoke set (the project's user-test scenarios, run through a web
+# target, 8.2) and the environment's health (error signals, and the monitoring source's error rate and latency, 11.4) are
+# checked; a failed check or a breach restores the previous version, records a rollback deploy and, for a breach, opens an
+# incident. A protected environment deploys only after a passing staging stage, through the owner's approval, and the
+# project's chat is told how each step ended.
 id = "deploy"
 name = "Deploy"
 description = "Deploys a qualified, published release to a Cloudflare environment in stages, with checks after each stage and a rollback to the previous version."

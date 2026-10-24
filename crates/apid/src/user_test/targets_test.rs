@@ -653,3 +653,30 @@ fn a_step_names_one_target_and_a_terminal_names_a_program() {
     };
     assert!(nothing.check().unwrap_err().contains("names a program"));
 }
+
+#[test]
+fn a_smoke_set_on_a_local_chrome_passes_the_healthy_page_and_fails_a_broken_deploy() {
+    let chrome = match web::local::find_chrome() {
+        Ok(chrome) => chrome,
+        Err(why) => {
+            eprintln!("skipped the smoke set's web test: {why}");
+            return;
+        }
+    };
+    let blobs_dir = tempfile::tempdir().unwrap();
+    let blobs = Blobs::open(blobs_dir.path()).unwrap();
+    // The smoke set reads the screen as it is: the cart page shows "Cart", and a broken deploy's page does not.
+    let set = [scenario("The cart loads", "look at the cart", "Cart")];
+    let healthy = format!("{}/", serve(true));
+    let mut open = || -> Result<Box<dyn Target>, String> {
+        Ok(Box::new(web::local::open(&chrome, &healthy)?))
+    };
+    super::run_smoke(&blobs, &mut open, &set).expect("the healthy page passes its smoke set");
+
+    let broken = format!("{}/error", serve(false));
+    let mut open =
+        || -> Result<Box<dyn Target>, String> { Ok(Box::new(web::local::open(&chrome, &broken)?)) };
+    let failed = super::run_smoke(&blobs, &mut open, &set)
+        .expect_err("the broken deploy fails its smoke set");
+    assert!(failed.starts_with("The cart loads: "), "{failed}");
+}

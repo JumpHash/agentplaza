@@ -22,8 +22,22 @@ pub struct Pools<'a> {
     pub app: &'a App,
 }
 
+/// A stand-in for the build farm, for the booted-hub tests: when this variable names a file, each target of a release is built
+/// as that file's bytes on no pool. A hub that builds for real never has it set.
+pub const STAND_IN: &str = "APZ_RELEASE_BUILD_STAND_IN";
+
 impl Builder for Pools<'_> {
     fn build(&self, release: &Release, target: &str) -> Result<Outcome, String> {
+        if let Some(path) = std::env::var_os(STAND_IN) {
+            let bytes = std::fs::read(&path).map_err(|e| format!("{STAND_IN}: {e}"))?;
+            return Ok(Outcome::Built(Built {
+                bytes,
+                pool: "stand-in".into(),
+                base: "stand-in".into(),
+                builder: "stand-in".into(),
+                command: "stand-in".into(),
+            }));
+        }
         let Some(stack) = project_stack::read(self.app, &release.project)? else {
             return Ok(Outcome::NotRun(format!(
                 "{} declares no build target: {FILE} is not on main",
