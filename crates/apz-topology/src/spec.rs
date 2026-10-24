@@ -79,6 +79,9 @@ pub struct Topology {
     /// The messaging stage (PLAN 22.8): delivery, ordering, retries, dead letters and duplicates (`[messaging]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messaging: Option<MessagingStage>,
+    /// The security stages (PLAN 22.8), declared in the `[security]` table.
+    #[serde(default)]
+    pub security: Security,
 }
 
 /// What a topology runs: its services as containers on the lab VM's bridge, or a Kubernetes cluster (k3s) in the VM.
@@ -632,6 +635,170 @@ pub struct Egress {
     pub allow: Vec<String>,
 }
 
+/// The security stages a topology declares (PLAN 22.8): the dependency audits and the image scan, the secrets scan of
+/// the release's tree, the DAST scan of the routes, and the fuzzers. Absent, the defaults: every known audit (each one
+/// its tool is installed for), the secrets scan, and no image, DAST or fuzz stage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Security {
+    /// The audits to run (`cargo-audit`, `cargo-deny`, `npm-audit`, `pip-audit`, `govulncheck`, `osv-scanner`); none
+    /// names every known one.
+    pub audit: Option<Vec<String>>,
+    /// The image a trivy or grype scan reads, by reference (`postgres:17`); none skips the stage.
+    pub image: Option<String>,
+    /// Whether the secrets scan reads the release's tree.
+    pub secrets: bool,
+    /// The routes the DAST scan probes: a GET of `path` on `service`, with each parameter's sample value.
+    #[serde(rename = "dast")]
+    pub dast: Vec<Route>,
+    /// The fuzzers the project gates on.
+    #[serde(rename = "fuzz")]
+    pub fuzz: Vec<Fuzz>,
+}
+
+impl Default for Security {
+    fn default() -> Self {
+        Security {
+            audit: None,
+            image: None,
+            secrets: true,
+            dast: Vec::new(),
+            fuzz: Vec::new(),
+        }
+    }
+}
+
+/// A route of the DAST scan: a GET of `path` on `service`, its query parameters and a sample value for each (the value the
+/// route answers normally).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Route {
+    pub service: String,
+    pub path: String,
+    pub params: BTreeMap<String, String>,
+}
+
+/// A fuzzer the project gates on. `cargo-fuzz` runs `target` in the crate at `dir` for `seconds`; `schemathesis` runs the
+/// property tests of `schema` against `service` for `seconds`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fuzz {
+    pub tool: String,
+    #[serde(default)]
+    pub dir: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub schema: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default = "minute")]
+    pub seconds: u64,
+}
+
+fn minute() -> u64 {
+    60
+}
+
+/// The largest fuzzing budget a declared fuzzer may have, in seconds.
+pub const MAX_FUZZ_SECS: u64 = 3600;
+
+impl Security {
+    /// What the stages name, and that they name what the topology has: the audits are known, the routes' services are
+    /// the topology's, a route's parameters are named, a fuzzer's fields fit its tool.
+    fn check(&self, topology: &Topology) -> Result<(), String> {
+        let known = crate::security::audit::AUDITS;
+        for name in self.audit.iter().flatten() {
+            if !known.contains(&name.as_str()) {
+                return Err(format!("security audit {name:?} is not a known audit"));
+            }
+        }
+        if let Some(image) = &self.image
+            && !is_name(image)
+        {
+            return Err(format!(
+                "security image {image:?} is not an image reference"
+            ));
+        }
+        let services: BTreeSet<&str> = topology.services.iter().map(|s| s.name.as_str()).collect();
+        for route in &self.dast {
+            if !services.contains(route.service.as_str()) {
+                return Err(format!(
+                    "security route names service {} the topology does not have",
+                    route.service
+                ));
+            }
+            if !route.path.starts_with('/')
+                || route.path.contains(char::is_whitespace)
+                || route.path.contains(['?', '#'])
+            {
+                return Err(format!(
+                    "security route path {:?} is not an absolute path without a query",
+                    route.path
+                ));
+            }
+            if route.params.is_empty() {
+                return Err(format!(
+                    "security route {} names no parameter to probe",
+                    route.path
+                ));
+            }
+            for (name, sample) in &route.params {
+                if name.is_empty()
+                    || name.contains(['&', '=', '#', '%', '+'])
+                    || name.contains(char::is_whitespace)
+                {
+                    return Err(format!(
+                        "security route parameter {name:?} is not a parameter name"
+                    ));
+                }
+                if sample.is_empty() {
+                    return Err(format!(
+                        "security route parameter {name} needs a sample value"
+                    ));
+                }
+            }
+        }
+        for fuzz in &self.fuzz {
+            if fuzz.seconds == 0 || fuzz.seconds > MAX_FUZZ_SECS {
+                return Err(format!(
+                    "fuzz budget of {} s is not between 1 and {MAX_FUZZ_SECS}",
+                    fuzz.seconds
+                ));
+            }
+            match fuzz.tool.as_str() {
+                "cargo-fuzz" => {
+                    let target = fuzz.target.as_deref().unwrap_or_default();
+                    if target.is_empty()
+                        || !target
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    {
+                        return Err(format!("cargo-fuzz target {target:?} is not a name"));
+                    }
+                }
+                "schemathesis" => {
+                    if fuzz.schema.as_deref().unwrap_or_default().is_empty() {
+                        return Err("schemathesis names no schema".into());
+                    }
+                    let service = fuzz.service.as_deref().unwrap_or_default();
+                    if !services.contains(service) {
+                        return Err(format!(
+                            "schemathesis names service {service:?} the topology does not have"
+                        ));
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "fuzz tool {other:?} is not cargo-fuzz or schemathesis"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The topology in `text`, checked.
 pub fn parse(text: &str) -> Result<Topology, String> {
     let topology: Topology = toml::from_str(text).map_err(|e| format!("topology: {e}"))?;
@@ -767,6 +934,7 @@ impl Topology {
                 ));
             }
         }
+        self.security.check(self)?;
         Ok(())
     }
 }

@@ -88,6 +88,7 @@ pub fn convert(text: &str, name: Option<&str>) -> Result<Conversion, String> {
         data: None,
         cache: None,
         messaging: None,
+        security: Default::default(),
     };
     topology.check()?;
     Ok(Conversion { topology, report })

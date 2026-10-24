@@ -16,6 +16,8 @@ ureq.workspace = true
 # The data stage (PLAN 22.8) runs over SQLite standing in for the project's database (the workspace's bundled build).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "cache", "fallible_uint"] }
 sha2.workspace = true
+# The hub's secret shapes (the hooks' detector): the security stages scan a release's tree with it.
+apz-secrets = { path = "../apz-secrets" }
 
 [[bin]]
 # The guest's topology runner: builds the bridge (--net) and runs the containers' artifacts on it.
@@ -38,6 +40,11 @@ path = "src/bin/apz-load.rs"
 name = "apz-fault"
 path = "src/bin/apz-fault.rs"
 
+# The security stages (PLAN 22.8): the audits, the image scan, the secrets scan, the DAST scan and the fuzzers.
+[[bin]]
+name = "apz-security"
+path = "src/bin/apz-security.rs"
+
 [[bin]]
 # The lab VM's stage runner (PLAN 22.8): the data, cache and messaging stages a topology declares, their numbers posted at
 # the run.
@@ -56,6 +63,8 @@ path = "src/bin/apz-topo-echo.rs"
 
 [dev-dependencies]
 tempfile = "3"
+# The seeded SQLite database of the DAST scan's tests (the workspace's own build of it).
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }
 
 [lints]
 workspace = true

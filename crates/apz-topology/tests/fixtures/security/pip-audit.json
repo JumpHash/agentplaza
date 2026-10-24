@@ -1,0 +1,22 @@
+{
+  "dependencies": [
+    {
+      "name": "jinja2",
+      "version": "2.11.2",
+      "vulns": [
+        {
+          "id": "PYSEC-2023-74",
+          "fix_versions": ["2.11.3"],
+          "aliases": ["CVE-2020-28493", "GHSA-gmj6-6f8f-6699"],
+          "description": "The urlize filter in Jinja2 is vulnerable to regular expression denial of service."
+        }
+      ]
+    },
+    {
+      "name": "requests",
+      "version": "2.31.0",
+      "vulns": []
+    }
+  ],
+  "fixes": []
+}

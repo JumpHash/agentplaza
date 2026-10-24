@@ -128,6 +128,7 @@ fn convert_source(
                 data: None,
                 cache: None,
                 messaging: None,
+                security: Default::default(),
             };
             topology.check().map_err(bad)?;
             let mut report = Vec::new();

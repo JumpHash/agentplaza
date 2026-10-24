@@ -1,0 +1,61 @@
+{
+  "database": {
+    "advisory-count": 620,
+    "last-commit": "3a9f1c2",
+    "last-updated": "2024-06-01T08:00:00+00:00"
+  },
+  "lockfile": {
+    "dependency-count": 118
+  },
+  "settings": {
+    "target_arch": [],
+    "target_os": [],
+    "severity": null,
+    "ignore": [],
+    "informational_warnings": ["unmaintained", "unsound", "notice"]
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 1,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2024-0001",
+          "package": "time",
+          "title": "Denial of Service via Stack Exhaustion",
+          "description": "The time crate can exhaust the stack when parsing a crafted input.",
+          "date": "2024-02-01",
+          "aliases": ["CVE-2024-0001"],
+          "related": [],
+          "categories": ["denial-of-service"],
+          "keywords": [],
+          "cvss": null,
+          "informational": null,
+          "url": "https://rustsec.org/advisories/RUSTSEC-2024-0001",
+          "withdrawn": null
+        },
+        "versions": {
+          "patched": [">=0.2.23"],
+          "unaffected": []
+        },
+        "affected": null,
+        "package": {
+          "name": "time",
+          "version": "0.2.22",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "checksum": "b1f0c2a7",
+          "dependencies": []
+        }
+      }
+    ]
+  },
+  "warnings": {
+    "unmaintained": [
+      {
+        "kind": "unmaintained",
+        "package": {"name": "atty", "version": "0.2.14"},
+        "advisory": {"id": "RUSTSEC-2021-0145", "package": "atty", "title": "Potential unaligned read"}
+      }
+    ]
+  }
+}
