@@ -82,51 +82,88 @@ impl Http for Ureq {
         headers: &[(&str, String)],
         body: Option<Body>,
     ) -> Result<Reply, String> {
-        let mut builder = ureq::http::Request::builder()
-            .method(method)
-            .uri(url)
-            .header("User-Agent", "agentplaza")
-            .header("Accept", "application/json");
-        for (key, value) in headers {
-            builder = builder.header(*key, value.as_str());
-        }
-        let bytes = match body {
-            Some(Body::Json(v)) => {
-                builder = builder.header("Content-Type", "application/json");
-                serde_json::to_vec(&v).map_err(|e| e.to_string())?
-            }
-            Some(Body::Form(fields)) => {
-                builder = builder.header("Content-Type", "application/x-www-form-urlencoded");
-                form(&fields).into_bytes()
-            }
-            Some(Body::Bytes(content_type, bytes)) => {
-                builder = builder.header("Content-Type", content_type.as_str());
-                bytes
-            }
-            None => Vec::new(),
-        };
-        let request = builder
-            .body(bytes)
-            .map_err(|e| format!("bad request: {e}"))?;
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
             .http_status_as_error(false)
             .build();
-        let response = ureq::Agent::new_with_config(config)
-            .run(request)
-            .map_err(|e| format!("{url}: no answer: {e}"))?;
-        let status = response.status().as_u16();
-        let mut raw = Vec::new();
-        response
-            .into_body()
-            .into_reader()
-            .read_to_end(&mut raw)
-            .map_err(|e| format!("{url}: reading the answer: {e}"))?;
-        Ok(Reply {
-            status,
-            body: parse(&raw),
-        })
+        send(config, method, url, headers, body)
     }
+}
+
+/// The hub's client for a platform with its own certificate authority (a Kubernetes cluster's API server): the server
+/// must chain to this PEM certificate, and no other root is trusted for the call.
+pub struct PrivateCa(pub String);
+
+impl Http for PrivateCa {
+    fn call(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        body: Option<Body>,
+    ) -> Result<Reply, String> {
+        let root = ureq::tls::Certificate::from_pem(self.0.as_bytes())
+            .map_err(|e| format!("the CA certificate is not a PEM certificate: {e}"))?;
+        let tls = ureq::tls::TlsConfig::builder()
+            .root_certs(ureq::tls::RootCerts::new_with_certs(&[root]))
+            .build();
+        let config = ureq::Agent::config_builder()
+            .timeout_global(Some(TIMEOUT))
+            .http_status_as_error(false)
+            .tls_config(tls)
+            .build();
+        send(config, method, url, headers, body)
+    }
+}
+
+/// One request over an agent with `config`: the body, the headers, and the answer read as JSON.
+fn send(
+    config: ureq::config::Config,
+    method: &str,
+    url: &str,
+    headers: &[(&str, String)],
+    body: Option<Body>,
+) -> Result<Reply, String> {
+    let mut builder = ureq::http::Request::builder()
+        .method(method)
+        .uri(url)
+        .header("User-Agent", "agentplaza")
+        .header("Accept", "application/json");
+    for (key, value) in headers {
+        builder = builder.header(*key, value.as_str());
+    }
+    let bytes = match body {
+        Some(Body::Json(v)) => {
+            builder = builder.header("Content-Type", "application/json");
+            serde_json::to_vec(&v).map_err(|e| e.to_string())?
+        }
+        Some(Body::Form(fields)) => {
+            builder = builder.header("Content-Type", "application/x-www-form-urlencoded");
+            form(&fields).into_bytes()
+        }
+        Some(Body::Bytes(content_type, bytes)) => {
+            builder = builder.header("Content-Type", content_type.as_str());
+            bytes
+        }
+        None => Vec::new(),
+    };
+    let request = builder
+        .body(bytes)
+        .map_err(|e| format!("bad request: {e}"))?;
+    let response = ureq::Agent::new_with_config(config)
+        .run(request)
+        .map_err(|e| format!("{url}: no answer: {e}"))?;
+    let status = response.status().as_u16();
+    let mut raw = Vec::new();
+    response
+        .into_body()
+        .into_reader()
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("{url}: reading the answer: {e}"))?;
+    Ok(Reply {
+        status,
+        body: parse(&raw),
+    })
 }
 
 /// A body as JSON: null when empty, the text as a JSON string when it is not JSON (a form-encoded OAuth answer is

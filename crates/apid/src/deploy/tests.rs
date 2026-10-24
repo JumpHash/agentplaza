@@ -125,13 +125,13 @@ impl Checks for Scripted {
 }
 
 /// A monitoring source the test sets: the error ratio, and the p95 latency in seconds.
-struct Gauge {
-    error_rate: Mutex<f64>,
-    p95_seconds: Mutex<f64>,
+pub(super) struct Gauge {
+    pub(super) error_rate: Mutex<f64>,
+    pub(super) p95_seconds: Mutex<f64>,
 }
 
 impl Gauge {
-    fn steady() -> Gauge {
+    pub(super) fn steady() -> Gauge {
         Gauge {
             error_rate: Mutex::new(0.001),
             p95_seconds: Mutex::new(0.12),

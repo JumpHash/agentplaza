@@ -639,8 +639,8 @@ pub fn deploy_now(
         .into_iter()
         .find(|e| e.name == env)
         .ok_or((404, format!("no environment {env}")))?;
-    // A Cloudflare environment deploys a qualified, published release through the deploy recipe (23).
-    if let Some(settings) = crate::deploy::Settings::of(&e).map_err(|e| (409, e))? {
+    // A Cloudflare or Kubernetes environment deploys a qualified, published release through the deploy recipe (23).
+    if let Some(plan) = crate::deploy::Plan::of(&e).map_err(|e| (409, e))? {
         let version = match version.map(str::trim).filter(|v| !v.is_empty()) {
             Some(v) => v.to_string(),
             None => crate::deploy::newest(app, project)
@@ -651,8 +651,7 @@ pub fn deploy_now(
                 ))?,
         };
         crate::deploy::gate(app, project, &e, &version).map_err(|m| (409, m))?;
-        return crate::deploy::start(app, project, &e, &version, by, settings)
-            .map_err(|m| (409, m));
+        return crate::deploy::start(app, project, &e, &version, by, plan).map_err(|m| (409, m));
     }
     let version = match version.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => v.chars().take(120).collect(),
@@ -683,7 +682,7 @@ pub(crate) fn request(
         .into_iter()
         .find(|e| e.name == env)
         .ok_or_else(|| format!("no environment {env}"))?;
-    // A protected Cloudflare environment asks only for a release that passed staging (23).
+    // A protected deploy to a platform asks only for a release that passed staging (23).
     if e.protected {
         crate::deploy::gate(app, project, &e, version)?;
     }
@@ -777,9 +776,9 @@ pub fn decided(app: &App, item: &crate::approvals::Approval, approve: bool) -> R
     // A Cloudflare environment runs its rollout instead of the hook.
     if let Some(arc) = app.handle().upgrade() {
         if let Some(e) = found.as_ref()
-            && let Ok(Some(settings)) = crate::deploy::Settings::of(e)
+            && let Ok(Some(plan)) = crate::deploy::Plan::of(e)
         {
-            crate::deploy::approved(&arc, project, e, settings, &sent, prior);
+            crate::deploy::approved(&arc, project, e, plan, &sent, prior);
             return Ok(());
         }
         send(&arc, project, env, &sent);
@@ -803,7 +802,7 @@ pub fn tracked(app: &Arc<App>, repo: &str, track: &str, version: &str) {
             continue;
         }
         // A Cloudflare environment that tracks releases deploys once the release is published (23, `published`).
-        if track == "releases" && matches!(crate::deploy::Settings::of(&e), Ok(Some(_))) {
+        if track == "releases" && matches!(crate::deploy::Plan::of(&e), Ok(Some(_))) {
             continue;
         }
         let result = request(
