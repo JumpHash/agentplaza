@@ -49,6 +49,7 @@ pub mod resolver;
 pub mod run;
 pub mod scenarios;
 pub mod security;
+pub mod segment;
 pub mod slowserve;
 pub mod spec;
 pub mod stage;

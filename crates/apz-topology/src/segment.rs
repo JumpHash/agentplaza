@@ -1,6 +1,14 @@
 // Copyright 2026 AgentPlaza
 // SPDX-License-Identifier: Apache-2.0
 //
+// Written for this port (PLAN 22.6, W58, round 2). The segment plan is the topology's: the planner lays a
+// segment out once (each VM's name, address and MAC, the gateway) and both sides read it: the node attaches
+// each VM's interface with its MAC and opens the gateway, and the VM's guest config is generated from it.
+// Moved here from the VMM, which only needs the MACs and the switch.
+
+// Copyright 2026 AgentPlaza
+// SPDX-License-Identifier: Apache-2.0
+//
 // Written for this port (PLAN 22.6, W58). A segment's addresses are laid out once, by the topology's
 // planner, and every VM of the topology gets its interface, its name and its route from the same plan.
 // The guest's default route goes to the segment's gateway and nowhere else, so the egress proxy is the
@@ -12,7 +20,16 @@
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 
-use super::Mac;
+/// A MAC address.
+pub type Mac = [u8; 6];
+
+/// The colon-separated hex of a MAC, as the guest's tools print it.
+pub fn mac_text(mac: &Mac) -> String {
+    mac.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
 
 /// The name the gateway answers to in the hosts file (the egress proxy's address).
 pub const GATEWAY_NAME: &str = "egress";
@@ -131,7 +148,7 @@ impl Plan {
                 .collect::<Vec<_>>()
         };
         let gateway = self.gateway.ip.to_string();
-        let gateway_mac = super::mac_text(&self.gateway.mac);
+        let gateway_mac = mac_text(&self.gateway.mac);
         Some(vec![
             words(&[
                 "ip",
@@ -158,6 +175,46 @@ impl Plan {
                 "ip", "route", "add", "default", "via", &gateway, "dev", device,
             ]),
         ])
+    }
+}
+
+/// One VM's guest config for its segment: the hosts file that resolves the segment's names, and the script that brings
+/// its interface up (the commands of [`Plan::guest_commands`], quoted for a shell).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuestNet {
+    pub hosts: String,
+    pub script: String,
+}
+
+/// A shell word as it must be written: as it is when it has only plain characters, quoted otherwise.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
+}
+
+impl Plan {
+    /// The guest config of the VM `machine` on its interface `device`. `None` when the VM is not in the plan.
+    pub fn guest_net(&self, machine: &str, device: &str) -> Option<GuestNet> {
+        let commands = self.guest_commands(machine, device)?;
+        let mut script = String::from(
+            "#!/bin/sh\n# This VM's interface on its segment, from the topology runner's plan.\nset -eu\n",
+        );
+        for command in commands {
+            let line: Vec<String> = command.iter().map(|word| shell_word(word)).collect();
+            script.push_str(&line.join(" "));
+            script.push('\n');
+        }
+        Some(GuestNet {
+            hosts: self.hosts_file(),
+            script,
+        })
     }
 }
 
@@ -222,5 +279,27 @@ mod tests {
         let too_many: Vec<String> = (0..=MAX_MEMBERS).map(|i| format!("vm{i}")).collect();
         let refs: Vec<&str> = too_many.iter().map(String::as_str).collect();
         assert!(Plan::new("web", 1, &refs).is_err());
+    }
+
+    #[test]
+    fn the_guest_config_names_the_segment_and_routes_only_through_the_gateway() {
+        let plan = Plan::new("web", 7, &["api", "db"]).unwrap();
+        let net = plan.guest_net("api", "eth0").unwrap();
+        assert!(net.hosts.contains("10.7.0.2 api\n"));
+        assert!(net.hosts.contains("10.7.0.1 egress\n"));
+        assert!(net.script.starts_with("#!/bin/sh\n"));
+        assert!(
+            net.script
+                .contains("ip route add default via 10.7.0.1 dev eth0\n")
+        );
+        assert!(net.script.contains("ip addr add 10.7.0.2/24 dev eth0\n"));
+        assert!(plan.guest_net("nobody", "eth0").is_none());
+    }
+
+    #[test]
+    fn a_command_word_with_a_space_is_quoted_for_the_shell() {
+        assert_eq!(shell_word("plain-1.2"), "plain-1.2");
+        assert_eq!(shell_word("a b"), "'a b'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
     }
 }

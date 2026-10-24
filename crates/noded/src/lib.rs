@@ -93,6 +93,7 @@ pub mod events;
 pub mod fleet;
 pub mod hostcheck;
 mod lab_caps;
+pub mod lab_net;
 pub mod mac_sandbox;
 mod mcp_vm;
 pub mod metrics;

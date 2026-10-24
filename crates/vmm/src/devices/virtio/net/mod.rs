@@ -17,9 +17,10 @@
 //!   MAC within the segment, flood broadcasts and unknown unicast inside it, and reach the outside
 //!   only through the segment's gateway, which accepts the egress proxy's connections and nothing
 //!   else.
+//! * [`gateway`] — the segment's way out: TCP over frames to the egress proxy, each proxied connection handed to
+//!   its owner as a byte stream.
 //! * [`overlay`] — a segment's frames carried between two switches over a byte stream (the node
 //!   tunnel or the mesh between nodes, PLAN 17.4), split-horizon so no frame loops.
-//! * [`plan`] — a segment's addresses and the guest commands that bring its interface up.
 //!
 //! The minimal feature set is `VIRTIO_NET_F_MAC` (the MAC in the configuration space) and
 //! `VIRTIO_F_VERSION_1` (the modern transport, and with it the 12-byte header that carries
@@ -30,9 +31,9 @@
 //! (`VmKind::Session`, a fork of a session included), see [`crate::spawner`].
 
 pub mod device;
+pub mod gateway;
 pub mod mmio_device;
 pub mod overlay;
-pub mod plan;
 pub mod switch;
 
 use crate::devices::virtio::queue::{InvalidAvailIdx, QueueError};
