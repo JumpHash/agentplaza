@@ -291,7 +291,10 @@ fn drive(
             "plaza_verdict",
             json!({ "task": tid, "pass": true, "notes": "the update is as the spec says" }),
         );
-        assert!(!text(&verdict["output"]).is_empty(), "{verdict}");
+        assert!(
+            text(&verdict["output"]).starts_with("Recorded"),
+            "{verdict}"
+        );
         hub.work_done(r_cid, rw_id, "done", "passed");
     }
     change
@@ -572,7 +575,16 @@ impl Booted {
             });
         list.as_array()
             .and_then(|l| l.iter().find(|a| a["kind"] == kind).cloned())
-            .unwrap_or(Value::Null)
+            .unwrap_or_else(|| {
+                let batches = self
+                    .hub
+                    .call("GET", &format!("/v1/projects/{}/upgrades", self.pid), None)
+                    .1;
+                panic!(
+                    "no {kind} approval: {list}\nbatches: {batches}\n{}",
+                    self.hub.log()
+                )
+            })
     }
 }
 
