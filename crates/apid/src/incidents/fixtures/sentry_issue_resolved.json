@@ -1,0 +1,18 @@
+{
+  "action": "resolved",
+  "data": {
+    "issue": {
+      "id": "4521187",
+      "shortId": "SITE-3K",
+      "title": "TypeError: Cannot read properties of undefined (reading 'id')",
+      "culprit": "src/checkout.ts in placeOrder",
+      "permalink": "https://sentry.example.com/organizations/acme/issues/4521187/",
+      "level": "error",
+      "status": "resolved",
+      "firstSeen": "2026-10-24T09:58:12.000000Z",
+      "project": { "id": "7", "slug": "site-web", "name": "Site" }
+    }
+  },
+  "installation": { "uuid": "2f1c6a0e-0000-4000-8000-000000000001" },
+  "actor": { "type": "application", "id": "sentry", "name": "Sentry" }
+}

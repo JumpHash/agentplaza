@@ -1,0 +1,11 @@
+id = "cloudwatch"
+kind = ["intake"]
+version = "1.0.0"
+scopes = []
+egress = []
+secrets = []
+events = []
+actions = []
+webhook = true
+auth_header = ""
+auth_format = ""

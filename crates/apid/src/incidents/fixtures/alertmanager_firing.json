@@ -1,0 +1,26 @@
+{
+  "version": "4",
+  "groupKey": "{}:{alertname=\"HighErrorRate\"}",
+  "truncatedAlerts": 0,
+  "status": "firing",
+  "receiver": "plaza",
+  "groupLabels": { "alertname": "HighErrorRate" },
+  "commonLabels": { "alertname": "HighErrorRate", "service": "api", "severity": "critical" },
+  "commonAnnotations": { "summary": "Error ratio above 5%" },
+  "externalURL": "http://alertmanager.example.com:9093",
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": { "alertname": "HighErrorRate", "service": "api", "severity": "critical", "instance": "api-1" },
+      "annotations": {
+        "summary": "Error ratio above 5% on api",
+        "description": "5xx responses are 12% of requests over 5m",
+        "runbook_url": "https://runbooks.example.com/high-error-rate"
+      },
+      "startsAt": "2026-10-24T10:00:00.000Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "http://prometheus.example.com/graph?g0.expr=up",
+      "fingerprint": "a1b2c3d4e5f60718"
+    }
+  ]
+}

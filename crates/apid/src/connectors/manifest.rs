@@ -3,7 +3,7 @@
 //! A manifest is TOML: `id`, `kind`, `version`, `scopes` (the risk classes of its actions), `egress` (the hosts it
 //! may reach, exact names), `secrets` (vault names, never values), `events`, `actions`, `webhook`, and the header a
 //! glue component's request carries the secret in (`auth_header`, `auth_format` with `${SECRET}`, as
-//! `egress_inject.rs` writes a fork's header). The 13 built-in connectors ship with a manifest each under
+//! `egress_inject.rs` writes a fork's header). The built-in connectors ship with a manifest each under
 //! `connectors/manifests/`; shipping one is the owner's approval, and a test holds each to its catalog entry.
 //!
 //! Stored in plaza.db (table `connector_manifest`): every version proposed, with its state. A version that widens
@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The built-in manifests, in catalog order.
-const BUILTIN: [&str; 14] = [
+const BUILTIN: [&str; 20] = [
     include_str!("manifests/firecrawl.toml"),
     include_str!("manifests/elevenlabs.toml"),
     include_str!("manifests/unsplash.toml"),
@@ -22,6 +22,12 @@ const BUILTIN: [&str; 14] = [
     include_str!("manifests/telegram.toml"),
     include_str!("manifests/cloudflare.toml"),
     include_str!("manifests/prometheus.toml"),
+    include_str!("manifests/sentry.toml"),
+    include_str!("manifests/alertmanager.toml"),
+    include_str!("manifests/grafana.toml"),
+    include_str!("manifests/cloudwatch.toml"),
+    include_str!("manifests/uptime.toml"),
+    include_str!("manifests/loki.toml"),
     include_str!("manifests/digitalocean.toml"),
     include_str!("manifests/github.toml"),
     include_str!("manifests/namecheap.toml"),

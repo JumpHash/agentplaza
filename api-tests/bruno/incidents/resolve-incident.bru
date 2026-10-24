@@ -1,0 +1,32 @@
+meta {
+  name: Close an open incident as the owner
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents/{{incidentId}}/resolve
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the incident is resolved and its chat is told", function () {
+    const b = res.getBody();
+    expect(b.status).to.eql("resolved");
+    expect(b.resolved_ms).to.be.above(0);
+  });
+}

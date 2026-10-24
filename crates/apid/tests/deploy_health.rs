@@ -394,6 +394,27 @@ fn a_published_release_deploys_through_staging_to_production_and_a_breach_rolls_
         "{incident}"
     );
 
+    // The breach runs the incident recipe (12.1): it is the incident's suspect, already rolled back by the watch.
+    let (_, listed) = hub.call("GET", &format!("/v1/projects/{pid}/incidents"), None);
+    let breach = listed["incidents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|i| i["source"] == json!("deploy-health"))
+        .cloned()
+        .unwrap_or_else(|| panic!("the breach is an incident: {listed}\n{}", hub.log()));
+    assert_eq!(breach["outcome"], json!("rolled_back"), "{breach}");
+    assert_eq!(
+        breach["suspect"],
+        json!(format!("production@{second}")),
+        "{breach}"
+    );
+    assert_eq!(
+        breach["steps"].as_array().map(Vec::len),
+        Some(4),
+        "{breach}"
+    );
+
     // The project's chat is told each step: the rollouts, the rollback and how the production deploy ended.
     let messages = project_messages(&hub, &pid);
     for expected in [

@@ -1,0 +1,27 @@
+meta {
+  name: List the project's recorded landings
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/landings
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the landings are a list, newest first, each with its change, author and files", function () {
+    const b = res.getBody();
+    expect(b.landings).to.be.an("array");
+    b.landings.forEach((l) => {
+      expect(l.change).to.be.a("string");
+      expect(l.files).to.be.an("array");
+    });
+  });
+}

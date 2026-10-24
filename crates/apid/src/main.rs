@@ -64,6 +64,7 @@ mod hub_auth;
 mod hub_mcp;
 mod ide;
 mod ide_term;
+mod incidents;
 mod inference;
 mod intake;
 mod internal;

@@ -312,7 +312,7 @@ fn flag_touched(app: &App, project: &str, change: &str) -> Result<(), String> {
 
 /// What a landed change touched, as Weft's change tree names it: the files it changed, and the symbols it changed
 /// (`path::qualified`, the ids an entry's anchors name).
-fn touched(app: &App, change: &str) -> Result<(Vec<String>, Vec<String>), String> {
+pub(crate) fn touched(app: &App, change: &str) -> Result<(Vec<String>, Vec<String>), String> {
     let rev = landed_revision(app, change)?;
     let tree = app.weft.get(&format!("/revisions/{rev}/tree"))?;
     let mut paths = Vec::new();

@@ -147,6 +147,8 @@ pub struct App {
     pub platforms: crate::platforms::Store,
     /// Projects in maintenance: their signals, map, proposals and sweeps.
     pub maintenance: crate::maintenance::Store,
+    /// Incidents (24.1): the alerts and breaches a project is handling, from opening to postmortem.
+    pub incidents: crate::incidents::Store,
     /// Where each project runs.
     pub environments: crate::environments::Store,
     /// The review graph's runs and recipes (review_graph), kept in plaza.db; the change trees are in the object store.
@@ -328,6 +330,7 @@ impl App {
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::new(),
             maintenance: Default::default(),
+            incidents: Default::default(),
             environments: crate::environments::Store::default()
                 .with_generations(Arc::clone(&generations)),
             reviews: crate::review_graph::Reviews::new(Arc::clone(&blobs)),

@@ -489,6 +489,8 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
         }
         // The landing changed main: the projects on the repo read their memory again.
         crate::project_memory::landed(&app, &repo, &change);
+        // And the incidents record the landing, for the triage of an alert that follows it (24.1).
+        crate::incidents::landed(&app, &repo, &change);
         // And each project's base on the repo is rebuilt from the new main (16.4).
         crate::base_builds::landed(&app, &repo);
         export_all(&app, &repo);
