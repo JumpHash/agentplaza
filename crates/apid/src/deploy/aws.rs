@@ -18,6 +18,7 @@
 //! Where a shape is written from memory of those references rather than checked against them, the comment says "assumed".
 //! Nothing here has been run against a real account: the tests drive a local fake that verifies the signatures.
 
+use std::collections::BTreeSet;
 use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -427,7 +428,13 @@ impl Client {
         };
         let mut headers = call.headers.clone();
         if let Some((access, secret, token)) = creds {
-            headers.extend(apz_gateway::signed_headers(
+            // S3 signs each path segment once; the other services sign it encoded again.
+            let sign = if service == "s3" {
+                apz_gateway::signed_headers_s3
+            } else {
+                apz_gateway::signed_headers
+            };
+            headers.extend(sign(
                 call.method,
                 &call.url,
                 &call.headers,
@@ -647,20 +654,31 @@ impl Client {
 
     // ---- S3 and CloudFront ----------------------------------------------------------------------------------------------
 
-    /// One S3 call on the path-style address of `bucket` and `key`, with the payload hash S3 wants in its header.
+    /// One S3 call on the path-style address of `bucket` and `key` (the key's segments are percent-encoded here), with
+    /// `query` (already encoded), extra `headers`, and the payload hash S3 wants in its own header.
     fn s3(
         &self,
         method: &'static str,
         bucket: &str,
         key: &str,
+        query: &str,
+        headers: &[(&str, String)],
         body: Option<(&str, Vec<u8>)>,
     ) -> Result<Reply, String> {
         let payload: &[u8] = match &body {
             Some((_, bytes)) => bytes,
             None => &[],
         };
-        let mut call = Call::new(method, format!("{}/{bucket}/{key}", self.endpoints.s3))
-            .header("x-amz-content-sha256", hex(&Sha256::digest(payload)));
+        let mut url = format!("{}/{bucket}/{}", self.endpoints.s3, key_path(key));
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(query);
+        }
+        let mut call =
+            Call::new(method, url).header("x-amz-content-sha256", hex(&Sha256::digest(payload)));
+        for (name, value) in headers {
+            call = call.header(name, value.clone());
+        }
         if let Some((content_type, bytes)) = body {
             call = call.bytes(content_type, bytes);
         }
@@ -673,7 +691,7 @@ impl Client {
 
     /// The release the site serves now: the pointer's text.
     fn site_live(&self, bucket: &str, prefix: &str) -> Result<Option<String>, String> {
-        let reply = self.s3("GET", bucket, &Self::site_pointer(prefix), None)?;
+        let reply = self.s3("GET", bucket, &Self::site_pointer(prefix), "", &[], None)?;
         if reply.status == 404 {
             return Ok(None);
         }
@@ -695,6 +713,8 @@ impl Client {
                 "PUT",
                 bucket,
                 &format!("{root}{path}"),
+                "",
+                &[],
                 Some((content_type(path), content.clone())),
             )?;
             ok(self, "s3", reply, &format!("uploading {path}"))?;
@@ -708,13 +728,17 @@ impl Client {
             "PUT",
             bucket,
             &format!("{root}{MANIFEST}"),
+            "",
+            &[],
             Some(("application/json", body)),
         )?;
         ok(self, "s3", reply, "uploading the manifest")?;
         Ok(release)
     }
 
-    /// Copies a release's files over the live ones, moves the pointer, and invalidates the distribution's paths.
+    /// Serves a release: copies its files over the live ones, removes the live files it does not have (so a rollback
+    /// restores the earlier set the same way), moves the pointer, and invalidates the distribution's paths. Files outside
+    /// the release store that the live prefix holds are removed too: the prefix is the site.
     fn site_serve(
         &self,
         bucket: &str,
@@ -723,7 +747,7 @@ impl Client {
         release: &str,
     ) -> Result<(), String> {
         let root = format!("{prefix}{RELEASES_DIR}{release}/");
-        let reply = self.s3("GET", bucket, &format!("{root}{MANIFEST}"), None)?;
+        let reply = self.s3("GET", bucket, &format!("{root}{MANIFEST}"), "", &[], None)?;
         let manifest = ok(self, "s3", reply, "reading the release's manifest")?;
         let paths: Vec<String> = manifest["files"]
             .as_array()
@@ -732,29 +756,99 @@ impl Client {
             .filter_map(|f| f["path"].as_str().map(str::to_string))
             .collect();
         for path in &paths {
-            let call = Call::new(
+            // The copy's source is the release's key, encoded the way the URL carries it.
+            let source = format!("/{bucket}/{}", key_path(&format!("{root}{path}")));
+            let reply = self.s3(
                 "PUT",
-                format!("{}/{bucket}/{prefix}{path}", self.endpoints.s3),
-            )
-            .header("x-amz-content-sha256", hex(&Sha256::digest(b"")))
-            .header("x-amz-copy-source", format!("/{bucket}/{root}{path}"));
-            let reply = self.call("s3", &self.region, call)?;
+                bucket,
+                &format!("{prefix}{path}"),
+                "",
+                &[("x-amz-copy-source", source)],
+                None,
+            )?;
             // S3 answers a failed copy with a 200 whose body is an Error document.
             let copied = ok(self, "s3", reply, &format!("copying {path}"))?;
             if copied.as_str().is_some_and(|text| text.contains("<Error>")) {
                 return Err(format!("copying {path} failed"));
             }
         }
-        let pointer = format!("{prefix}{RELEASES_DIR}{POINTER}");
+        let wanted: BTreeSet<String> = paths.iter().map(|p| format!("{prefix}{p}")).collect();
+        let stale: Vec<String> = self
+            .site_keys(bucket, prefix)?
+            .into_iter()
+            .filter(|key| !wanted.contains(key))
+            .collect();
+        self.site_delete(bucket, &stale)?;
         let reply = self.s3(
             "PUT",
             bucket,
-            &pointer,
+            &Self::site_pointer(prefix),
+            "",
+            &[],
             Some(("text/plain", release.as_bytes().to_vec())),
         )?;
         ok(self, "s3", reply, "moving the live pointer")?;
         if let Some(id) = distribution {
             self.invalidate(id)?;
+        }
+        Ok(())
+    }
+
+    /// Every key under `prefix` except the release store's, read page by page (ListObjectsV2, assumed: each page's
+    /// `NextContinuationToken` is the token the next page asks for, while `IsTruncated` is true).
+    fn site_keys(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, String> {
+        let store = format!("{prefix}{RELEASES_DIR}");
+        let mut keys = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            let mut pairs = vec![("list-type", "2"), ("prefix", prefix)];
+            if let Some(next) = token.as_deref() {
+                pairs.push(("continuation-token", next));
+            }
+            let reply = self.s3("GET", bucket, "", &query(&pairs), &[], None)?;
+            let page = ok(self, "s3", reply, "listing the site")?;
+            let xml = page.as_str().ok_or("the listing answered no XML text")?;
+            keys.extend(
+                xml_all(xml, "Key")
+                    .into_iter()
+                    .filter(|key| !key.starts_with(&store)),
+            );
+            token = match xml_tag(xml, "IsTruncated").as_deref() {
+                Some("true") => Some(
+                    xml_tag(xml, "NextContinuationToken")
+                        .ok_or("the listing is truncated and names no next page")?,
+                ),
+                _ => None,
+            };
+            if token.is_none() {
+                return Ok(keys);
+            }
+        }
+    }
+
+    /// Deletes `keys`, at most a thousand to a request (DeleteObjects, assumed: the body lists each key in XML, and the
+    /// request carries the body's Content-MD5). A key the answer names as failed is an error.
+    fn site_delete(&self, bucket: &str, keys: &[String]) -> Result<(), String> {
+        for batch in keys.chunks(1000) {
+            let mut xml = String::from("<Delete><Quiet>true</Quiet>");
+            for key in batch {
+                xml.push_str(&format!("<Object><Key>{}</Key></Object>", escape(key)));
+            }
+            xml.push_str("</Delete>");
+            let digest =
+                base64::engine::general_purpose::STANDARD.encode(md5::Md5::digest(xml.as_bytes()));
+            let reply = self.s3(
+                "POST",
+                bucket,
+                "",
+                "delete",
+                &[("Content-MD5", digest)],
+                Some(("application/xml", xml.into_bytes())),
+            )?;
+            let answer = ok(self, "s3", reply, "deleting stale files")?;
+            if answer.as_str().is_some_and(|text| text.contains("<Error>")) {
+                return Err("deleting stale files failed".into());
+            }
         }
         Ok(())
     }
@@ -969,14 +1063,38 @@ fn xml_tag(doc: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let start = doc.find(&open)? + open.len();
     let end = start + doc[start..].find(&format!("</{tag}>"))?;
-    Some(
-        doc[start..end]
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&"),
-    )
+    Some(unescape(&doc[start..end]))
+}
+
+/// The text of every `<tag>…</tag>` of an XML document, in order.
+fn xml_all(doc: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    doc.split(&open)
+        .skip(1)
+        .filter_map(|part| part.split(&close).next())
+        .map(unescape)
+        .collect()
+}
+
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Text as an XML element's content: `&`, `<` and `>` escaped.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// A key as the URL carries it: each segment percent-encoded once, the `/` between them kept.
+fn key_path(key: &str) -> String {
+    key.split('/').map(pct).collect::<Vec<_>>().join("/")
 }
 
 /// `YYYY-MM-DDTHH:MM:SS[.fff]Z` (the form STS gives an expiry) as a time.
@@ -1032,8 +1150,8 @@ fn content_type(path: &str) -> &'static str {
     }
 }
 
-/// The files of a site's zip, by their paths. A path the signer cannot take unencoded (anything but letters, digits, `-`,
-/// `_`, `.`, `~` and `/`) is refused, as is a path that climbs out of the release.
+/// The files of a site's zip, by their paths. Any name is a key (S3 signs each segment encoded once); a path that is
+/// absolute or climbs out of the release is refused.
 fn zip_files(zip: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut archive = zip::ZipArchive::new(Cursor::new(zip))
         .map_err(|e| format!("the site artifact is a zip file: {e}"))?;
@@ -1052,13 +1170,10 @@ fn zip_files(zip: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
             .to_string();
         let plain = !name.is_empty()
             && !name.starts_with('/')
-            && !name.split('/').any(|part| part == "..")
-            && name.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/')
-            });
+            && !name.split('/').any(|part| part == ".." || part.is_empty());
         if !plain {
             return Err(format!(
-                "the site file {name:?} has a name S3 keys here do not take"
+                "the site file {name:?} is absolute or climbs out of the release"
             ));
         }
         let mut content = Vec::new();

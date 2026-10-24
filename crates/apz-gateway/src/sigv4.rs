@@ -24,6 +24,18 @@ pub(crate) fn sign(
     service: &str,
     now: SystemTime,
 ) {
+    sign_mode(req, creds, region, service, now, false);
+}
+
+/// [`sign`], with the S3 path rule when `s3` is set (see [`canonical_path`]).
+fn sign_mode(
+    req: &mut Req,
+    creds: &Credentials,
+    region: &str,
+    service: &str,
+    now: SystemTime,
+    s3: bool,
+) {
     let amz_date = amz_date(now);
     req.set_header("x-amz-date", &amz_date);
     if let Some(token) = &creds.session_token {
@@ -47,7 +59,7 @@ pub(crate) fn sign(
     let canonical = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
         req.method(),
-        canonical_uri(path),
+        canonical_path(path, s3),
         canonical_query(query),
         headers
             .iter()
@@ -78,6 +90,41 @@ pub(crate) fn sign(
 /// `authorization`), for a request with `method` to `url`, its own `headers` and its `body`. The caller sends the request
 /// with these headers added; only those three names are answered. The device farms (apid, PLAN 8.5) sign their calls with
 /// this, so the signing is this module's.
+fn signed_headers_mode(
+    method: &'static str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    access_key: &str,
+    secret_key: &str,
+    session_token: Option<&str>,
+    region: &str,
+    service: &str,
+    now: SystemTime,
+    s3: bool,
+) -> Vec<(String, String)> {
+    let mut req = Req::raw(method, url, body.to_vec());
+    for (name, value) in headers {
+        req.set_header(name, value);
+    }
+    let creds = Credentials {
+        access_key: access_key.to_string(),
+        secret_key: secret_key.to_string(),
+        session_token: session_token.map(str::to_string),
+    };
+    sign_mode(&mut req, &creds, region, service, now, s3);
+    req.headers
+        .into_iter()
+        .filter(|(name, _)| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "x-amz-date" | "x-amz-security-token" | "authorization"
+            )
+        })
+        .collect()
+}
+
+/// The headers AWS SigV4 adds to one request, as [`signed_headers`] signs them for every service but S3.
 pub fn signed_headers(
     method: &'static str,
     url: &str,
@@ -90,25 +137,48 @@ pub fn signed_headers(
     service: &str,
     now: SystemTime,
 ) -> Vec<(String, String)> {
-    let mut req = Req::raw(method, url, body.to_vec());
-    for (name, value) in headers {
-        req.set_header(name, value);
-    }
-    let creds = Credentials {
-        access_key: access_key.to_string(),
-        secret_key: secret_key.to_string(),
-        session_token: session_token.map(str::to_string),
-    };
-    sign(&mut req, &creds, region, service, now);
-    req.headers
-        .into_iter()
-        .filter(|(name, _)| {
-            matches!(
-                name.to_ascii_lowercase().as_str(),
-                "x-amz-date" | "x-amz-security-token" | "authorization"
-            )
-        })
-        .collect()
+    signed_headers_mode(
+        method,
+        url,
+        headers,
+        body,
+        access_key,
+        secret_key,
+        session_token,
+        region,
+        service,
+        now,
+        false,
+    )
+}
+
+/// [`signed_headers`] for S3: each path segment is signed encoded once, as S3 expects (other services encode it again).
+/// The caller sends the key's segments already percent-encoded in the URL.
+pub fn signed_headers_s3(
+    method: &'static str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    access_key: &str,
+    secret_key: &str,
+    session_token: Option<&str>,
+    region: &str,
+    service: &str,
+    now: SystemTime,
+) -> Vec<(String, String)> {
+    signed_headers_mode(
+        method,
+        url,
+        headers,
+        body,
+        access_key,
+        secret_key,
+        session_token,
+        region,
+        service,
+        now,
+        true,
+    )
 }
 
 fn signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
@@ -138,11 +208,17 @@ fn split_url(url: &str) -> (&str, &str, &str) {
     (host, path, query)
 }
 
-/// Every path segment URI-encoded (again — non-S3 services sign the
-/// encoded path encoded once more).
-fn canonical_uri(path: &str) -> String {
+/// The canonical path: every segment URI-encoded again (non-S3 services sign the encoded path encoded once more). S3
+/// signs each segment encoded once: the URL's escapes are decoded and encoded again, so `%20` stays `%20`, never `%2520`.
+fn canonical_path(path: &str, s3: bool) -> String {
     path.split('/')
-        .map(uri_encode)
+        .map(|segment| {
+            if s3 {
+                uri_encode(&percent_decode(segment))
+            } else {
+                uri_encode(segment)
+            }
+        })
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -296,8 +372,25 @@ mod tests {
             )
         );
         assert_eq!(
-            canonical_uri("/model/us.anthropic.claude%3A0/converse"),
+            canonical_path("/model/us.anthropic.claude%3A0/converse", false),
             "/model/us.anthropic.claude%253A0/converse"
+        );
+        // S3 signs an escape once: a key's `%20`, `%C3%A9`, `%2B` and `%25` are what the URL carries, not doubled.
+        assert_eq!(
+            canonical_path("/bucket/a%20b.txt", true),
+            "/bucket/a%20b.txt"
+        );
+        assert_eq!(
+            canonical_path("/bucket/%C3%A9%2B.txt", true),
+            "/bucket/%C3%A9%2B.txt"
+        );
+        assert_eq!(
+            canonical_path("/bucket/q%3F%25.txt", true),
+            "/bucket/q%3F%25.txt"
+        );
+        assert_eq!(
+            canonical_path("/bucket/a%20b.txt", false),
+            "/bucket/a%2520b.txt"
         );
     }
 }

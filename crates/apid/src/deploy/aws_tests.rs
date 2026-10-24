@@ -32,6 +32,8 @@ const CLUSTER: &str = "prod";
 const SERVICE: &str = "web";
 const FAMILY: &str = "web";
 const TASK_ARN: &str = "arn:aws:ecs:eu-west-1:123456789012:task-definition/web";
+/// How many keys one S3 listing page answers (the fake is a valid S3 that pages early).
+const LIST_PAGE: usize = 2;
 
 /// One session the fake issued.
 #[derive(Clone)]
@@ -131,6 +133,28 @@ impl Fake {
         self.state.lock().unwrap().issued.clone()
     }
 
+    /// The live keys: every object outside the release store, in key order.
+    fn live_keys(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .objects
+            .keys()
+            .filter(|k| !k.contains("apz-releases/"))
+            .cloned()
+            .collect()
+    }
+
+    /// The bytes of an object, if it is there.
+    fn object(&self, key: &str) -> Option<Vec<u8>> {
+        self.state
+            .lock()
+            .unwrap()
+            .objects
+            .get(key)
+            .map(|(_, b)| b.clone())
+    }
+
     /// Whether `req` carries a SigV4 signature that one of the candidate credentials produces for it.
     fn verified(&self, req: &Req, service: &str, region: &str, candidates: &[Issued]) -> bool {
         let Some(auth) = req.header("authorization") else {
@@ -167,7 +191,12 @@ impl Fake {
             .filter(|n| !matches!(*n, "host" | "x-amz-date" | "x-amz-security-token"))
             .map(|n| (n.to_string(), req.header(n).unwrap_or_default().to_string()))
             .collect();
-        let expected = apz_gateway::signed_headers(
+        let sign = if service == "s3" {
+            apz_gateway::signed_headers_s3
+        } else {
+            apz_gateway::signed_headers
+        };
+        let expected = sign(
             method,
             &url,
             &headers,
@@ -480,24 +509,89 @@ impl Fake {
         }
     }
 
+    /// S3 with path-style keys: the URL carries each key's segments percent-encoded, and the fake decodes them. It serves
+    /// PUT (with the payload hash S3 checks), COPY (an `x-amz-copy-source` PUT), GET, a LIST that answers two keys a page
+    /// (so a listing must follow its continuation tokens), and a batch DELETE (with the body's Content-MD5 checked). Each
+    /// call is logged with the key it names, decoded.
     fn s3(&self, req: &Req, rest: &str) -> Resp {
-        let (bucket_and_key, _) = rest.split_once('?').unwrap_or((rest, ""));
-        let key = bucket_and_key
-            .trim_start_matches('/')
-            .split_once('/')
-            .map(|(_, key)| key.to_string())
-            .unwrap_or_default();
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let key = percent_decode(
+            path.trim_start_matches('/')
+                .split_once('/')
+                .map(|(_, key)| key)
+                .unwrap_or(""),
+        );
+        let params: Vec<(String, String)> = query
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| {
+                let (k, v) = p.split_once('=').unwrap_or((p, ""));
+                (percent_decode(k), percent_decode(v))
+            })
+            .collect();
+        let param = |name: &str| {
+            params
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
         let mut state = self.state.lock().unwrap();
         match req.method.as_str() {
+            "GET" if key.is_empty() && param("list-type").is_some() => {
+                let prefix = param("prefix").unwrap_or_default();
+                let start: usize = param("continuation-token")
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                let keys: Vec<String> = state
+                    .objects
+                    .keys()
+                    .filter(|k| k.starts_with(&prefix))
+                    .cloned()
+                    .collect();
+                let end = (start + LIST_PAGE).min(keys.len());
+                let mut xml = String::from(
+                    "<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>site-bucket</Name>",
+                );
+                for key in &keys[start.min(keys.len())..end] {
+                    xml.push_str(&format!("<Contents><Key>{}</Key></Contents>", escape(key)));
+                }
+                let truncated = end < keys.len();
+                xml.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
+                if truncated {
+                    xml.push_str(&format!(
+                        "<NextContinuationToken>{end}</NextContinuationToken>"
+                    ));
+                }
+                xml.push_str("</ListBucketResult>");
+                state.log.push(format!("s3 list {prefix}"));
+                Resp::text(200, &xml)
+            }
+            "POST" if key.is_empty() && param("delete").is_some() => {
+                let digest =
+                    base64::engine::general_purpose::STANDARD.encode(md5::Md5::digest(&req.body));
+                if req.header("content-md5") != Some(digest.as_str()) {
+                    return Resp::text(400, "<Error><Code>BadDigest</Code></Error>");
+                }
+                let body = String::from_utf8_lossy(&req.body).to_string();
+                let keys: Vec<String> = body
+                    .split("<Key>")
+                    .skip(1)
+                    .filter_map(|part| part.split("</Key>").next())
+                    .map(unescape)
+                    .collect();
+                for key in &keys {
+                    state.objects.remove(key);
+                }
+                state.log.push(format!("s3 delete {}", keys.join(",")));
+                Resp::text(200, "<DeleteResult></DeleteResult>")
+            }
             "PUT" if req.header("x-amz-copy-source").is_some() => {
                 let source = req
                     .header("x-amz-copy-source")
                     .unwrap_or_default()
                     .trim_start_matches('/');
-                let source_key = source
-                    .split_once('/')
-                    .map(|(_, k)| k.to_string())
-                    .unwrap_or_default();
+                let source_key =
+                    percent_decode(source.split_once('/').map(|(_, k)| k).unwrap_or_default());
                 let Some(object) = state.objects.get(&source_key).cloned() else {
                     return Resp::text(404, "<Error><Code>NoSuchKey</Code></Error>");
                 };
@@ -1076,16 +1170,23 @@ fn a_static_site_uploads_its_files_with_content_types_then_invalidates_and_rolls
         client.live(&target).unwrap().as_deref(),
         Some(rel2.as_str())
     );
+    // The files release two does not have are gone from the live site; the release store keeps both releases.
+    assert_eq!(h.fake.live_keys(), ["index.html"]);
     client.restore(&target, &rel1).unwrap();
     assert_eq!(
         client.live(&target).unwrap().as_deref(),
         Some(rel1.as_str())
     );
+    assert_eq!(
+        h.fake.live_keys(),
+        ["assets/app.css", "assets/app.js", "index.html"]
+    );
+    assert_eq!(h.fake.object("index.html").unwrap(), b"<h1>one</h1>");
 
     let r1 = format!("apz-releases/{rel1}/");
     let r2 = format!("apz-releases/{rel2}/");
     assert_eq!(
-        h.fake.calls(),
+        calls_without_listings(&h),
         [
             "sts AssumeRole".to_string(),
             "s3 get apz-releases/current missing".to_string(),
@@ -1103,6 +1204,7 @@ fn a_static_site_uploads_its_files_with_content_types_then_invalidates_and_rolls
             format!("s3 put {r2}manifest.json application/json"),
             format!("s3 get {r2}manifest.json"),
             format!("s3 copy {r2}index.html -> index.html"),
+            "s3 delete assets/app.css,assets/app.js".to_string(),
             "s3 put apz-releases/current text/plain".to_string(),
             "cloudfront invalidate EDIST1 /*".to_string(),
             "s3 get apz-releases/current".to_string(),
@@ -1118,7 +1220,7 @@ fn a_static_site_uploads_its_files_with_content_types_then_invalidates_and_rolls
 }
 
 #[test]
-fn a_site_file_name_the_signer_cannot_take_unencoded_is_refused_before_any_upload() {
+fn site_keys_with_spaces_unicode_and_reserved_characters_are_signed_served_and_removed() {
     let h = harness();
     let client = client(&h);
     let target = Target::Site {
@@ -1126,11 +1228,104 @@ fn a_site_file_name_the_signer_cannot_take_unencoded_is_refused_before_any_uploa
         prefix: "www/".into(),
         distribution: None,
     };
-    let err = client
-        .upload(&target, &zipped(&[("a b.html", "x")]))
-        .unwrap_err();
-    assert!(err.contains("a b.html"), "{err}");
-    assert!(!h.fake.calls().iter().any(|c| c.starts_with("s3 put")));
+    let names = [
+        "docs/hello world.html",
+        "é/ünï.css",
+        "q?x=1&y#frag.txt",
+        "100%.txt",
+        "a+b(c)!.js",
+    ];
+    let first: Vec<(&str, &str)> = names.iter().map(|n| (*n, *n)).collect();
+    let rel1 = client.upload(&target, &zipped(&first)).unwrap();
+    client
+        .split(&target, &versions(&[(rel1.as_str(), 100)]))
+        .unwrap();
+    assert_eq!(
+        h.fake.live_keys(),
+        [
+            "www/100%.txt",
+            "www/a+b(c)!.js",
+            "www/docs/hello world.html",
+            "www/q?x=1&y#frag.txt",
+            "www/é/ünï.css",
+        ]
+    );
+    assert_eq!(
+        h.fake.object("www/é/ünï.css").unwrap(),
+        "é/ünï.css".as_bytes()
+    );
+
+    // A second release that keeps one of them removes the rest, reserved characters and all.
+    let rel2 = client
+        .upload(&target, &zipped(&[("é/ünï.css", "v2")]))
+        .unwrap();
+    client
+        .split(&target, &versions(&[(rel2.as_str(), 100)]))
+        .unwrap();
+    assert_eq!(h.fake.live_keys(), ["www/é/ünï.css"]);
+    assert_eq!(h.fake.object("www/é/ünï.css").unwrap(), b"v2");
+    let deletes: Vec<String> = h
+        .fake
+        .calls()
+        .into_iter()
+        .filter(|c| c.starts_with("s3 delete"))
+        .collect();
+    assert_eq!(deletes.len(), 1, "one batch removes what release two lacks");
+    assert!(
+        deletes[0].contains("q?x=1&y#frag.txt") && deletes[0].contains("100%.txt"),
+        "{}",
+        deletes[0]
+    );
+    // The listings answered two keys a page, so the live prefix was read across pages.
+    assert!(
+        h.fake
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("s3 list"))
+            .count()
+            >= 4
+    );
+
+    // The signature on such a key: the fake recomputes it with the session's secret, and refuses one made with another.
+    let issued = h.fake.issued()[0].clone();
+    let url = format!("{}/s3/site-bucket/{}", h.base, key_path("www/é/ünï.css"));
+    let wrong = apz_gateway::signed_headers_s3(
+        "GET",
+        &url,
+        &[],
+        &[],
+        &issued.access,
+        "not-the-secret",
+        issued.token.as_deref(),
+        REGION,
+        "s3",
+        h.fake.now(),
+    );
+    let headers: Vec<(&str, String)> = wrong.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    assert_eq!(Ureq.call("GET", &url, &headers, None).unwrap().status, 403);
+    let right = apz_gateway::signed_headers_s3(
+        "GET",
+        &url,
+        &[],
+        &[],
+        &issued.access,
+        &issued.secret,
+        issued.token.as_deref(),
+        REGION,
+        "s3",
+        h.fake.now(),
+    );
+    let headers: Vec<(&str, String)> = right.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    assert_eq!(Ureq.call("GET", &url, &headers, None).unwrap().status, 200);
+}
+
+/// The fake's log without the listings (their number follows the page size, not the deploy).
+fn calls_without_listings(h: &Harness) -> Vec<String> {
+    h.fake
+        .calls()
+        .into_iter()
+        .filter(|c| !c.starts_with("s3 list"))
+        .collect()
 }
 
 #[test]
