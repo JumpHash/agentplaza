@@ -949,7 +949,12 @@ fn record_qualification(app: &App, run: &LabRun, verdicts: &[LabVerdict]) {
         run.ended_ms,
         verdicts.iter().map(|v| (v.kind.as_str(), v.passed)),
     );
-    if let Err(err) = app.evals.qualified(&task, stages, minutes) {
+    // A lab run is `q<n>`: its qualification is keyed by that number, so judging it again records nothing new.
+    let Some(number) = run.id.strip_prefix('q').and_then(|n| n.parse::<u64>().ok()) else {
+        eprintln!("apid: evals: the lab run {} has no number", run.id);
+        return;
+    };
+    if let Err(err) = app.evals.qualify_run(number, &task, stages, minutes) {
         eprintln!(
             "apid: evals: the qualification of {} was not recorded: {err}",
             run.id

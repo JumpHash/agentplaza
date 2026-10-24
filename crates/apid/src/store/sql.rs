@@ -41,6 +41,10 @@ pub const EVAL_BENCH_NEXT: &str = include_str!("../../sql/queries/eval_bench_nex
 pub const EVAL_BENCH_RUNNING: &str = include_str!("../../sql/queries/eval_bench_running.sql");
 pub const EVAL_BENCH_FINISH: &str = include_str!("../../sql/queries/eval_bench_finish.sql");
 pub const EVAL_TASK_COST: &str = include_str!("../../sql/queries/eval_task_cost.sql");
+pub const EVAL_BENCH_CHECK: &str = include_str!("../../sql/queries/eval_bench_check.sql");
+pub const EVAL_BENCH_REFERENCE: &str = include_str!("../../sql/queries/eval_bench_reference.sql");
+pub const EVAL_QUALIFICATION_SEEN: &str =
+    include_str!("../../sql/queries/eval_qualification_seen.sql");
 pub const EVAL_BENCH_ALL: &str = include_str!("../../sql/queries/eval_bench_all.sql");
 
 // A page of the vault's audit log (vault/audit.rs).
@@ -303,6 +307,9 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "eval_bench_running", EVAL_BENCH_RUNNING),
     ("plaza", "eval_bench_finish", EVAL_BENCH_FINISH),
     ("plaza", "eval_task_cost", EVAL_TASK_COST),
+    ("plaza", "eval_bench_check", EVAL_BENCH_CHECK),
+    ("plaza", "eval_bench_reference", EVAL_BENCH_REFERENCE),
+    ("plaza", "eval_qualification_seen", EVAL_QUALIFICATION_SEEN),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
     ("plaza", "hub_mcp_call_last_seq", HUB_MCP_CALL_LAST_SEQ),
     ("plaza", "hub_mcp_call_page", HUB_MCP_CALL_PAGE),

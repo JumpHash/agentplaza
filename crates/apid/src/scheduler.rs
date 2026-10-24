@@ -938,6 +938,16 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     // A failed task's lane will never land.
     if finished && matches!(outcome, FinishOutcome::Failed) {
         crate::weft_hub::abandon(app, task.id(), summary);
+        // A replay that failed is scored against its case (its branch stays as evidence).
+        if let Err(err) = app
+            .evals
+            .replay_finished(task.id(), false, apz_plaza::now_ms())
+        {
+            eprintln!(
+                "apid: evals: the replay of {} was not scored: {err}",
+                task.id()
+            );
+        }
     }
 }
 

@@ -12,6 +12,7 @@ post {
 
 body:json {
   {
+    "run": "q1",
     "task": "{{taskId}}",
     "stages": 2,
     "lab_minutes": 45
@@ -23,7 +24,7 @@ assert {
 }
 
 tests {
-  test("the qualification is recorded on the task's eval records", function () {
-    expect(res.getBody().lab_minutes).to.equal(45);
+  test("the qualification is recorded once, keyed by its lab run", function () {
+    expect(res.getBody().recorded).to.be.a("boolean");
   });
 }

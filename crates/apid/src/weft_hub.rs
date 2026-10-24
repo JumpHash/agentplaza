@@ -894,7 +894,12 @@ pub fn open_lane(
         .chars()
         .take(100)
         .collect();
-    let r = app.weft.post("/lanes", &json!({ "repo": repo, "task": task, "title": title, "author": { "kind": "agent", "cid": worker }, "stacked_on": stacked }));
+    // A replay's lane is on its own branch, which starts at the case's commit; every other lane is on main.
+    let reference = app
+        .evals
+        .replay_reference(task)
+        .unwrap_or_else(|| "main".to_string());
+    let r = app.weft.post("/lanes", &json!({ "repo": repo, "ref": reference, "task": task, "title": title, "author": { "kind": "agent", "cid": worker }, "stacked_on": stacked }));
     match r {
         Ok(v) => {
             let change = v["change"].as_str()?.to_string();

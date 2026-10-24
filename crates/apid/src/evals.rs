@@ -176,6 +176,24 @@ pub struct FindingRecord {
     pub ruled_ms: u64,
 }
 
+/// A lab run's qualification (a row of `eval_qualification`), keyed by the run's number: a run is recorded once, however
+/// often its stages are judged again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
+#[table(name = "eval_qualification")]
+pub struct Qualification {
+    #[table(key)]
+    pub id: u64,
+    #[table(index)]
+    pub task: String,
+    pub stages: u64,
+    pub lab_minutes: u64,
+}
+
+/// The qualifications' table (`eval_qualification`), written through.
+pub fn qualification_def() -> &'static TableDef {
+    apz_store::root_def!(Qualification)
+}
+
 /// An archived task with a known outcome (the benchmark's cases, PLAN 25.3, kept forever: W32): the commit it started
 /// from, its goal, the check that tells whether its change works, and whether the change landed or was reverted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, apz_store::Table)]
@@ -191,6 +209,10 @@ pub struct Archived {
     pub goal: String,
     /// The acceptance the replay's task is judged by (the task's own acceptance text).
     pub check: String,
+    /// A test command the replay's builder runs in its lane with its `run` tool. A replay that names one passes only when
+    /// its last run of it passed; empty when the case names none (the replay then passes when its change lands).
+    #[serde(default)]
+    pub command: String,
     /// `landed` (the change stood) or `reverted` (it was undone): what the replay's check must agree with.
     pub outcome: String,
     pub archived_ms: u64,
@@ -208,6 +230,11 @@ pub struct BenchRun {
     /// The replay task the route opened in the case's project.
     #[table(index)]
     pub task: Option<String>,
+    /// The Weft branch the replay's lane lands to: created at the case's start commit, never merged into main.
+    pub reference: String,
+    /// The test command the replay runs (empty for none), and whether its last run passed (None: it did not run).
+    pub command: String,
+    pub check: Option<bool>,
     /// `passed` or `failed`: whether the replay's check passed.
     pub outcome: String,
     pub known: String,
@@ -252,6 +279,8 @@ struct Vm {
     harness_version: String,
     tool_ms: u64,
     memory_cites: u64,
+    /// The `run` commands the VM reported, in order, and whether each passed.
+    runs: Vec<(String, bool)>,
 }
 
 /// The eval records: writes runs through `plaza.db`, reads them back, and keeps what a running session has so far.
@@ -472,6 +501,15 @@ impl Evals {
         report::reviewers(&findings, &passes, &late)
     }
 
+    /// A `run` command a session's VM reported, and whether it passed: a replay's check result (see [`Evals::record_checks`]).
+    pub fn ran(&self, cid: u64, command: &str, ok: bool) {
+        self.vms()
+            .entry(cid)
+            .or_default()
+            .runs
+            .push((command.to_string(), ok));
+    }
+
     /// The task's change landed (or did not): every run of the task says so from now on.
     pub fn landed(&self, task: &str, landed: bool) -> Result<(), StoreError> {
         let task = task.to_string();
@@ -506,14 +544,33 @@ impl Evals {
     }
 
     /// The task passed `stages` qualification stages in the lab, which took `lab_minutes`: every run of the task says so.
-    pub fn qualified(&self, task: &str, stages: u64, lab_minutes: u64) -> Result<(), StoreError> {
+    pub fn qualify_run(
+        &self,
+        run: u64,
+        task: &str,
+        stages: u64,
+        lab_minutes: u64,
+    ) -> Result<bool, StoreError> {
         let task = task.to_string();
-        self.db.write(move |conn| {
+        let written = self.db.write(move |conn| {
+            let seen: u64 = conn
+                .prepare_cached(sql::EVAL_QUALIFICATION_SEEN)?
+                .query_row(params![bound(run)], |r| r.get(0))?;
+            if seen > 0 {
+                return Ok(false);
+            }
+            let row = Qualification {
+                id: run,
+                task: task.clone(),
+                stages,
+                lab_minutes,
+            };
+            insert_row(conn, qualification_def(), &row, run)?;
             conn.prepare_cached(sql::EVAL_RUNS_QUALIFIED)?
                 .execute(params![task, bound(stages), bound(lab_minutes)])?;
-            Ok(())
+            Ok(true)
         })?;
-        Ok(())
+        Ok(written.value)
     }
 
     /// A review ruled on a finding (confirmed or dropped). A confirmed finding is a later finding of the task's builder
@@ -564,13 +621,22 @@ impl Evals {
         })
     }
 
-    /// Starts the replay of archived case `case` in `task` (the replay task the route opened), at `now`: its record is
-    /// written as running until the task ends. Returns its id.
-    pub fn start_replay(&self, case: &Archived, task: &str, now: u64) -> Result<u64, StoreError> {
+    /// Starts the replay of archived case `case` in `task` (the replay task the route opened), on the Weft branch
+    /// `reference` that starts at the case's commit. Its record is written as running until the task ends. Returns its id.
+    pub fn start_replay(
+        &self,
+        case: &Archived,
+        task: &str,
+        reference: &str,
+        now: u64,
+    ) -> Result<u64, StoreError> {
         let row = BenchRun {
             id: 0,
             archive: case.id,
             task: Some(task.to_string()),
+            reference: reference.to_string(),
+            command: case.command.clone(),
+            check: None,
             outcome: "running".into(),
             known: case.outcome.clone(),
             matched: false,
@@ -588,28 +654,65 @@ impl Evals {
         Ok(written.value)
     }
 
+    /// The Weft branch of the running replay of `task`, when `task` is one.
+    pub fn replay_reference(&self, task: &str) -> Option<String> {
+        let task = task.to_string();
+        let read = self.db.read(|conn| {
+            let reference: Option<String> = conn
+                .prepare_cached(sql::EVAL_BENCH_REFERENCE)?
+                .query_row(params![task], |r| r.get(0))
+                .optional()?;
+            Ok(reference)
+        });
+        read.unwrap_or_else(|e| {
+            eprintln!("apid: evals: cannot read the replay branch: {e}");
+            None
+        })
+    }
+
+    /// The `run` commands a replay's sessions reported, in order: the running replay of `task` keeps the last run of its
+    /// test command, and its check is that run's result.
+    pub fn record_checks(&self, task: &str, runs: &[(String, bool)]) -> Result<(), StoreError> {
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let task = task.to_string();
+        let runs = runs.to_vec();
+        self.db.write(move |conn| {
+            for (command, ok) in &runs {
+                conn.prepare_cached(sql::EVAL_BENCH_CHECK)?
+                    .execute(params![task, command, *ok])?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     /// The replay task `task` ended at `now`: `landed` (its change landed) or failed. A running replay of it is scored
-    /// against its case's known outcome (a case that landed must pass; a reverted one must not), with what its sessions
-    /// spent and the time it took. A task that is no replay is left alone.
+    /// against its case's known outcome: it passes when its change landed and, where the case names a test command, that
+    /// command's last run passed. A case that landed must pass; a reverted one must not. The record keeps what its
+    /// sessions spent and the time it took. A task that is no replay is left alone.
     pub fn replay_finished(&self, task: &str, landed: bool, now: u64) -> Result<(), StoreError> {
         let task = task.to_string();
         self.db.write(move |conn| {
-            let running: Option<(u64, String, u64)> = conn
+            let running: Option<(u64, String, u64, String, Option<bool>)> = conn
                 .prepare_cached(sql::EVAL_BENCH_RUNNING)?
-                .query_row(params![task], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .query_row(params![task], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })
                 .optional()?;
-            let Some((id, known, started)) = running else {
+            let Some((id, known, started, command, check)) = running else {
                 return Ok(());
             };
             let cost: u64 = conn
                 .prepare_cached(sql::EVAL_TASK_COST)?
                 .query_row(params![task], |r| r.get(0))?;
-            let outcome = if landed { "passed" } else { "failed" };
-            let matched = landed == (known == "landed");
+            let passed = landed && (command.is_empty() || check == Some(true));
+            let matched = passed == (known == "landed");
             conn.prepare_cached(sql::EVAL_BENCH_FINISH)?
                 .execute(params![
                     id,
-                    outcome,
+                    if passed { "passed" } else { "failed" },
                     matched,
                     bound(cost),
                     bound(now.saturating_sub(started))
@@ -706,6 +809,11 @@ pub fn ended(app: &App, session: &Session) {
         return;
     }
     let (begun, vm) = app.evals.take(session);
+    if let Some(task) = &session.task
+        && let Err(err) = app.evals.record_checks(task, &vm.runs)
+    {
+        eprintln!("apid: evals: the checks of {task} were not recorded: {err}");
+    }
     let mut run = Run::of(session, begun, vm);
     run.pool = session
         .node
@@ -924,8 +1032,9 @@ fn archive_at(r: &Row<'_>) -> apz_store::rusqlite::Result<Archived> {
         start: r.get(3)?,
         goal: r.get(4)?,
         check: r.get(5)?,
-        outcome: r.get(6)?,
-        archived_ms: r.get(7)?,
+        command: r.get(6)?,
+        outcome: r.get(7)?,
+        archived_ms: r.get(8)?,
     })
 }
 
@@ -934,12 +1043,15 @@ fn bench_at(r: &Row<'_>) -> apz_store::rusqlite::Result<BenchRun> {
         id: r.get(0)?,
         archive: r.get(1)?,
         task: r.get(2)?,
-        outcome: r.get(3)?,
-        known: r.get(4)?,
-        matched: r.get(5)?,
-        cost_micros: r.get(6)?,
-        wall_ms: r.get(7)?,
-        replayed_ms: r.get(8)?,
+        reference: r.get(3)?,
+        command: r.get(4)?,
+        check: r.get(5)?,
+        outcome: r.get(6)?,
+        known: r.get(7)?,
+        matched: r.get(8)?,
+        cost_micros: r.get(9)?,
+        wall_ms: r.get(10)?,
+        replayed_ms: r.get(11)?,
     })
 }
 
@@ -1076,6 +1188,7 @@ fn archive_route(app: &App, req: &Request) -> Response {
         start,
         goal,
         check,
+        command: text("command").unwrap_or_default(),
         outcome,
         archived_ms: apz_plaza::now_ms(),
     };
@@ -1085,9 +1198,11 @@ fn archive_route(app: &App, req: &Request) -> Response {
     }
 }
 
-/// Opens the replay of archived case `id`: a task in the case's project whose goal names the commit it started from, and
-/// whose acceptance is the case's check. The replay is recorded as running; the work loop runs the task like any other,
-/// and its end scores it ([`Evals::replay_finished`], called when the task lands or fails).
+/// Opens the replay of archived case `id`. First a Weft branch is made at the case's commit (`ref.create`); then the
+/// replay's task is created outside any project, its replay is recorded as running on that branch, and only then is the
+/// task linked into the case's project. The work loop therefore never sees the task without its branch, so the replay's
+/// lane starts at the case's commit and lands only to that branch, never to main. Its end scores it
+/// ([`Evals::replay_finished`]); the branch stays as evidence.
 fn replay_route(app: &App, id: &str) -> Response {
     let Ok(id) = id.parse::<u64>() else {
         return Response::error(400, &format!("{id:?} is no case number"));
@@ -1095,60 +1210,91 @@ fn replay_route(app: &App, id: &str) -> Response {
     let Some(case) = app.evals.archives().into_iter().find(|c| c.id == id) else {
         return Response::error(404, &format!("no archived case {id}"));
     };
+    let now = apz_plaza::now_ms();
+    let repo = match crate::weft_hub::ensure_repo(app, &case.project) {
+        Ok(repo) => repo,
+        Err(err) => return Response::error(409, &format!("the project has no repository: {err}")),
+    };
+    let reference = format!("replay-{id}-{now}");
+    if let Err(err) = app.weft.console(
+        "ref.create",
+        json!({ "repo": repo, "ref": reference, "at": case.start }),
+    ) {
+        return Response::error(
+            409,
+            &format!("the replay branch was not made at {}: {err}", case.start),
+        );
+    }
     let task = match app.plaza.tasks.create(&apz_plaza::tasks::CreateTask {
         goal: format!(
-            "Replay archived case {id}: {}. Open your lane at revision {}, the commit the task started from.",
+            "Replay archived case {id}: {}. Work on your lane, which starts at revision {}, the commit the task started from.",
             case.goal, case.start
         ),
         acceptance: Some(case.check.clone()),
         role: None,
         after: vec![],
-        project: Some(case.project.clone()),
+        project: None,
     }) {
         Ok(task) => task,
         Err(err) => {
             return Response::error(409, &format!("the replay task was not created: {err:?}"));
         }
     };
-    if let Err(err) = app.projects.link_task(&case.project, task.id()) {
-        eprintln!(
-            "apid: evals: replay {} is not linked to {}: {err}",
-            task.id(),
-            case.project
-        );
-    }
-    match app
-        .evals
-        .start_replay(&case, task.id(), apz_plaza::now_ms())
-    {
-        Ok(bench) => {
-            crate::work_loop::tick(app);
-            Response::json(201, &json!({ "task": task.id(), "bench": bench }))
+    let bench = match app.evals.start_replay(&case, task.id(), &reference, now) {
+        Ok(bench) => bench,
+        Err(err) => return Response::error(500, &format!("the replay was not recorded: {err}")),
+    };
+    // Only now does the task join its project: `adopt` moves a task that is in no project into one, and each moved
+    // task is linked to it, as the owner's own adoption does.
+    let moved = match app.plaza.tasks.adopt(task.id(), &case.project) {
+        Ok(moved) => moved,
+        Err(refused) => {
+            return Response::error(409, &format!("the replay task was not adopted: {refused}"));
         }
-        Err(err) => Response::error(500, &format!("the replay was not recorded: {err}")),
+    };
+    for moved_task in &moved {
+        if let Err(err) = app.projects.link_task(&case.project, moved_task.id()) {
+            eprintln!(
+                "apid: replay task {} not linked to {}: {err}",
+                moved_task.id(),
+                case.project
+            );
+        }
     }
+    crate::work_loop::tick(app);
+    Response::json(
+        201,
+        &json!({ "task": task.id(), "bench": bench, "reference": reference }),
+    )
 }
 
-/// Records a task's qualification stages and the lab minutes they took (25.1's later fields).
+/// Records the qualification stages a lab run passed and the lab minutes it held, on its change's task: keyed by the run, so
+/// judging the same run again records nothing new. A body names the run (`q<n>`), the task, the stages and the minutes.
 fn qualified_route(app: &App, req: &Request) -> Response {
     let body: serde_json::Value = match serde_json::from_slice(&req.body) {
         Ok(body) => body,
         Err(err) => return Response::error(400, &format!("the body is not JSON: {err}")),
     };
-    let (Some(task), Some(stages), Some(minutes)) = (
+    let run = body.get("run").and_then(|run| match run {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => s.trim_start_matches('q').parse().ok(),
+        _ => None,
+    });
+    let (Some(run), Some(task), Some(stages), Some(minutes)) = (
+        run,
         body.get("task").and_then(serde_json::Value::as_str),
         body.get("stages").and_then(serde_json::Value::as_u64),
         body.get("lab_minutes").and_then(serde_json::Value::as_u64),
     ) else {
         return Response::error(
             400,
-            "a qualification names its task, stages and lab_minutes",
+            "a qualification names its run, task, stages and lab_minutes",
         );
     };
-    match app.evals.qualified(task, stages, minutes) {
-        Ok(()) => Response::json(
+    match app.evals.qualify_run(run, task, stages, minutes) {
+        Ok(recorded) => Response::json(
             200,
-            &json!({ "task": task, "stages": stages, "lab_minutes": minutes }),
+            &json!({ "run": run, "task": task, "recorded": recorded }),
         ),
         Err(err) => Response::error(500, &format!("the qualification was not recorded: {err}")),
     }
@@ -1504,7 +1650,7 @@ mod tests {
             .unwrap();
         evals.incident("t1").unwrap();
         evals.reverted("t3").unwrap();
-        evals.qualified("t1", 2, 45).unwrap();
+        evals.qualify_run(1, "t1", 2, 45).unwrap();
 
         let runs = evals.runs_all(&RunFilter::default());
         let by_id = |id: u64| runs.iter().find(|r| r.id == id).unwrap();
@@ -1578,7 +1724,8 @@ mod tests {
             task: "t1".into(),
             start: "abc123".into(),
             goal: "fix the queue".into(),
-            check: "grep -q tested queue.txt".into(),
+            check: "the queue is tested".into(),
+            command: String::new(),
             outcome: "landed".into(),
             archived_ms: 42,
         };
@@ -1613,11 +1760,25 @@ mod tests {
                 300,
             ))
             .unwrap();
-        assert_eq!(evals.start_replay(&landed, "r1", 1000).unwrap(), 1);
+        assert_eq!(
+            evals
+                .start_replay(&landed, "r1", "replay-1-900", 1000)
+                .unwrap(),
+            1
+        );
         assert_eq!(
             evals.bench_runs()[0].outcome,
             "running",
             "a replay is recorded while its task runs"
+        );
+        assert_eq!(
+            evals.replay_reference("r1").as_deref(),
+            Some("replay-1-900")
+        );
+        assert_eq!(
+            evals.replay_reference("t9"),
+            None,
+            "a task that is no replay has no branch"
         );
         evals.replay_finished("r1", true, 3000).unwrap();
         let replay = evals
@@ -1641,6 +1802,31 @@ mod tests {
             "the task's spend and its time"
         );
 
+        // A failed replay of a landed case is a mismatch.
+        let failing_id = evals.archive(&landed).unwrap();
+        evals
+            .start_replay(
+                &Archived {
+                    id: failing_id,
+                    ..landed.clone()
+                },
+                "r3",
+                "replay-2-900",
+                10,
+            )
+            .unwrap();
+        evals.replay_finished("r3", false, 20).unwrap();
+        let replay = evals
+            .bench_runs()
+            .into_iter()
+            .find(|b| b.archive == failing_id)
+            .unwrap();
+        assert_eq!(
+            (replay.outcome.as_str(), replay.matched),
+            ("failed", false),
+            "a failed replay of a landed case"
+        );
+
         // A reverted case that fails its replay agrees with its outcome.
         let reverted = Archived {
             id: 0,
@@ -1655,6 +1841,7 @@ mod tests {
                     ..reverted
                 },
                 "r2",
+                "replay-3-900",
                 10,
             )
             .unwrap();
@@ -1671,7 +1858,120 @@ mod tests {
 
         // A task that is no replay is left alone.
         evals.replay_finished("t9", true, 5).unwrap();
-        assert_eq!(evals.bench_runs().len(), 2);
+        assert_eq!(evals.bench_runs().len(), 3);
+    }
+
+    #[test]
+    fn a_case_with_a_test_command_passes_only_when_its_last_run_of_that_command_passed() {
+        let (_dir, _store, evals) = fixture();
+        let case = Archived {
+            id: 0,
+            project: "pr1".into(),
+            task: "t1".into(),
+            start: "abc123".into(),
+            goal: "write the notes".into(),
+            check: "the notes exist".into(),
+            command: "test -d notes".into(),
+            outcome: "landed".into(),
+            archived_ms: 0,
+        };
+        let id = evals.archive(&case).unwrap();
+        let case = Archived { id, ..case };
+        // The change lands, and the builder ran the command and it passed.
+        evals.start_replay(&case, "c1", "replay-a", 0).unwrap();
+        evals
+            .record_checks(
+                "c1",
+                &[("ls".into(), false), ("test -d notes".into(), true)],
+            )
+            .unwrap();
+        evals.replay_finished("c1", true, 10).unwrap();
+        let passed = evals
+            .bench_runs()
+            .into_iter()
+            .find(|b| b.task.as_deref() == Some("c1"))
+            .unwrap();
+        assert_eq!(
+            (passed.outcome.as_str(), passed.matched, passed.check),
+            ("passed", true, Some(true))
+        );
+
+        // The change lands, but the command never ran in the replay: it does not pass.
+        evals.start_replay(&case, "c2", "replay-b", 0).unwrap();
+        evals.replay_finished("c2", true, 10).unwrap();
+        let unchecked = evals
+            .bench_runs()
+            .into_iter()
+            .find(|b| b.task.as_deref() == Some("c2"))
+            .unwrap();
+        assert_eq!(
+            (unchecked.outcome.as_str(), unchecked.matched),
+            ("failed", false),
+            "a check that did not run is no pass"
+        );
+
+        // The last run of the command failed: a landed change does not pass.
+        evals.start_replay(&case, "c3", "replay-c", 0).unwrap();
+        evals
+            .record_checks(
+                "c3",
+                &[
+                    ("test -d notes".into(), true),
+                    ("test -d notes".into(), false),
+                ],
+            )
+            .unwrap();
+        evals.replay_finished("c3", true, 10).unwrap();
+        let failed = evals
+            .bench_runs()
+            .into_iter()
+            .find(|b| b.task.as_deref() == Some("c3"))
+            .unwrap();
+        assert_eq!(
+            (failed.outcome.as_str(), failed.matched, failed.check),
+            ("failed", false, Some(false))
+        );
+    }
+
+    #[test]
+    fn a_lab_run_is_qualified_once_however_often_it_is_judged() {
+        let (_dir, _store, evals) = fixture();
+        evals
+            .record(&run_step(
+                1,
+                "t1",
+                "builder",
+                "build",
+                "mock/agent",
+                true,
+                100,
+                900,
+            ))
+            .unwrap();
+        assert!(
+            evals.qualify_run(7, "t1", 2, 45).unwrap(),
+            "the first judgement is recorded"
+        );
+        assert!(
+            !evals.qualify_run(7, "t1", 3, 60).unwrap(),
+            "the same run judged again records nothing"
+        );
+        let run = evals.runs(&RunFilter::default(), 0).remove(0);
+        assert_eq!(
+            (run.qual_stages, run.lab_minutes),
+            (2, 45),
+            "the first judgement counts, once"
+        );
+        assert!(
+            evals.qualify_run(8, "t1", 1, 5).unwrap(),
+            "another run is recorded"
+        );
+        let run = evals.runs(&RunFilter::default(), 0).remove(0);
+        assert_eq!(
+            (run.qual_stages, run.lab_minutes),
+            (3, 50),
+            "the two runs add up"
+        );
     }
 
     #[test]

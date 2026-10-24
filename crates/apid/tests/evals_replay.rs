@@ -241,7 +241,8 @@ fn land(
     known: &mut HashSet<u64>,
     tid: &str,
     note: &str,
-) -> String {
+    check: Option<&str>,
+) -> (String, String) {
     let b = next_session(hub, tid, "builder", known);
     let b_cid = b["cid"].as_u64().expect("its VM");
     known.insert(b_cid);
@@ -254,6 +255,14 @@ fn land(
     let b_vm = vm_of(hub, b_cid, home, token);
     let ws = b_vm.checkout(&change, &repo);
     b_vm.write(&format!("{repo}/notes/{tid}.md"), note);
+    if let Some(command) = check {
+        // The builder runs the case's check in its lane, and its VM reports the run to the hub (as a harness does).
+        let _ = hub.guest(
+            b_cid,
+            "message",
+            json!({ "type": "tool_report", "work": w_id, "call": "toolu_check", "ok": true, "output": "", "name": "run", "input": { "command": command }, "duration_ms": 4 }),
+        );
+    }
     b_vm.weft(
         &ws,
         &["snapshot", "--turn", "1", "--model", "claude-opus-5-5"],
@@ -306,11 +315,56 @@ fn land(
         t["state"] == "done"
     });
     assert_eq!(done["state"], "done", "{done}\n{}", hub.log());
-    change
+    (change, repo)
+}
+
+/// The head of `repo`'s `reference` branch, as the repository's view gives it.
+fn head_of(hub: &Hub, repo: &str, reference: &str) -> Value {
+    hub.call("GET", &format!("/v1/weft/repos/{repo}"), None).1["refs"][reference].clone()
+}
+
+/// A task of `project` with its goal and acceptance; its id.
+fn task_of(hub: &Hub, project: &str, goal: &str) -> String {
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": goal, "acceptance": "the notes are written", "project": project })),
+    );
+    assert_eq!(status, 201, "{task}");
+    text(&task["id"])
+}
+
+/// An archived case of `project`: the commit it started from, its test command, and its known outcome.
+fn archive(hub: &Hub, project: &str, start: &Value, command: &str, outcome: &str) -> u64 {
+    let (status, case) = hub.call(
+        "POST",
+        "/v1/evals/archive",
+        Some(json!({ "project": project, "task": "old", "start": start, "goal": "Write the notes", "check": "the notes are written", "command": command, "outcome": outcome })),
+    );
+    assert_eq!(status, 201, "{case}");
+    case["id"].as_u64().expect("the case's id")
+}
+
+/// The benchmark's record of replay task `task`, once it has `outcome`.
+fn scored(hub: &Hub, task: &str, outcome: &str) -> Value {
+    let rows = hub.wait_for("/v1/evals/bench", Duration::from_secs(30), |rows| {
+        rows.as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|b| b["task"] == json!(task) && b["outcome"] == outcome)
+        })
+    });
+    rows.as_array()
+        .and_then(|rows| rows.iter().find(|b| b["task"] == json!(task)).cloned())
+        .unwrap_or_else(|| {
+            panic!(
+                "no replay of {task} scored {outcome}: {rows}\n{}",
+                hub.log()
+            )
+        })
 }
 
 #[test]
-fn a_replay_of_an_archived_case_runs_as_a_task_and_is_scored_when_its_change_lands() {
+fn a_replay_lands_only_on_its_own_branch_from_its_case_commit_and_is_scored_against_its_outcome() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
     let scratch = Scratch::new("evals-replay");
@@ -328,11 +382,10 @@ fn a_replay_of_an_archived_case_runs_as_a_task_and_is_scored_when_its_change_lan
     std::fs::write(&token, hub.token()).unwrap();
     let home = scratch.0.join("vms");
 
-    // A project, and an archived case of its work: the task started at the root (an empty repository) and it landed.
     let (status, project) = hub.call(
         "POST",
         "/v1/projects",
-        Some(json!({ "title": "Notes", "goal": "Notes on the intake work", "kind": "other" })),
+        Some(json!({ "title": "Notes", "goal": "Notes on the work", "kind": "other" })),
     );
     assert_eq!(status, 201, "{project}");
     let pid = text(&project["id"]);
@@ -342,61 +395,116 @@ fn a_replay_of_an_archived_case_runs_as_a_task_and_is_scored_when_its_change_lan
         Some(json!({ "role_models": { "builder": BUILDER_MODEL, "reviewer": "mock/echo", "verifier": VERIFIER_MODEL } })),
     );
     assert_eq!(status, 200, "{settings}");
-    let (status, refused) = hub.call("POST", "/v1/evals/bench/1", None);
-    assert_eq!(status, 404, "{refused}");
-    let (status, case) = hub.call(
-        "POST",
-        "/v1/evals/archive",
-        Some(json!({ "project": pid, "task": "old-1", "start": "root", "goal": "Write the notes on the intake work", "check": "the notes are written and reviewed", "outcome": "landed" })),
-    );
-    assert_eq!(status, 201, "{case}\n{}", hub.log());
-    let case_id = case["id"].as_u64().expect("the case's id");
 
-    // The replay is a task in the project: the work loop runs it, and the scripted VMs walk its builder and reviewers.
-    let (status, replay) = hub.call("POST", &format!("/v1/evals/bench/{case_id}"), None);
-    assert_eq!(status, 201, "{replay}\n{}", hub.log());
-    let tid = text(&replay["task"]);
-    assert!(
-        hub.call("GET", &format!("/v1/tasks/{tid}"), None)
-            .1
-            .to_string()
-            .contains("the commit the task started from"),
-        "the replay's goal names the commit it starts from"
-    );
+    // Main has one landed change; its head is the commit the case below starts from.
+    let first = task_of(&hub, &pid, "Write the first notes");
     let mut known = HashSet::new();
-    let _change = land(
+    let (_, repo) = land(
         &hub,
         &gateway,
         &home,
         &token,
         &mut known,
-        &tid,
-        "the replayed notes",
+        &first,
+        "the first notes",
+        None,
     );
+    let start = head_of(&hub, &repo, "main");
+    assert!(start.is_string(), "main has a head: {start}");
 
-    // Its change landed, which is the outcome the case says it had: the replay is scored as a match.
-    let bench = hub.wait_for("/v1/evals/bench", Duration::from_secs(20), |rows| {
-        rows.as_array().is_some_and(|rows| {
-            rows.iter()
-                .any(|b| b["task"] == json!(tid) && b["outcome"] == "passed")
-        })
-    });
-    let row = bench
-        .as_array()
-        .and_then(|rows| rows.iter().find(|b| b["task"] == json!(tid)).cloned())
-        .unwrap_or_else(|| panic!("no replay row for {tid}: {bench}\n{}", hub.log()));
-    assert_eq!(row["archive"], json!(case_id), "{row}");
+    // Main moves on: a second change lands, so main is no longer where the first case started.
+    let second = task_of(&hub, &pid, "Write the second notes");
+    let _ = land(
+        &hub,
+        &gateway,
+        &home,
+        &token,
+        &mut known,
+        &second,
+        "the second notes",
+        None,
+    );
+    let main_before = head_of(&hub, &repo, "main");
+    assert_ne!(main_before, start, "main moved on");
+
+    // The replay of the first case: its builder runs the case's check in its lane and the change lands on the replay
+    // branch, which starts at the case's commit.
+    let case = archive(&hub, &pid, &start, "test -d notes", "landed");
+    let (status, replay) = hub.call("POST", &format!("/v1/evals/bench/{case}"), None);
+    assert_eq!(status, 201, "{replay}\n{}", hub.log());
+    let task = text(&replay["task"]);
+    let reference = text(&replay["reference"]);
+    let (change, _) = land(
+        &hub,
+        &gateway,
+        &home,
+        &token,
+        &mut known,
+        &task,
+        "the replayed notes",
+        Some("test -d notes"),
+    );
+    assert_eq!(
+        head_of(&hub, &repo, "main"),
+        main_before,
+        "the replay never moved main"
+    );
+    let detail = hub
+        .call("GET", &format!("/v1/weft/changes/{change}"), None)
+        .1;
+    assert_eq!(
+        detail["base"], start,
+        "the replay's lane starts at the case's commit: {detail}"
+    );
+    let landed_on = head_of(&hub, &repo, &reference);
+    assert!(
+        landed_on.is_string() && landed_on != main_before,
+        "the change landed on the replay branch: {landed_on}"
+    );
+    let row = scored(&hub, &task, "passed");
     assert_eq!(
         (
-            row["outcome"].as_str(),
             row["known"].as_str(),
-            row["matched"].as_bool()
+            row["matched"].as_bool(),
+            row["check"].as_bool(),
+            row["reference"].as_str()
         ),
-        (Some("passed"), Some("landed"), Some(true)),
+        (
+            Some("landed"),
+            Some(true),
+            Some(true),
+            Some(reference.as_str())
+        ),
         "{row}"
     );
-    assert!(
-        row["replayed_ms"].as_u64().is_some_and(|ms| ms > 0),
+
+    // The failing replay: its builder fails, so the replay is scored as a mismatch against the case's known pass, and
+    // main does not move.
+    let case = archive(&hub, &pid, &main_before, "test -d notes", "landed");
+    let (status, replay) = hub.call("POST", &format!("/v1/evals/bench/{case}"), None);
+    assert_eq!(status, 201, "{replay}\n{}", hub.log());
+    let failing = text(&replay["task"]);
+    let mut known_failing = HashSet::new();
+    let b = next_session(&hub, &failing, "builder", &known_failing);
+    let b_cid = b["cid"].as_u64().expect("its VM");
+    known_failing.insert(b_cid);
+    hello(&hub, b_cid, "builder");
+    let w = first_work(&hub, &gateway, b_cid);
+    hub.work_done(
+        b_cid,
+        w["work"].as_u64().expect("the work item"),
+        "failed",
+        "the notes could not be written",
+    );
+    let row = scored(&hub, &failing, "failed");
+    assert_eq!(
+        (row["known"].as_str(), row["matched"].as_bool()),
+        (Some("landed"), Some(false)),
         "{row}"
+    );
+    assert_eq!(
+        head_of(&hub, &repo, "main"),
+        main_before,
+        "a failed replay never moved main either"
     );
 }

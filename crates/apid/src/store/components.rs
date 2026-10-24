@@ -451,6 +451,7 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("eval findings", crate::evals::finding_def),
         ("eval archive", crate::evals::archive_def),
         ("eval bench", crate::evals::bench_def),
+        ("eval qualifications", crate::evals::qualification_def),
         ("unfurl cache", crate::unfurl::def),
         ("prompt", crate::prompts::store::def),
         ("prompt version", crate::prompts::store::version_def),
