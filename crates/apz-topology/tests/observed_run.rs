@@ -1,6 +1,8 @@
 //! A fake topology run, observed (PLAN 22.7): its services are stand-ins that write log lines, the real collector
 //! process (`apz-topo-collect`) serves their OTLP and ships their lines, and a fake hub receiver stands in for the
 //! hub's OTLP receiver. No container runtime and no VM: the processes are the real ones.
+//! The stand-ins are `/bin/sh` scripts, so the file runs on Unix only.
+#![cfg(unix)]
 
 use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Write};

@@ -132,7 +132,16 @@ fn a_bashism_fails_in_sh_and_dash_and_passes_in_bash() {
     if on_this_machine("bash") {
         let (_, _, bash) = find(&rows, &format!("cli:bash:{}", system()));
         let bash = bash.as_ref().unwrap();
-        assert!(bash.passed, "bash runs the bashism: {}", bash.evidence);
+        if compat::bash_major().is_some_and(|major| major >= 4) {
+            assert!(bash.passed, "bash runs the bashism: {}", bash.evidence);
+        } else {
+            // Bash 3.2 (the Mac's /bin/bash) has no `${1,,}` either, so the bashism fails there too.
+            assert!(
+                !bash.passed && bash.evidence.to_lowercase().contains("bad substitution"),
+                "bash older than 4 refuses it: {}",
+                bash.evidence
+            );
+        }
     }
     for shell in ["sh", "dash"] {
         if !on_this_machine(shell) {

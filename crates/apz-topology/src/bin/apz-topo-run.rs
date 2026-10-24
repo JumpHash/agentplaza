@@ -114,7 +114,7 @@ fn main() -> ExitCode {
 fn sibling(name: &str) -> Result<PathBuf, String> {
     Ok(std::env::current_exe()
         .map_err(|e| e.to_string())?
-        .with_file_name(name))
+        .with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
 }
 
 /// The `apz-fault` binary beside this runner.
@@ -189,7 +189,7 @@ fn serve(args: &Args) -> Result<(), String> {
             observed.logs_dir = Some(config.logs_dir.clone());
             let binary = std::env::current_exe()
                 .map_err(|e| e.to_string())?
-                .with_file_name("apz-topo-collect");
+                .with_file_name(format!("apz-topo-collect{}", std::env::consts::EXE_SUFFIX));
             let child = collector::spawn(
                 &binary,
                 &PathBuf::from(path),

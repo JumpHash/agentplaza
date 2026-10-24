@@ -230,7 +230,7 @@ impl ProjectUser {
         if !USER_UIDS.contains(&uid) {
             return Err(format!("uid {uid} is outside the project accounts' range"));
         }
-        if !home.is_absolute() {
+        if !mac_absolute(home) {
             return Err(format!("home must be absolute: {}", home.display()));
         }
         Ok(ProjectUser {
@@ -512,11 +512,16 @@ pub fn delete_keychain(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Whether a path names a place on the Mac by its leading `/`, on any host (the tests check it on Windows too).
+fn mac_absolute(path: &Path) -> bool {
+    path.to_string_lossy().starts_with('/')
+}
+
 /// The path of a keychain as the quoted command line takes it: absolute, and free of the characters quoting cannot
 /// carry.
 fn keychain_path(path: &Path) -> Result<String, String> {
     let text = path.display().to_string();
-    if !path.is_absolute()
+    if !mac_absolute(path)
         || text
             .chars()
             .any(|c| c == '"' || c == '\\' || c.is_control())
@@ -707,7 +712,7 @@ pub fn session_line(runs: &Runs, spec: &Spec) -> Result<Invocation, String> {
     match runs {
         Runs::Current => Ok(line),
         Runs::Project { user, helper } => {
-            if !helper.is_absolute() {
+            if !mac_absolute(helper) {
                 return Err(format!("the helper must be absolute: {}", helper.display()));
             }
             let mut args = vec![

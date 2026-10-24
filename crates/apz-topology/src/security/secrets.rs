@@ -70,7 +70,12 @@ fn scan_file(root: &Path, path: &Path, hits: &mut Vec<Hit>) {
         return;
     }
     let text = String::from_utf8_lossy(&bytes);
-    let relative = path.strip_prefix(root).unwrap_or(path).display();
+    // The subject names the file with `/` on every host, so a finding reads the same on Windows.
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
     for (index, line) in text.lines().enumerate() {
         if let Some(shape) = apz_secrets::shape(line) {
             hits.push(Hit {

@@ -83,6 +83,8 @@ pub fn tail(text: &str, lines: usize) -> String {
 mod tests {
     use super::*;
 
+    // The tests run `/bin/sh`, which Windows does not have.
+    #[cfg(unix)]
     #[test]
     fn a_process_is_run_in_its_directory_and_its_output_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -99,6 +101,7 @@ mod tests {
         assert!(ran.stderr.contains("err"), "{ran:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_process_past_its_limit_is_killed_and_says_so() {
         let dir = tempfile::tempdir().unwrap();

@@ -360,11 +360,20 @@ mod tests {
                 .iter()
                 .find(|c| c.cell == format!("cli:bash:{system}"))
                 .unwrap();
-            assert_eq!(
-                bash.state, "passed",
-                "bash runs the bashism: {}",
-                bash.evidence
-            );
+            if compat::bash_major().is_some_and(|major| major >= 4) {
+                assert_eq!(
+                    bash.state, "passed",
+                    "bash runs the bashism: {}",
+                    bash.evidence
+                );
+            } else {
+                // Bash 3.2 (the Mac's /bin/bash) has no `${1,,}` either, so the bashism fails there too.
+                assert_eq!(
+                    bash.state, "failed",
+                    "bash older than 4 refuses it: {}",
+                    bash.evidence
+                );
+            }
         }
         // Assessed again, the failure is not filed twice.
         let again = assess(&reviews, &release, &matrix, &pools, &outcomes, &cells);

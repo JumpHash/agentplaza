@@ -37,7 +37,9 @@ pub fn cargo_packages(metadata_json: &str, root: &str) -> Result<Vec<Package>, E
     let names: BTreeSet<&str> = metadata.packages.iter().map(|p| p.name.as_str()).collect();
     let mut out = Vec::new();
     for package in &metadata.packages {
-        let dir = match package.manifest_path.rsplit_once('/') {
+        // The manifest's directory with `/` separators on every host (cargo names it with `\` on Windows).
+        let manifest = package.manifest_path.replace('\\', "/");
+        let dir = match manifest.rsplit_once('/') {
             Some((dir, _manifest)) => relative(dir, root),
             None => String::new(),
         };

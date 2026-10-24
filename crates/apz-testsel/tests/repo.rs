@@ -58,7 +58,8 @@ fn fixture_map(
     ]
     .map(|(test, export)| TestRun {
         test: test.to_string(),
-        export: export.replace("<ROOT>", root),
+        // The root goes into a JSON string: its backslashes (Windows) are escaped.
+        export: export.replace("<ROOT>", &root.replace('\\', "\\\\")),
     });
     record(
         "agentplaza",

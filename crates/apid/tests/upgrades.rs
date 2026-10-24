@@ -368,9 +368,10 @@ fn landed(hub: &Hub, change: &str, tid: &str) {
 fn sample(scratch: &Path) -> (PathBuf, Vec<(String, String)>) {
     let registry = scratch.join("registry");
     publish(&registry, "tiny", "1.0.0");
+    // A TOML basic string reads `\` as an escape, so a Windows path goes in with `/` separators (cargo takes them).
     let config = format!(
         "[source.crates-io]\nreplace-with = \"local\"\n\n[source.local]\nlocal-registry = \"{}\"\n",
-        registry.display()
+        registry.to_string_lossy().replace('\\', "/")
     );
     let files = vec![
         ("Cargo.toml".to_string(), "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ntiny = \"1\"\n".to_string()),

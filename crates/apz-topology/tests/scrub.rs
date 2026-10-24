@@ -301,6 +301,8 @@ fn a_postgres_url_reaches_loopback_plain_and_any_other_host_over_verified_tls() 
         plain("postgres://app@[::1]/app"),
         Ok(source::Transport::Plain)
     );
+    // A socket is a Unix path: only a Unix build of the driver reads the host as one.
+    #[cfg(unix)]
     assert_eq!(
         plain("postgres://app@%2Ftmp/app"),
         Ok(source::Transport::Plain)

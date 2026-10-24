@@ -3,7 +3,8 @@
 //! process on 127.0.0.1), waits for it to listen, and runs `apz-stage` over the repo, which prints the stages' numbers;
 //! the test judges those numbers as the hub does. One run passes everything. The other has a broken migration (it drops
 //! a column the new code reads) and a cache that does not invalidate on write (the seeded defect); its judgments fail
-//! exactly those two items.
+//! exactly those two items. The stage's backup is `cp`, so the file runs on Unix only.
+#![cfg(unix)]
 
 use std::collections::BTreeMap;
 use std::fs;

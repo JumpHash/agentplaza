@@ -145,6 +145,8 @@ fn an_unruled_email_column_refuses_the_run_and_with_the_rule_the_copy_lasts_as_l
         )
         .expect("the query runs");
     assert_eq!(original, 0, "the email is faked");
+    // Windows does not delete a file that is open: the copy is closed before the run ends.
+    drop(kept);
 
     // What the scans found is kept with the run, as counts.
     let (status, listed) = hub.call("GET", &format!("/v1/test-lab/runs/{id}/scrub"), None);
