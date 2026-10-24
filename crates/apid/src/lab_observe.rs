@@ -23,6 +23,7 @@ use apz_topology::compare::Limit;
 use apz_topology::observe::{self, LogLine, PointKind, SpanRec};
 use apz_topology::resilience;
 use apz_topology::spec::{self, Assertion, Scenario, Topology};
+use apz_topology::stage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
@@ -607,7 +608,78 @@ pub fn assess(
             }
         }));
     }
+    // Each stage the topology declares (PLAN 22.8) is judged by the numbers its run recorded. A stage with none did not run
+    // here: its verdict fails with that reason and files nothing.
+    let stage_values = lab_performance::values(
+        metrics,
+        &run.id,
+        &stage::names(&stage::Stages::of(topology)),
+    );
+    for judgment in stage::judge(&stage::Stages::of(topology), &stage_values) {
+        let check = Check {
+            id: format!("{}:{}", judgment.stage, judgment.id),
+            kind: judgment.stage.into(),
+            passed: judgment.passed,
+            detail: judgment.detail,
+            cites: vec![format!(
+                "lab run {} recorded the {} stage",
+                run.id, judgment.stage
+            )],
+        };
+        let measured = judgment.measured;
+        out.push(record(lab, &run, &check, || {
+            if measured {
+                file_stage(reviews, &run, topology, judgment.stage, &check)
+            } else {
+                String::new()
+            }
+        }));
+    }
     Ok(out)
+}
+
+/// The finding a failing stage judgment becomes on its change's review tree (PLAN 22.8): a confirmed finding of the stage's
+/// kind (`data`, `cache` or `messaging`), its proof the numbers it was judged by. Empty when the run names no change.
+fn file_stage(
+    reviews: &Reviews,
+    run: &LabRun,
+    topology: &Topology,
+    stage: &str,
+    check: &Check,
+) -> String {
+    if run.change.is_empty() {
+        return String::new();
+    }
+    let by = By {
+        seat: "test-lab".into(),
+        model: stage.into(),
+        session: run.id.clone(),
+    };
+    let finding = Finding {
+        symbol: format!("{}/{}.toml", spec::DIR, topology.name),
+        lineage: None,
+        text: format!("{} failed: {}", check.id, check.detail),
+        severity: "major".into(),
+        node: String::new(),
+        round: 0,
+        id: String::new(),
+        scenario: format!(
+            "lab run {} of topology {} observed the {stage} stage",
+            run.id, topology.name
+        ),
+        kind: stage.into(),
+        verdict: FindingVerdict::Confirmed,
+        proof: format!("lab run {}\n{}", run.id, check.detail),
+        reason: String::new(),
+        by: Some(by.clone()),
+        verified_by: Some(by),
+        contest: String::new(),
+        ruling: String::new(),
+        ruling_reason: String::new(),
+    };
+    reviews
+        .attach_finding(&run.change, finding)
+        .map_or_else(String::new, |(review, id)| format!("{review}/{id}"))
 }
 
 /// What a run observed, for `GET .../observations`: its state, the counts of its logs, errors and spans, and its
@@ -897,6 +969,7 @@ fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 pub(crate) mod tests {
     use super::*;
     use crate::review_graph::{NodeDef, NodeRun, NodeState, Run, RunState};
+    use apz_topology::compare::Metric;
     use std::sync::Arc;
 
     /// Metrics over a fresh metrics file; the store is returned too, so it stays open while the test runs.
@@ -1171,6 +1244,74 @@ pub(crate) mod tests {
             .iter()
             .find(|v| v.id == "resilience:cache-outage")
             .unwrap();
+        assert!(!verdict.passed);
+        assert!(verdict.detail.contains("not run"), "{}", verdict.detail);
+        assert!(verdict.finding.is_empty());
+        assert_eq!(reviews.run("rv-c1").unwrap().findings().count(), 0);
+    }
+
+    /// A topology with a data stage: the previous release's schema, one migration, and a read the new code runs.
+    const DATA_STAGE: &str = "name = \"fake-run\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\n[data]\nprevious = [\"db/previous.sql\"]\nmigrations = [\"db/0002.sql\"]\nread = [{ id = \"list\", sql = \"SELECT id, title, due FROM tasks\", min_rows = 3 }]\n";
+
+    #[test]
+    fn a_data_stage_whose_read_fails_files_a_data_finding_with_the_numbers() {
+        let (_files, metrics) = metrics_in("lab-observe-data");
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = reviews_in(&dir);
+        reviews.put_run(review_of("c1"));
+        let lab = lab_with("q1", "running", "run-token");
+        // The migration dropped a column the new code reads: the read returned no rows at all (unreadable).
+        let values = vec![
+            Metric {
+                name: "data.previous.failed".into(),
+                value: 0.0,
+            },
+            Metric {
+                name: "data.migrations.failed".into(),
+                value: 0.0,
+            },
+            Metric {
+                name: "data.read.list.rows".into(),
+                value: -1.0e18,
+            },
+        ];
+        let body = stage::otlp("apz-stage", &values, NOW);
+        ingest_json(&lab, &metrics, "run-token", "metrics", &body).unwrap();
+        set_state(&lab, "q1", "done");
+
+        let topology = spec::parse(DATA_STAGE).unwrap();
+        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
+        let failed = verdicts
+            .iter()
+            .find(|v| v.id == "data:read:list")
+            .expect("the read is judged");
+        assert!(!failed.passed, "{failed:?}");
+        assert_eq!(failed.kind, "data");
+        let migrations = verdicts.iter().find(|v| v.id == "data:migrations").unwrap();
+        assert!(migrations.passed, "{migrations:?}");
+
+        let (review, id) = failed
+            .finding
+            .split_once('/')
+            .expect("the finding is filed");
+        let run = reviews.run(review).unwrap();
+        let finding = run.findings().find(|f| f.id == id).expect("on the run");
+        assert_eq!(finding.kind, "data");
+        assert_eq!(finding.verdict, FindingVerdict::Confirmed);
+        assert!(finding.proof.contains("read list"), "{}", finding.proof);
+    }
+
+    #[test]
+    fn a_data_stage_with_no_numbers_is_not_run_and_files_nothing() {
+        let (_files, metrics) = metrics_in("lab-observe-data-not-run");
+        let dir = tempfile::tempdir().unwrap();
+        let reviews = reviews_in(&dir);
+        reviews.put_run(review_of("c1"));
+        let lab = lab_with("q1", "running", "run-token");
+        set_state(&lab, "q1", "done");
+        let topology = spec::parse(DATA_STAGE).unwrap();
+        let verdicts = assess(&lab, &metrics, &reviews, "q1", &topology, &[], &[]).unwrap();
+        let verdict = verdicts.iter().find(|v| v.id == "data:previous").unwrap();
         assert!(!verdict.passed);
         assert!(verdict.detail.contains("not run"), "{}", verdict.detail);
         assert!(verdict.finding.is_empty());

@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::spec::{
     Collect, Data, Health, Kind, Observe, Scenario, Serve, Topology, Traffic, Volume,
 };
+use crate::stage::Stages;
 
 /// The bridge inside the guest.
 pub const BRIDGE: &str = "apz0";
@@ -58,6 +59,10 @@ pub struct GuestPlan {
     /// when the run starts, and the run's runner can drive the scenarios.
     #[serde(default)]
     pub resilience: Vec<Scenario>,
+    /// The topology's data, cache and messaging stages (PLAN 22.8): run by the lab VM's stage runner after the services
+    /// are up, and judged by the hub.
+    #[serde(default, skip_serializing_if = "Stages::is_empty")]
+    pub stages: Stages,
 }
 
 /// One replica of a service: a container with its address on the bridge.
@@ -189,6 +194,7 @@ pub fn plan(
             || topology.observe.traces == Collect::Otlp)
             .then(|| format!("http://{GATEWAY}:{OTLP_PORT}")),
         resilience: topology.resilience.clone(),
+        stages: Stages::of(topology),
     })
 }
 
