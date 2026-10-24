@@ -39,6 +39,8 @@ use crate::fault::Fault;
 pub const DIR: &str = ".plaza/topologies";
 /// The most replicas one service may declare (a lab VM is sized for its topology).
 pub const MAX_REPLICAS: u32 = 16;
+/// The largest declared volume size, in MiB (a lab volume is small: a fill writes it).
+pub const MAX_VOLUME_MIB: u64 = 1024;
 
 /// A topology: its name, what it runs, its services (or its k3s cluster), what it observes, its traffic and its egress
 /// allowlist.
@@ -127,6 +129,9 @@ pub struct Volume {
     pub target: String,
     #[serde(default)]
     pub read_only: bool,
+    /// The volume's declared size in MiB (1 to 1024): what a `fill_disk` scenario fills, and the bound of that fill.
+    #[serde(default)]
+    pub size_mib: Option<u64>,
 }
 
 /// A service's health check: the command that runs inside its container, and the timing Compose gives it.
@@ -572,10 +577,12 @@ impl Scenario {
                     .volume
                     .as_deref()
                     .ok_or_else(|| format!("{who} fills a disk and names no volume"))?;
-                if !is_label(volume) || !topology.volume_of(&self.target, volume) {
+                let declared = topology.volume_of(&self.target, volume).ok_or_else(|| {
+                    format!("{who} fills {volume}, which {} does not mount", self.target)
+                })?;
+                if declared.size_mib.is_none() {
                     return Err(format!(
-                        "{who} fills {volume}, which {} does not mount",
-                        self.target
+                        "{who} fills {volume}, which has no size_mib: a fill is bounded by the volume's declared size"
                     ));
                 }
                 only("fault", self.fault.is_some(), "fault")?;
@@ -597,12 +604,12 @@ impl Scenario {
 }
 
 impl Topology {
-    /// Whether `service` mounts the named volume.
-    fn volume_of(&self, service: &str, volume: &str) -> bool {
+    /// The named volume of `service`, as the service mounts it.
+    pub fn volume_of(&self, service: &str, volume: &str) -> Option<&Volume> {
         self.services
             .iter()
             .filter(|s| s.name == service)
-            .any(|s| s.volumes.iter().any(|v| v.name == volume))
+            .find_map(|s| s.volumes.iter().find(|v| v.name == volume))
     }
 }
 
@@ -804,6 +811,17 @@ impl Service {
                 return Err(format!(
                     "service {} mounts {} at {:?}: a target is an absolute path",
                     self.name, volume.name, volume.target
+                ));
+            }
+            if volume
+                .size_mib
+                .is_some_and(|mib| mib == 0 || mib > MAX_VOLUME_MIB)
+            {
+                return Err(format!(
+                    "service {} declares volume {} at {} MiB: 1 to {MAX_VOLUME_MIB} MiB allowed",
+                    self.name,
+                    volume.name,
+                    volume.size_mib.unwrap_or(0)
                 ));
             }
             if !targets.insert(volume.target.as_str()) {
@@ -1148,7 +1166,7 @@ mod tests {
         }
     }
 
-    const RESILIENCE: &str = "name = \"stack\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\nenv = { CACHE_URL = \"redis://cache:6379\" }\n[[service]]\nname = \"cache\"\nimage = \"redis:7\"\nvolumes = [{ name = \"cache-data\", target = \"/data\" }]\n";
+    const RESILIENCE: &str = "name = \"stack\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\nenv = { CACHE_URL = \"redis://cache:6379\" }\n[[service]]\nname = \"cache\"\nimage = \"redis:7\"\nvolumes = [{ name = \"cache-data\", target = \"/data\", size_mib = 4 }]\n";
 
     fn with(scenario: &str) -> String {
         format!("{RESILIENCE}[[resilience]]\n{scenario}")
@@ -1253,6 +1271,13 @@ mod tests {
         assert_eq!(topology.resilience[0].leave_mib, 16);
         let other = fill.replace("cache-data\"\nleave", "api-data\"\nleave");
         assert!(parse(&other).unwrap_err().contains("does not mount"));
+        let unsized_text = RESILIENCE.replace(", size_mib = 4", "");
+        let no_size = format!(
+            "{unsized_text}[[resilience]]\nid = \"full-disk\"\naction = \"fill_disk\"\ntarget = \"cache\"\nvolume = \"cache-data\"\nat_secs = 1\nfor_secs = 4\nrecover_within_secs = 5\nprobe = {{ service = \"api\" }}\nexpect = {{ max_error_percent = 100 }}\n"
+        );
+        assert!(parse(&no_size).unwrap_err().contains("no size_mib"));
+        let too_big = RESILIENCE.replace("size_mib = 4", "size_mib = 4096");
+        assert!(parse(&too_big).unwrap_err().contains("MiB allowed"));
 
         let skew = with(
             "id = \"skew\"\naction = \"clock_skew\"\ntarget = \"api\"\nsecs = 3600\nat_secs = 1\nfor_secs = 4\nrecover_within_secs = 5\nprobe = { service = \"api\" }\nexpect = { max_error_percent = 0 }\n",

@@ -10,7 +10,7 @@
 //! and severs the open ones. Latency holds each request for the set time before it reaches the dependency.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -143,15 +143,7 @@ impl Proxy {
 
     /// Sets the fault for the connections from now on. A partition also severs the connections that are open.
     pub fn set_fault(&self, fault: Fault) {
-        *locked(&self.shared.fault) = fault;
-        if fault == Fault::Partition {
-            let mut open = locked(&self.shared.open);
-            for (client, upstream) in open.values() {
-                let _ = client.shutdown(Shutdown::Both);
-                let _ = upstream.shutdown(Shutdown::Both);
-            }
-            open.clear();
-        }
+        set_shared_fault(&self.shared, fault);
     }
 
     /// The fault now in force.
@@ -161,15 +153,151 @@ impl Proxy {
 
     /// What the proxy has done so far.
     pub fn stats(&self) -> Stats {
-        let c = &self.shared.counters;
-        Stats {
-            connections: c.connections.load(Ordering::SeqCst),
-            forwarded: c.forwarded.load(Ordering::SeqCst),
-            lost: c.lost.load(Ordering::SeqCst),
-            reset: c.reset.load(Ordering::SeqCst),
-            refused: c.refused.load(Ordering::SeqCst),
+        shared_stats(&self.shared)
+    }
+
+    /// A handle that steers this proxy from another thread, or serves its control (see [`serve_control`]).
+    pub fn handle(&self) -> ProxyHandle {
+        ProxyHandle {
+            shared: Arc::clone(&self.shared),
         }
     }
+}
+
+fn set_shared_fault(shared: &Shared, fault: Fault) {
+    *locked(&shared.fault) = fault;
+    if fault == Fault::Partition {
+        let mut open = locked(&shared.open);
+        for (client, upstream) in open.values() {
+            let _ = client.shutdown(Shutdown::Both);
+            let _ = upstream.shutdown(Shutdown::Both);
+        }
+        open.clear();
+    }
+}
+
+fn shared_stats(shared: &Shared) -> Stats {
+    let c = &shared.counters;
+    Stats {
+        connections: c.connections.load(Ordering::SeqCst),
+        forwarded: c.forwarded.load(Ordering::SeqCst),
+        lost: c.lost.load(Ordering::SeqCst),
+        reset: c.reset.load(Ordering::SeqCst),
+        refused: c.refused.load(Ordering::SeqCst),
+    }
+}
+
+/// A handle on a running proxy's state: it sets the fault and reads the stats from any thread.
+#[derive(Clone)]
+pub struct ProxyHandle {
+    shared: Arc<Shared>,
+}
+
+impl ProxyHandle {
+    pub fn set_fault(&self, fault: Fault) {
+        set_shared_fault(&self.shared, fault);
+    }
+
+    pub fn stats(&self) -> Stats {
+        shared_stats(&self.shared)
+    }
+}
+
+/// Something that sets a dependency's fault: a proxy in this process, or a proxy process steered over its control.
+pub trait Steer: Send {
+    fn steer(&self, fault: Fault) -> Result<(), String>;
+}
+
+impl Steer for Proxy {
+    fn steer(&self, fault: Fault) -> Result<(), String> {
+        fault.check()?;
+        self.set_fault(fault);
+        Ok(())
+    }
+}
+
+impl Steer for ProxyHandle {
+    fn steer(&self, fault: Fault) -> Result<(), String> {
+        fault.check()?;
+        self.set_fault(fault);
+        Ok(())
+    }
+}
+
+/// A proxy process's control address (`apz-fault proxy`): the fault is set by one line, `fault <json>`, answered `ok`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Remote {
+    control: SocketAddr,
+}
+
+impl Remote {
+    pub fn new(control: SocketAddr) -> Remote {
+        Remote { control }
+    }
+
+    /// The address the control listens on.
+    pub fn control(&self) -> SocketAddr {
+        self.control
+    }
+}
+
+impl Steer for Remote {
+    fn steer(&self, fault: Fault) -> Result<(), String> {
+        fault.check()?;
+        let json = serde_json::to_string(&fault).map_err(|e| e.to_string())?;
+        let mut stream = TcpStream::connect_timeout(&self.control, Duration::from_secs(2))
+            .map_err(|e| format!("the proxy's control {}: {e}", self.control))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|e| e.to_string())?;
+        writeln!(stream, "fault {json}").map_err(|e| e.to_string())?;
+        let mut reply = String::new();
+        BufReader::new(stream)
+            .read_line(&mut reply)
+            .map_err(|e| e.to_string())?;
+        match reply.trim() {
+            "ok" => Ok(()),
+            other => Err(format!("the proxy refused {json}: {other}")),
+        }
+    }
+}
+
+/// Serves a proxy's control on `listener`: each line is a command, answered in turn. `fault <json>` sets the fault and
+/// answers `ok` (or `err <why>`); `stats` answers the proxy's stats as JSON. Runs until the listener fails.
+pub fn serve_control(listener: TcpListener, handle: ProxyHandle) -> io::Result<()> {
+    for stream in listener.incoming() {
+        let Ok(mut writer) = stream else { continue };
+        let Ok(reader) = writer.try_clone() else {
+            continue;
+        };
+        for line in BufReader::new(reader).lines() {
+            let Ok(line) = line else { break };
+            let reply = answer_command(&handle, line.trim());
+            if writeln!(writer, "{reply}").is_err() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn answer_command(handle: &ProxyHandle, line: &str) -> String {
+    if let Some(json) = line.strip_prefix("fault ") {
+        return match serde_json::from_str::<Fault>(json) {
+            Ok(fault) => match fault.check() {
+                Ok(()) => {
+                    handle.set_fault(fault);
+                    "ok".into()
+                }
+                Err(why) => format!("err {why}"),
+            },
+            Err(why) => format!("err {why}"),
+        };
+    }
+    if line == "stats" {
+        return serde_json::to_string(&handle.stats()).unwrap_or_else(|e| format!("err {e}"));
+    }
+    "err unknown command".into()
 }
 
 impl Drop for Proxy {
@@ -358,6 +486,37 @@ mod tests {
         let stats = proxy.stats();
         assert_eq!(stats.reset, 3, "{stats:?}");
         assert_eq!(answered, 7);
+    }
+
+    #[test]
+    fn the_control_steers_a_proxy_and_reports_its_stats() {
+        let upstream = echo();
+        let proxy = Proxy::start(loopback(), upstream, Fault::Healthy).unwrap();
+        let control = TcpListener::bind(loopback()).unwrap();
+        let control_addr = control.local_addr().unwrap();
+        let handle = proxy.handle();
+        thread::spawn(move || {
+            let _ = serve_control(control, handle);
+        });
+        let remote = Remote::new(control_addr);
+        assert_eq!(exchange(proxy.addr()).as_deref(), Some(&b"ping"[..]));
+
+        remote.steer(Fault::Partition).unwrap();
+        assert_eq!(proxy.fault(), Fault::Partition);
+        assert_eq!(exchange(proxy.addr()), None, "blocked through the control");
+        remote.steer(Fault::Healthy).unwrap();
+        assert_eq!(exchange(proxy.addr()).as_deref(), Some(&b"ping"[..]));
+
+        // A fault out of range is refused by the control, and the proxy keeps its fault.
+        assert!(remote.steer(Fault::Loss { percent: 101 }).is_err());
+        assert_eq!(proxy.fault(), Fault::Healthy);
+
+        let mut stream = TcpStream::connect(control_addr).unwrap();
+        writeln!(stream, "stats").unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let stats: Stats = serde_json::from_str(line.trim()).unwrap();
+        assert!(stats.refused >= 1 && stats.forwarded >= 2, "{stats:?}");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The cache-outage scenario end to end (PLAN 22.8): a small API calls its cache through a fault proxy that resets 30 % of
 //! the connections. Without a retry the API fails its share of probes and the scenario fails the spec's 5 %; with a retry
-//! the API answers every probe and the scenario passes. The run is the topology's own scenario, run by `run_all`.
+//! the API answers every probe and the scenario passes. The run is the topology's own scenario, run by `run_with` against
+//! an in-process proxy.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -8,10 +9,12 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
 
+use apz_topology::fault::{Fault, Proxy, Steer};
 use apz_topology::resilience::{Measured, Ran, judge};
-use apz_topology::scenarios::{self, Config, ProxyConfig};
+use apz_topology::scenarios;
 use apz_topology::slowserve::SlowServer;
 use apz_topology::spec;
+use apz_topology::steps::{Commands, Guest, InProcess, System};
 
 const TOPOLOGY: &str = r#"
 name = "web-stack"
@@ -87,27 +90,31 @@ fn api(cache: SocketAddr, attempts: u32) -> SocketAddr {
     addr
 }
 
+/// A guest whose only processes are the given proxies, by service.
+fn guest(proxies: BTreeMap<String, Vec<Box<dyn Steer>>>) -> Guest<System, Commands, InProcess> {
+    Guest {
+        host: System {
+            path: String::new(),
+        },
+        runner: Commands,
+        procs: InProcess { proxies },
+        device: "apz0".into(),
+    }
+}
+
 /// The scenario's measurements, with the API making `attempts` calls per probe.
 fn outage(attempts: u32) -> (spec::Scenario, Measured) {
     let cache = SlowServer::start(0).unwrap();
-    let proxy = free_port();
-    let api_addr = api(proxy, attempts);
+    let proxy_addr = free_port();
+    let proxy = Proxy::start(proxy_addr, cache.addr(), Fault::Healthy).unwrap();
+    let api_addr = api(proxy_addr, attempts);
     let topology = spec::parse(TOPOLOGY).unwrap();
-    let config = Config {
-        proxies: BTreeMap::from([(
-            "cache".to_string(),
-            ProxyConfig {
-                listen: proxy.to_string(),
-                upstream: cache.addr().to_string(),
-            },
-        )]),
-        urls: BTreeMap::from([("api".to_string(), format!("http://{api_addr}"))]),
-        services: BTreeMap::new(),
-        volumes: Vec::new(),
-        device: "apz0".into(),
-        collector: None,
-    };
-    let outcomes = scenarios::run_all(&topology, &config).expect("the scenario runs");
+    let urls = BTreeMap::from([("api".to_string(), format!("http://{api_addr}"))]);
+    let mut guest = guest(BTreeMap::from([(
+        "cache".to_string(),
+        vec![Box::new(proxy.handle()) as Box<dyn Steer>],
+    )]));
+    let outcomes = scenarios::run_with(&topology.resilience, &urls, &mut guest);
     let measured = match &outcomes[0].ran {
         Ran::Measured(measured) => measured.clone(),
         other => panic!("the scenario did not run: {other:?}"),
@@ -146,41 +153,29 @@ fn a_retry_passes_the_same_cache_outage_scenario() {
 }
 
 #[test]
-fn a_fault_on_a_dependency_with_no_proxy_is_refused_before_anything_starts() {
+fn a_fault_on_a_dependency_with_no_proxy_is_not_run_with_its_reason() {
     let topology = spec::parse(TOPOLOGY).unwrap();
-    let config = Config {
-        proxies: BTreeMap::new(),
-        urls: BTreeMap::new(),
-        services: BTreeMap::new(),
-        volumes: Vec::new(),
-        device: "apz0".into(),
-        collector: None,
-    };
-    let why = scenarios::run_all(&topology, &config).unwrap_err();
-    assert!(
-        why.contains("cache-outage") || why.contains("cache"),
-        "{why}"
+    let urls = BTreeMap::from([("api".to_string(), "http://127.0.0.1:9".to_string())]);
+    let mut guest = guest(BTreeMap::new());
+    let outcomes = scenarios::run_with(&topology.resilience, &urls, &mut guest);
+    assert_eq!(
+        outcomes[0].ran,
+        Ran::NotRun("no fault proxy in front of cache".into())
     );
 }
 
 #[test]
-fn a_kill_the_guest_cannot_do_is_not_run_with_its_reason() {
+fn a_kill_with_no_pid_file_in_the_guest_is_not_run_with_its_reason() {
     let topology = spec::parse(&TOPOLOGY.replace(
         "action = \"fault\"\ntarget = \"cache\"\nfault = { kind = \"reset\", percent = 30 }",
         "action = \"kill\"\ntarget = \"cache\"",
     ))
     .unwrap();
-    let config = Config {
-        proxies: BTreeMap::new(),
-        urls: BTreeMap::from([("api".to_string(), "http://127.0.0.1:9".to_string())]),
-        services: BTreeMap::new(),
-        volumes: Vec::new(),
-        device: "apz0".into(),
-        collector: None,
-    };
-    let outcomes = scenarios::run_all(&topology, &config).unwrap();
+    let urls = BTreeMap::from([("api".to_string(), "http://127.0.0.1:9".to_string())]);
+    let mut guest = guest(BTreeMap::new());
+    let outcomes = scenarios::run_with(&topology.resilience, &urls, &mut guest);
     assert_eq!(
         outcomes[0].ran,
-        Ran::NotRun("the guest knows no process of cache".into())
+        Ran::NotRun("the guest keeps no pid file for cache".into())
     );
 }

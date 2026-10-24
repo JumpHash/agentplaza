@@ -560,6 +560,7 @@ fn volumes(
             name: label,
             target: target.to_string(),
             read_only,
+            size_mib: None,
         });
     }
     Ok(())
@@ -900,7 +901,8 @@ mod tests {
             [Volume {
                 name: "db-data".into(),
                 target: "/var/lib/postgresql/data".into(),
-                read_only: false
+                read_only: false,
+                size_mib: None,
             }]
         );
         let health = db.health.as_ref().unwrap();

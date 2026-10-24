@@ -86,7 +86,6 @@ mod tests {
             root: true,
             tools: vec!["tc".into()],
             paths: vec!["/sys/class/net/apz0".into()],
-            ..FakeHost::default()
         };
         assert!(check(&ready, "apz0").is_ok());
         assert!(check(&ready, "apz9").unwrap_err().contains("apz9"));
