@@ -15,6 +15,7 @@ pub mod egress;
 #[cfg(test)]
 pub mod fixture;
 pub mod http;
+pub mod loopback;
 pub mod routes;
 pub mod runtime;
 pub mod runtimes;
@@ -147,7 +148,8 @@ impl Mcp {
                 Arc::new(stdio::SandboxLauncher),
                 Some(egress::Egress::new(port)),
             )
-            .with_vm(Arc::new(vm::VmLauncher::new(noded))),
+            .with_vm(Arc::new(vm::VmLauncher::new(noded)))
+            .with_loopback(loopback::host()),
         }
     }
 }
@@ -364,10 +366,13 @@ pub fn call_for_agent(
     let secrets = VaultSecrets::new(app);
     let ctx = ctx(app, &secrets, OnBehalf::Agent { cid: agent.cid }, node);
     let started = Instant::now();
-    let result = app
-        .mcp
-        .runtime
-        .call(&server, &ctx, &entry.tool, input.clone());
+    let result = loopback::asked(
+        app,
+        &server,
+        app.mcp
+            .runtime
+            .call(&server, &ctx, &entry.tool, input.clone()),
+    );
     let ms = started.elapsed().as_millis() as u64;
     let record = |ok: bool, output_bytes: usize| {
         app.transcripts.record(

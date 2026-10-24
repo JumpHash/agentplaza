@@ -778,6 +778,7 @@ pub(crate) fn decide_approval(
     let applied = match item.kind.as_str() {
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),
+        crate::mcp::loopback::KIND => crate::mcp::loopback::decided(app, &item, approve),
         "artifact.share" => crate::shares::request::on_decided(app, &item),
         _ => {
             // A held engine call gets the decision pushed to it. The agent is told in chat only when
