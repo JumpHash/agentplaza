@@ -604,6 +604,18 @@ pub fn checks(d: &Deps, id: &str, passed: bool, reason: &str) -> Result<Release,
     )
 }
 
+/// Records the qualification's verdict on the release (22.10): passed moves it on, failed fails it (the release's life
+/// records the reason). The engine (`qualify`) calls it once the stages are judged.
+pub fn qualification(d: &Deps, id: &str, passed: bool, reason: &str) -> Result<Release, String> {
+    let verdict = if passed { "passed" } else { "failed" };
+    move_with(
+        d,
+        id,
+        "release.verdict",
+        json!({ "source": "qualification", "verdict": verdict, "reason": reason }),
+    )
+}
+
 /// Sends a candidate to qualification (22.10).
 pub fn qualify(d: &Deps, id: &str) -> Result<Release, String> {
     move_with(d, id, "release.qualify", json!({}))

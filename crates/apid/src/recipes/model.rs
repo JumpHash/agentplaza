@@ -730,6 +730,7 @@ pub fn builtin() -> Vec<Recipe> {
         include_str!("builtin/intake.toml"),
         include_str!("builtin/plan.toml"),
         include_str!("builtin/release.toml"),
+        include_str!("builtin/qualify.toml"),
         include_str!("builtin/deploy.toml"),
         include_str!("builtin/incident.toml"),
         include_str!("builtin/upgrade.toml"),
@@ -805,7 +806,7 @@ max = 2
     #[test]
     fn the_built_in_recipes_check_and_round_trip() {
         let recipes = builtin();
-        assert_eq!(recipes.len(), 13);
+        assert_eq!(recipes.len(), 14);
         // The intake and plan recipes are real (planning.rs): their steps are the engine's and the planner's.
         let intake = builtin_named("intake").unwrap();
         assert!(!intake.description.contains("Stub"), "intake is real");

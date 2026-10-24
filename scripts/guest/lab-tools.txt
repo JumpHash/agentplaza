@@ -1,0 +1,12 @@
+# The tools a lab VM's image carries (PLAN 22.6 to 22.8), one per line: `bin <name>` is a binary of apz-topology built for
+# the guest, `data <path>` a file the lab copies into the image at the run. The lab image is the guest of a lab VM
+# (scripts/guest/lab.config, its kernel); each line here is copied into it, and apz-topology's test checks every name is a
+# binary of the crate. The scrubber's copy is the run's scrubbed production data (apid lab_scrub::run_dir, its `scrub`
+# directory), which the lab receives after the personal data scan and which is removed when the run ends.
+bin apz-topo-run
+bin apz-topo-collect
+bin apz-load
+bin apz-fault
+bin apz-stage
+bin apz-security
+data scrub

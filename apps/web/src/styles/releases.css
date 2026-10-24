@@ -12,3 +12,16 @@
 .rel-groups { display: flex; flex-direction: column; gap: 16px; }
 .rel-error { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
 .rel-error p { margin: 0; }
+
+/* The qualification report (release-report.ts): the two back links on one row, a muted stage row, the small grey
+   lines under a reason, the run ids, one acceptance block, the cost figures and a direction in the deltas. */
+.rel-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; }
+.rel-muted td { color: var(--ink-3); }
+.rel-faint { color: var(--ink-3); font-size: 12px; }
+.rel-links { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.rel-run { margin-right: 6px; }
+.rel-acc { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line, rgba(127, 127, 127, 0.2)); }
+.rel-acc:first-child { border-top: 0; padding-top: 0; }
+.rel-acc p { margin: 0; }
+.rel-stats { display: flex; flex-wrap: wrap; gap: 24px; }
+.rel-dir-flat { color: var(--ink-3); }

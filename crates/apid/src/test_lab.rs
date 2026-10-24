@@ -176,6 +176,19 @@ impl Store {
         *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = stored;
         Ok(())
     }
+    /// The verdicts a run recorded (its checks), in the order they were recorded.
+    pub fn verdicts_of(&self, run: &str) -> Vec<LabVerdict> {
+        self.inner
+            .lock()
+            .map(|p| {
+                p.verdicts
+                    .iter()
+                    .filter(|v| v.run == run)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
     /// Every run, in the order they were made.
     pub fn runs(&self) -> Vec<LabRun> {
         self.inner

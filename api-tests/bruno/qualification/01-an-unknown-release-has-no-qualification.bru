@@ -1,0 +1,15 @@
+meta {
+  name: An unknown release has no qualification
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/releases/rel-0/qualification
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

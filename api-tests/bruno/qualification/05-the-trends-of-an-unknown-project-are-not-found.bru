@@ -1,0 +1,15 @@
+meta {
+  name: The trends of an unknown project are not found
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/pr-0/trends
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

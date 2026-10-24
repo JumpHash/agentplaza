@@ -32,5 +32,5 @@ pub mod sync;
 #[cfg(test)]
 mod sync_tests;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 pub mod versions;

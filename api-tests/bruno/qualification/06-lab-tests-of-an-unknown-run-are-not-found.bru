@@ -1,0 +1,19 @@
+meta {
+  name: Lab tests of an unknown run are not found
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/test-lab/runs/q0/tests
+  body: json
+  auth: none
+}
+
+body:json {
+  {"tests": []}
+}
+
+assert {
+  res.status: eq 404
+}

@@ -701,7 +701,7 @@ impl Reviews {
     }
 
     /// Stores a run as the review chain stores one (the flows that wait for a review are tested with a run of theirs).
-    #[cfg(test)]
+    /// Stores a review run (a seat's, a backport's, or a release's own review graph, `qualify`).
     pub fn put_run(&self, run: Run) {
         self.with(|b| {
             b.runs.insert(run.id.clone(), run);

@@ -203,6 +203,8 @@ pub struct App {
     pub routes: std::sync::OnceLock<Arc<apz_http::Router<App>>>,
     /// The test lab: its runs and their reservations (test_lab.rs).
     pub test_lab: crate::test_lab::Store,
+    /// The qualifications of release candidates (PLAN 22.10): their runs, stages, histories and acceptances.
+    pub qualify: crate::qualify::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
     pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
@@ -366,6 +368,7 @@ impl App {
             nodes: Arc::default(),
             routes: std::sync::OnceLock::new(),
             test_lab: crate::test_lab::Store::default(),
+            qualify: crate::qualify::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
