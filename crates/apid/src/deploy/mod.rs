@@ -3,9 +3,9 @@
 //!
 //! Only a release the release entity holds as published (`releases/entity.rs`: a qualified candidate is published, and
 //! a yanked or unpublished one is never promoted) is deployed. An environment on the `releases` track deploys the newest
-//! such release ([`published`]); an owner's or an approved deploy names one ([`start`]). An environment is a Cloudflare
-//! one when its variables name a Worker (`CLOUDFLARE_WORKER`) or a Pages project (`CLOUDFLARE_PAGES`); the rest keep the
-//! deploy hook of `environments.rs`.
+//! such release ([`published`]); an owner's or an approved deploy names one ([`start`]). An environment deploys to the platforms its variables name: a Cloudflare
+//! Worker (`CLOUDFLARE_WORKER`) or Pages project (`CLOUDFLARE_PAGES`), an AWS target (below), or a Kubernetes Deployment; the
+//! rest keep the deploy hook of `environments.rs`.
 //!
 //! A rollout (`recipes/builtin/deploy.toml`, step `rollout`, one item per target) takes each target in turn: it uploads the
 //! release's artifact (the `web` target by default) as a new version, serves it at each stage's percentage (Workers:
@@ -18,17 +18,26 @@
 //! staging stage, and its deploy waits for the owner in Approvals as any protected deploy does. The deploy's status and
 //! the environment's version follow the outcome, and the project's chat is told at each step.
 //!
-//! A Kubernetes environment (`KUBERNETES_DEPLOYMENT` set) takes the same path: its release's manifests are applied and its
-//! rollout watched in [`kubernetes`] (11.2), with a canary (`KUBERNETES_CANARY`) sharing each stage's replicas with the
-//! stable Deployment. Its address, CA and token are the `kubernetes` connector's. The stages and the health watch are read
-//! the same way for both platforms ([`Settings::watch_of`]).
+//! AWS (11.3, [`aws`]) is a platform of the same path: an environment names a Lambda alias (`AWS_LAMBDA_FUNCTION`,
+//! `AWS_LAMBDA_ALIAS`), an ECS service (`AWS_ECS_CLUSTER`, `AWS_ECS_SERVICE`, `AWS_ECS_CONTAINER`, `AWS_ECS_FAMILY`,
+//! `ECS_MIN_HEALTHY_PERCENT`, `ECS_MAX_PERCENT`), a static site (`AWS_S3_BUCKET`, `AWS_S3_PREFIX`,
+//! `AWS_CLOUDFRONT_DISTRIBUTION`) or a CloudFormation stack (`AWS_CLOUDFORMATION_STACK`), in `AWS_REGION` (else the
+//! connector's region). The artifact of each is named by `DEPLOY_ARTIFACT`.
+//!
+//! A Kubernetes environment (`KUBERNETES_DEPLOYMENT` set, 11.2, [`kubernetes`]) names one Deployment, which is its only
+//! target: its release's manifests (or Helm chart) are applied and its rollout watched by the kubernetes module's own
+//! engine, with a canary (`KUBERNETES_CANARY`) sharing each stage's replicas with the stable Deployment. Its address, CA and
+//! token are the `kubernetes` connector's. The stages and the health watch are read the same way for every platform
+//! ([`Settings::watch_of`]).
 //!
 //! Environment variables (not secret): `CLOUDFLARE_WORKER`, `CLOUDFLARE_PAGES`, `ROLLOUT_STAGES` (`10,50,100`),
 //! `DEPLOY_WINDOW_SECS` (300), `DEPLOY_MAX_ERRORS` (0), `DEPLOY_ARTIFACT` (`web`), `HEALTH_MAX_ERROR_RATE` (0.05),
 //! `HEALTH_MAX_P95_MS` (2000), `HEALTH_ERROR_QUERY`, `HEALTH_LATENCY_QUERY` (the monitoring queries, see [`health`]). The
 //! Cloudflare account ID and API token are the Cloudflare connector's (`connectors::hub_values`), read on the hub only; the
-//! monitoring source is the `prometheus` connector's URL and optional token.
+//! AWS base credentials and role are the `aws` connector's, the same way; the monitoring source is the `prometheus`
+//! connector's URL and optional token.
 
+pub mod aws;
 pub mod cloudflare;
 pub mod health;
 pub mod kubernetes;
@@ -39,7 +48,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cloudflare::{Api, Target};
 use health::{Health, Prometheus};
 
 use crate::environments::{self, Deploy, Environment};
@@ -65,10 +73,126 @@ const MAX_WINDOW_SECS: u64 = 3600;
 /// Who a rollback's deploy record names.
 pub const ROLLBACK_BY: &str = "rollback";
 
+/// What a rollout deploys to: a Cloudflare target, an AWS one, or a Kubernetes Deployment. The first two are rolled out target
+/// by target through [`Api`]; a Kubernetes Deployment is rolled out whole by [`kubernetes`], which keeps its own state (the
+/// manifests, the canary's replicas and the revisions it undoes to), so it is the environment's only target.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Target {
+    Cloudflare(cloudflare::Target),
+    Aws(aws::Target),
+    Kubernetes(kubernetes::Settings),
+}
+
+impl Target {
+    /// The target as the logs and the chat name it.
+    pub fn label(&self) -> String {
+        match self {
+            Target::Cloudflare(target) => target.label(),
+            Target::Aws(target) => target.label(),
+            Target::Kubernetes(settings) => {
+                format!("Kubernetes {}/{}", settings.namespace, settings.deployment)
+            }
+        }
+    }
+
+    /// Whether the target can serve several versions at once, at percentages: Workers' percentage deployments and Lambda's
+    /// weighted aliases. The rest serve one version, so their first stage is the whole deploy.
+    fn staged(&self) -> bool {
+        matches!(
+            self,
+            Target::Cloudflare(cloudflare::Target::Workers(_))
+                | Target::Aws(aws::Target::Lambda { .. })
+        )
+    }
+}
+
+/// The calls a rollout makes to its platforms, by target: `live` reads the version that serves now, `upload` makes a
+/// version from the release's artifact, `split` serves versions at percentages, `restore` serves an earlier one again.
+pub trait Api: Send + Sync {
+    fn live(&self, target: &Target) -> Result<Option<String>, String>;
+    fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String>;
+    fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String>;
+    fn restore(&self, target: &Target, to: &str) -> Result<(), String>;
+    /// The Kubernetes client and the hub's tools, which a Kubernetes Deployment's rollout runs with ([`kubernetes::roll`]).
+    fn kubernetes(&self) -> Result<(&kubernetes::Client, &kubernetes::Tools), String> {
+        Err("no Kubernetes connector serves this rollout".to_string())
+    }
+}
+
+/// The platforms a rollout reaches, each present when an environment's targets need it. The tools are the hub's, for a
+/// Kubernetes Deployment's Helm chart and kustomize.
+pub struct Platforms {
+    pub cloudflare: Option<cloudflare::Client>,
+    pub aws: Option<aws::Client>,
+    pub kubernetes: Option<kubernetes::Client>,
+    pub tools: kubernetes::Tools,
+}
+
+impl Platforms {
+    fn cloudflare(&self) -> Result<&cloudflare::Client, String> {
+        self.cloudflare
+            .as_ref()
+            .ok_or_else(|| "no Cloudflare connector serves this rollout".to_string())
+    }
+
+    fn aws(&self) -> Result<&aws::Client, String> {
+        self.aws
+            .as_ref()
+            .ok_or_else(|| "no AWS connector serves this rollout".to_string())
+    }
+}
+
+impl Api for Platforms {
+    fn live(&self, target: &Target) -> Result<Option<String>, String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.live(t),
+            Target::Aws(t) => self.aws()?.live(t),
+            Target::Kubernetes(_) => Err(KUBERNETES_UNIT.to_string()),
+        }
+    }
+
+    fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.upload(t, bytes),
+            Target::Aws(t) => self.aws()?.upload(t, bytes),
+            Target::Kubernetes(_) => Err(KUBERNETES_UNIT.to_string()),
+        }
+    }
+
+    fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.split(t, versions),
+            Target::Aws(t) => self.aws()?.split(t, versions),
+            Target::Kubernetes(_) => Err(KUBERNETES_UNIT.to_string()),
+        }
+    }
+
+    fn restore(&self, target: &Target, to: &str) -> Result<(), String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.restore(t, to),
+            Target::Aws(t) => self.aws()?.restore(t, to),
+            Target::Kubernetes(_) => Err(KUBERNETES_UNIT.to_string()),
+        }
+    }
+
+    fn kubernetes(&self) -> Result<(&kubernetes::Client, &kubernetes::Tools), String> {
+        let client = self
+            .kubernetes
+            .as_ref()
+            .ok_or_else(|| "no Kubernetes connector serves this rollout".to_string())?;
+        Ok((client, &self.tools))
+    }
+}
+
+/// The staged calls refuse a Kubernetes target: its Deployment is rolled out whole, by [`kubernetes::roll`].
+const KUBERNETES_UNIT: &str = "a Kubernetes Deployment is rolled out whole, by its own engine";
+
 /// An environment's rollout settings, read from its variables.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub targets: Vec<Target>,
+    /// The AWS region the environment deploys in (`AWS_REGION`), when it names one; else the connector's.
+    pub aws_region: Option<String>,
     pub stages: Vec<u32>,
     pub window: Duration,
     pub max_errors: u32,
@@ -82,17 +206,68 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// The settings of an environment, or None when it names no Cloudflare target (it keeps its deploy hook).
+    /// The settings of an environment, or None when it names no platform target (it keeps its deploy hook).
     pub fn of(env: &Environment) -> Result<Option<Settings>, String> {
+        let var = |key: &str| variable(env, key);
         let mut targets = Vec::new();
-        if let Some(name) = variable(env, "CLOUDFLARE_WORKER") {
-            targets.push(Target::Workers(name));
+        if let Some(name) = var("CLOUDFLARE_WORKER") {
+            targets.push(Target::Cloudflare(cloudflare::Target::Workers(name)));
         }
-        if let Some(name) = variable(env, "CLOUDFLARE_PAGES") {
-            targets.push(Target::Pages(name));
+        if let Some(name) = var("CLOUDFLARE_PAGES") {
+            targets.push(Target::Cloudflare(cloudflare::Target::Pages(name)));
+        }
+        if let Some(function) = var("AWS_LAMBDA_FUNCTION") {
+            targets.push(Target::Aws(aws::Target::Lambda {
+                function,
+                alias: var("AWS_LAMBDA_ALIAS").unwrap_or_else(|| "live".to_string()),
+            }));
+        }
+        if var("AWS_ECS_CLUSTER").is_some() || var("AWS_ECS_SERVICE").is_some() {
+            let (Some(cluster), Some(service), Some(container)) = (
+                var("AWS_ECS_CLUSTER"),
+                var("AWS_ECS_SERVICE"),
+                var("AWS_ECS_CONTAINER"),
+            ) else {
+                return Err(
+                    "an ECS rollout names AWS_ECS_CLUSTER, AWS_ECS_SERVICE and AWS_ECS_CONTAINER"
+                        .into(),
+                );
+            };
+            targets.push(Target::Aws(aws::Target::Ecs {
+                family: var("AWS_ECS_FAMILY").unwrap_or_else(|| service.clone()),
+                cluster,
+                service,
+                container,
+                min_healthy: var_u32(&var, "ECS_MIN_HEALTHY_PERCENT", 100)?,
+                max_percent: var_u32(&var, "ECS_MAX_PERCENT", 200)?,
+            }));
+        }
+        if let Some(bucket) = var("AWS_S3_BUCKET") {
+            let prefix = var("AWS_S3_PREFIX").unwrap_or_default();
+            let prefix = match prefix.trim_matches('/') {
+                "" => String::new(),
+                trimmed => format!("{trimmed}/"),
+            };
+            targets.push(Target::Aws(aws::Target::Site {
+                bucket,
+                prefix,
+                distribution: var("AWS_CLOUDFRONT_DISTRIBUTION"),
+            }));
+        }
+        if let Some(name) = var("AWS_CLOUDFORMATION_STACK") {
+            targets.push(Target::Aws(aws::Target::Stack { name }));
+        }
+        if let Some(settings) = kubernetes::Settings::of(env)? {
+            targets.push(Target::Kubernetes(settings));
         }
         if targets.is_empty() {
             return Ok(None);
+        }
+        if targets.len() > 1 && targets.iter().any(|t| matches!(t, Target::Kubernetes(_))) {
+            return Err(format!(
+                "{} names a Kubernetes Deployment and other targets: the Deployment is the environment's only target",
+                env.name
+            ));
         }
         Ok(Some(Settings {
             targets,
@@ -101,7 +276,7 @@ impl Settings {
     }
 
     /// The stages and the health watch an environment's variables set (`ROLLOUT_STAGES`, `DEPLOY_WINDOW_SECS`, the
-    /// thresholds and the queries). Every platform reads them; the targets are the platform's own.
+    /// thresholds, the queries) and its AWS region. Every platform reads them; the targets are the platform's own.
     pub fn watch_of(env: &Environment) -> Result<Settings, String> {
         let var = |key: &str| variable(env, key);
         let stages = match var("ROLLOUT_STAGES") {
@@ -142,6 +317,7 @@ impl Settings {
         };
         Ok(Settings {
             targets: Vec::new(),
+            aws_region: var("AWS_REGION"),
             stages,
             window: Duration::from_secs(window),
             max_errors,
@@ -154,6 +330,14 @@ impl Settings {
                 .unwrap_or_else(|| health::LATENCY_QUERY.to_string()),
         })
     }
+
+    /// The Kubernetes Deployment the environment rolls out to, when it names one (it is then its only target).
+    pub fn kubernetes(&self) -> Option<&kubernetes::Settings> {
+        self.targets.iter().find_map(|target| match target {
+            Target::Kubernetes(settings) => Some(settings),
+            _ => None,
+        })
+    }
 }
 
 /// An environment variable's value, trimmed, when it is set and not empty.
@@ -162,6 +346,16 @@ fn variable(env: &Environment, key: &str) -> Option<String> {
         .get(key)
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+}
+
+/// A whole-number variable, or its default when the environment does not name it.
+fn var_u32(var: &impl Fn(&str) -> Option<String>, key: &str, default: u32) -> Result<u32, String> {
+    match var(key) {
+        Some(text) => text
+            .parse::<u32>()
+            .map_err(|_| format!("{key} is a whole number")),
+        None => Ok(default),
+    }
 }
 
 /// `10,50,100`: increasing percentages from 1 to 100, ending at 100.
@@ -218,27 +412,9 @@ fn staging_passed(envs: &[Environment], version: &str) -> bool {
     })
 }
 
-/// The gate every platform's deploy of `version` to `env` passes before it is recorded or waits for approval: the release
-/// is qualified and published, and a protected environment has a passing staging deploy of it.
-fn gate_common(
-    releases: &entity::Store,
-    envs: &[Environment],
-    project: &str,
-    env: &Environment,
-    version: &str,
-) -> Result<(), String> {
-    eligible(releases, project, version)?;
-    if env.protected && !staging_passed(envs, version) {
-        return Err(format!(
-            "{} is protected: it deploys {version} only after a staging environment passed that version",
-            env.name
-        ));
-    }
-    Ok(())
-}
-
-/// The gate of a Cloudflare deploy: [`gate_common`], and the environment's settings (None when it is not a Cloudflare
-/// environment: no gate here).
+/// The gate a deploy of `version` to `env` passes before it is recorded or waits for approval: the release is
+/// qualified and published, and a protected environment has a passing staging deploy of it, whichever platform it deploys
+/// to. Returns the environment's settings, or None when it names no platform (no gate here).
 pub fn check_gate(
     releases: &entity::Store,
     envs: &[Environment],
@@ -249,63 +425,35 @@ pub fn check_gate(
     let Some(settings) = Settings::of(env)? else {
         return Ok(None);
     };
-    gate_common(releases, envs, project, env, version)?;
+    eligible(releases, project, version)?;
+    if env.protected && !staging_passed(envs, version) {
+        return Err(format!(
+            "{} is protected: it deploys {version} only after a staging environment passed that version",
+            env.name
+        ));
+    }
     Ok(Some(settings))
 }
 
-/// The gate a deploy of `version` to `env` passes, on whichever platform the environment names (none: no gate).
-pub fn gate(app: &App, project: &str, env: &Environment, version: &str) -> Result<(), String> {
-    let envs = app.environments.of(project);
-    match Plan::of(env)? {
-        None => Ok(()),
-        Some(Plan::Cloudflare(_)) => {
-            check_gate(&app.releases, &envs, project, env, version).map(|_| ())
-        }
-        Some(Plan::Kubernetes(_)) => gate_common(&app.releases, &envs, project, env, version),
-    }
-}
-
-/// The platform an environment's deploys run on (23): Cloudflare's Workers or Pages, or a Kubernetes cluster.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Plan {
-    Cloudflare(Settings),
-    Kubernetes(kubernetes::Settings),
-}
-
-impl Plan {
-    /// The plan of an environment, or None when it names no platform (it keeps its deploy hook).
-    pub fn of(env: &Environment) -> Result<Option<Plan>, String> {
-        match (Settings::of(env)?, kubernetes::Settings::of(env)?) {
-            (Some(_), Some(_)) => Err(format!(
-                "{} names both Cloudflare and Kubernetes targets: an environment deploys to one platform",
-                env.name
-            )),
-            (Some(settings), None) => Ok(Some(Plan::Cloudflare(settings))),
-            (None, Some(settings)) => Ok(Some(Plan::Kubernetes(settings))),
-            (None, None) => Ok(None),
-        }
-    }
-
-    /// The stages and the health watch of the rollout.
-    pub fn watch(&self) -> &Settings {
-        match self {
-            Plan::Cloudflare(settings) => settings,
-            Plan::Kubernetes(settings) => &settings.watch,
-        }
-    }
-
-    /// The items of the recipe run's rollout step: one per Cloudflare target, one for a Kubernetes Deployment.
-    fn items(&self) -> u32 {
-        match self {
-            Plan::Cloudflare(settings) => settings.targets.len().max(1) as u32,
-            Plan::Kubernetes(_) => 1,
-        }
-    }
+/// [`check_gate`] over the hub's stores.
+pub fn gate(
+    app: &App,
+    project: &str,
+    env: &Environment,
+    version: &str,
+) -> Result<Option<Settings>, String> {
+    check_gate(
+        &app.releases,
+        &app.environments.of(project),
+        project,
+        env,
+        version,
+    )
 }
 
 // ---- Rollouts -------------------------------------------------------------------------------------------------------
 
-/// The ports a rollout uses: Cloudflare, the release's bytes, the checks, the incidents, and the recipe run that records it.
+/// The ports a rollout uses: the platforms, the release's bytes, the checks, the incidents, and the recipe run that records it.
 pub struct Ports<'a> {
     pub api: &'a dyn Api,
     pub artifacts: &'a dyn Artifacts,
@@ -381,6 +529,9 @@ pub fn roll(
     release: &Release,
     run: &str,
 ) -> Rolled {
+    if let Some(kube) = settings.kubernetes() {
+        return roll_kubernetes(ports, project, env, kube, release, run);
+    }
     let mut changed: Vec<(Target, Option<String>)> = Vec::new();
     let items = settings.targets.len();
     match rollout_all(ports, project, env, settings, release, &mut changed) {
@@ -431,6 +582,37 @@ pub fn roll(
     }
 }
 
+/// A Kubernetes Deployment's rollout: the kubernetes module's engine runs it with the same recipe run, checks and incidents.
+/// The engine's client and tools come from the platforms; without them the step fails before anything is touched.
+fn roll_kubernetes(
+    ports: &Ports,
+    project: &str,
+    env: &Environment,
+    settings: &kubernetes::Settings,
+    release: &Release,
+    run: &str,
+) -> Rolled {
+    let (client, tools) = match ports.api.kubernetes() {
+        Ok(pair) => pair,
+        Err(why) => {
+            ports.runs.settle(run, STEP, &Report::verdict(false), now());
+            return Rolled {
+                status: "failed",
+                detail: why,
+            };
+        }
+    };
+    let kube = kubernetes::Ports {
+        client,
+        tools,
+        artifacts: ports.artifacts,
+        checks: ports.checks,
+        incidents: ports.incidents,
+        runs: ports.runs,
+    };
+    kubernetes::roll(&kube, project, env, settings, release, run)
+}
+
 fn stages_text(stages: &[u32]) -> String {
     stages
         .iter()
@@ -463,9 +645,10 @@ fn rollout_all(
             .upload(target, &bytes)
             .map_err(|e| Stop::Check(format!("{label}: {e}")))?;
         changed.push((target.clone(), previous.clone()));
-        // Pages has no percentages, and a first deploy has nothing to split with: both go to 100% at once.
-        let stages: Vec<u32> = match (target, &previous) {
-            (Target::Workers(_), Some(_)) => settings.stages.clone(),
+        // Pages, a site, a service and a stack have no percentages, and a first deploy has nothing to split with: both go
+        // to 100% at once.
+        let stages: Vec<u32> = match &previous {
+            Some(_) if target.staged() => settings.stages.clone(),
             _ => vec![100],
         };
         for pct in stages {
@@ -560,20 +743,20 @@ fn now() -> u64 {
 
 // ---- Starting them -------------------------------------------------------------------------------------------------
 
-/// Deploys `version` to an environment now: the gate passes, the deploy is recorded, and its rollout starts in the
-/// background. The deploy comes back with status `recorded` (its outcome follows).
+/// Deploys `version` to an environment now: the gate passes, the deploy is recorded, and its rollout starts in
+/// the background. The deploy comes back with status `recorded` (its outcome follows).
 pub fn start(
     app: &Arc<App>,
     project: &str,
     env: &Environment,
     version: &str,
     by: &str,
-    plan: Plan,
+    settings: Settings,
 ) -> Result<Deploy, String> {
     let release = eligible(&app.releases, project, version)?;
     let prior = env.version.clone();
     let deploy = environments::record(app, project, &env.name, version, by, None)?;
-    spawn(app, project, env, plan, release, &deploy, prior);
+    spawn(app, project, env, settings, release, &deploy, prior);
     Ok(deploy)
 }
 
@@ -582,12 +765,12 @@ pub fn approved(
     app: &Arc<App>,
     project: &str,
     env: &Environment,
-    plan: Plan,
+    settings: Settings,
     deploy: &Deploy,
     prior: Option<String>,
 ) {
     match eligible(&app.releases, project, &deploy.version) {
-        Ok(release) => spawn(app, project, env, plan, release, deploy, prior),
+        Ok(release) => spawn(app, project, env, settings, release, deploy, prior),
         Err(why) => {
             environments::settle_deploy(app, project, &env.name, &deploy.id, "failed", &why, None)
         }
@@ -604,7 +787,7 @@ pub fn published(app: &Arc<App>, project: &str) {
         if env.track != "releases" || env.version.as_deref() == Some(release.version.as_str()) {
             continue;
         }
-        if !matches!(Plan::of(&env), Ok(Some(_))) {
+        if !matches!(Settings::of(&env), Ok(Some(_))) {
             continue;
         }
         if let Err(why) = environments::request(
@@ -624,39 +807,25 @@ pub fn published(app: &Arc<App>, project: &str) {
     }
 }
 
-/// The platform's client, read from its connector on the hub, with the settings the rollout runs on.
-enum Connected {
-    Cloudflare(cloudflare::Client, Settings),
-    Kubernetes(kubernetes::Client, kubernetes::Settings),
-}
-
-fn connect(app: &App, plan: Plan) -> Result<Connected, String> {
-    Ok(match plan {
-        Plan::Cloudflare(settings) => Connected::Cloudflare(cloudflare_client(app)?, settings),
-        Plan::Kubernetes(settings) => Connected::Kubernetes(kubernetes_client(app)?, settings),
-    })
-}
-
 /// Starts the rollout of `release` as deploy `deploy` in the background. The recipe run is started here, so its step
 /// shows at once; the deploy's status and the environment's version follow the outcome, and the chat is told.
 fn spawn(
     app: &Arc<App>,
     project: &str,
     env: &Environment,
-    plan: Plan,
+    settings: Settings,
     release: Release,
     deploy: &Deploy,
     prior: Option<String>,
 ) {
-    let items = BTreeMap::from([(STEP.to_string(), plan.items())]);
-    let said = starting(&env.name, &deploy.version, plan.watch());
-    let connected = match connect(app, plan) {
-        Ok(connected) => connected,
+    let client = match platforms(app, &settings) {
+        Ok(client) => client,
         Err(why) => {
             environments::settle_deploy(app, project, &env.name, &deploy.id, "failed", &why, None);
             return;
         }
     };
+    let items = BTreeMap::from([(STEP.to_string(), settings.targets.len().max(1) as u32)]);
     let subject = format!("{}@{}", env.name, deploy.version);
     let run = app
         .recipe_runs
@@ -679,7 +848,11 @@ fn spawn(
         "the rollout started",
         None,
     );
-    tell(app, project, &said);
+    tell(
+        app,
+        project,
+        &starting(&env.name, &deploy.version, &settings),
+    );
     let (app, project, env, deploy_id, version) = (
         Arc::clone(app),
         project.to_string(),
@@ -697,30 +870,14 @@ fn spawn(
         let incidents = AppIncidents {
             app: Arc::clone(&app),
         };
-        let rolled = match connected {
-            Connected::Cloudflare(client, settings) => {
-                let ports = Ports {
-                    api: &client,
-                    artifacts: &artifacts,
-                    checks: &checks,
-                    incidents: &incidents,
-                    runs: &app.recipe_runs,
-                };
-                roll(&ports, &project, &env, &settings, &release, &run)
-            }
-            Connected::Kubernetes(client, settings) => {
-                let tools = kubernetes::Tools::from_env();
-                let ports = kubernetes::Ports {
-                    client: &client,
-                    tools: &tools,
-                    artifacts: &artifacts,
-                    checks: &checks,
-                    incidents: &incidents,
-                    runs: &app.recipe_runs,
-                };
-                kubernetes::roll(&ports, &project, &env, &settings, &release, &run)
-            }
+        let ports = Ports {
+            api: &client,
+            artifacts: &artifacts,
+            checks: &checks,
+            incidents: &incidents,
+            runs: &app.recipe_runs,
         };
+        let rolled = roll(&ports, &project, &env, &settings, &release, &run);
         let running = match rolled.status {
             "passed" => Some(Some(version.clone())),
             "rolled_back" => Some(prior.clone()),
@@ -762,17 +919,29 @@ fn record_rollback(app: &App, project: &str, env: &str, to: Option<&str>, from: 
     }
 }
 
-/// The Cloudflare client for the environment's account, with the connector's token read on the hub.
-fn cloudflare_client(app: &App) -> Result<cloudflare::Client, String> {
-    let values = crate::connectors::hub_values(app, "cloudflare")?;
-    let account = values.get("account_id").map(String::as_str).unwrap_or("");
-    let token = values.get("api_token").map(String::as_str).unwrap_or("");
-    cloudflare::Client::new(
-        Arc::new(crate::platforms::http::Ureq),
-        &cloudflare::Client::base_from_env(),
-        account,
-        token,
-    )
+/// The clients the environment's targets need: Cloudflare's when a Worker or Pages target is named, AWS's when an AWS one is,
+/// Kubernetes's when a Deployment is. Each is built from its connector on the hub, so a missing connector refuses the deploy
+/// before anything is called.
+fn platforms(app: &App, settings: &Settings) -> Result<Platforms, String> {
+    let cloudflare_targets = settings
+        .targets
+        .iter()
+        .any(|t| matches!(t, Target::Cloudflare(_)));
+    let aws_targets = settings.targets.iter().any(|t| matches!(t, Target::Aws(_)));
+    Ok(Platforms {
+        cloudflare: cloudflare_targets
+            .then(|| cloudflare_client(app))
+            .transpose()?,
+        aws: aws_targets
+            .then(|| aws_client(app, settings.aws_region.as_deref()))
+            .transpose()?,
+        kubernetes: settings
+            .kubernetes()
+            .is_some()
+            .then(|| kubernetes_client(app))
+            .transpose()?,
+        tools: kubernetes::Tools::from_env(),
+    })
 }
 
 /// The Kubernetes client for the environment's cluster: its address, CA and token from the connector, read on the hub.
@@ -791,6 +960,65 @@ fn kubernetes_client(app: &App) -> Result<kubernetes::Client, String> {
             .map(|c| c.trim().to_string())
             .filter(|c| !c.is_empty()),
     ))
+}
+
+/// The AWS client: the `aws` connector's role and base credentials (or web identity token), read on the hub. The region is
+/// the environment's `AWS_REGION`, else the connector's, else us-east-1.
+fn aws_client(app: &App, region: Option<&str>) -> Result<aws::Client, String> {
+    let values = crate::connectors::hub_values(app, "aws")?;
+    let value = |key: &str| {
+        values
+            .get(key)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let region = region
+        .map(str::to_string)
+        .or_else(|| value("region"))
+        .unwrap_or_else(|| aws::DEFAULT_REGION.to_string());
+    let base = match (
+        value("web_identity_token"),
+        value("access_key_id"),
+        value("secret_access_key"),
+    ) {
+        (Some(token), _, _) => aws::Base::WebIdentity { token },
+        (None, Some(access_key), Some(secret_key)) => aws::Base::Keys {
+            access_key,
+            secret_key,
+        },
+        _ => {
+            return Err(
+                "the AWS connector holds neither a web identity token nor an access key and secret"
+                    .into(),
+            );
+        }
+    };
+    let role = value("role_arn").ok_or("the AWS connector has no role ARN")?;
+    aws::Client::new(
+        Arc::new(crate::platforms::http::Ureq),
+        aws::Endpoints::from_env(&region),
+        &region,
+        &role,
+        base,
+        aws::system_clock(),
+        aws::Wait {
+            interval: Duration::from_secs(15),
+            attempts: 80,
+        },
+    )
+}
+
+/// The Cloudflare client for the environment's account, with the connector's token read on the hub.
+fn cloudflare_client(app: &App) -> Result<cloudflare::Client, String> {
+    let values = crate::connectors::hub_values(app, "cloudflare")?;
+    let account = values.get("account_id").map(String::as_str).unwrap_or("");
+    let token = values.get("api_token").map(String::as_str).unwrap_or("");
+    cloudflare::Client::new(
+        Arc::new(crate::platforms::http::Ureq),
+        &cloudflare::Client::base_from_env(),
+        account,
+        token,
+    )
 }
 
 /// Writes one notice to the project's chat (the loop's notice path).

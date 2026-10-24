@@ -43,18 +43,6 @@ impl Target {
     }
 }
 
-/// The Cloudflare operations a rollout needs. The production client is [`Client`]; the tests give a recording fake.
-pub trait Api: Send + Sync {
-    /// The version (Workers) or deployment (Pages) that serves the target now: what a rollback returns to.
-    fn live(&self, target: &Target) -> Result<Option<String>, String>;
-    /// Uploads the artifact as a new version (Workers) or deployment (Pages), and returns its id.
-    fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String>;
-    /// Serves `versions` (id and percentage, summing to 100). Pages serves one deployment at 100%.
-    fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String>;
-    /// Serves the earlier version or deployment `to` again, at 100%.
-    fn restore(&self, target: &Target, to: &str) -> Result<(), String>;
-}
-
 /// The production client: one account, one token, the platforms' HTTP path.
 pub struct Client {
     http: Arc<dyn Http>,
@@ -118,8 +106,8 @@ impl Client {
     }
 }
 
-impl Api for Client {
-    fn live(&self, target: &Target) -> Result<Option<String>, String> {
+impl Client {
+    pub fn live(&self, target: &Target) -> Result<Option<String>, String> {
         match target {
             Target::Workers(script) => {
                 let v = self.send(
@@ -159,7 +147,7 @@ impl Api for Client {
         }
     }
 
-    fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String> {
+    pub fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String> {
         let (path, content_type, body) = match target {
             Target::Workers(script) => {
                 let metadata = json!({ "main_module": WORKER_MODULE }).to_string();
@@ -186,7 +174,7 @@ impl Api for Client {
             .ok_or_else(|| format!("{}: the upload answered no id", target.label()))
     }
 
-    fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String> {
+    pub fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String> {
         match target {
             Target::Workers(script) => {
                 let total: u32 = versions.iter().map(|(_, p)| *p).sum();
@@ -214,7 +202,7 @@ impl Api for Client {
         }
     }
 
-    fn restore(&self, target: &Target, to: &str) -> Result<(), String> {
+    pub fn restore(&self, target: &Target, to: &str) -> Result<(), String> {
         match target {
             Target::Workers(_) => self.split(target, &[(to.to_string(), 100)]),
             Target::Pages(project) => {

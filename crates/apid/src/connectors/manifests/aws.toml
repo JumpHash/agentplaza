@@ -1,0 +1,11 @@
+id = "aws"
+kind = ["tool"]
+version = "1.0.0"
+scopes = []
+egress = []
+secrets = ["AWS_SECRET_ACCESS_KEY", "AWS_WEB_IDENTITY_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = ""
+auth_format = ""
