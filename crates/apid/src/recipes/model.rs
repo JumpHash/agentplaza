@@ -827,7 +827,17 @@ max = 2
         let deploy = builtin_named("deploy").unwrap();
         assert!(!deploy.description.contains("Stub"), "deploy is real");
         assert_eq!(deploy.steps[0].fan_out, Fan::Named("per_target".into()));
-        for stub in ["incident", "upgrade", "cve"] {
+        let upgrade = builtin_named("upgrade").unwrap();
+        assert!(!upgrade.description.contains("Stub"), "upgrade is real");
+        assert_eq!(
+            upgrade
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            crate::upgrades::STEPS
+        );
+        for stub in ["incident", "cve"] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
                 r.description.contains("Stub until"),

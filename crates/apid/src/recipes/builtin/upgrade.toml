@@ -1,12 +1,16 @@
-# The upgrade recipe (PLAN 21.1, 24). Stub: it needs the upgrade phase (24); none runs yet. An upgrade plans a change of
-# a dependency or a toolchain, rolls it out, and checks it.
+# The upgrade recipe (PLAN 21.1, 24.2). Its engine is crates/apid/src/upgrades: a scheduled run per project and ecosystem
+# (Cargo, npm, pip and uv, Go, Gradle, NuGet, SwiftPM), or an advisory's fix (12.3). The steps: plan (the ecosystem's
+# updates against its registry, the changelogs read), rollout (the batch applied to a copy of main), verify (the selected
+# tests of a patch or minor batch, the whole suite for a major), review (the batch changes what it may, and only that), and
+# land (the batch's change goes to the landing queue: it lands by itself when the project allows, else it waits for the
+# owner). Each major is a run of its own.
 id = "upgrade"
 name = "Upgrade"
-description = "Stub until the upgrade phase (24): declares its steps, none runs yet."
-version = 1
+description = "Upgrades an ecosystem's dependencies on a schedule: its patch and minor updates as one batch, each major as its own change, read against the changelogs, tested, reviewed and queued."
+version = 2
 inputs = ["upgrade"]
 outputs = ["change"]
-triggers = ["upgrade.available"]
+triggers = ["schedule"]
 
 [[steps]]
 id = "plan"
@@ -22,6 +26,16 @@ gate = ["passed"]
 id = "verify"
 engine = "upgrade"
 gate = ["passed", "tests green"]
+
+[[steps]]
+id = "review"
+engine = "upgrade"
+gate = ["passed"]
+
+[[steps]]
+id = "land"
+engine = "upgrade"
+gate = ["passed"]
 output = "change"
 
 [[edges]]
@@ -32,4 +46,14 @@ when = "passed"
 [[edges]]
 from = "rollout"
 to = "verify"
+when = "passed"
+
+[[edges]]
+from = "verify"
+to = "review"
+when = "passed"
+
+[[edges]]
+from = "review"
+to = "land"
 when = "passed"

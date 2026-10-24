@@ -149,6 +149,8 @@ pub struct App {
     pub maintenance: crate::maintenance::Store,
     /// Where each project runs.
     pub environments: crate::environments::Store,
+    /// Each project's dependency upgrades: its schedules and the batches it made (upgrades/).
+    pub upgrades: crate::upgrades::Store,
     /// The review graph's runs and recipes (review_graph), kept in plaza.db; the change trees are in the object store.
     pub reviews: crate::review_graph::Reviews,
     /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
@@ -328,6 +330,7 @@ impl App {
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::new(),
             maintenance: Default::default(),
+            upgrades: crate::upgrades::Store::default(),
             environments: crate::environments::Store::default()
                 .with_generations(Arc::clone(&generations)),
             reviews: crate::review_graph::Reviews::new(Arc::clone(&blobs)),

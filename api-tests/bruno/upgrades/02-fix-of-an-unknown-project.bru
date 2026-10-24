@@ -1,0 +1,26 @@
+meta {
+  name: Fix of an advisory for an unknown project
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/no-such-project/upgrades/fix
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "advisory": "RUSTSEC-0000-0000",
+    "ecosystem": "cargo",
+    "package": "tiny",
+    "fixed": "1.0.1",
+    "priority": "high"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
