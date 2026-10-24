@@ -1448,9 +1448,22 @@ fn owner_door(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Some(with_token) = with_credential(app, req, rest) {
         let mut req = req.clone();
         req.body = with_token;
-        return forward(app, &req, "owner", rest);
+        return after_import(app, rest, forward(app, &req, "owner", rest));
     }
-    forward(app, req, "owner", rest)
+    after_import(app, rest, forward(app, req, "owner", rest))
+}
+
+/// A repository imported or adopted through the console: the reviews its history carries become the book's runs.
+fn after_import(app: &App, rest: &str, resp: Response) -> Response {
+    if (200..300).contains(&resp.status)
+        && let Some(repo) = rest.strip_prefix("repos/").and_then(|r| {
+            r.strip_suffix("/import")
+                .or_else(|| r.strip_suffix("/adopt"))
+        })
+    {
+        crate::review_graph::restore_carried(app, repo);
+    }
+    resp
 }
 
 /// The body of an owner's export, release export or adopt with its connection's token added, when it has none.

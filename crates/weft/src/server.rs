@@ -784,6 +784,13 @@ fn repo_routes(router: Router<H>) -> Router<H> {
                 Err(e) => refused(e),
             }
         })
+        .get("/v1/repos/{repo}/reviews", |h: &H, _, p| {
+            let st = h.store.state();
+            match st.repo(p.get("repo")) {
+                Ok(_) => ok(json!({ "reviews": reviews_view(&st, p.get("repo")) })),
+                Err(e) => fail(404, e),
+            }
+        })
         .get("/v1/repos/{repo}/targets", |h: &H, req, p| {
             let rev = q(req, "rev").unwrap_or_else(|| h.store.state().repos.get(p.get("repo")).map(|r| r.head("main")).unwrap_or_else(|| "root".into()));
             match crate::release::targets(&h.store, &rev) {
@@ -1744,7 +1751,21 @@ pub fn change_view(st: &State, c: &Change) -> Value {
         "kind": c.kind, "base": c.base, "stacked_on": c.stacked_on.and_then(|s| st.changes.get(&s).map(|x| x.name.clone())), "reverts": c.reverts.and_then(|s| st.changes.get(&s).map(|x| x.name.clone())),
         "revisions": revs, "drafts": c.drafts, "rounds": c.rounds, "landed": c.landed, "intents": c.intents, "records": records,
         "conflict": c.conflict, "queue_position": queue_pos, "import": c.import, "exported": c.exported, "opened_ms": c.opened_ms,
+        "reviews": c.reviews,
     })
+}
+
+/// Every review written about the repository's changes, in order: `{change, seq, at_ms, key, outcome}`.
+pub fn reviews_view(st: &State, repo: &str) -> Vec<Value> {
+    st.changes
+        .values()
+        .filter(|c| c.repo == repo)
+        .flat_map(|c| {
+            c.reviews.iter().map(|r| {
+                json!({ "change": c.name, "seq": r.seq, "at_ms": r.at_ms, "key": r.key, "outcome": r.outcome })
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
