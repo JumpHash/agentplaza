@@ -16,6 +16,10 @@ ureq.workspace = true
 # The data stage (PLAN 22.8) runs over SQLite standing in for the project's database (the workspace's bundled build).
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "cache", "fallible_uint"] }
 sha2.workspace = true
+# The scrubber (PLAN 22.5): rules for log lines and the personal data scan.
+regex = "1"
+# The scrubber's read-only Postgres source (PLAN 22.5): a local host or socket only, its session read-only.
+postgres = "0.19"
 # The hub's secret shapes (the hooks' detector): the security stages scan a release's tree with it.
 apz-secrets = { path = "../apz-secrets" }
 

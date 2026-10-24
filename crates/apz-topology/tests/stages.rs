@@ -63,6 +63,7 @@ fn cp_backup() -> Option<Backup> {
 fn tasks_stage() -> DataStage {
     DataStage {
         previous: vec!["db/previous.sql".into()],
+        production: None,
         migrations: vec!["db/0002_due.sql".into()],
         down: vec!["db/0002_due.down.sql".into()],
         reads: vec![read(
@@ -250,6 +251,7 @@ CREATE TABLE ledger (writer INTEGER NOT NULL, seq INTEGER NOT NULL, PRIMARY KEY 
 fn ledger_stage(writers: u32, ops: u32) -> DataStage {
     DataStage {
         previous: vec!["db/previous.sql".into()],
+        production: None,
         migrations: vec![],
         down: vec![],
         reads: vec![],

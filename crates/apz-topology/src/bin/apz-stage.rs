@@ -1,12 +1,13 @@
 //! apz-stage: the lab VM's stage runner (PLAN 22.8). Runs the data, cache and messaging stages a topology declares and
 //! records their numbers at the run, where the hub judges them as findings.
 //!
-//! Usage: `apz-stage <plan.json> <repo-root> <work-dir> [--service NAME=URL]... [--upstream URL --token TOKEN]`
+//! Usage: `apz-stage <plan.json> <repo-root> <work-dir> [--service NAME=URL]... [--production COPY] [--upstream URL --token TOKEN]`
 //!
 //! `<plan.json>` is the guest plan the runner was given: its `stages` are the stages the topology declares. The runner
 //! (`apz-topo-run --stages`) runs this once the services are up.
 //!
-//! - The data stage runs over the repo at `<repo-root>` (its SQL files) in `<work-dir>/data`.
+//! - The data stage runs over the repo at `<repo-root>` (its SQL files) in `<work-dir>/data`. A stage that names a
+//!   production source starts from `--production COPY`: the scrubbed copy the hub made for this run (PLAN 22.5).
 //! - The cache stage needs the URL of its service (`--service`, one for each service the run started): the service's
 //!   declared paths are read over HTTP.
 //! - The messaging stage runs its producer and the idempotent consumer in process; its deliveries are written to
@@ -36,7 +37,7 @@ fn main() -> ExitCode {
         Err(Failure::Usage(why)) => {
             eprintln!("apz-stage: {why}");
             eprintln!(
-                "usage: apz-stage <plan.json> <repo-root> <work-dir> [--service NAME=URL]... [--upstream URL --token TOKEN]"
+                "usage: apz-stage <plan.json> <repo-root> <work-dir> [--service NAME=URL]... [--production COPY] [--upstream URL --token TOKEN]"
             );
             ExitCode::from(2)
         }
@@ -53,13 +54,18 @@ enum Failure {
 }
 
 /// The options after the three paths: the services' URLs, and the collector's upstream and token.
-type Options = (Vec<(String, String)>, Option<String>, Option<String>);
+type Options = (
+    Vec<(String, String)>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 fn run(args: &[String]) -> Result<(), Failure> {
     let [plan_path, root, work, rest @ ..] = args else {
         return Err(Failure::Usage("three paths are needed".into()));
     };
-    let (services, upstream, token) = options(rest).map_err(Failure::Usage)?;
+    let (services, upstream, token, production) = options(rest).map_err(Failure::Usage)?;
     let text = std::fs::read_to_string(plan_path)
         .map_err(|why| Failure::Stage(format!("{plan_path}: {why}")))?;
     let plan: GuestPlan =
@@ -73,7 +79,8 @@ fn run(args: &[String]) -> Result<(), Failure> {
     let mut failed = Vec::new();
 
     if let Some(stage) = &stages.data {
-        let run = data::run(stage, root, &work.join("data"));
+        let copy = production.as_deref().map(Path::new);
+        let run = data::run_from(stage, root, &work.join("data"), copy);
         for note in &run.notes {
             eprintln!("data: {note}");
         }
@@ -133,6 +140,7 @@ fn options(rest: &[String]) -> Result<Options, String> {
     let mut services = Vec::new();
     let mut upstream = None;
     let mut token = None;
+    let mut production = None;
     let mut it = rest.iter();
     while let Some(flag) = it.next() {
         let value = it
@@ -148,10 +156,11 @@ fn options(rest: &[String]) -> Result<Options, String> {
             }
             "--upstream" => upstream = Some(value),
             "--token" => token = Some(value),
+            "--production" => production = Some(value),
             other => return Err(format!("unknown option {other}")),
         }
     }
-    Ok((services, upstream, token))
+    Ok((services, upstream, token, production))
 }
 
 /// The deliveries the consumer recorded, one JSON line each.
