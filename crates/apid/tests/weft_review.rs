@@ -123,11 +123,12 @@ fn first_work(hub: &Hub, gateway: &FakeDaemon, cid: u64) -> Value {
     }
 }
 
-/// The session of `seat` on `task` that runs on a VM `known` does not have: forking, its CID set.
+/// The session of `seat` on `task` that runs on a VM `known` does not have, its CID set: forking, or already running
+/// when the hub moved it on before this poll saw it fork (a busy runner).
 fn next_session(hub: &Hub, task: &str, seat: &str, known: &HashSet<u64>) -> Value {
     let fresh = |s: &Value| {
         s["seat"] == seat
-            && s["state"] == "forking"
+            && (s["state"] == "forking" || s["state"] == "running")
             && s["cid"].as_u64().is_some_and(|cid| !known.contains(&cid))
     };
     let list = hub.wait_for(&format!("/v1/sessions?task={task}"), WAIT, |list| {
