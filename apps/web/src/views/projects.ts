@@ -15,6 +15,7 @@ import { settingsTab } from './project-settings';
 import { maintenanceTab } from './project-maintenance';
 import { environmentsTab } from './project-environments';
 import { previewsTab } from './project-previews';
+import { cvesTab } from './project-cves';
 import { recipeRunsOf } from './recipe-graph';
 import { projectsApi, type ModeDef, type ProjectMode } from '../api-projects';
 import { dropZone, pickFiles, uploadToProject, type PickedFile } from '../ui/file-drop';
@@ -47,7 +48,7 @@ const TASK_TONE: Record<WorkState, Tone> = {
 };
 const APPROVABLE: ProjectStage[] = ['critique', 'approval'];
 /** The tabs of a project's page that are drawn here; the others (Work, Tasks, Weft) are the console's own screens. */
-const OWN_TABS = ['plan', 'maintenance', 'environments', 'previews', 'settings'];
+const OWN_TABS = ['plan', 'maintenance', 'environments', 'previews', 'cves', 'settings'];
 const TAB_LINKS: [string, string][] = [
   ['plan', 'Plan'],
   ['work', 'Work'],
@@ -56,6 +57,7 @@ const TAB_LINKS: [string, string][] = [
   ['maintenance', 'Maintenance'],
   ['environments', 'Environments'],
   ['previews', 'Previews'],
+  ['cves', 'CVE report'],
   ['settings', 'Settings'],
 ];
 
@@ -543,7 +545,9 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
             ? [keep(`environments:${p.id}:${p.archived ? 'archived' : 'live'}`, () => environmentsTab(p))]
             : tab === 'previews'
               ? [keep(`previews:${p.id}:${p.archived ? 'archived' : 'live'}`, () => previewsTab(p))]
-              : planTab(p);
+              : tab === 'cves'
+                ? [keep(`cves:${p.id}:${p.archived ? 'archived' : 'live'}`, () => cvesTab(p))]
+                : planTab(p);
     return [...header(p, refresh), tabsBar(p, tab), h('div.pj-body', null, body)];
   };
 

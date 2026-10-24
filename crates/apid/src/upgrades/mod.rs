@@ -1188,6 +1188,9 @@ pub fn run(app: &App, project: &str, eco: Ecosystem, request: &Request) -> Repor
         now,
     };
     let report = process(&ports, project, eco, request);
+    if let Request::Fix(advisory) = request {
+        crate::cves::fix_settled(app, project, advisory, &report);
+    }
     settle(app, project, eco, &report, now);
     report
 }

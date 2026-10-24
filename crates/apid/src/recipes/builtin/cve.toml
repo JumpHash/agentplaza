@@ -1,35 +1,49 @@
-# The cve recipe (PLAN 21.1, 24). Stub: it needs the security phase (24); none runs yet. A vulnerability is assessed,
-# patched, and released.
+# The cve recipe (PLAN 21.1, 24.3, 12.3). Its engine is crates/apid/src/cves: a poll of the advisory feeds (OSV, GitHub's
+# advisory database, RustSec's advisory-db, and the ecosystems' audits), on a schedule per project. The steps: match (each
+# advisory against main's lock files and every release's SBOM, so the report names the releases and the environments that
+# run them), reach (whether the code reaches the vulnerable code: govulncheck's traces for Go, Weft's call references to the
+# named function for Rust), fix (an affected package in main becomes an upgrade task through the upgrade flow, with the
+# advisory's priority), and report (the project's CVE report, exportable, and the chat's notice of what is new).
 id = "cve"
 name = "Vulnerability"
-description = "Stub until the security phase (24): declares its steps, none runs yet."
-version = 1
+description = "Polls the advisory feeds, matches what they give against main and every release's SBOM, checks whether the code reaches the vulnerable code, fixes what main carries through an upgrade task, and keeps the project's CVE report."
+version = 2
 inputs = ["advisory"]
-outputs = ["release"]
-triggers = ["advisory.matched"]
+outputs = ["report"]
+triggers = ["schedule"]
 
 [[steps]]
-id = "assess"
+id = "match"
 engine = "cve"
 gate = ["passed"]
 
 [[steps]]
-id = "patch"
-engine = "cve"
-gate = ["passed", "tests green"]
-
-[[steps]]
-id = "release"
+id = "reach"
 engine = "cve"
 gate = ["passed"]
-output = "release"
+
+[[steps]]
+id = "fix"
+engine = "cve"
+gate = ["passed"]
+
+[[steps]]
+id = "report"
+engine = "cve"
+gate = ["passed"]
+output = "report"
 
 [[edges]]
-from = "assess"
-to = "patch"
+from = "match"
+to = "reach"
 when = "passed"
 
 [[edges]]
-from = "patch"
-to = "release"
+from = "reach"
+to = "fix"
+when = "passed"
+
+[[edges]]
+from = "fix"
+to = "report"
 when = "passed"

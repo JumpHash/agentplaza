@@ -848,16 +848,15 @@ max = 2
                 .collect::<Vec<_>>(),
             crate::upgrades::STEPS
         );
-        for stub in ["cve"] {
-            let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
-            assert!(
-                r.description.contains("Stub until"),
-                "{stub} says which phase fills it"
-            );
-            assert!(
-                r.steps.iter().all(|s| s.engine.is_some()),
-                "{stub} runs by its engine"
-            );
+        // The CVE recipe is real (cves/): its four steps are the engine's, and no built-in is a stub any more.
+        let cve = builtin_named("cve").unwrap();
+        assert!(!cve.description.contains("Stub"), "cve is real");
+        assert_eq!(
+            cve.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["match", "reach", "fix", "report"]
+        );
+        for r in &recipes {
+            assert!(!r.description.contains("Stub"), "{} is not a stub", r.id);
         }
         for r in recipes {
             r.check().unwrap();

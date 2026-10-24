@@ -570,6 +570,7 @@ pub fn tick(app: &Arc<App>, now: u64) {
     }
     app.triggers.start_due(&app.recipe_runs, now);
     crate::upgrades::tick(app, now);
+    crate::cves::tick(app, now);
 }
 
 /// Starts the triggers the plaza keeps for itself at its start: the engine watch's first run is a minute after it.

@@ -38,6 +38,7 @@ mod content;
 mod context_track;
 mod control;
 mod curator;
+mod cves;
 mod decisions;
 mod deliverables;
 mod deploy;

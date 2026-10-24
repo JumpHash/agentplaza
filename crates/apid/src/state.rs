@@ -153,6 +153,8 @@ pub struct App {
     pub environments: crate::environments::Store,
     /// Each project's dependency upgrades: its schedules and the batches it made (upgrades/).
     pub upgrades: crate::upgrades::Store,
+    /// Each project's CVE record: the feeds' last polls and the findings they make (cves/).
+    pub cves: crate::cves::Store,
     /// The review graph's runs and recipes (review_graph), kept in plaza.db; the change trees are in the object store.
     pub reviews: crate::review_graph::Reviews,
     /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
@@ -334,6 +336,7 @@ impl App {
             maintenance: Default::default(),
             incidents: Default::default(),
             upgrades: crate::upgrades::Store::default(),
+            cves: crate::cves::Store::default(),
             environments: crate::environments::Store::default()
                 .with_generations(Arc::clone(&generations)),
             reviews: crate::review_graph::Reviews::new(Arc::clone(&blobs)),
