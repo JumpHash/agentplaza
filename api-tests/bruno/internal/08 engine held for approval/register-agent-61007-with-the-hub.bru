@@ -36,6 +36,6 @@ tests {
   });
   test("the profile carries tools and a system prompt", function () {
     expect(res.getBody().profile.tools).to.be.an("array");
-    expect(res.getBody().profile.system).to.be.a("string");
+    expect(res.getBody().profile.system_parts).to.be.an("array").that.is.not.empty;
   });
 }
