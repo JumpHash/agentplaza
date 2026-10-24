@@ -87,7 +87,7 @@ pub struct Outcome {
     pub comparisons: Vec<Comparison>,
 }
 
-fn qualified(release: &Release) -> bool {
+pub(crate) fn qualified(release: &Release) -> bool {
     release.channel == "stable"
         && matches!(
             release.state,

@@ -26837,6 +26837,76 @@
         }
       }
     },
+    "/v1/test-lab/runs/{id}/ux": {
+      "post": {
+        "operationId": "post_v1_test_lab_runs_id_ux",
+        "tags": [
+          "test-lab"
+        ],
+        "summary": "A done run's UI checks: its candidate's pages read in the lane's test fork at each declared size, theme and locale, judged against the previous qualified stable release's screenshots; a failing check is filed as a visual, accessibility or layout finding on the run's change, and the candidate's screenshots are kept as its release's artifacts",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "owner": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "A path parameter is not valid UTF-8",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No owner token or session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicts with the current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{id}/topologies": {
       "get": {
         "operationId": "get_v1_projects_id_topologies",

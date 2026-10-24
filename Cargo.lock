@@ -365,6 +365,7 @@ dependencies = [
  "apz-transfer",
  "apz-trust",
  "apz-uds",
+ "apz-ux",
  "apz-view",
  "apz-vt",
  "argon2",
@@ -929,6 +930,17 @@ version = "1.0.0"
 dependencies = [
  "vm-memory",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "apz-ux"
+version = "1.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "png 0.18.1",
+ "serde",
+ "serde_json",
+ "toml 1.1.8+spec-1.1.0",
 ]
 
 [[package]]

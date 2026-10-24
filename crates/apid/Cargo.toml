@@ -63,6 +63,7 @@ apz-os = { path = "../apz-os" }
 apz-egress-rules = { path = "../apz-egress-rules" }
 # The test topologies (PLAN 22.6): the typed file, the guest plan and the runner (topology.rs).
 apz-topology = { path = "../apz-topology" }
+apz-ux = { path = "../apz-ux" }
 apz-secrets = { path = "../apz-secrets" }
 # The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.
 chacha20poly1305.workspace = true

@@ -261,6 +261,16 @@ impl Web {
     }
 }
 
+impl apz_ux::probe::Devtools for Web {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.command(method, params)
+    }
+
+    fn load(&mut self, url: &str) -> Result<(), String> {
+        self.navigate(url)
+    }
+}
+
 impl Target for Web {
     fn kind(&self) -> &str {
         "web"

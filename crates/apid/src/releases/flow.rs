@@ -645,7 +645,7 @@ pub fn publish_all(d: &Deps, id: &str, step: &registries::Step) -> Result<Releas
 /// and the SBOM (`signing::check`). The first artifact that does not verify refuses the release.
 pub fn verify(d: &Deps, id: &str) -> Result<(), String> {
     let rel = get(d, id)?;
-    for art in &rel.artifacts {
+    for art in rel.artifacts.iter().filter(|a| !a.is_ux()) {
         let hash = art
             .digest
             .parse::<Hash>()
