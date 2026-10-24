@@ -4,12 +4,14 @@
 //! - The command lines are `apz-desktop-macos`'s [`Simctl`]; a [`Runner`] runs them on the node (`desk::StationRunner`
 //!   sends them through the station's shell, as the target's agent).
 //! - The screenshot is `simctl io screenshot` to a file on the node, read back through the runner.
+//! - The video is one recording for the whole step ([`start_recording`]), stopped at the end of the step and landed as an
+//!   artifact of the run ([`land_recording`]).
 //! - The tree and the taps come from the accessibility bridge, behind [`Bridge`]. The bridge is the one piece this
 //!   repository does not yet speak: [`Unwired`] answers that reason, and a client for the bridge's documented protocol
 //!   (Callstack's open-source `agent-device`, PLAN 19.3) implements [`Bridge`] to replace it. A simulator step whose app
 //!   has no tree does not get past its first look until then.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -50,8 +52,6 @@ pub struct Simulator<'a> {
     runner: Box<dyn Runner + 'a>,
     bridge: Box<dyn Bridge + 'a>,
     device: String,
-    /// The recording in progress: its process on the node, and the file it writes.
-    recording: Option<(u32, String)>,
     started: Instant,
 }
 
@@ -67,7 +67,6 @@ impl<'a> Simulator<'a> {
             runner,
             bridge,
             device: device.to_string(),
-            recording: None,
             started: Instant::now(),
         };
         exec(
@@ -79,38 +78,6 @@ impl<'a> Simulator<'a> {
             },
         )?;
         Ok(target)
-    }
-
-    /// Starts recording the device's screen to `path` (an absolute path on the node) until [`Self::stop_recording`].
-    pub fn record(&mut self, path: &str) -> Result<(), String> {
-        if self.recording.is_some() {
-            return Err("a recording of this simulator is already running".into());
-        }
-        let args = Simctl::Record {
-            device: self.device.clone(),
-            path: PathBuf::from(path),
-        }
-        .args()?;
-        let pid = self.runner.start(&args)?;
-        self.recording = Some((pid, path.to_string()));
-        Ok(())
-    }
-
-    /// Ends the recording (the tool finishes its file when it is interrupted) and answers the file's path.
-    pub fn stop_recording(&mut self) -> Result<Option<String>, String> {
-        let Some((pid, path)) = self.recording.take() else {
-            return Ok(None);
-        };
-        self.runner.stop(pid)?;
-        Ok(Some(path))
-    }
-}
-
-impl Drop for Simulator<'_> {
-    fn drop(&mut self) {
-        if let Err(why) = self.stop_recording() {
-            eprintln!("apid: a simulator recording of {}: {why}", self.device);
-        }
     }
 }
 
@@ -147,4 +114,28 @@ impl Target for Simulator<'_> {
     fn clock_ms(&mut self) -> Option<u64> {
         Some(self.started.elapsed().as_millis() as u64)
     }
+}
+
+/// Starts recording `device`'s screen to `path` (an absolute path on the node) in the background, and answers the
+/// process id that [`land_recording`] stops it by.
+pub fn start_recording(runner: &dyn Runner, device: &str, path: &str) -> Result<u32, String> {
+    let args = Simctl::Record {
+        device: device.to_string(),
+        path: PathBuf::from(path),
+    }
+    .args()?;
+    runner.start(&args)
+}
+
+/// Ends the recording `pid` writes to `path` (the tool finishes its file when it is interrupted), reads the file from the
+/// node, and hands its bytes to `store`, which answers what the artifact is.
+pub fn land_recording<T>(
+    runner: &dyn Runner,
+    pid: u32,
+    path: &str,
+    store: impl FnOnce(&[u8]) -> Result<T, String>,
+) -> Result<T, String> {
+    runner.stop(pid)?;
+    let bytes = runner.fetch(Path::new(path))?;
+    store(&bytes)
 }

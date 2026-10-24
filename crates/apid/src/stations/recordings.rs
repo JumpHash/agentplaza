@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::audit::{StationAudit, read_rows, save};
-use super::leases::{Kind, LeaseView, State};
+use super::leases::{LeaseView, State};
 use super::ops::{self, Failure};
 use crate::settings::RecordingDefaults;
 use crate::state::App;
@@ -820,7 +820,7 @@ fn sample_once(app: &App, last: &mut BTreeMap<String, u64>, now: u64) {
         for view in app.stations.leases.views(&station.id) {
             let lease = &view.lease;
             let session = match (lease.kind, lease.state, lease.session) {
-                (Kind::Pixel, State::Active, Some(session)) => session,
+                (kind, State::Active, Some(session)) if kind.holds_session() => session,
                 _ => continue,
             };
             if !app.stations.recordings.is_open(&lease.id) {
@@ -893,6 +893,7 @@ pub fn spawn_sweep(app: &Arc<App>) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::leases::Kind;
     use super::*;
     use crate::stations::leases::Lease;
     use serde_json::json;

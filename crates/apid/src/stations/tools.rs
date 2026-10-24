@@ -64,9 +64,9 @@ pub fn spec(name: &str) -> Option<(&'static str, Value)> {
             obj(json!({}), &[]),
         ),
         "station_lease" => (
-            "Opens a lease on a workstation for your task. kind 'shared' is for files, shells, runs and scripts, and is active at once. kind 'pixel' takes the screen for you: it waits up to 25 seconds in the machine's queue for a free session, then answers with its place. Release it with station_release when you are done. The screen tools (station_screenshot, station_click, station_type, station_key, station_scroll, station_drag, station_ui_tree, station_ui_act) need your pixel lease.",
+            "Opens a lease on a workstation for your task. kind 'shared' is for files, shells, runs and scripts, and is active at once. kind 'pixel' takes the screen for you: it waits up to 25 seconds in the machine's queue for a free session, then answers with its place. kind 'owner_screen' takes the owner's own screen on a machine with no virtual display (a Mac): the same queue and the same screen tools, on the owner's screen. Release it with station_release when you are done. The screen tools (station_screenshot, station_click, station_type, station_key, station_scroll, station_drag, station_ui_tree, station_ui_act) need your pixel lease.",
             obj(
-                json!({"station": station, "kind": {"type": "string", "enum": ["shared", "pixel"]}, "task": text}),
+                json!({"station": station, "kind": {"type": "string", "enum": ["shared", "pixel", "owner_screen"]}, "task": text}),
                 &["station", "kind"],
             ),
         ),
@@ -238,7 +238,12 @@ pub(crate) fn parse(tool: &str, input: &Value) -> Result<Call, String> {
             let kind = match str_arg(input, "kind")?.as_str() {
                 "shared" => Kind::Shared,
                 "pixel" => Kind::Pixel,
-                other => return Err(format!("`kind` must be shared or pixel, not {other}")),
+                "owner_screen" => Kind::OwnerScreen,
+                other => {
+                    return Err(format!(
+                        "`kind` must be shared, pixel or owner_screen, not {other}"
+                    ));
+                }
             };
             return Ok(Call::Lease {
                 station,

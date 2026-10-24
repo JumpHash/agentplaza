@@ -256,15 +256,20 @@ pub struct TuiTarget {
     pub rows: u16,
 }
 
-/// A macOS app target's configuration (PLAN 19.3). The app runs on the Mac node `station`; the target acts as the agent
-/// `agent`, so the station's laws and audit apply to its calls as they do to that agent's. The agent holds a pixel lease
-/// on the station for each scenario (the screen tools need one).
+/// A macOS app target's configuration (PLAN 19.3). The app runs on the Mac node `station`, on the owner's screen (the lease
+/// is `owner_screen`: the Mac has no virtual display). The target acts as the agent `agent`, so the station's laws and audit
+/// apply to its calls as they do to that agent's. The lease is held for each scenario, and only the app's windows are read,
+/// captured and pointed at.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MacTarget {
     pub station: String,
     pub agent: u64,
-    /// The app, as the station lists it (its name, or its bundle id).
+    /// The app, as the station lists it (its name): the scope of its tree, its pictures and its pointer input.
     pub app: String,
+    /// Its bundle id: the app is quit by it at the end of the step, and brought to the front before keys and pointer input.
+    pub bundle: String,
+    /// Its bundle path on the node: the app is launched from it (`open -n -a`) for each scenario.
+    pub path: String,
     /// The lease's task on the station, for its audit and its time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
@@ -287,6 +292,20 @@ impl MacTarget {
         }
         if self.station.trim().is_empty() || self.app.trim().is_empty() {
             return Err("a macOS target names its station and its app".into());
+        }
+        let bundle_id = !self.bundle.is_empty()
+            && self
+                .bundle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+        if !bundle_id {
+            return Err("a macOS target's bundle is a bundle id (letters, digits, dots, dashes, underscores)".into());
+        }
+        if !self.path.starts_with('/') {
+            return Err(
+                "a macOS target's path is the app's bundle, an absolute path on the Mac node"
+                    .into(),
+            );
         }
         if !(1..=8).contains(&self.depth) {
             return Err("a macOS target reads between 1 and 8 levels of its tree".into());

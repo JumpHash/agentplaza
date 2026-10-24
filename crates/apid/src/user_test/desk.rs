@@ -1,7 +1,7 @@
 //! The plumbing of the desktop targets (PLAN 19.3, W47): a macOS app and an iOS simulator run on a Mac node, and the run
 //! reaches the node only as its own agent. Every call is a workstation tool (`stations/tools.rs`), so the station's choke
-//! point checks the agent's pixel lease and laws and audits the call, as it does for the agent's own work. Nothing here
-//! goes to the owner's client (cid 0), and a target names the agent it acts as in its config.
+//! point checks the agent's lease and laws and audits the call, as it does for the agent's own work. Nothing here goes to
+//! the owner's client (cid 0), and a target names the agent it acts as in its config.
 
 use std::path::{Path, PathBuf};
 
@@ -10,9 +10,10 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use super::Opener;
-use super::macos::MacApp;
-use super::simulator::{Simulator, Unwired};
+use super::macos::{self, MacApp};
+use super::simulator::{self, Simulator, Unwired};
 use super::target::Target;
+use crate::artifacts::{Budget, Refusal};
 use crate::recipes::model::{MacTarget, SimTarget, UserTest};
 use crate::state::App;
 
@@ -50,10 +51,11 @@ impl<T: Calls + ?Sized> Calls for &T {
     }
 }
 
-/// Opens a pixel lease on `station` for the calls' agent, and answers its id. A lease still queued when the station answers
-/// is released again: the scenario does not run without its session.
+/// Opens an owner-screen lease on `station` for the calls' agent, and answers its id. The lease is the owner's own screen
+/// (the Mac daemon serves no virtual display). A lease still queued when the station answers is released again: the step
+/// does not run without its session.
 pub fn open_lease(calls: &dyn Calls, station: &str, task: Option<&str>) -> Result<String, String> {
-    let mut input = json!({"station": station, "kind": "pixel"});
+    let mut input = json!({"station": station, "kind": "owner_screen"});
     if let Some(task) = task {
         input["task"] = json!(task);
     }
@@ -66,7 +68,7 @@ pub fn open_lease(calls: &dyn Calls, station: &str, task: Option<&str>) -> Resul
     if state != "active" {
         let _ = release_lease(calls, station, &id);
         return Err(format!(
-            "no pixel session on {station} was granted (the lease is {state}, and the station's session is not free)"
+            "the owner's screen on {station} was not granted (the lease is {state}, and the screen is not free)"
         ));
     }
     Ok(id)
@@ -193,12 +195,12 @@ impl Runner for StationRunner<'_> {
         let text: String = output.split_whitespace().collect();
         base64::engine::general_purpose::STANDARD
             .decode(text)
-            .map_err(|e| format!("the picture from {}: {e}", self.station))
+            .map_err(|e| format!("the file from {}: {e}", self.station))
     }
 }
 
-/// The opener of a macOS target: each scenario leases a pixel session, launches the app fresh and reads it. The lease ends
-/// with the target.
+/// The opener of a macOS target: each scenario leases the owner's screen, launches the app fresh from its bundle path and
+/// reads it. The lease ends with the target.
 fn mac_opener<'a>(app: &'a App, mac: &'a MacTarget) -> Opener<'a> {
     Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
         let lease = open_lease(
@@ -211,6 +213,8 @@ fn mac_opener<'a>(app: &'a App, mac: &'a MacTarget) -> Opener<'a> {
             &mac.station,
             lease,
             &mac.app,
+            &mac.bundle,
+            &mac.path,
             mac.depth,
         );
         target.relaunch()?;
@@ -218,20 +222,16 @@ fn mac_opener<'a>(app: &'a App, mac: &'a MacTarget) -> Opener<'a> {
     })
 }
 
-/// The opener of a simulator target: each scenario launches the app fresh in the device, and records it when the target
-/// names a video.
+/// The opener of a simulator target: each scenario launches the app fresh in the device.
 fn simulator_opener<'a>(app: &'a App, sim: &'a SimTarget) -> Opener<'a> {
     Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
         let runner = StationRunner::new(app, sim.agent, &sim.station);
-        let mut target = Simulator::launch(
+        let target = Simulator::launch(
             Box::new(runner),
             Box::new(Unwired),
             &sim.device,
             &sim.bundle,
         )?;
-        if let Some(video) = &sim.video {
-            target.record(video)?;
-        }
         Ok(Box::new(target))
     })
 }
@@ -245,43 +245,101 @@ pub fn opener<'a>(app: &'a App, config: &'a UserTest) -> Result<Opener<'a>, Stri
     }
 }
 
-/// Before a step's scenarios: a simulator is booted, and the app installed when the step gives its path. A Mac app needs
-/// nothing up front; its lease is opened for each scenario.
-pub fn prepare(app: &App, config: &UserTest) -> Result<(), String> {
+/// What a step keeps from its setup until its end: the simulator's recording, as the process on the node that writes it
+/// and the file it writes.
+#[derive(Debug, Default)]
+pub struct Setup {
+    recording: Option<(u32, String)>,
+}
+
+/// Before a step's scenarios: a simulator is booted, the app installed when the step gives its path, and the step's video
+/// started when it names one. A failure shuts the simulator down again. A Mac app needs nothing up front.
+pub fn prepare(app: &App, config: &UserTest) -> Result<Setup, String> {
     let Some(sim) = &config.simulator else {
-        return Ok(());
+        return Ok(Setup::default());
     };
     let runner = StationRunner::new(app, sim.agent, &sim.station);
+    match set_up(&runner, sim) {
+        Ok(recording) => Ok(Setup { recording }),
+        Err(why) => {
+            let _ = simctl::exec(
+                &runner,
+                &Simctl::Shutdown {
+                    device: sim.device.clone(),
+                },
+            );
+            Err(why)
+        }
+    }
+}
+
+fn set_up(runner: &dyn Runner, sim: &SimTarget) -> Result<Option<(u32, String)>, String> {
     simctl::exec(
-        &runner,
+        runner,
         &Simctl::Boot {
             device: sim.device.clone(),
         },
     )?;
     if let Some(path) = &sim.app {
         simctl::exec(
-            &runner,
+            runner,
             &Simctl::Install {
                 device: sim.device.clone(),
                 app: PathBuf::from(path),
             },
         )?;
     }
-    Ok(())
+    match &sim.video {
+        Some(video) => Ok(Some((
+            simulator::start_recording(runner, &sim.device, video)?,
+            video.clone(),
+        ))),
+        None => Ok(None),
+    }
 }
 
-/// After a step's scenarios: a simulator is shut down. A failure is reported, not raised: the step's result stands.
-pub fn finish(app: &App, config: &UserTest) {
-    let Some(sim) = &config.simulator else {
-        return;
-    };
-    let runner = StationRunner::new(app, sim.agent, &sim.station);
-    if let Err(why) = simctl::exec(
-        &runner,
-        &Simctl::Shutdown {
-            device: sim.device.clone(),
-        },
-    ) {
-        eprintln!("apid: user test simulator {}: {why}", sim.device);
+/// After a step's scenarios: a Mac app is quit, a simulator's video is stopped and landed as an artifact of the run, and the
+/// simulator is shut down. Each step's failure is said in the answer, not raised: the step's result stands.
+pub fn finish(app: &App, config: &UserTest, setup: Setup) -> String {
+    let mut notes = Vec::new();
+    if let Some(mac) = &config.macos
+        && let Err(why) = macos::quit(&AppCalls::new(app, mac.agent), &mac.station, &mac.bundle)
+    {
+        notes.push(why);
     }
+    if let Some(sim) = &config.simulator {
+        let runner = StationRunner::new(app, sim.agent, &sim.station);
+        if let Some((pid, path)) = setup.recording {
+            let landed = simulator::land_recording(&runner, pid, &path, |bytes| {
+                app.artifacts
+                    .put_blob_within(
+                        Some(sim.agent),
+                        "video/quicktime",
+                        bytes,
+                        &Budget::unlimited(),
+                    )
+                    .map(|blob| blob.id)
+                    .map_err(|refusal| match refusal {
+                        Refusal::Budget(why) => why,
+                        Refusal::Problems(problems) => problems.join("; "),
+                    })
+            });
+            match landed {
+                Ok(id) => notes.push(format!("the recording of {} is artifact {id}", sim.device)),
+                Err(why) => notes.push(format!(
+                    "the recording of {} did not land: {why}",
+                    sim.device
+                )),
+            }
+        }
+        if let Err(why) = simctl::exec(
+            &runner,
+            &Simctl::Shutdown {
+                device: sim.device.clone(),
+            },
+        ) {
+            notes.push(format!("{} did not shut down: {why}", sim.device));
+        }
+    }
+    notes.join("; ")
 }

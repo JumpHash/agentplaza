@@ -619,6 +619,15 @@ fn run_scenarios(
     }
 }
 
+/// A step's summary with a note the desktop target's end added (the recording's artifact, a failure to quit).
+fn with_note(summary: String, note: &str) -> String {
+    if note.is_empty() {
+        summary
+    } else {
+        format!("{summary}; {note}")
+    }
+}
+
 /// One `test:user` step of a run, from its config: the models, the target and the regressions of the project.
 fn run_step(
     app: &App,
@@ -649,26 +658,26 @@ fn run_step(
             now,
         )
     };
-    if let Err(why) = desk::prepare(app, config) {
-        // A simulator booted before its app failed to install is shut down again.
-        desk::finish(app, config);
-        return Ok(no_target(why));
-    }
+    let setup = match desk::prepare(app, config) {
+        Ok(setup) => setup,
+        Err(why) => return Ok(no_target(why)),
+    };
     let host = Live(app);
     let placed = match placed_for(app, &host, config, project, change) {
         Ok(placed) => placed,
         Err(why) => {
-            desk::finish(app, config);
-            return Ok(no_target(why));
+            let note = desk::finish(app, config, setup);
+            return Ok(no_target(with_note(why, &note)));
         }
     };
     let ran = run_scenarios(app, config, project, change, &roles, placed.as_ref());
-    desk::finish(app, config);
+    // The desktop target's end: a Mac app is quit, the simulator's video lands, the simulator shuts down.
+    let note = desk::finish(app, config, setup);
     if let Some(placed) = placed {
         retire_placed(placed);
     }
     let execution = match ran {
-        Ran::NoTarget(why) => return Ok(no_target(why)),
+        Ran::NoTarget(why) => return Ok(no_target(with_note(why, &note))),
         Ran::Failed(why) => {
             return Ok(finish(
                 app,
@@ -678,7 +687,7 @@ fn run_step(
                     passed: false,
                     findings: 0,
                     commands: "the user test".into(),
-                    summary: format!("the user test did not run: {why}"),
+                    summary: with_note(format!("the user test did not run: {why}"), &note),
                 },
                 now,
             ));
@@ -695,7 +704,7 @@ fn run_step(
         .record_user_run(&review, change, project, change, found, now)?;
     let confirmed = execution.confirmed();
     let commands = format!("{} target", execution.target);
-    let summary = execution.summary();
+    let summary = with_note(execution.summary(), &note);
     app.recipe_runs
         .record_evidence(run, execution.evidence, now);
     Ok(finish(
