@@ -53,6 +53,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.environments.load(conn),
         },
         Component {
+            name: "ephemeral",
+            def: crate::ephemeral::store::def,
+            rows: |app| app.ephemeral.rows(),
+            load: |app, conn| app.ephemeral.load(conn),
+        },
+        Component {
             name: "incidents",
             def: crate::incidents::def,
             rows: |app| app.incidents.rows(),

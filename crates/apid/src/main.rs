@@ -53,6 +53,7 @@ mod engine_feed;
 mod engine_instances;
 mod engine_watch;
 mod environments;
+mod ephemeral;
 mod evals;
 mod events;
 mod fleet;
@@ -137,6 +138,7 @@ mod task_plan;
 mod test_lab;
 mod test_select;
 mod threads;
+mod tool_library;
 mod tool_life;
 mod toolbox;
 mod toolbox_survey;
@@ -159,6 +161,7 @@ mod vm_snapshots;
 mod weft_hub;
 mod work_loop;
 mod work_routes;
+mod workflows;
 
 use std::process::ExitCode;
 

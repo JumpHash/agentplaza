@@ -33,6 +33,7 @@ import { mount as rules } from './rules';
 import { mount as setup } from './setup';
 import { mount as tasks } from './tasks';
 import { mount as tools } from './tools';
+import { mount as toolLibrary } from './tool-library';
 import { mount as metrics } from './metrics';
 import { mount as vault } from './vault';
 import { mount as platforms } from './platforms';
@@ -76,6 +77,7 @@ export const SCREENS: Screen[] = [
   { key: 'lab', label: 'Lab', icon: 'brain', section: 'Lab', mount: lab },
   { key: 'models', label: 'Models', icon: 'models', section: 'Setup', mount: models },
   { key: 'tools', label: 'Tools', icon: 'wrench', section: 'Setup', mount: tools },
+  { key: 'tool-library', label: 'Tool library', icon: 'wrench', section: 'Setup', mount: toolLibrary },
   { key: 'mcp', label: 'MCP', icon: 'terminal', section: 'Setup', mount: mcp },
   { key: 'vault', label: 'Vault', icon: 'key', section: 'Setup', mount: vault },
   { key: 'platforms', label: 'Git platforms', icon: 'git', section: 'Setup', mount: platforms },

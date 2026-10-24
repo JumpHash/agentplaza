@@ -1,0 +1,17 @@
+meta {
+  name: The ephemeral instances of the project are listed
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{life_pid}}/ephemeral
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+  res.responseTime: lt {{budgetMs}}
+}

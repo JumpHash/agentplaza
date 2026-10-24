@@ -287,6 +287,16 @@ fn forget_secret(app: &App, project: &str, env: &str, name: &str) -> bool {
     gone
 }
 
+/// An environment's secret's value, read on the hub (the vault's own binding of the environment). Never returned to a
+/// caller that is not the hub.
+pub(crate) fn secret_value(app: &App, project: &str, env: &str, name: &str) -> Option<String> {
+    app.vault.value_for(
+        &secret_name(project, env, name),
+        &binding(project, env),
+        &crate::vault::OnBehalf::Hub,
+    )
+}
+
 fn hook_url(app: &App, project: &str, env: &str) -> Option<String> {
     app.vault.value_for(
         &secret_name(project, env, HOOK),

@@ -414,6 +414,30 @@ pub struct CheckRun {
     pub html_url: String,
 }
 
+/// A check run as the hub writes it (created or updated): its name, its status (`in_progress` or `completed`), its
+/// conclusion once completed (`success`, `failure`, …), and the output GitHub shows on the commit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CheckWrite {
+    pub name: String,
+    pub status: String,
+    pub conclusion: Option<String>,
+    pub title: String,
+    pub summary: String,
+}
+
+/// The body of a check run's create or update (its output is required by GitHub with a title and a summary).
+fn check_body(check: &CheckWrite) -> Value {
+    let mut body = json!({
+        "name": check.name,
+        "status": check.status,
+        "output": { "title": check.title, "summary": check.summary },
+    });
+    if let Some(conclusion) = &check.conclusion {
+        body["conclusion"] = json!(conclusion);
+    }
+    body
+}
+
 fn pull_of(v: &Value) -> Pull {
     Pull {
         number: v["number"].as_u64().unwrap_or(0),
@@ -502,6 +526,58 @@ impl GitHub {
                 html_url: s(&c["html_url"]),
             })
             .collect())
+    }
+
+    /// Creates a check run on `sha` (`POST .../check-runs`); its id.
+    pub fn create_check_run(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+        check: &CheckWrite,
+    ) -> Result<u64, String> {
+        let mut body = check_body(check);
+        body["head_sha"] = json!(sha);
+        let reply = self.http.call(
+            "POST",
+            &format!(
+                "{}/repos/{}/{}/check-runs",
+                self.api,
+                escape(owner),
+                escape(repo)
+            ),
+            &headers(token),
+            Some(Body::Json(body)),
+        )?;
+        reply
+            .ok("creating the check run")?
+            .get("id")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "creating the check run: GitHub gave no id".to_string())
+    }
+
+    /// Updates a check run (`PATCH .../check-runs/{id}`): its status, conclusion and output. Returns its id.
+    pub fn update_check_run(
+        &self,
+        token: &str,
+        owner: &str,
+        repo: &str,
+        id: u64,
+        check: &CheckWrite,
+    ) -> Result<u64, String> {
+        let reply = self.http.call(
+            "PATCH",
+            &format!(
+                "{}/repos/{}/{}/check-runs/{id}",
+                self.api,
+                escape(owner),
+                escape(repo)
+            ),
+            &headers(token),
+            Some(Body::Json(check_body(check))),
+        )?;
+        reply.ok("updating the check run").map(|_| id)
     }
 
     fn token(&self, body: Value, what: &str) -> Result<Tokens, String> {

@@ -1442,6 +1442,8 @@ impl<'a, 'l, S: Write + Send, W: Write + Send> Agent<'a, 'l, S, W> {
         uses: &[(String, String, Value, Option<Value>)],
         script: Option<&str>,
     ) -> Result<Vec<Step>, Halt> {
+        // A library call of an in-VM tool is that tool's call: it is routed (and run, held or refused) as its own.
+        let uses = &crate::tool_library::rewrite(uses);
         let routes: Vec<Route> = uses
             .iter()
             .map(|(_, name, input, meta)| self.route(name, input, meta.as_ref()))

@@ -104,11 +104,13 @@ pub fn router() -> Router<App> {
     let router = crate::deliverables::routes(router);
     let router = crate::storage::routes(router);
     let router = crate::toolbox::routes(router);
+    let router = crate::tool_library::routes::routes(router);
     let router = crate::adopt::routes(router);
     let router = crate::projects::routes(router);
     let router = crate::project_memory::routes(router);
     let router = crate::maintenance::routes(router);
     let router = crate::environments::routes(router);
+    let router = crate::ephemeral::routes(router);
     let router = crate::incidents::routes(router);
     let router = crate::project_files::routes(router);
     let router = crate::drafts::routes(router);
@@ -126,6 +128,7 @@ pub fn router() -> Router<App> {
     let router = crate::platforms::routes(router);
     let router = crate::review_graph::routes::routes(router);
     let router = crate::recipes::routes::routes(router);
+    let router = crate::workflows::routes::routes(router);
     let router = crate::releases::routes::routes(router);
     let router = crate::triggers::routes::routes(router);
     let router = crate::upgrades::routes::routes(router);

@@ -54,6 +54,7 @@ const FIELD_MANAGER: &str = "apz-deploy";
 /// The label a canary's pods and selector carry, which the stable Deployment's do not.
 const TRACK: &str = "apz.deploy/track";
 const CANARY: &str = "canary";
+const JSON: &str = "application/json";
 const APPLY: &str = "application/apply-patch+yaml";
 const MERGE: &str = "application/merge-patch+json";
 const STRATEGIC: &str = "application/strategic-merge-patch+json";
@@ -368,6 +369,31 @@ impl Client {
         .map(|_| ())
     }
 
+    /// Creates a namespace; one that is already there is not an error.
+    pub fn create_namespace(&self, name: &str) -> Result<(), String> {
+        let doc = json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": name } });
+        let reply = self.call("POST", "/api/v1/namespaces", Some((JSON, &doc)))?;
+        if reply.status == 409 {
+            return Ok(());
+        }
+        reply
+            .ok(&format!("POST namespaces/{name}"))
+            .map(|_| ())
+            .map_err(|e| self.redact(&e))
+    }
+
+    /// Deletes a namespace and everything in it; one already gone is not an error.
+    pub fn delete_namespace(&self, name: &str) -> Result<(), String> {
+        let reply = self.call("DELETE", &format!("/api/v1/namespaces/{name}"), None)?;
+        if reply.status == 404 {
+            return Ok(());
+        }
+        reply
+            .ok(&format!("DELETE namespaces/{name}"))
+            .map(|_| ())
+            .map_err(|e| self.redact(&e))
+    }
+
     /// `rollout undo --to-revision`: the Deployment's pod template becomes the one its ReplicaSet of `revision` holds.
     pub fn undo(&self, namespace: &str, name: &str, revision: u64) -> Result<(), String> {
         let deploy = self.deployment(namespace, name)?.ok_or_else(|| {
@@ -575,8 +601,14 @@ fn progress(deploy: &Value) -> Progress {
 }
 
 /// Reads a Deployment's status until its rollout completes; a failed rollout, or one that takes longer than the timeout,
-/// is an error naming why.
-fn wait(client: &Client, namespace: &str, name: &str, settings: &Settings) -> Result<(), String> {
+/// is an error naming why. `kubectl rollout status` reads it the same way.
+pub fn await_rollout(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    timeout: Duration,
+    poll: Duration,
+) -> Result<(), String> {
     let started = Instant::now();
     loop {
         let deploy = client
@@ -586,16 +618,19 @@ fn wait(client: &Client, namespace: &str, name: &str, settings: &Settings) -> Re
             Progress::Done => return Ok(()),
             Progress::Failed(why) => return Err(format!("{name}: {why}")),
             Progress::Waiting(detail) => {
-                if started.elapsed() >= settings.timeout {
+                if started.elapsed() >= timeout {
                     return Err(format!(
-                        "{name} did not finish its rollout within {:?}: {detail}",
-                        settings.timeout
+                        "{name} did not finish its rollout within {timeout:?}: {detail}"
                     ));
                 }
-                std::thread::sleep(settings.poll);
+                std::thread::sleep(poll);
             }
         }
     }
+}
+
+fn wait(client: &Client, namespace: &str, name: &str, settings: &Settings) -> Result<(), String> {
+    await_rollout(client, namespace, name, settings.timeout, settings.poll)
 }
 
 /// The canary's replicas for a stage at `pct`: its share of the stable Deployment's `total`, rounded up, at least one and
@@ -619,6 +654,19 @@ fn parse(text: &str) -> Result<Vec<Value>, String> {
         docs.push(doc);
     }
     Ok(docs)
+}
+
+/// A release's manifests as the documents a deploy applies: the stream parsed and its Kustomize overlay built (see
+/// [`build`]). The ephemeral environments (`ephemeral`) apply them to their own namespace.
+pub fn manifests_of(bytes: &[u8], tools: &Tools) -> Result<Vec<Value>, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| "the release's manifests are not UTF-8 text".to_string())?;
+    build(parse(text)?, tools)
+}
+
+/// Whether a kind has no namespace.
+pub fn is_cluster_scoped(kind: &str) -> bool {
+    CLUSTER_SCOPED.contains(&kind)
 }
 
 /// The manifests with their Kustomize overlay built: by `kubectl kustomize` or `kustomize build` when the hub has one, else
@@ -774,7 +822,12 @@ fn manifests(
     Ok((target, others))
 }
 
-fn set_image(doc: &mut Value, container: Option<&str>, image: &str) -> Result<(), String> {
+/// Sets the image of a Deployment's container (the first, when none is named).
+pub(crate) fn set_image(
+    doc: &mut Value,
+    container: Option<&str>,
+    image: &str,
+) -> Result<(), String> {
     let containers = doc
         .pointer_mut("/spec/template/spec/containers")
         .and_then(Value::as_array_mut)

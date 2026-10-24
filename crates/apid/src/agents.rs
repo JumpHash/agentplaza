@@ -507,6 +507,8 @@ fn harness_prompt() -> String {
          agent or the operator. Never try to reach the host, the hub or another agent's machine except through \
          plaza tools. Report honestly; never claim work you did not do.",
     );
+    text.push_str("\n\n");
+    text.push_str(&crate::tool_library::prompt_map());
     text.push_str(
         "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
          sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \

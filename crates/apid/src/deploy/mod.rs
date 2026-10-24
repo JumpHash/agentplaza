@@ -341,7 +341,7 @@ impl Settings {
 }
 
 /// An environment variable's value, trimmed, when it is set and not empty.
-fn variable(env: &Environment, key: &str) -> Option<String> {
+pub(crate) fn variable(env: &Environment, key: &str) -> Option<String> {
     env.variables
         .get(key)
         .map(|v| v.trim().to_string())
@@ -945,7 +945,7 @@ fn platforms(app: &App, settings: &Settings) -> Result<Platforms, String> {
 }
 
 /// The Kubernetes client for the environment's cluster: its address, CA and token from the connector, read on the hub.
-fn kubernetes_client(app: &App) -> Result<kubernetes::Client, String> {
+pub(crate) fn kubernetes_client(app: &App) -> Result<kubernetes::Client, String> {
     let values = crate::connectors::hub_values(app, "kubernetes")?;
     let url = values.get("url").map(String::as_str).unwrap_or("");
     let token = values.get("token").map(String::as_str).unwrap_or("");
@@ -964,7 +964,7 @@ fn kubernetes_client(app: &App) -> Result<kubernetes::Client, String> {
 
 /// The AWS client: the `aws` connector's role and base credentials (or web identity token), read on the hub. The region is
 /// the environment's `AWS_REGION`, else the connector's, else us-east-1.
-fn aws_client(app: &App, region: Option<&str>) -> Result<aws::Client, String> {
+pub(crate) fn aws_client(app: &App, region: Option<&str>) -> Result<aws::Client, String> {
     let values = crate::connectors::hub_values(app, "aws")?;
     let value = |key: &str| {
         values
@@ -1009,7 +1009,7 @@ fn aws_client(app: &App, region: Option<&str>) -> Result<aws::Client, String> {
 }
 
 /// The Cloudflare client for the environment's account, with the connector's token read on the hub.
-fn cloudflare_client(app: &App) -> Result<cloudflare::Client, String> {
+pub(crate) fn cloudflare_client(app: &App) -> Result<cloudflare::Client, String> {
     let values = crate::connectors::hub_values(app, "cloudflare")?;
     let account = values.get("account_id").map(String::as_str).unwrap_or("");
     let token = values.get("api_token").map(String::as_str).unwrap_or("");
