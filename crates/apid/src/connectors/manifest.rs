@@ -42,6 +42,13 @@ const REGISTRIES: [&str; 8] = [
     include_str!("manifests/registries/homebrew-tap.toml"),
 ];
 
+/// The store submissions' connectors (9.6), one manifest each: App Store Connect and Google Play. Like the registries', they
+/// are read by the release's store step (`releases::stores`), not the catalog.
+const STORES: [&str; 2] = [
+    include_str!("manifests/stores/app-store-connect.toml"),
+    include_str!("manifests/stores/google-play.toml"),
+];
+
 /// The kinds a manifest may name: what the connector does for the plaza.
 const KINDS: [&str; 4] = ["tool", "intake", "notify", "publish"];
 /// The scopes a manifest may name: the risk classes of connector actions.
@@ -85,6 +92,18 @@ pub fn registries() -> Vec<Manifest> {
         .iter()
         .map(|text| {
             let mut m = parse(text).expect("a shipped registry manifest parses");
+            m.state = "approved".into();
+            m
+        })
+        .collect()
+}
+
+/// The store connectors' manifests, approved as shipped (9.6). Each file parses and passes [`check`] (a test holds that).
+pub fn stores() -> Vec<Manifest> {
+    STORES
+        .iter()
+        .map(|text| {
+            let mut m = parse(text).expect("a shipped store manifest parses");
             m.state = "approved".into();
             m
         })

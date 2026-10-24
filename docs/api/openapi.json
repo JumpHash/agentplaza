@@ -19626,7 +19626,7 @@
         "tags": [
           "releases"
         ],
-        "summary": "Promote a published release to an environment or store track",
+        "summary": "Promote a published release to an environment, or to a store track (testflight/internal, testflight/external, app-store, play/internal, play/closed, play/open, play/production): a store track submits the build there, each step recorded on the release, and a retry resumes from a failed step. Body: `phased` (App Store, default true), `rollout` (a fraction above 0 and below 1 for play/production)",
         "parameters": [
           {
             "name": "id",

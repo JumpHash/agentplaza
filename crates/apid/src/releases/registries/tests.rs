@@ -125,11 +125,11 @@ impl Builder for Packages {
 
 /// One request a fake registry received, as it arrived.
 #[derive(Clone, Debug)]
-struct Seen {
-    method: String,
-    path: String,
-    headers: BTreeMap<String, String>,
-    body: Vec<u8>,
+pub(crate) struct Seen {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) headers: BTreeMap<String, String>,
+    pub(crate) body: Vec<u8>,
 }
 
 impl Seen {
@@ -138,7 +138,7 @@ impl Seen {
     }
 }
 
-type Log = Arc<Mutex<Vec<Seen>>>;
+pub(crate) type Log = Arc<Mutex<Vec<Seen>>>;
 
 /// Reads one request: its head, then its body by `content-length`.
 fn read_request(stream: &mut TcpStream) -> Option<Seen> {
@@ -172,7 +172,7 @@ fn read_request(stream: &mut TcpStream) -> Option<Seen> {
 }
 
 /// A fake registry on 127.0.0.1: each request is recorded, and `answer` says its status and body.
-fn fake(answer: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> (u16, Log) {
+pub(crate) fn fake(answer: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> (u16, Log) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let log: Log = Arc::new(Mutex::new(Vec::new()));
@@ -197,13 +197,13 @@ fn fake(answer: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> (u16
 
 /// The transport of a test: a request to a registry's host goes to that registry's fake on 127.0.0.1, with the same
 /// path, headers and body. Every request is kept as the mediator sent it; a host with no fake is an error.
-struct Redirect {
+pub(crate) struct Redirect {
     hosts: Vec<(&'static str, u16)>,
     sent: Mutex<Vec<Outgoing>>,
 }
 
 impl Redirect {
-    fn new(hosts: Vec<(&'static str, u16)>) -> Redirect {
+    pub(crate) fn new(hosts: Vec<(&'static str, u16)>) -> Redirect {
         Redirect {
             hosts,
             sent: Mutex::new(Vec::new()),
@@ -236,7 +236,7 @@ impl Outbound for Redirect {
 }
 
 /// A vault of its own in a temp directory, booted, with each secret bound to its binding.
-fn test_vault(name: &str, secrets: &[(&str, &str, &str)]) -> Vault {
+pub(crate) fn test_vault(name: &str, secrets: &[(&str, &str, &str)]) -> Vault {
     let dir =
         std::env::temp_dir().join(format!("apid-registry-vault-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -249,7 +249,7 @@ fn test_vault(name: &str, secrets: &[(&str, &str, &str)]) -> Vault {
     vault
 }
 
-fn add(vault: &Vault, name: &str, binding: &str, value: &str) {
+pub(crate) fn add(vault: &Vault, name: &str, binding: &str, value: &str) {
     vault
         .create(
             NewSecret {
@@ -641,6 +641,7 @@ fn release_by_hand(
         verdicts: vec![],
         promotions: vec![],
         sync: vec![],
+        store_steps: vec![],
         created_ms: 1,
         updated_ms: 1,
     };
