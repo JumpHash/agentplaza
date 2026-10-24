@@ -1,5 +1,5 @@
-//! The deploy recipe (PLAN 23, 11.1): a qualified, published release goes to an environment, in stages, with checks after
-//! each stage, and comes back when a check fails.
+//! The deploy recipe (PLAN 23, 11.1, 11.4): a qualified, published release goes to an environment, in stages, with checks after
+//! each stage, and comes back when a check fails or the environment's health breaches.
 //!
 //! Only a release the release entity holds as published (`releases/entity.rs`: a qualified candidate is published, and
 //! a yanked or unpublished one is never promoted) is deployed. An environment on the `releases` track deploys the newest
@@ -9,34 +9,42 @@
 //!
 //! A rollout (`recipes/builtin/deploy.toml`, step `rollout`, one item per target) takes each target in turn: it uploads the
 //! release's artifact (the `web` target by default) as a new version, serves it at each stage's percentage (Workers:
-//! 10, 50, 100 by default), and after each stage runs the smoke checks and counts the environment's error signals over
-//! the project's window. A failed check restores every target it changed to the version it replaced; Pages has no
-//! percentages, so its one stage is the whole deploy. A protected environment deploys a release only after a staging
-//! environment passed that same version, and its deploy waits for the owner in Approvals as any protected deploy does.
-//! The deploy's status and the environment's version follow the outcome, and the project's chat is told.
+//! 10, 50, 100 by default), and after each stage runs the smoke set and reads the environment's health for the window
+//! ([`health`]). The smoke set is the project's confirmed user-test scenarios, run through a web target in a browser of
+//! the release's commit (8.2, `user_test::smoke`). A failed smoke check, or a health breach (error signals, error ratio or
+//! p95 latency past the environment's thresholds), restores every target it changed to the version it replaced: the deploy
+//! is recorded as rolled back, a rollback deploy records the earlier release, and a breach opens an incident. Pages has
+//! no percentages, so its one stage is the whole deploy. A protected environment deploys a release only after a passing
+//! staging stage, and its deploy waits for the owner in Approvals as any protected deploy does. The deploy's status and
+//! the environment's version follow the outcome, and the project's chat is told at each step.
 //!
 //! Environment variables (not secret): `CLOUDFLARE_WORKER`, `CLOUDFLARE_PAGES`, `ROLLOUT_STAGES` (`10,50,100`),
-//! `DEPLOY_WINDOW_SECS` (300), `DEPLOY_MAX_ERRORS` (0), `DEPLOY_ARTIFACT` (`web`). The account ID and the API token are the
-//! Cloudflare connector's (`connectors::hub_values`), read on the hub only.
+//! `DEPLOY_WINDOW_SECS` (300), `DEPLOY_MAX_ERRORS` (0), `DEPLOY_ARTIFACT` (`web`), `HEALTH_MAX_ERROR_RATE` (0.05),
+//! `HEALTH_MAX_P95_MS` (2000), `HEALTH_ERROR_QUERY`, `HEALTH_LATENCY_QUERY` (the monitoring queries, see [`health`]). The
+//! Cloudflare account ID and API token are the Cloudflare connector's (`connectors::hub_values`), read on the hub only; the
+//! monitoring source is the `prometheus` connector's URL and optional token.
 
 pub mod cloudflare;
+pub mod health;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cloudflare::{Api, Target};
+use health::{Health, Prometheus};
 
-use crate::chats::{Author, MessageKind, Post};
+use crate::cards::{Kind, NewCard};
 use crate::environments::{self, Deploy, Environment};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::Runs;
 use crate::releases::entity::{self, Release, ReleaseState};
 use crate::releases::flow::Ledger;
 use crate::state::App;
+use crate::user_test::scenario::Scenario;
 use crate::work_loop;
-use std::collections::BTreeMap;
 
 /// The recipe a rollout runs as, and its one step.
 pub const RECIPE: &str = "deploy";
@@ -49,15 +57,23 @@ pub const DEFAULT_STAGES: [u32; 3] = [10, 50, 100];
 const DEFAULT_WINDOW_SECS: u64 = 300;
 /// The longest window a project may set: an hour.
 const MAX_WINDOW_SECS: u64 = 3600;
+/// Who a rollback's deploy record names.
+pub const ROLLBACK_BY: &str = "rollback";
 
 /// An environment's rollout settings, read from its variables.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub targets: Vec<Target>,
     pub stages: Vec<u32>,
     pub window: Duration,
     pub max_errors: u32,
     pub artifact: String,
+    /// The error ratio a stage may show, from 0 to 1.
+    pub max_error_rate: f64,
+    /// The p95 latency a stage may show, in milliseconds.
+    pub max_p95_ms: f64,
+    pub error_query: String,
+    pub latency_query: String,
 }
 
 impl Settings {
@@ -99,12 +115,34 @@ impl Settings {
                 .map_err(|_| "DEPLOY_MAX_ERRORS is a number".to_string())?,
             None => 0,
         };
+        let max_error_rate = match var("HEALTH_MAX_ERROR_RATE") {
+            Some(text) => text
+                .parse::<f64>()
+                .ok()
+                .filter(|r| (0.0..=1.0).contains(r))
+                .ok_or("HEALTH_MAX_ERROR_RATE is a ratio from 0 to 1")?,
+            None => health::DEFAULT_MAX_ERROR_RATE,
+        };
+        let max_p95_ms = match var("HEALTH_MAX_P95_MS") {
+            Some(text) => text
+                .parse::<f64>()
+                .ok()
+                .filter(|m| m.is_finite() && *m >= 0.0)
+                .ok_or("HEALTH_MAX_P95_MS is a number of milliseconds")?,
+            None => health::DEFAULT_MAX_P95_MS,
+        };
         Ok(Some(Settings {
             targets,
             stages,
             window: Duration::from_secs(window),
             max_errors,
             artifact: var("DEPLOY_ARTIFACT").unwrap_or_else(|| ARTIFACT.to_string()),
+            max_error_rate,
+            max_p95_ms,
+            error_query: var("HEALTH_ERROR_QUERY")
+                .unwrap_or_else(|| health::ERROR_QUERY.to_string()),
+            latency_query: var("HEALTH_LATENCY_QUERY")
+                .unwrap_or_else(|| health::LATENCY_QUERY.to_string()),
         }))
     }
 }
@@ -204,11 +242,12 @@ pub fn gate(
 
 // ---- Rollouts -------------------------------------------------------------------------------------------------------
 
-/// The ports a rollout uses: Cloudflare, the release's bytes, the checks, and the recipe run that records it.
+/// The ports a rollout uses: Cloudflare, the release's bytes, the checks, the incidents, and the recipe run that records it.
 pub struct Ports<'a> {
     pub api: &'a dyn Api,
     pub artifacts: &'a dyn Artifacts,
     pub checks: &'a dyn Checks,
+    pub incidents: &'a dyn Incidents,
     pub runs: &'a Runs,
 }
 
@@ -219,17 +258,23 @@ pub trait Artifacts: Send + Sync {
 
 /// The checks after each stage.
 pub trait Checks: Send + Sync {
-    /// The smoke scenarios: the environment's address answers, and the project's scenarios pass. Fails when either does
-    /// not, or when the project has scenarios and no target can run them.
-    fn smoke(&self, project: &str, env: &Environment) -> Result<(), String>;
-    /// The monitoring signals of the environment since `since_ms`, once `window` has passed: how many are errors.
-    fn errors(
+    /// The smoke set (8.2): the project's scenarios run through a web target at the environment's address, in a browser of
+    /// the release's commit. Fails at the first scenario that does not hold.
+    fn smoke(&self, project: &str, env: &Environment, release: &Release) -> Result<(), String>;
+    /// The environment's health once the window has passed: the error signals since `since_ms`, and the monitoring
+    /// source's error ratio and p95 latency when it is connected. The thresholds are in `settings`.
+    fn health(
         &self,
         project: &str,
         env: &Environment,
         since_ms: u64,
-        window: Duration,
-    ) -> Result<u32, String>;
+        settings: &Settings,
+    ) -> Result<Health, String>;
+}
+
+/// The incidents a health breach opens (12.1 fills the incident recipe; this records the incident).
+pub trait Incidents: Send + Sync {
+    fn open(&self, project: &str, env: &str, version: &str, detail: &str);
 }
 
 /// What a rollout did: `passed`, `rolled_back`, or `failed` (a restore that could not run, so a target is left as it is).
@@ -237,6 +282,29 @@ pub trait Checks: Send + Sync {
 pub struct Rolled {
     pub status: &'static str,
     pub detail: String,
+}
+
+/// Why a stage stopped: a check failed (rolled back), or the health breached (rolled back, and an incident is opened).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Stop {
+    Check(String),
+    Breach(String),
+}
+
+impl Stop {
+    fn why(&self) -> &str {
+        match self {
+            Stop::Check(why) | Stop::Breach(why) => why,
+        }
+    }
+
+    /// The same stop, named by the place it happened (a target and its stage).
+    fn at(self, place: &str) -> Stop {
+        match self {
+            Stop::Check(why) => Stop::Check(format!("{place}: {why}")),
+            Stop::Breach(why) => Stop::Breach(format!("{place}: {why}")),
+        }
+    }
 }
 
 /// Rolls `release` out to each target of `env` in stages. The recipe run's step gets one item per target: it passes when
@@ -260,14 +328,14 @@ pub fn roll(
             Rolled {
                 status: "passed",
                 detail: format!(
-                    "{} served at {} for {} target(s); smoke and signals passed at each stage",
+                    "{} served at {} for {} target(s); smoke and health passed at each stage",
                     release.version,
                     stages_text(&settings.stages),
                     items
                 ),
             }
         }
-        Err(why) => {
+        Err(stop) => {
             ports.runs.settle(run, STEP, &Report::verdict(false), now());
             let mut notes = Vec::new();
             let mut restored = true;
@@ -280,6 +348,12 @@ pub fn roll(
                     restored = false;
                     notes.push(format!("{}: {e}", target.label()));
                 }
+            }
+            let why = stop.why().to_string();
+            if matches!(stop, Stop::Breach(_)) {
+                ports
+                    .incidents
+                    .open(project, &env.name, &release.version, &why);
             }
             let detail = if notes.is_empty() {
                 format!("{why}; restored the previous version")
@@ -310,18 +384,21 @@ fn rollout_all(
     settings: &Settings,
     release: &Release,
     changed: &mut Vec<(Target, Option<String>)>,
-) -> Result<(), String> {
-    let bytes = ports.artifacts.bytes(release, &settings.artifact)?;
+) -> Result<(), Stop> {
+    let bytes = ports
+        .artifacts
+        .bytes(release, &settings.artifact)
+        .map_err(Stop::Check)?;
     for target in &settings.targets {
         let label = target.label();
         let previous = ports
             .api
             .live(target)
-            .map_err(|e| format!("{label}: {e}"))?;
+            .map_err(|e| Stop::Check(format!("{label}: {e}")))?;
         let version = ports
             .api
             .upload(target, &bytes)
-            .map_err(|e| format!("{label}: {e}"))?;
+            .map_err(|e| Stop::Check(format!("{label}: {e}")))?;
         changed.push((target.clone(), previous.clone()));
         // Pages has no percentages, and a first deploy has nothing to split with: both go to 100% at once.
         let stages: Vec<u32> = match (target, &previous) {
@@ -336,31 +413,69 @@ fn rollout_all(
             ports
                 .api
                 .split(target, &versions)
-                .map_err(|e| format!("{label} at {pct}%: {e}"))?;
-            checks(ports, project, env, settings).map_err(|e| format!("{label} at {pct}%: {e}"))?;
+                .map_err(|e| Stop::Check(format!("{label} at {pct}%: {e}")))?;
+            checks(ports, project, env, settings, release)
+                .map_err(|stop| stop.at(&format!("{label} at {pct}%")))?;
         }
     }
     Ok(())
 }
 
-/// The checks after a stage: the smoke scenarios, then the environment's error signals over the window.
+/// The checks after a stage: the smoke set, then the environment's health over the window.
 fn checks(
     ports: &Ports,
     project: &str,
     env: &Environment,
     settings: &Settings,
-) -> Result<(), String> {
+    release: &Release,
+) -> Result<(), Stop> {
     let since = now();
-    ports.checks.smoke(project, env)?;
-    let errors = ports.checks.errors(project, env, since, settings.window)?;
-    if errors > settings.max_errors {
-        return Err(format!(
-            "{errors} error signals in the {}s window (at most {})",
-            settings.window.as_secs(),
-            settings.max_errors
+    ports
+        .checks
+        .smoke(project, env, release)
+        .map_err(|e| Stop::Check(format!("smoke: {e}")))?;
+    let health = ports
+        .checks
+        .health(project, env, since, settings)
+        .map_err(Stop::Check)?;
+    match breach(&health, settings) {
+        Some(why) => Err(Stop::Breach(why)),
+        None => Ok(()),
+    }
+}
+
+/// The breach a stage's health shows, in a line with its numbers, or none.
+pub fn breach(health: &Health, settings: &Settings) -> Option<String> {
+    let window = settings.window.as_secs();
+    if health.signals > settings.max_errors {
+        return Some(format!(
+            "{} error signals in the {window}s window (at most {})",
+            health.signals, settings.max_errors
         ));
     }
-    Ok(())
+    let mut over = Vec::new();
+    if let Some(rate) = health.error_rate.filter(|r| *r > settings.max_error_rate) {
+        over.push(format!(
+            "error rate {:.1}% (at most {:.1}%)",
+            rate * 100.0,
+            settings.max_error_rate * 100.0
+        ));
+    }
+    if let Some(p95) = health.p95_ms.filter(|p| *p > settings.max_p95_ms) {
+        over.push(format!(
+            "p95 latency {p95:.0} ms (at most {:.0} ms)",
+            settings.max_p95_ms
+        ));
+    }
+    (!over.is_empty()).then(|| format!("{} in the {window}s window", over.join(", ")))
+}
+
+/// The chat's line when a rollout starts.
+pub fn starting(env: &str, version: &str, settings: &Settings) -> String {
+    format!(
+        "Deploying {version} to {env}: rolling out at {}, with the smoke set and a health check after each stage.",
+        stages_text(&settings.stages)
+    )
 }
 
 /// The chat's line about a rollout's end.
@@ -459,8 +574,7 @@ fn spawn(
     deploy: &Deploy,
     prior: Option<String>,
 ) {
-    let client = cloudflare_client(app);
-    let client = match client {
+    let client = match cloudflare_client(app) {
         Ok(client) => client,
         Err(why) => {
             environments::settle_deploy(app, project, &env.name, &deploy.id, "failed", &why, None);
@@ -490,6 +604,11 @@ fn spawn(
         "the rollout started",
         None,
     );
+    tell(
+        app,
+        project,
+        &starting(&env.name, &deploy.version, &settings),
+    );
     let (app, project, env, deploy_id, version) = (
         Arc::clone(app),
         project.to_string(),
@@ -504,16 +623,20 @@ fn spawn(
         let checks = AppChecks {
             app: Arc::clone(&app),
         };
+        let incidents = AppIncidents {
+            app: Arc::clone(&app),
+        };
         let ports = Ports {
             api: &client,
             artifacts: &artifacts,
             checks: &checks,
+            incidents: &incidents,
             runs: &app.recipe_runs,
         };
         let rolled = roll(&ports, &project, &env, &settings, &release, &run);
         let running = match rolled.status {
             "passed" => Some(Some(version.clone())),
-            "rolled_back" => Some(prior),
+            "rolled_back" => Some(prior.clone()),
             _ => None,
         };
         environments::settle_deploy(
@@ -526,7 +649,30 @@ fn spawn(
             running,
         );
         tell(&app, &project, &telling(&env.name, &version, &rolled));
+        if rolled.status == "rolled_back" {
+            record_rollback(&app, &project, &env.name, prior.as_deref(), &version);
+        }
     });
+}
+
+/// A rollback is a deploy of its own (23): the environment records the earlier release it went back to, by the health
+/// watch, so its deploys show the rollback as one.
+fn record_rollback(app: &App, project: &str, env: &str, to: Option<&str>, from: &str) {
+    let Some(to) = to else {
+        return;
+    };
+    match environments::record(app, project, env, to, ROLLBACK_BY, None) {
+        Ok(deploy) => environments::settle_deploy(
+            app,
+            project,
+            env,
+            &deploy.id,
+            "rollback",
+            &format!("back on {to}; {from} was rolled back"),
+            None,
+        ),
+        Err(why) => eprintln!("apid: recording the rollback of {project} {env}: {why}"),
+    }
 }
 
 /// The Cloudflare client for the environment's account, with the connector's token read on the hub.
@@ -542,28 +688,52 @@ fn cloudflare_client(app: &App) -> Result<cloudflare::Client, String> {
     )
 }
 
-/// Writes one notice to the project's chat.
+/// Writes one notice to the project's chat (the loop's notice path).
 fn tell(app: &App, project: &str, text: &str) {
     let now = now();
     let chat = work_loop::project_chat(app, project, now);
-    let _ = app.chats.post(
-        &chat,
-        Post {
-            author: Author::System,
-            session: None,
-            seat: None,
-            kind: MessageKind::Notice,
-            text: text.to_string(),
-            card: None,
-            attachments: Vec::new(),
-        },
-        now,
-    );
+    work_loop::notice(app, &chat, text, now);
+}
+
+/// The monitoring source: the `prometheus` connector's URL and token, when the connector is enabled and has a URL. None
+/// when it is not connected (the watch then counts the environment's error signals only).
+fn monitor(app: &App) -> Result<Option<Prometheus>, String> {
+    let Ok(values) = crate::connectors::hub_values(app, "prometheus") else {
+        return Ok(None);
+    };
+    let Some(url) = values
+        .get("url")
+        .map(|u| u.trim())
+        .filter(|u| !u.is_empty())
+    else {
+        return Ok(None);
+    };
+    Prometheus::new(
+        Arc::new(crate::platforms::http::Ureq),
+        url,
+        values.get("token").map(String::as_str),
+    )
+    .map(Some)
+}
+
+/// The project's smoke set (8.2): its confirmed user-test scenarios, each once.
+fn smoke_set(app: &App, project: &str) -> Vec<Scenario> {
+    let mut set: Vec<Scenario> = Vec::new();
+    for json in app.reviews.confirmed_scenarios(project) {
+        if let Ok(scenario) = serde_json::from_str::<Scenario>(&json)
+            && scenario.check().is_ok()
+            && !set.iter().any(|s| s.id == scenario.id)
+        {
+            set.push(scenario);
+        }
+    }
+    set
 }
 
 // ---- The production ports -------------------------------------------------------------------------------------------
 
-/// The release's artifact bytes, from Weft's blobs (the digest the release recorded).
+/// The release's artifact bytes, from Weft's blobs (the digest the release recorded). An environment's target is the
+/// artifact of that name; a release with one artifact deploys that one.
 struct AppArtifacts {
     app: Arc<App>,
 }
@@ -574,6 +744,7 @@ impl Artifacts for AppArtifacts {
             .artifacts
             .iter()
             .find(|a| a.target == target)
+            .or_else(|| (release.artifacts.len() == 1).then(|| &release.artifacts[0]))
             .ok_or_else(|| format!("{} has no {target} artifact to deploy", release.version))?;
         let hash = artifact
             .digest
@@ -583,38 +754,34 @@ impl Artifacts for AppArtifacts {
     }
 }
 
-/// The smoke scenarios and the error signals, from the environment's address and the project's maintenance book.
+/// The smoke set and the health, from the project's user tests, the environment's maintenance signals and its monitoring.
 struct AppChecks {
     app: Arc<App>,
 }
 
 impl Checks for AppChecks {
-    fn smoke(&self, project: &str, env: &Environment) -> Result<(), String> {
-        if let Some(url) = &env.url {
-            let status = http_status(url)?;
-            if !(200..300).contains(&status) {
-                return Err(format!("{url} answered {status}"));
-            }
+    fn smoke(&self, project: &str, env: &Environment, release: &Release) -> Result<(), String> {
+        let scenarios = smoke_set(&self.app, project);
+        if scenarios.is_empty() {
+            return Ok(());
         }
-        if !self.app.reviews.confirmed_scenarios(project).is_empty() {
-            return Err(
-                "the project has smoke scenarios, and no web target runs them yet (PLAN 8.2)"
-                    .into(),
-            );
-        }
-        Ok(())
+        let url = env
+            .url
+            .as_deref()
+            .ok_or_else(|| format!("{} has no address its smoke scenarios can open", env.name))?;
+        crate::user_test::smoke(&self.app, project, url, &release.from, &scenarios)
     }
 
-    fn errors(
+    fn health(
         &self,
         project: &str,
         env: &Environment,
         since_ms: u64,
-        window: Duration,
-    ) -> Result<u32, String> {
-        std::thread::sleep(window);
+        settings: &Settings,
+    ) -> Result<Health, String> {
+        std::thread::sleep(settings.window);
         let book = self.app.maintenance.get(project);
-        let count = book
+        let signals = book
             .signals
             .iter()
             .filter(|s| {
@@ -622,25 +789,52 @@ impl Checks for AppChecks {
                     && s.environment.as_deref() == Some(env.name.as_str())
                     && s.at_ms >= since_ms
             })
-            .count();
-        Ok(count as u32)
+            .count() as u32;
+        let mut health = Health {
+            signals,
+            ..Health::default()
+        };
+        if let Some(monitor) = monitor(&self.app)? {
+            let reading = health::read(
+                &monitor,
+                &env.name,
+                settings.window,
+                &settings.error_query,
+                &settings.latency_query,
+            )?;
+            health.error_rate = reading.error_rate;
+            health.p95_ms = reading.p95_ms;
+        }
+        Ok(health)
     }
 }
 
-/// The environment's address answers with its status (a GET, the hub's own request).
-fn http_status(url: &str) -> Result<u16, String> {
-    let request = ureq::http::Request::builder()
-        .method("GET")
-        .uri(url)
-        .header("User-Agent", "agentplaza")
-        .body(Vec::new())
-        .map_err(|e| format!("bad address {url}: {e}"))?;
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .http_status_as_error(false)
-        .build();
-    let response = ureq::Agent::new_with_config(config)
-        .run(request)
-        .map_err(|e| format!("{url} did not answer: {e}"))?;
-    Ok(response.status().as_u16())
+/// Records an incident for a breach: a card of the incident kind in the project's chat, with the breach's numbers. The
+/// incident recipe (12.1) takes it from there.
+struct AppIncidents {
+    app: Arc<App>,
+}
+
+impl Incidents for AppIncidents {
+    fn open(&self, project: &str, env: &str, version: &str, detail: &str) {
+        let now = now();
+        let chat = work_loop::project_chat(&self.app, project, now);
+        work_loop::open_card(
+            &self.app,
+            NewCard {
+                kind: Kind::Incident,
+                chat: Some(chat),
+                project: Some(project.to_string()),
+                task: None,
+                session: None,
+                subject: format!("incident:{env}:{version}"),
+                title: format!("{version} breached its health window on {env}"),
+                body: Some(format!(
+                    "{detail}. The deploy was rolled back to the previous release."
+                )),
+                choices: Vec::new(),
+            },
+            now,
+        );
+    }
 }

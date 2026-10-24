@@ -7,7 +7,11 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::cloudflare::{Api, Client, Target};
-use super::{Artifacts, Checks, Ports, Rolled, Settings, check_gate, eligible, roll, telling};
+use super::health::{self, Health, Monitor};
+use super::{
+    Artifacts, Checks, Incidents, Ports, Rolled, Settings, breach, check_gate, eligible, roll,
+    starting, telling,
+};
 use crate::environments::{Deploy, Environment};
 use crate::platforms::http::{Body, Fake};
 use crate::recipes::runs::{RunState, Runs};
@@ -98,7 +102,7 @@ impl Scripted {
 }
 
 impl Checks for Scripted {
-    fn smoke(&self, _project: &str, _env: &Environment) -> Result<(), String> {
+    fn smoke(&self, _project: &str, _env: &Environment, _release: &Release) -> Result<(), String> {
         let n = self.smoke_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if self.fail_on == Some(n) {
             return Err("the smoke scenario sign-in failed".into());
@@ -106,14 +110,89 @@ impl Checks for Scripted {
         Ok(())
     }
 
-    fn errors(
+    fn health(
         &self,
         _project: &str,
         _env: &Environment,
         _since_ms: u64,
-        _window: Duration,
-    ) -> Result<u32, String> {
-        Ok(self.errors)
+        _settings: &Settings,
+    ) -> Result<Health, String> {
+        Ok(Health {
+            signals: self.errors,
+            ..Health::default()
+        })
+    }
+}
+
+/// A monitoring source the test sets: the error ratio, and the p95 latency in seconds.
+struct Gauge {
+    error_rate: Mutex<f64>,
+    p95_seconds: Mutex<f64>,
+}
+
+impl Gauge {
+    fn steady() -> Gauge {
+        Gauge {
+            error_rate: Mutex::new(0.001),
+            p95_seconds: Mutex::new(0.12),
+        }
+    }
+}
+
+impl Monitor for Gauge {
+    fn query(&self, expr: &str) -> Result<Option<f64>, String> {
+        if expr.contains("histogram_quantile") {
+            Ok(Some(*self.p95_seconds.lock().unwrap()))
+        } else {
+            Ok(Some(*self.error_rate.lock().unwrap()))
+        }
+    }
+}
+
+/// The health a monitoring source reads, with no signals of the hub's own (the production checks read both).
+struct Watched<'m> {
+    monitor: &'m dyn Monitor,
+}
+
+impl Checks for Watched<'_> {
+    fn smoke(&self, _project: &str, _env: &Environment, _release: &Release) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn health(
+        &self,
+        _project: &str,
+        env: &Environment,
+        _since_ms: u64,
+        settings: &Settings,
+    ) -> Result<Health, String> {
+        let reading = health::read(
+            self.monitor,
+            &env.name,
+            settings.window,
+            &settings.error_query,
+            &settings.latency_query,
+        )?;
+        Ok(Health {
+            signals: 0,
+            error_rate: reading.error_rate,
+            p95_ms: reading.p95_ms,
+        })
+    }
+}
+
+/// The incidents a rollout opened, as `project env version: detail`.
+#[derive(Default)]
+struct Recording {
+    opened: Mutex<Vec<String>>,
+}
+
+impl Incidents for Recording {
+    fn open(&self, project: &str, env: &str, version: &str, detail: &str) {
+        self.opened
+            .lock()
+            .unwrap()
+            .push(format!("{project} {env} {version}: {detail}"));
     }
 }
 
@@ -190,13 +269,25 @@ fn staging(status: &str) -> Environment {
 /// Runs one rollout of `release` to `env` through `api`, with the checks given; returns its outcome and the run's state.
 fn rollout(
     api: &RecordingApi,
-    checks: &Scripted,
+    checks: &dyn Checks,
     env: &Environment,
     release: &Release,
 ) -> (Rolled, RunState) {
+    let (rolled, state, _) = rollout_recorded(api, checks, env, release);
+    (rolled, state)
+}
+
+/// [`rollout`], also returning the incidents it opened.
+fn rollout_recorded(
+    api: &RecordingApi,
+    checks: &dyn Checks,
+    env: &Environment,
+    release: &Release,
+) -> (Rolled, RunState, Vec<String>) {
     let settings = Settings::of(env)
         .unwrap()
         .expect("a Cloudflare environment");
+    let incidents = Recording::default();
     let runs = Runs::default();
     let items =
         std::collections::BTreeMap::from([("rollout".to_string(), settings.targets.len() as u32)]);
@@ -215,11 +306,13 @@ fn rollout(
         api,
         artifacts: &Bundle,
         checks,
+        incidents: &incidents,
         runs: &runs,
     };
     let rolled = roll(&ports, "site", env, &settings, release, &run);
     let state = runs.view(&run).expect("the run").run.state;
-    (rolled, state)
+    let opened = incidents.opened.lock().unwrap().clone();
+    (rolled, state, opened)
 }
 
 #[test]
@@ -550,8 +643,7 @@ fn the_client_sends_versions_and_percentages_and_the_token_only_in_its_header() 
             ]
         })))
     );
-    let Some(Body::Bytes(content_type, bytes)) = seen[1].3.clone()
-    else {
+    let Some(Body::Bytes(content_type, bytes)) = seen[1].3.clone() else {
         panic!("the upload is a multipart body");
     };
     assert!(content_type.starts_with("multipart/form-data; boundary="));
@@ -670,10 +762,12 @@ fn a_protected_production_rolls_out_in_stages_once_staging_passed_the_same_relea
     let checks = Scripted::passing();
     let runs = Runs::default();
     let release = eligible(&releases, "site", "1.2.0").expect("a published release");
+    let incidents = Recording::default();
     let ports = Ports {
         api: &api,
         artifacts: &Bundle,
         checks: &checks,
+        incidents: &incidents,
         runs: &runs,
     };
     let rolled = roll(&ports, "site", &production, &settings, &release, "");
@@ -688,4 +782,202 @@ fn a_protected_production_rolls_out_in_stages_once_staging_passed_the_same_relea
             "split workers:site v1:100",
         ]
     );
+}
+
+fn watched_env(window_secs: &str) -> Environment {
+    environment(
+        "production",
+        "production",
+        false,
+        &[
+            ("CLOUDFLARE_WORKER", "site"),
+            ("DEPLOY_WINDOW_SECS", window_secs),
+        ],
+    )
+}
+
+#[test]
+fn a_steady_source_does_not_roll_back_and_opens_no_incident() {
+    let env = watched_env("1");
+    let api = RecordingApi::new(Some("v0"));
+    let gauge = Gauge::steady();
+    let (rolled, state, opened) = rollout_recorded(
+        &api,
+        &Watched { monitor: &gauge },
+        &env,
+        &release("1.2.0", ReleaseState::Published),
+    );
+    assert_eq!(rolled.status, "passed", "{}", rolled.detail);
+    assert_eq!(state, RunState::Passed);
+    assert!(opened.is_empty(), "{opened:?}");
+    assert!(
+        !api.calls().iter().any(|c| c.starts_with("restore")),
+        "{:?}",
+        api.calls()
+    );
+}
+
+#[test]
+fn an_error_rate_rise_rolls_back_on_its_own_and_opens_an_incident_with_its_numbers() {
+    let env = watched_env("1");
+    let api = RecordingApi::new(Some("v0"));
+    let gauge = Gauge::steady();
+    *gauge.error_rate.lock().unwrap() = 0.5;
+    let (rolled, state, opened) = rollout_recorded(
+        &api,
+        &Watched { monitor: &gauge },
+        &env,
+        &release("1.2.0", ReleaseState::Published),
+    );
+    assert_eq!(rolled.status, "rolled_back", "{}", rolled.detail);
+    assert_eq!(state, RunState::Failed);
+    // The first stage breaches: the 50% stage never ran, and the previous version comes back.
+    assert_eq!(
+        api.calls(),
+        [
+            "live workers:site",
+            "upload workers:site",
+            "split workers:site v1:10,v0:90",
+            "restore workers:site v0",
+        ]
+    );
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(
+        opened[0].contains("error rate 50.0% (at most 5.0%)"),
+        "{opened:?}"
+    );
+    assert!(opened[0].starts_with("site production 1.2.0"), "{opened:?}");
+    assert!(
+        telling("production", "1.2.0", &rolled).starts_with("Rolled production back"),
+        "{}",
+        rolled.detail
+    );
+}
+
+#[test]
+fn a_latency_breach_also_rolls_back_and_names_the_p95() {
+    let env = watched_env("1");
+    let api = RecordingApi::new(Some("v0"));
+    let gauge = Gauge::steady();
+    *gauge.p95_seconds.lock().unwrap() = 4.5;
+    let (rolled, _, opened) = rollout_recorded(
+        &api,
+        &Watched { monitor: &gauge },
+        &env,
+        &release("1.2.0", ReleaseState::Published),
+    );
+    assert_eq!(rolled.status, "rolled_back", "{}", rolled.detail);
+    assert_eq!(
+        api.calls().last().map(String::as_str),
+        Some("restore workers:site v0")
+    );
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert!(
+        opened[0].contains("p95 latency 4500 ms (at most 2000 ms)"),
+        "{opened:?}"
+    );
+}
+
+#[test]
+fn a_failed_smoke_check_rolls_back_without_opening_an_incident() {
+    let env = watched_env("1");
+    let api = RecordingApi::new(Some("v0"));
+    let checks = Scripted {
+        fail_on: Some(1),
+        ..Scripted::passing()
+    };
+    let (rolled, _, opened) = rollout_recorded(
+        &api,
+        &checks,
+        &env,
+        &release("1.2.0", ReleaseState::Published),
+    );
+    assert_eq!(rolled.status, "rolled_back", "{}", rolled.detail);
+    assert!(opened.is_empty(), "a check is not a breach: {opened:?}");
+}
+
+#[test]
+fn the_thresholds_are_read_from_the_environment_and_a_breach_names_its_numbers() {
+    let env = environment(
+        "production",
+        "production",
+        false,
+        &[
+            ("CLOUDFLARE_WORKER", "site"),
+            ("HEALTH_MAX_ERROR_RATE", "0.2"),
+            ("HEALTH_MAX_P95_MS", "900"),
+        ],
+    );
+    let settings = Settings::of(&env).unwrap().unwrap();
+    assert_eq!(settings.max_error_rate, 0.2);
+    assert_eq!(settings.max_p95_ms, 900.0);
+    assert_eq!(settings.error_query, health::ERROR_QUERY);
+    let quiet = Health {
+        signals: 0,
+        error_rate: Some(0.1),
+        p95_ms: Some(800.0),
+    };
+    assert_eq!(breach(&quiet, &settings), None);
+    let slow = Health {
+        signals: 0,
+        error_rate: Some(0.3),
+        p95_ms: Some(1200.0),
+    };
+    assert_eq!(
+        breach(&slow, &settings).as_deref(),
+        Some(
+            "error rate 30.0% (at most 20.0%), p95 latency 1200 ms (at most 900 ms) in the 300s window"
+        )
+    );
+    let signals = Health {
+        signals: 2,
+        ..Health::default()
+    };
+    assert!(
+        breach(&signals, &settings)
+            .unwrap()
+            .contains("2 error signals")
+    );
+
+    for (key, bad) in [
+        ("HEALTH_MAX_ERROR_RATE", "2"),
+        ("HEALTH_MAX_ERROR_RATE", "many"),
+        ("HEALTH_MAX_P95_MS", "-1"),
+    ] {
+        let env = environment(
+            "production",
+            "production",
+            false,
+            &[("CLOUDFLARE_WORKER", "site"), (key, bad)],
+        );
+        assert!(Settings::of(&env).is_err(), "{key}={bad} is refused");
+    }
+}
+
+#[test]
+fn the_chat_is_told_when_a_rollout_starts_and_how_it_ends() {
+    let env = environment(
+        "staging",
+        "staging",
+        false,
+        &[("CLOUDFLARE_WORKER", "site-staging")],
+    );
+    let settings = Settings::of(&env).unwrap().unwrap();
+    assert_eq!(
+        starting("staging", "1.2.0", &settings),
+        "Deploying 1.2.0 to staging: rolling out at 10% → 50% → 100%, with the smoke set and a health check after each stage."
+    );
+    let passed = Rolled {
+        status: "passed",
+        detail: "1.2.0 served".into(),
+    };
+    assert_eq!(
+        telling("staging", "1.2.0", &passed),
+        "Deployed 1.2.0 to staging: 1.2.0 served."
+    );
+    let stuck = Rolled {
+        status: "failed",
+        detail: "no earlier version to return to".into(),
+    };
+    assert!(telling("staging", "1.2.0", &stuck).contains("The owner needs to look"));
 }
