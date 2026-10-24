@@ -1,0 +1,26 @@
+meta {
+  name: Answer 400 when a transfer names no files
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/v1/transfers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "scope": "base:p:build",
+    "from": "n1",
+    "to": "n2",
+    "files": []
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

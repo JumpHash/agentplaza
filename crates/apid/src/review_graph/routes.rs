@@ -2,9 +2,9 @@
 //!
 //! | Route | Answer |
 //! |---|---|
-//! | `GET /v1/recipes` | every recipe version, and the orchestrator's proposals |
-//! | `GET /v1/recipes/{id}?version=` | one recipe, with its TOML |
-//! | `PUT /v1/recipes/{id}` | a new version (the owner's), `{toml}` |
+//! | `GET /v1/recipes` | every recipe version, the recipe engine's recipes (`engine`), and the orchestrator's proposals |
+//! | `GET /v1/recipes/{id}?version=` | one recipe, with its TOML (an engine recipe answers with `engine: true`) |
+//! | `PUT /v1/recipes/{id}` | a new version (the owner's), `{toml}`; an engine recipe's version is checked by the engine |
 //! | `POST /v1/recipes/proposals/{id}` | the owner's decision on a proposal, `{approve}` |
 //! | `GET /v1/tasks/{id}/reviews` | the task's runs, newest first |
 //! | `GET /v1/reviews/{run}` | a run: its nodes, scores, findings, the gate |
@@ -96,11 +96,16 @@ pub fn routes(router: Router<App>) -> Router<App> {
     router
         .get("/v1/recipes", |app, _, _| {
             let recipes: Vec<Value> = app.reviews.recipes().into_iter().map(|r| json!({ "id": r.id, "version": r.version, "title": r.title, "applies": r.applies, "axes": r.axes, "rounds": r.rounds, "nodes": r.nodes.len() })).collect();
-            Response::json(200, &json!({ "recipes": recipes, "proposals": app.reviews.proposals() }))
+            // The recipe engine's recipes (recipes/model.rs): the graphs of steps that runs follow.
+            let engine: Vec<Value> = app.recipe_runs.recipes().iter().map(|r| json!({ "id": r.id, "name": r.name, "version": r.version, "scope": r.scope, "steps": r.steps.len(), "source": crate::recipes::runs::source_of(r) })).collect();
+            Response::json(200, &json!({ "recipes": recipes, "engine": engine, "proposals": app.reviews.proposals() }))
         })
-        .doc(RouteDoc::new("List the review recipes and the orchestrator's proposals"))
+        .doc(RouteDoc::new("List the review recipes, the recipe engine's recipes and the orchestrator's proposals"))
         .get("/v1/recipes/{id}", |app, req: &Request, p: &Params<'_>| {
             let version = req.query_param("version").and_then(|v| v.parse().ok());
+            if let Some(r) = app.recipe_runs.recipe(p.get("id"), version) {
+                return Response::json(200, &json!({ "recipe": r, "toml": r.to_toml(), "engine": true }));
+            }
             match app.reviews.recipe(p.get("id"), version) {
                 Some(r) => Response::json(200, &json!({ "recipe": r, "toml": r.to_toml() })),
                 None => Response::error(404, "no such recipe"),
@@ -109,6 +114,20 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .doc(RouteDoc::new("Show a review recipe").errors(&[404]))
         .route("PUT", "/v1/recipes/{id}", |app, req: &Request, p: &Params<'_>| {
             let body: Value = req.json().unwrap_or(Value::Null);
+            // An engine recipe (a graph of steps) saves a new version; the IDE writes its file through here.
+            if app.recipe_runs.recipe(p.get("id"), None).is_some() {
+                let parsed = match body["toml"].as_str() {
+                    Some(t) => crate::recipes::Recipe::parse(t),
+                    None => serde_json::from_value::<crate::recipes::Recipe>(body.clone()).map_err(|e| e.to_string()),
+                };
+                return match parsed.and_then(|r| if r.id == p.get("id") { app.recipe_runs.put_version(r, apz_plaza::now_ms()) } else { Err("the recipe's id is not the route's".into()) }) {
+                    Ok(r) => {
+                        app.bus.publish("recipe", &json!({ "recipe": r.key() }));
+                        Response::json(200, &json!({ "recipe": r }))
+                    }
+                    Err(e) => Response::error(400, &e),
+                };
+            }
             let parsed = match body["toml"].as_str() {
                 Some(t) => super::recipe::Recipe::parse(t),
                 None => serde_json::from_value::<super::recipe::Recipe>(body.clone()).map_err(|e| e.to_string()),

@@ -171,3 +171,40 @@ export const projectsApi = {
     return { id: d.id, name: d.title, size: d.size, type: d.content_type };
   },
 };
+
+// ---- Previews ----------------------------------------------------------------------------------------------------
+
+/** A lane's app on a node: awake, asleep (put to sleep, or dozing until a visit wakes it) or closed (the preview ended). */
+export type PreviewStatus = 'awake' | 'asleep' | 'closed';
+export interface Preview {
+  id: string; project: string; lane: string; node: string; status: PreviewStatus; port: number;
+  created_ms: number; used_ms: number; ends_ms: number | null;
+  /** The hub's public path to the lane's app (`/preview/<project>/<lane>/`). */
+  path: string;
+}
+/** `view` watches the app (GET and HEAD only); `use` uses it. */
+export type PreviewScope = 'view' | 'use';
+export type PreviewLinkState = 'active' | 'revoked' | 'expired';
+export interface PreviewLink {
+  id: string; scope: PreviewScope; label: string; state: PreviewLinkState;
+  created_ms: number; expires_ms: number | null; revoked_ms: number | null;
+}
+/** A link to make: its scope, an optional label, and how long it lasts in seconds (1 second to 90 days). */
+export interface PreviewLinkInput { scope: PreviewScope; label: string; expires_in_s: number }
+/** A link as made. `url` is the address to share (the token is in it); `qr` is the path of its QR code, an SVG. */
+export interface PreviewShare { link: PreviewLink; token: string; url: string; qr: string }
+/** One visit through a link: when, from where, what it asked. Newest first. */
+export interface PreviewOpening { at_ms: number; from: string; method: string; path: string }
+
+export const previewsApi = {
+  list: async (project: string): Promise<Preview[]> =>
+    (await call<{ previews: Preview[] }>('GET', `/v1/projects/${enc(project)}/previews`)).previews,
+  sleep: async (id: string): Promise<Preview> => (await call<{ preview: Preview }>('POST', `/v1/previews/${enc(id)}/sleep`, {})).preview,
+  wake: async (id: string): Promise<Preview> => (await call<{ preview: Preview }>('POST', `/v1/previews/${enc(id)}/wake`, {})).preview,
+  close: async (id: string): Promise<Preview> => (await call<{ preview: Preview }>('POST', `/v1/previews/${enc(id)}/close`, {})).preview,
+  links: async (id: string): Promise<PreviewLink[]> => (await call<{ links: PreviewLink[] }>('GET', `/v1/previews/${enc(id)}/links`)).links,
+  share: (id: string, input: PreviewLinkInput) => call<PreviewShare>('POST', `/v1/previews/${enc(id)}/links`, input),
+  revoke: async (link: string): Promise<PreviewLink> => (await call<{ link: PreviewLink }>('DELETE', `/v1/preview-links/${enc(link)}`)).link,
+  openings: async (link: string): Promise<PreviewOpening[]> =>
+    (await call<{ openings: PreviewOpening[] }>('GET', `/v1/preview-links/${enc(link)}/openings`)).openings,
+};

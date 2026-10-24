@@ -4,12 +4,17 @@
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 use apz_gateway::Caller;
 use apz_http::{Request, Response, RouteDoc, Router};
 use apz_metrics::{EntityKind, Event, SeriesKey};
-use apz_proto::chat::{Block, ChatRequest, Message, Role};
-use apz_proto::wire::{CAP_ACP, Decision, GuestMessage, HostMessage, WorkStatus, cap_output};
+use apz_proto::chat::{Block, ChatRequest, Delta, Message, Role};
+use apz_proto::wire::{
+    BatchCall, BatchDecision, CAP_ACP, Decision, EngineSpec, GuestMessage, HostMessage, Program,
+    WorkStatus, cap_output,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -69,7 +74,7 @@ fn forget_tools(cid: u64) {
 /// `attachments` stays 0: the chat model has no image or file block.
 pub(crate) fn context_split(request: &ChatRequest, input_tokens: u64) -> Vec<(String, u64)> {
     let mut bytes = [0u64; 6];
-    bytes[0] = request.system.as_ref().map_or(0, |s| s.len() as u64);
+    bytes[0] = request.system_text().map_or(0, |s| s.len() as u64);
     bytes[1] = serde_json::to_vec(&request.tools).map_or(0, |v| v.len() as u64);
     for message in &request.messages {
         let is_summary = message
@@ -194,6 +199,9 @@ struct Hello {
     /// The harness's features (`acp`); absent from a harness from before v4.
     #[serde(default)]
     caps: Vec<String>,
+    /// The session's kind (`base` for a base build's VM); absent for an agent.
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -245,8 +253,21 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 let hello: Hello = req
                     .json()
                     .map_err(|e| Response::error(400, &e.to_string()))?;
+                // A base build's VM is no agent: apid notes that it is up, and the build's steps go to it.
+                if hello.kind.as_deref() == Some(apz_proto::wire::KIND_BASE) {
+                    crate::base_vm::arrive(cid);
+                    return Ok(Response::json(
+                        200,
+                        &json!({ "profile": null, "policy": null }),
+                    ));
+                }
                 let profile = crate::agents::hello(app, cid, &hello.role, hello.vm, &hello.caps);
-                Ok(Response::json(200, &json!({ "profile": profile })))
+                // The session's first policy: the VM sends it right after its welcome.
+                let policy = crate::policy::at_hello(app, cid);
+                Ok(Response::json(
+                    200,
+                    &json!({ "profile": profile, "policy": policy }),
+                ))
             })
         })
         .doc(RouteDoc::new("Register an agent's VM and get its profile").errors(&[400, 403]))
@@ -552,6 +573,48 @@ fn egress_check(app: &App, cid: u64, host: &str, port: u16) -> Value {
 /// One v3 guest line from agent `cid`; the reply for the guest, if any.
 // contract
 pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage> {
+    // A base build's command answered: the step waiting for it takes the answer (base_vm.rs), and nothing is sent back.
+    if let GuestMessage::ExecResult {
+        id,
+        ok,
+        exit_code,
+        output,
+    } = message
+    {
+        crate::base_vm::answer(
+            cid,
+            id,
+            crate::base_vm::Answer {
+                ok,
+                exit_code,
+                output,
+            },
+        );
+        return None;
+    }
+    // A guest's port listens (a preview's app, v10): noded lets an inbound stream reach it. A base VM is not an agent,
+    // so this is answered before the agent lookup. The hub's own registration (preview start) is the fallback.
+    if let GuestMessage::Listening { port } = message {
+        let path = format!("/v1/forks/{cid}/ports");
+        match crate::fleet::noded_for(
+            app,
+            cid,
+            "POST",
+            &path,
+            Some(&serde_json::json!({"port": port})),
+        ) {
+            Ok((200, _)) => {
+                // Recorded only once noded has it: a refused registration leaves the hub's fallback to make it.
+                crate::base_vm::record_listening(cid, port);
+                eprintln!("apid: VM {cid} registered port {port} (the guest announced it)")
+            }
+            Ok((status, reply)) => {
+                eprintln!("apid: VM {cid} port {port} not registered: noded {status}: {reply}")
+            }
+            Err(why) => eprintln!("apid: VM {cid} port {port} not registered: {why}"),
+        }
+        return None;
+    }
     let Some(agent) = app.agents.get(cid) else {
         return match message {
             GuestMessage::ModelCall { req, .. } => Some(HostMessage::ModelResult {
@@ -559,6 +622,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 ok: false,
                 response: None,
                 error: Some("unknown agent".to_string()),
+                window: None,
             }),
             GuestMessage::ToolRequest { call, .. } => Some(HostMessage::ToolDecision {
                 call,
@@ -569,13 +633,31 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                 engine: None,
                 approval: None,
             }),
+            GuestMessage::ToolBatch { work, calls } => Some(HostMessage::ToolBatchDecision {
+                work,
+                decisions: calls
+                    .into_iter()
+                    .map(|call| BatchDecision {
+                        call: call.call,
+                        decision: Decision::Deny,
+                        output: "unknown agent".to_string(),
+                        is_error: true,
+                        program: None,
+                        engine: None,
+                        approval: None,
+                    })
+                    .collect(),
+            }),
             _ => None,
         };
     };
     match message {
-        GuestMessage::ModelCall { req, work, request } => {
-            Some(model_call(app, cid, &agent, req, work, request))
-        }
+        GuestMessage::ModelCall {
+            req,
+            work,
+            request,
+            helper,
+        } => Some(model_call(app, cid, &agent, req, work, request, helper)),
         GuestMessage::ToolRequest {
             work,
             call,
@@ -586,15 +668,41 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             crate::steps::tool(app, cid, &name);
             Some(tool_request(app, cid, &agent, work, call, &name, &input))
         }
+        GuestMessage::ToolBatch { work, calls } => Some(tool_batch(app, cid, &agent, work, calls)),
         GuestMessage::ToolReport {
             work,
             call,
             ok,
             output,
+            policy,
+            name,
+            input,
+            duration_ms,
+            script,
         } => {
-            // A report carries no duration of its own, so the tool's time is recorded as 0.
-            let tool = take_tool(cid, &call);
-            collect::tool_call(app, cid, &tool, 0.0, ok);
+            // A call the guest decided itself names its tool and carries its record; any other was named at its request.
+            let tool = match name {
+                Some(name) => name,
+                None => take_tool(cid, &call),
+            };
+            if let Some(policy) = &policy {
+                let input = input.unwrap_or(Value::Null);
+                record_local(app, cid, work, &call, &tool, &input, policy);
+            }
+            // A harness from before v7 sends no duration: its calls count as 0 ms.
+            let ms = duration_ms.unwrap_or(0);
+            app.evals.tool(cid, &tool, ms, ok);
+            let _ = app.sessions.add_usage(
+                cid,
+                &crate::sessions::Usage {
+                    tool_calls: 1,
+                    ..Default::default()
+                },
+            );
+            collect::tool_call(app, cid, &tool, ms as f64, ok);
+            if tool.starts_with(crate::library::PREFIX) {
+                crate::tool_life::reported(app, &tool, ok, ms);
+            }
             let snap = app.context.on_tool(cid, work, &tool, ok, output.len());
             crate::context_track::publish(app, &snap);
             if crate::library::take_package_call(cid, &call)
@@ -618,6 +726,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                     call,
                     ok,
                     output: cap_output(&output, REPORT_OUTPUT_BYTES),
+                    script,
                 },
             );
             None
@@ -687,7 +796,12 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
             after,
             folded,
             reason,
+            summary,
         } => {
+            // The summary also goes into the task's journal, where the next session and the curator read it.
+            if !summary.is_empty() {
+                crate::journal::record_compaction(app, cid, &summary);
+            }
             app.transcripts.record(
                 &app.bus,
                 cid,
@@ -697,6 +811,7 @@ pub fn handle(app: &App, cid: u64, message: GuestMessage) -> Option<HostMessage>
                     after,
                     folded,
                     reason,
+                    summary,
                 },
             );
             record_compaction(app, cid, before, after);
@@ -723,7 +838,30 @@ fn model_call(
     req: u64,
     work: u64,
     mut request: ChatRequest,
+    helper: Option<u64>,
 ) -> HostMessage {
+    // A helper is one level down: it is never offered the tools that start or await helpers (depth is one).
+    if helper.is_some()
+        && request
+            .tools
+            .iter()
+            .any(|tool| matches!(tool.name.as_str(), "spawn_helper" | "await_helper"))
+    {
+        let e = "a helper cannot start or await helpers".to_string();
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error { message: e.clone() },
+        );
+        return HostMessage::ModelResult {
+            req,
+            ok: false,
+            response: None,
+            error: Some(e),
+            window: None,
+        };
+    }
     // Held by STOP ALL: no agent thinks until the owner resumes, not even mid-turn. An agent whose project is
     // paused or over does not think either (see `projects::held`).
     // A held call answers `paused:`, so the harness's turn waits and asks again instead of failing.
@@ -748,6 +886,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     // The model of the chat the call is for (one message's choice, else the chat's own) before the agent's model.
@@ -766,6 +905,7 @@ fn model_call(
             ok: false,
             response: None,
             error: Some(e),
+            window: None,
         };
     }
     request.model = model.clone();
@@ -786,6 +926,8 @@ fn model_call(
     );
 
     // A session's call is held on its budget first; one that does not fit pauses the session (work_loop.rs).
+    // A helper's call is held on the VM's session's budget (its task's), and recorded on the helper's session.
+    let helper_session = helper.and_then(|n| crate::work_loop::helper_session(app, cid, n));
     let budget_hold = match crate::work_loop::before_call(app, cid, &model, &request) {
         Ok(held) => held,
         Err(paused) => {
@@ -802,6 +944,7 @@ fn model_call(
                 ok: false,
                 response: None,
                 error: Some(paused),
+                window: None,
             };
         }
     };
@@ -813,25 +956,52 @@ fn model_call(
     collect::agent_state(app, cid, "first_token");
     let started = std::time::Instant::now();
     let mut first_delta_ms: Option<f64> = None;
-    let result = gateway.complete_for(
-        &request,
-        &mut |delta| {
-            if first_delta_ms.is_none() {
-                // The first token is in: the agent waits on the model's stream from here.
-                collect::agent_state(app, cid, "streaming");
-            }
-            first_delta_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
-            app.bus.publish(
-                "delta",
-                &json!({ "cid": cid, "work": work, "req": req, "delta": delta }),
-            );
-        },
-        &caller,
-    );
+    // The VM hears the answer as it streams. A thread of its own sends the fragments in order, so the stream never
+    // waits on the VM's session; the answer goes back only once they are all sent.
+    let result = thread::scope(|scope| {
+        let (sent, fragments) = mpsc::channel();
+        scope.spawn(move || {
+            stream_deltas(fragments, |delta| {
+                // A fragment the VM does not take ends what it hears of this answer; the answer carries the rest.
+                matches!(
+                    crate::fleet::send(app, cid, &delta_line(req, delta)),
+                    Ok((200..300, _))
+                )
+            })
+        });
+        let result = gateway.complete_for(
+            &request,
+            &mut |delta| {
+                if first_delta_ms.is_none() {
+                    // The first token is in: the agent waits on the model's stream from here.
+                    collect::agent_state(app, cid, "streaming");
+                }
+                first_delta_ms.get_or_insert_with(|| started.elapsed().as_secs_f64() * 1000.0);
+                // The bus keeps the events it has always carried: the text, the reasoning and the start of a tool call.
+                if !matches!(delta, Delta::ToolInput { .. } | Delta::BlockEnd { .. }) {
+                    app.bus.publish(
+                        "delta",
+                        &json!({ "cid": cid, "work": work, "req": req, "delta": delta }),
+                    );
+                }
+                let _ = sent.send(delta.clone());
+            },
+            &caller,
+        );
+        // The stream is over: the sender sends what is left, and the scope waits for it.
+        drop(sent);
+        result
+    });
     let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
     collect::agent_state(app, cid, "tools");
     if let Some(held) = budget_hold {
-        crate::work_loop::after_call(app, cid, held, result.as_ref().ok().map(|r| &r.usage));
+        crate::work_loop::after_call(
+            app,
+            cid,
+            held,
+            result.as_ref().ok().map(|r| &r.usage),
+            helper_session.as_deref(),
+        );
     }
     match result {
         Ok(resp) => {
@@ -900,6 +1070,7 @@ fn model_call(
                 ok: true,
                 response: Some(resp),
                 error: None,
+                window: crate::providers::context_window(app, &model),
             }
         }
         Err(e) => {
@@ -917,9 +1088,68 @@ fn model_call(
                 ok: false,
                 response: None,
                 error: Some(message),
+                window: None,
             }
         }
     }
+}
+
+/// The line that carries one fragment of model call `req`'s answer to the VM.
+fn delta_line(req: u64, delta: Delta) -> Value {
+    json!({ "message": HostMessage::ModelDelta { req, delta } })
+}
+
+/// Sends a model call's fragments to the VM in the order they arrive, until the stream ends (`fragments` closes), or
+/// until the VM refuses one (`send` returns false): the answer carries the whole response, so the rest are not sent.
+/// Fragments that are waiting together go as one: text joins text, and the input of a tool call joins its own. A VM
+/// on a remote node answers each send only after a round trip, so the fragments do not queue behind a line each.
+fn stream_deltas(fragments: Receiver<Delta>, mut send: impl FnMut(Delta) -> bool) {
+    while let Ok(first) = fragments.recv() {
+        let mut outgoing = first;
+        while let Ok(next) = fragments.try_recv() {
+            if let Err(next) = join_fragment(&mut outgoing, next)
+                && !send(std::mem::replace(&mut outgoing, next))
+            {
+                return;
+            }
+        }
+        if !send(outgoing) {
+            return;
+        }
+    }
+}
+
+/// Joins `next` onto `into` when both are the same kind of fragment for the same place: text onto text, reasoning
+/// onto reasoning, the input of one tool call onto that call's. Otherwise `next` is handed back.
+fn join_fragment(into: &mut Delta, next: Delta) -> Result<(), Delta> {
+    match (into, next) {
+        (Delta::Text { text }, Delta::Text { text: more })
+        | (Delta::Thinking { text }, Delta::Thinking { text: more }) => {
+            text.push_str(&more);
+            Ok(())
+        }
+        (
+            Delta::ToolInput { index, json: chunk },
+            Delta::ToolInput {
+                index: next_index,
+                json: more,
+            },
+        ) if *index == next_index => {
+            chunk.push_str(&more);
+            Ok(())
+        }
+        (_, next) => Err(next),
+    }
+}
+
+/// What the hub decided for one call: the verdict and its output, and for an allowed call what it runs with.
+struct Decided {
+    decision: Decision,
+    output: String,
+    is_error: bool,
+    program: Option<Program>,
+    engine: Option<EngineSpec>,
+    approval: Option<String>,
 }
 
 /// Decides and, for host tools, runs one tool request from the model.
@@ -932,12 +1162,74 @@ fn tool_request(
     name: &str,
     input: &Value,
 ) -> HostMessage {
+    let decided = decide_call(app, cid, agent, work, &call, name, input);
+    count_decided(app, cid, decided.decision);
+    HostMessage::ToolDecision {
+        call,
+        decision: decided.decision,
+        output: decided.output,
+        is_error: decided.is_error,
+        program: decided.program,
+        engine: decided.engine,
+        approval: decided.approval,
+    }
+}
+
+/// Counts a call the hub decided (not allowed to run in the guest) as one of its session's tool calls. A call the guest
+/// runs is counted when its report arrives, so each of a session's calls is counted once.
+fn count_decided(app: &App, cid: u64, decision: Decision) {
+    if decision != Decision::Allow {
+        let _ = app.sessions.add_usage(
+            cid,
+            &crate::sessions::Usage {
+                tool_calls: 1,
+                ..Default::default()
+            },
+        );
+    }
+}
+
+/// Decides the calls of one model turn that the policy does not allow, in order, each as [`tool_request`] decides
+/// one, and answers them all at once: a turn is one round trip to the hub.
+fn tool_batch(app: &App, cid: u64, agent: &Agent, work: u64, calls: Vec<BatchCall>) -> HostMessage {
+    let decisions = calls
+        .into_iter()
+        .map(|call| {
+            remember_tool(cid, &call.call, &call.name);
+            crate::steps::tool(app, cid, &call.name);
+            let decided = decide_call(app, cid, agent, work, &call.call, &call.name, &call.input);
+            count_decided(app, cid, decided.decision);
+            BatchDecision {
+                call: call.call,
+                decision: decided.decision,
+                output: decided.output,
+                is_error: decided.is_error,
+                program: decided.program,
+                engine: decided.engine,
+                approval: decided.approval,
+            }
+        })
+        .collect();
+    HostMessage::ToolBatchDecision { work, decisions }
+}
+
+/// Decides one call from the model: the laws and the grant, the owner's permission mode, the VM checkpoint an
+/// irreversible call waits for, and an allowed host tool's run. The transcript records the request and the decision.
+fn decide_call(
+    app: &App,
+    cid: u64,
+    agent: &Agent,
+    work: u64,
+    call: &str,
+    name: &str,
+    input: &Value,
+) -> Decided {
     app.transcripts.record(
         &app.bus,
         cid,
         work,
         crate::transcript::Entry::ToolRequest {
-            call: call.clone(),
+            call: call.to_string(),
             name: name.to_string(),
             input: input.clone(),
         },
@@ -971,7 +1263,7 @@ fn tool_request(
             .map(|item| item.thread),
         waiting: holds.then(|| approvals::Waiting {
             work,
-            call: call.clone(),
+            call: call.to_string(),
         }),
     };
     let gate = if verdict.is_ok() {
@@ -994,19 +1286,24 @@ fn tool_request(
         }
         (approvals::Gate::Held { refusal, .. }, _) => (Decision::Deny, refusal, true),
         (approvals::Gate::Run, Err(reason)) => (Decision::Deny, reason, true),
-        // An agent-made tool from the library: allowed with its program, which the guest runs.
+        // An agent-made tool from the library: one that uses a connector's secret runs on the hub's glue tier; any other
+        // is allowed with its program, which the guest runs.
         (approvals::Gate::Run, Ok(Runs::Guest)) if name.starts_with(crate::library::PREFIX) => {
-            match crate::library::program(app, cid, name) {
-                Some(found) => {
-                    program = Some(found);
-                    (Decision::Allow, String::new(), false)
+            if let Some((is_error, output)) = crate::tool_life::glue_call(app, cid, name, input) {
+                (Decision::Done, output, is_error)
+            } else {
+                match crate::library::program(app, cid, name) {
+                    Some(found) => {
+                        program = Some(found);
+                        (Decision::Allow, String::new(), false)
+                    }
+                    None => (Decision::Deny, "no such library tool".to_string(), true),
                 }
-                None => (Decision::Deny, "no such library tool".to_string(), true),
             }
         }
         (approvals::Gate::Run, Ok(Runs::Guest)) => {
             if name == "tool_package" {
-                crate::library::remember_package_call(cid, &call);
+                crate::library::remember_package_call(cid, call);
             }
             // The engine's model is checked against the tier before the VM runs it: a bad one is a
             // tool error here, not a gateway refusal later.
@@ -1021,7 +1318,11 @@ fn tool_request(
             }
         }
         (approvals::Gate::Run, Ok(Runs::Host)) => {
-            let (is_error, output) = run_host(app, agent, work, name, input);
+            // A built-in tool a library version replaces runs as that replacement's stage says (PLAN 14.2); otherwise
+            // it runs as before.
+            let host = || run_host(app, agent, work, name, input);
+            let (is_error, output) =
+                crate::tool_life::replaced_call(app, cid, name, input, &host).unwrap_or_else(host);
             (Decision::Done, output, is_error)
         }
     };
@@ -1030,7 +1331,7 @@ fn tool_request(
         cid,
         work,
         crate::transcript::Entry::ToolDecision {
-            call: call.clone(),
+            call: call.to_string(),
             decision: decision.into(),
             output: cap_output(&output, DECISION_OUTPUT_BYTES),
         },
@@ -1040,14 +1341,68 @@ fn tool_request(
         .then(|| input.get("engine").and_then(Value::as_str))
         .flatten()
         .and_then(|id| app.engines.launch_spec(id));
-    HostMessage::ToolDecision {
-        call,
+    Decided {
         decision,
         output,
         is_error,
         program,
         engine,
         approval,
+    }
+}
+
+/// Records a call the guest decided itself under policy `policy` (see `crate::policy`): its request, and its decision,
+/// which names the policy. A call the policy does not allow is also a violation, recorded with the metric; the call
+/// itself stands.
+fn record_local(
+    app: &App,
+    cid: u64,
+    work: u64,
+    call: &str,
+    tool: &str,
+    input: &Value,
+    policy: &str,
+) {
+    app.transcripts.record(
+        &app.bus,
+        cid,
+        work,
+        crate::transcript::Entry::ToolRequest {
+            call: call.to_string(),
+            name: tool.to_string(),
+            input: input.clone(),
+        },
+    );
+    app.transcripts.record(
+        &app.bus,
+        cid,
+        work,
+        crate::transcript::Entry::ToolDecision {
+            call: call.to_string(),
+            decision: crate::transcript::Verdict::Allow,
+            output: cap_output(
+                &format!("allowed by policy {policy}"),
+                DECISION_OUTPUT_BYTES,
+            ),
+        },
+    );
+    if let Some(reason) = crate::policy::violation(cid, policy, tool) {
+        app.transcripts.record(
+            &app.bus,
+            cid,
+            work,
+            crate::transcript::Entry::Error {
+                message: format!("policy violation: {reason}"),
+            },
+        );
+        app.metrics
+            .registry
+            .counter(SeriesKey::new(
+                "policy.violation",
+                EntityKind::Agent,
+                &cid.to_string(),
+            ))
+            .inc();
     }
 }
 
@@ -1132,7 +1487,7 @@ mod tests {
             let granted = vec!["read".to_string(), "calc".to_string()];
             // An ungranted tool is denied even when a runner exists for it.
             assert!(matches!(
-                decide(&granted, "bash", Some(Runs::Guest)),
+                decide(&granted, "run", Some(Runs::Guest)),
                 Err("not granted to this agent")
             ));
             // A granted guest tool may run in the VM.
@@ -1230,6 +1585,8 @@ mod egress_check_tests {
 
     fn request_of(system: Option<&str>, messages: Vec<Message>) -> ChatRequest {
         ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: String::new(),
             system: system.map(str::to_string),
             messages,
@@ -1293,7 +1650,7 @@ mod egress_check_tests {
         remember_tool(9_001, "call-a", "read");
         assert_eq!(take_tool(9_001, "call-a"), "read");
         assert_eq!(take_tool(9_001, "call-a"), "unknown");
-        remember_tool(9_001, "call-b", "bash");
+        remember_tool(9_001, "call-b", "run");
         forget_tools(9_001);
         assert_eq!(take_tool(9_001, "call-b"), "unknown");
     }
@@ -1442,7 +1799,7 @@ mod law_gate_tests {
   forbid tool.call
   principal is Agent
   resource is Tool
-  when resource.name == "read_file"
+  when resource.name == "read"
 }
 "#;
 
@@ -1460,7 +1817,7 @@ mod law_gate_tests {
             let laws = Laws::builtin();
             let granted = crate::tools::offered_names("builder");
             let input = json!({"command": "curl -H 'Authorization: sk-proj-abcdefghijklmnopqrstuvwxyz0123' x"});
-            let reason = gate_call(&laws, 7, "builder", &granted, "bash", &input).unwrap_err();
+            let reason = gate_call(&laws, 7, "builder", &granted, "run", &input).unwrap_err();
             assert!(
                 reason.starts_with("refused by law ") && reason.contains("C-002b"),
                 "{reason}"
@@ -1477,7 +1834,7 @@ mod law_gate_tests {
                     7,
                     "builder",
                     &granted,
-                    "read_file",
+                    "read",
                     &json!({"path": "a.md"})
                 ),
                 Ok(Runs::Guest)
@@ -1525,12 +1882,11 @@ mod law_gate_tests {
             let mut with_rule = compiled_in();
             with_rule.push(("owner.jhrl".to_string(), OWNER_RULE.to_string()));
             let added = Laws::from_files(with_rule);
-            let reason =
-                gate_call(&added, 7, "builder", &granted, "read_file", &input).unwrap_err();
+            let reason = gate_call(&added, 7, "builder", &granted, "read", &input).unwrap_err();
             assert!(reason.contains("O-001"), "{reason}");
             let removed = Laws::from_files(compiled_in());
             assert_eq!(
-                gate_call(&removed, 7, "builder", &granted, "read_file", &input),
+                gate_call(&removed, 7, "builder", &granted, "read", &input),
                 Ok(Runs::Guest)
             );
         }
@@ -1549,7 +1905,118 @@ mod hold_tests {
         // The harness did not advertise acp (an older one): refused as before.
         assert!(!holds_for_owner(&[], "engine.edit"));
         // Not an engine call, even from an ACP harness: the plaza's own tools behave as they did.
-        assert!(!holds_for_owner(&acp, "write_file"));
+        assert!(!holds_for_owner(&acp, "edit"));
         assert!(!holds_for_owner(&acp, "code_engine"));
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn a_model_calls_fragments_reach_the_vm_in_order_and_waiting_ones_join() {
+        let (sent, fragments) = mpsc::channel();
+        for delta in [
+            Delta::Text { text: "a".into() },
+            Delta::Text { text: "b".into() },
+            Delta::ToolUse {
+                name: "read".into(),
+                index: 1,
+                id: "t1".into(),
+            },
+            Delta::ToolInput {
+                index: 1,
+                json: "{\"path\"".into(),
+            },
+            Delta::ToolInput {
+                index: 1,
+                json: ": \"x\"}".into(),
+            },
+            Delta::BlockEnd { index: 1 },
+            Delta::Text { text: "c".into() },
+        ] {
+            sent.send(delta).unwrap();
+        }
+        // The stream is over: the sender sends what is left and returns.
+        drop(sent);
+        let mut lines = Vec::new();
+        stream_deltas(fragments, |delta| {
+            lines.push(delta_line(7, delta));
+            true
+        });
+        // Text joins text, and one call's input joins its own; the call's start and end, and the text after them,
+        // keep their place in the order.
+        assert_eq!(
+            lines,
+            vec![
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "text", "text": "ab"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_use", "name": "read", "index": 1, "id": "t1"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "tool_input", "index": 1, "json": "{\"path\": \"x\"}"}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "block_end", "index": 1}}}),
+                json!({"message": {"type": "model_delta", "req": 7, "delta": {"type": "text", "text": "c"}}}),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_fragments_stop_at_the_first_one_the_vm_does_not_take() {
+        let (sent, fragments) = mpsc::channel();
+        for delta in [
+            Delta::BlockEnd { index: 0 },
+            Delta::Text { text: "a".into() },
+            Delta::BlockEnd { index: 1 },
+            Delta::Text { text: "b".into() },
+        ] {
+            sent.send(delta).unwrap();
+        }
+        drop(sent);
+        let mut offered = Vec::new();
+        stream_deltas(fragments, |delta| {
+            offered.push(delta);
+            // The VM takes its first two fragments only.
+            offered.len() < 2
+        });
+        assert_eq!(
+            offered,
+            vec![
+                Delta::BlockEnd { index: 0 },
+                Delta::Text { text: "a".into() }
+            ],
+            "nothing after the refused fragment is offered"
+        );
+    }
+
+    #[test]
+    fn fragments_of_different_calls_or_kinds_never_join() {
+        let mut text = Delta::Text { text: "x".into() };
+        assert_eq!(
+            join_fragment(&mut text, Delta::Thinking { text: "y".into() }),
+            Err(Delta::Thinking { text: "y".into() })
+        );
+        let mut first = Delta::ToolInput {
+            index: 0,
+            json: "{".into(),
+        };
+        assert_eq!(
+            join_fragment(
+                &mut first,
+                Delta::ToolInput {
+                    index: 2,
+                    json: "}".into(),
+                },
+            ),
+            Err(Delta::ToolInput {
+                index: 2,
+                json: "}".into(),
+            })
+        );
+        assert_eq!(
+            first,
+            Delta::ToolInput {
+                index: 0,
+                json: "{".into(),
+            }
+        );
     }
 }

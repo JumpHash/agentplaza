@@ -1,0 +1,17 @@
+meta {
+  name: Refuse to promote an unknown tool version
+  type: http
+  seq: 61
+}
+
+post {
+  url: {{baseUrl}}/v1/library/no-such-tool/1/promote
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "no such version"
+}

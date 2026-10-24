@@ -88,6 +88,7 @@
 //! models) lives in `apid`.
 
 mod collect;
+pub mod cpu_baseline;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
@@ -99,6 +100,7 @@ pub mod snapshots;
 pub mod stats;
 pub mod templates;
 pub mod train;
+pub mod transfer;
 pub mod volumes;
 pub mod workspace_image;
 pub mod workstation;
@@ -233,6 +235,8 @@ pub struct Node {
     workstations: workstation::Store,
     /// The exports and imports of sleeping VMs in flight (migrate.rs).
     migrations: migrate::Migrations,
+    /// The blob store and the server node-to-node transfers use (transfer.rs).
+    transfers: transfer::Transfers,
     /// The MCP servers this node runs in microVMs (mcp_vm.rs).
     mcp: mcp_vm::McpVms,
 }
@@ -240,6 +244,10 @@ pub struct Node {
 /// `GET /v1/machine`.
 #[derive(Debug, Serialize)]
 pub struct MachineView {
+    /// The port this node serves node-to-node transfers on (transfer.rs); null when it does not.
+    pub transfer_port: Option<u16>,
+    /// The SHA-256 pin of this node's transfer certificate (hex); null when it serves none.
+    pub transfer_pin: Option<String>,
     pub name: String,
     pub arch: &'static str,
     pub os: &'static str,
@@ -265,6 +273,14 @@ pub struct MachineView {
     pub memory_mib: u64,
     /// The size of the state directory's filesystem, in GiB; null when unknown.
     pub storage_gib: Option<u64>,
+    /// The free space on that filesystem now, in GiB; null when unknown.
+    pub storage_free_gib: Option<u64>,
+    /// Whether the state directory's filesystem clones files (reflinks, `vmm::clonefile`).
+    pub clones: bool,
+    /// The CPU baseline a pool is keyed by (`cpu_baseline`); null where the platform has none to read.
+    pub cpu_baseline: Option<String>,
+    /// The warm templates this node holds, by key (the bases of plan 16.1 that a node keeps).
+    pub bases: Vec<String>,
     pub vsock_mode: &'static str,
     /// The launch backends this node can run a workstation VM under: `plaza`, and `qemu` when QEMU and its firmware are here.
     pub workstation_backends: Vec<&'static str>,
@@ -313,6 +329,7 @@ impl Node {
             fabric: Mutex::new(None),
             workstations: workstation::Store::open(guest),
             migrations: migrate::Migrations::new(),
+            transfers: transfer::Transfers::open(&apz_os::dirs::state().join("transfers")),
             mcp: mcp_vm::McpVms::kvm(),
         }
     }
@@ -320,6 +337,8 @@ impl Node {
     pub fn machine(&self) -> MachineView {
         let class = machine_class();
         MachineView {
+            transfer_port: self.transfers.port(),
+            transfer_pin: self.transfers.pin(),
             name: hostname(),
             arch: machine_arch(),
             os: machine_os(),
@@ -338,6 +357,14 @@ impl Node {
             cpus: host_cpus(),
             memory_mib: self.probed.memory_mib,
             storage_gib: self.probed.storage_gib,
+            storage_free_gib: storage_free_gib(&apz_os::dirs::state()),
+            clones: self.probed.clones,
+            cpu_baseline: self.probed.cpu_baseline.clone(),
+            bases: self
+                .registry
+                .templates()
+                .map(|templates| templates.list().into_iter().map(|view| view.key).collect())
+                .unwrap_or_default(),
             vsock_mode: "uds-muxer",
             workstation_backends: self.workstations.backends(),
             started_at_ms: self.started_at_ms,
@@ -585,6 +612,10 @@ struct Probed {
     cpu: Cpu,
     memory_mib: u64,
     storage_gib: Option<u64>,
+    /// Whether the state directory's filesystem clones files.
+    clones: bool,
+    /// The CPU baseline (`cpu_baseline`), read once at start.
+    cpu_baseline: Option<String>,
     facts: MachineFacts,
 }
 
@@ -628,6 +659,8 @@ fn probe_host(state_dir: &Path) -> Probed {
             cpu: probe_cpu(None),
             memory_mib: host_memory_mib(),
             storage_gib: storage_gib(state_dir),
+            clones: vmm::clonefile::reflink_supported(state_dir),
+            cpu_baseline: cpu_baseline::host(),
             facts,
         };
     }
@@ -660,6 +693,8 @@ fn probe_host(state_dir: &Path) -> Probed {
         cpu: probe_cpu(tree.as_deref()),
         memory_mib,
         storage_gib: storage_gib(state_dir),
+        clones: vmm::clonefile::reflink_supported(state_dir),
+        cpu_baseline: cpu_baseline::host(),
         facts: probe_machine_facts(None),
     }
 }
@@ -1025,20 +1060,31 @@ fn parse_reg_string(output: &str, name: &str) -> Option<String> {
 /// The total size in GiB of the filesystem holding `dir` (`/` when `dir` does not exist), from
 /// `df -Pk`. None on Windows or when `df` fails.
 fn storage_gib(dir: &Path) -> Option<u64> {
+    df_gib(dir, 1)
+}
+
+/// The free space in GiB of the filesystem holding `dir` now (see [`storage_gib`]).
+fn storage_free_gib(dir: &Path) -> Option<u64> {
+    df_gib(dir, 3)
+}
+
+/// One column of `df -Pk` for the filesystem holding `dir`, in GiB.
+fn df_gib(dir: &Path, column: usize) -> Option<u64> {
     if cfg!(target_os = "windows") {
         return None;
     }
     let target = if dir.exists() { dir } else { Path::new("/") };
-    parse_df_gib(&command_stdout("df", &["-Pk", target.to_str()?])?)
+    parse_df_gib(&command_stdout("df", &["-Pk", target.to_str()?])?, column)
 }
 
-/// The total of a `df -Pk` table: the second column (1024-byte blocks) of its first data line.
-fn parse_df_gib(output: &str) -> Option<u64> {
+/// The GiB in `column` of a `df -Pk` table's first data line (1024-byte blocks: column 1 is the total,
+/// column 3 the available space).
+fn parse_df_gib(output: &str, column: usize) -> Option<u64> {
     let kib: u64 = output
         .lines()
         .nth(1)?
         .split_whitespace()
-        .nth(1)?
+        .nth(column)?
         .parse()
         .ok()?;
     Some(kib / (1024 * 1024))
@@ -1732,8 +1778,9 @@ mod tests {
     #[test]
     fn df_table_gives_the_total_in_gib() {
         let out = "Filesystem     1024-blocks       Used Available Capacity Mounted on\n/dev/sda2      1953514584 1000000000 900000000      53% /\n";
-        assert_eq!(parse_df_gib(out), Some(1863));
-        assert_eq!(parse_df_gib("Filesystem\n"), None);
+        assert_eq!(parse_df_gib(out, 1), Some(1863), "the total");
+        assert_eq!(parse_df_gib(out, 3), Some(858), "the available space");
+        assert_eq!(parse_df_gib("Filesystem\n", 1), None);
     }
 }
 
@@ -1747,6 +1794,10 @@ impl Server {
     /// Binds `config.port` on 127.0.0.1 and starts serving.
     pub fn start(config: Config) -> std::io::Result<Self> {
         let server = apz_http::Server::bind(config.port)?;
+        let transfer_port = std::env::var("APZ_TRANSFER_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(transfer::DEFAULT_PORT);
         let internal_token = config.internal_token.clone();
         if !internal_token.enabled() {
             println!("noded: no --internal-token-file: the HTTP API takes no token");
@@ -1757,6 +1808,12 @@ impl Server {
             .unwrap_or(19080);
         collect::point_at_vsockd(vsockd_port, internal_token.header());
         let node = Arc::new(Node::new(config));
+        if let Err(err) = node
+            .transfers
+            .listen(std::net::SocketAddr::from(([0, 0, 0, 0], transfer_port)))
+        {
+            eprintln!("noded: transfers are off: cannot listen on {transfer_port}: {err}");
+        }
         stats::spawn(Arc::clone(&node.stats))?;
         spawn_metrics(Arc::clone(&node));
         // VM lifecycle events (boot, wake, sleep, snapshot …) go into the node's metrics for the hub.
@@ -1912,6 +1969,26 @@ fn router() -> Router<Node> {
         .delete("/v1/runs/{id}", |node, _, params| {
             delete_run(node, params.get("id"))
         })
+        // The ports a run's forks serve: an inbound stream (vsockd, for the hub's terminal and model streams) is
+        // allowed to a port only while a live run registered it.
+        .post("/v1/runs/{id}/ports", |node, request, params| {
+            register_port(node, params.get("id"), &request.body)
+        })
+        // The guest side: a VM's port that listens is registered by its CID (the run is the one with that guest).
+        .post("/v1/forks/{cid}/ports", |node, request, params| {
+            register_port_by_cid(node, params.get("cid"), &request.body)
+        })
+        .delete("/v1/runs/{id}/ports/{cid}/{port}", |node, _, params| {
+            unregister_port(
+                node,
+                params.get("id"),
+                params.get("cid"),
+                params.get("port"),
+            )
+        })
+        .get("/v1/forks/{cid}/ports/{port}", |node, _, params| {
+            served_port(node, params.get("cid"), params.get("port"))
+        })
         .post("/v1/runs/{id}/input", |node, request, params| {
             send_input(node, params.get("id"), &request.body)
         })
@@ -1980,8 +2057,51 @@ fn router() -> Router<Node> {
         .delete("/v1/exports/{export}", |node, _, params| {
             delete_export(node, params.get("export"))
         })
+        .post(
+            "/v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest",
+            |node, request, params| {
+                checkpoint_manifest(
+                    node,
+                    params.get("id"),
+                    params.get("index"),
+                    params.get("name"),
+                    &request.body,
+                )
+            },
+        )
+        .post("/v1/exports/{export}/manifest", |node, request, params| {
+            migrate_answer(
+                201,
+                transfer::publish_export(
+                    &node.transfers,
+                    &node.migrations,
+                    params.get("export"),
+                    &request.body,
+                ),
+            )
+        })
+        .post("/v1/transfers/manifests", |node, request, _| {
+            migrate_answer(200, transfer::publish_files(&node.transfers, &request.body))
+        })
+        .post("/v1/transfers/fetch", |node, request, _| {
+            migrate_answer(
+                200,
+                transfer::fetch_manifest(&node.transfers, &request.body),
+            )
+        })
         .post("/v1/imports", |node, request, _| {
             create_import(node, &request.body)
+        })
+        .post("/v1/imports/from-transfer", |node, request, _| {
+            migrate_answer(
+                201,
+                transfer::import_from_transfer(
+                    &node.transfers,
+                    &node.migrations,
+                    node.registry(),
+                    &request.body,
+                ),
+            )
         })
         .post("/v1/imports/{import}/finish", |node, _, params| {
             finish_import(node, params.get("import"))
@@ -2240,6 +2360,21 @@ fn checkpoint_list(node: &Node, id: &str, index: &str) -> Response {
     };
     match node.registry().checkpoints(id, vm) {
         Ok(checkpoints) => Response::json(200, &serde_json::json!({"checkpoints": checkpoints})),
+        Err(err) => Response::error(err.status(), &err.to_string()),
+    }
+}
+
+/// `POST /v1/runs/{id}/vms/{index}/checkpoints/{name}/manifest`: the checkpoint's files as blobs, offered to the receiver.
+fn checkpoint_manifest(node: &Node, id: &str, index: &str, name: &str, body: &[u8]) -> Response {
+    let vm = match vm_index(id, index) {
+        Ok(vm) => vm,
+        Err(response) => return response,
+    };
+    match node.registry().checkpoint_dir(id, vm, name) {
+        Ok(dir) => migrate_answer(
+            200,
+            transfer::publish_checkpoint(&node.transfers, &dir, body),
+        ),
         Err(err) => Response::error(err.status(), &err.to_string()),
     }
 }
@@ -2569,6 +2704,76 @@ struct MemoryRequest {
 /// answers with the VM's memory as the balloon now reads it. An unknown run or
 /// VM is a 404; a VM with no balloon, or one that has stopped, is a 409 (see
 /// `registry::MemoryError::status`).
+/// `POST /v1/runs/{id}/ports` with `{"cid", "port"}`: a fork of the run serves that port on that guest.
+fn register_port(node: &Node, id: &str, body: &[u8]) -> Response {
+    let Ok(request) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return Response::error(400, "a port request is JSON {cid, port}");
+    };
+    let (Some(cid), Some(port)) = (
+        request["cid"].as_u64(),
+        request["port"].as_u64().and_then(|p| u16::try_from(p).ok()),
+    ) else {
+        return Response::error(400, "a port request needs a cid and a port");
+    };
+    if node.registry().find(id).is_none() {
+        return Response::error(404, &format!("no run with id {id}"));
+    }
+    match node.registry().register_port(id, cid, port) {
+        Ok(()) => Response::json(
+            200,
+            &serde_json::json!({"cid": cid, "port": port, "served": true}),
+        ),
+        Err(err) => Response::error(409, &err),
+    }
+}
+
+/// `POST /v1/forks/{cid}/ports` with `{"port"}`: the VM at `cid` announced that `port` listens. The live run that has
+/// that guest serves it; a CID no live run has is refused.
+fn register_port_by_cid(node: &Node, cid: &str, body: &[u8]) -> Response {
+    let Ok(cid) = cid.parse::<u64>() else {
+        return Response::error(400, "a CID is a number");
+    };
+    let port = match serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| value["port"].as_u64())
+        .and_then(|port| u16::try_from(port).ok())
+    {
+        Some(port) => port,
+        None => return Response::error(400, "a port is a number from 1 to 65535"),
+    };
+    match node.registry().register_port_by_cid(cid, port) {
+        Ok(()) => Response::json(200, &serde_json::json!({"registered": true})),
+        Err(why) => Response::error(404, &why),
+    }
+}
+
+/// `DELETE /v1/runs/{id}/ports/{cid}/{port}`: the run's fork stops serving that port.
+fn unregister_port(node: &Node, id: &str, cid: &str, port: &str) -> Response {
+    let (Ok(cid), Ok(port)) = (cid.parse::<u64>(), port.parse::<u16>()) else {
+        return Response::error(400, "a CID and a port");
+    };
+    let Some(run) = node.registry().find(id) else {
+        return Response::error(404, &format!("no run with id {id}"));
+    };
+    Response::json(
+        200,
+        &serde_json::json!({"removed": run.unregister_port(cid, port)}),
+    )
+}
+
+/// `GET /v1/forks/{cid}/ports/{port}`: 200 when a live run serves the port on that guest, 404 otherwise. vsockd asks
+/// this before it dials a guest for an inbound stream.
+fn served_port(node: &Node, cid: &str, port: &str) -> Response {
+    let (Ok(cid), Ok(port)) = (cid.parse::<u64>(), port.parse::<u16>()) else {
+        return Response::error(400, "a CID and a port");
+    };
+    if node.registry().port_served(cid, port) {
+        Response::json(200, &serde_json::json!({"served": true}))
+    } else {
+        Response::json(404, &serde_json::json!({"served": false}))
+    }
+}
+
 fn set_vm_memory(node: &Node, id: &str, index: &str, body: &[u8]) -> Response {
     let Ok(vm) = index.parse::<u32>() else {
         return Response::error(404, &format!("no VM {index} in run {id}"));

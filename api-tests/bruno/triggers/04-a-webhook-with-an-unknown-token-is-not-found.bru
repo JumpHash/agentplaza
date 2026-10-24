@@ -1,0 +1,25 @@
+meta {
+  name: A webhook with a token that is not the connector's is not found
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/hooks/github/no-such-token
+  body: json
+  auth: none
+}
+
+headers {
+  X-GitHub-Event: issues
+}
+
+body:json {
+  {
+    "action": "labeled"
+  }
+}
+
+assert {
+  res.status: eq 404
+}

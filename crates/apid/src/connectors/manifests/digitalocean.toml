@@ -1,0 +1,11 @@
+id = "digitalocean"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read", "irreversible"]
+egress = ["api.digitalocean.com"]
+secrets = ["DIGITALOCEAN_TOKEN"]
+events = []
+actions = ["droplets", "droplet_create"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

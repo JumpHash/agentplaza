@@ -1,5 +1,5 @@
-//! apz-link [--state DIR] join <token> [--name NAME]
-//! apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT]
+//! apz-link [--state DIR] join <token> [--name NAME] [--mesh HOST:PORT]
+//! apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT] [--inbound PORT] [--mesh HOST:PORT]
 //! apz-link [--state DIR] show
 //!
 //! The state directory defaults to `~/.local/share/agentplaza/node`.
@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use apz_link::{identity, join, run};
 
 const USAGE: &str = "\
-usage: apz-link [--state DIR] join <token> [--name NAME]
-       apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT]
+usage: apz-link [--state DIR] join <token> [--name NAME] [--mesh HOST:PORT]
+       apz-link [--state DIR] run [--noded PORT] [--vsockd PORT] [--forward PORT] [--inbound PORT] [--mesh HOST:PORT]
        apz-link [--state DIR] show";
 
 fn main() -> ExitCode {
@@ -45,7 +45,8 @@ fn dispatch(args: &[String]) -> Result<(), String> {
     match rest.as_slice() {
         ["join", token, more @ ..] => {
             let name = flag(more, "--name")?.map_or_else(hostname, str::to_string);
-            let id = join::join(token, &name, join::machine_summary(), &state)?;
+            let mesh = flag(more, "--mesh")?;
+            let id = join::join(token, &name, join::machine_summary(), &state, mesh)?;
             println!(
                 "joined {} as {} (agents {})",
                 id.hub_url,
@@ -65,7 +66,11 @@ fn dispatch(args: &[String]) -> Result<(), String> {
             if let Some(port) = flag(more, "--forward")? {
                 local.forward = port.parse().map_err(|_| "--forward: not a port")?;
             }
-            run::run(&state, local)
+            if let Some(port) = flag(more, "--inbound")? {
+                local.inbound = port.parse().map_err(|_| "--inbound: not a port")?;
+            }
+            let mesh = flag(more, "--mesh")?.map(str::to_string);
+            run::run(&state, local, mesh)
         }
         ["show"] => {
             let (id, _) = identity::load(&state)?;

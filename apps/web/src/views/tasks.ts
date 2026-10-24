@@ -21,6 +21,7 @@ import { checkBox, emptyBox } from './work';
 import { reviewPanel } from './review-graph';
 import { budgetCard, type LiveCard } from './budget';
 import { seatsCard } from './task-seats';
+import { recipeRunsOf } from './recipe-graph';
 
 const LANES = ['Open', 'In progress', 'Done', 'Failed or withdrawn'];
 const MARK: Record<string, string> = { Open: '○', 'In progress': '●', Done: '✓', 'Failed or withdrawn': '×' };
@@ -102,7 +103,7 @@ const toolOf = (e: Entry): string => str(e.data.tool) || str(e.data.name) || 'to
 /** The shell command of a bash tool request, or null for any other tool. */
 function commandOf(e: Entry): string | null {
   const inp = (e.data.input ?? {}) as Record<string, unknown>;
-  return toolOf(e).toLowerCase() === 'bash' && typeof inp.command === 'string' ? inp.command : null;
+  return toolOf(e).toLowerCase() === 'run' && typeof inp.command === 'string' ? inp.command : null;
 }
 
 /** What one transcript entry says the agent is doing now, or null when it says nothing new. */
@@ -691,6 +692,8 @@ export function mount(root: HTMLElement, params: string[]): Cleanup {
       t.outcome && t.outcome !== t.note ? block('Outcome', renderMarkdown(t.outcome, { embeds })) : null,
       // The review of the change, once it is sealed: its verdict, the readings, the graph.
       REVIEW_STATES.has(t.state) ? block('Review', reviewPanel(t.id)) : null,
+      // The recipe runs of the task: the recipe graphs, and the latest runs, each a link to its run.
+      block('Recipes', recipeRunsOf({ task: t.id })),
     ];
     const reviewBtn = a
       ? button('Review changes', () => openIde(`agent:${a.cid}`, { review: true }), { icon: 'square-code', title: "Review the assignee's changes since the work began" })

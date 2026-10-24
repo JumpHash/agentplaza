@@ -1618,6 +1618,49 @@ mod tests {
     }
 
     #[test]
+    fn the_compatible_providers_are_priced_from_the_lists_they_appear_in() {
+        // The fetched list prices the OpenAI-compatible presets (PLAN 11.3) by their bare model ids, so
+        // `<preset>/<model>` resolves through the part after the first `/`. A local server is in no list: unpriced.
+        const COMPATIBLE: &str = r#"{
+            "qwen-plus": {"input_cost_per_token": 0.0000004, "output_cost_per_token": 0.0000012,
+                "mode": "chat", "litellm_provider": "dashscope"},
+            "kimi-k3": {"input_cost_per_token": 0.0000006, "output_cost_per_token": 0.0000025,
+                "mode": "chat", "litellm_provider": "moonshot"},
+            "glm-5.3": {"input_cost_per_token": 0.0000006, "output_cost_per_token": 0.0000022,
+                "mode": "chat", "litellm_provider": "zai"},
+            "mistral-large-latest": {"input_cost_per_token": 0.000002, "output_cost_per_token": 0.000006,
+                "mode": "chat", "litellm_provider": "mistral"},
+            "grok-4.7": {"input_cost_per_token": 0.000003, "output_cost_per_token": 0.000015,
+                "mode": "chat", "litellm_provider": "xai"}
+        }"#;
+        let catalog = Catalog::default();
+        *catalog.state.write().unwrap() = CatalogState {
+            fetched_at_ms: 1,
+            openrouter: Default::default(),
+            litellm: parse_litellm(COMPATIBLE).unwrap(),
+            sources: Vec::new(),
+        };
+        let none = BTreeMap::new();
+        for id in [
+            "qwen/qwen-plus",
+            "moonshot/kimi-k3",
+            "zai/glm-5.3",
+            "mistral/mistral-large-latest",
+            "xai/grok-4.7",
+        ] {
+            let priced = catalog
+                .lookup(id, &none)
+                .unwrap_or_else(|| panic!("{id} is priced"));
+            assert!(
+                priced.price.input > 0.0 && priced.price.output > 0.0,
+                "{id}"
+            );
+        }
+        assert!(catalog.lookup("vllm/llama-3", &none).is_none());
+        assert!(catalog.lookup("llamacpp/local-model", &none).is_none());
+    }
+
+    #[test]
     fn bad_bodies_are_errors() {
         assert!(parse_openrouter("not json").is_err());
         assert!(parse_litellm("[1, 2]").is_err());

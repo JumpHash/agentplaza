@@ -1,0 +1,21 @@
+meta {
+  name: A cron expression with a field out of range is refused
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/recipes/intake/triggers
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "cron": "61 9 * * *"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

@@ -129,11 +129,12 @@ fn sessions(hub: &Hub, task: &str) -> Vec<Value> {
 fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_raises_it() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "builder": role("builder", "Builder"),
         "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
     } });
     let scratch = Scratch::new("work-engine");
     let no_weft = scratch.0.join("no-weft");
@@ -189,8 +190,8 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         })
     });
     assert!(
-        seats.as_array().is_some_and(|s| s.len() == 2),
-        "a builder and a reviewer: {seats}\n{}",
+        seats.as_array().is_some_and(|s| s.len() == 4),
+        "a builder, two reviewers and a verifier: {seats}\n{}",
         hub.log()
     );
     // The seat is filled when its session is made; the session has its VM once noded's start returns.
@@ -306,30 +307,88 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         builder_cid,
         work,
         "plaza_message_seat",
-        json!({ "to": "reviewer", "text": "Check the upgrade section first." }),
+        json!({ "to": "reviewer#1", "text": "Check the upgrade section first." }),
     );
     assert!(
         text(&note["output"]).contains("waits for the next session"),
         "{note}"
     );
+    // The builder reads the thread its note opened, by the id the send reported. Nobody else has written in
+    // it, so there is no one for the builder's own answer to go to.
+    let thread_id = text(&note["output"])
+        .split_whitespace()
+        .nth(3)
+        .unwrap_or_default()
+        .trim_end_matches(':')
+        .to_string();
+    let read = tool(
+        &hub,
+        builder_cid,
+        work,
+        "thread_read",
+        json!({ "thread": thread_id }),
+    );
+    assert!(
+        text(&read["output"]).contains("Check the upgrade section first."),
+        "{read}"
+    );
+    let answer = tool(
+        &hub,
+        builder_cid,
+        work,
+        "thread_answer",
+        json!({ "thread": thread_id, "text": "Noted." }),
+    );
+    assert_eq!(answer["is_error"], true, "{answer}");
+    assert!(
+        text(&answer["output"]).contains("waits for an answer from you"),
+        "{answer}"
+    );
 
-    // The builder finishes: the reviewer's session starts on the other model and reads the note first.
+    // A tool the builder ran reports how long it took: the hub keeps each tool's latency.
+    let report = json!({
+        "type": "tool_report",
+        "work": work,
+        "call": "toolu_9",
+        "ok": true,
+        "output": "ok",
+        "name": "run",
+        "input": { "command": "true" },
+        "duration_ms": 30,
+    });
+    let (status, body) = hub.guest(builder_cid, "message", report);
+    assert_eq!(status, 200, "{body}");
+    let (_, tools) = hub.call("GET", "/v1/evals/tools", None);
+    assert_eq!(
+        tools,
+        json!([{ "tool": "run", "calls": 1, "errors": 0, "p50_ms": 30, "p95_ms": 30 }]),
+        "the hub keeps the tool's duration"
+    );
+
+    // The builder finishes: the chain's two sceptic reviewers start on the other model, and the first reads the note
+    // first.
     hub.work_done(
         builder_cid,
         work,
         "done",
         "Drafted the notes; the upgrade section is new.",
     );
-    let reviewer = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+    let reviewers = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
         s.as_array().is_some_and(|s| {
             s.iter()
-                .any(|s| s["seat"] == "reviewer" && s["cid"].is_u64())
+                .filter(|s| s["seat"] == "reviewer#1" || s["seat"] == "reviewer#2")
+                .filter(|s| s["cid"].is_u64())
+                .count()
+                == 2
         })
     });
-    let reviewer = reviewer
-        .as_array()
-        .and_then(|s| s.iter().find(|s| s["seat"] == "reviewer").cloned())
-        .unwrap_or_else(|| panic!("a reviewer session: {reviewer}\n{}", hub.log()));
+    let session_of = |seat: &str| -> Value {
+        reviewers
+            .as_array()
+            .and_then(|s| s.iter().find(|s| s["seat"] == seat).cloned())
+            .unwrap_or_else(|| panic!("a {seat} session: {reviewers}\n{}", hub.log()))
+    };
+    let reviewer = session_of("reviewer#1");
     assert_eq!(
         reviewer["model"], "mock/echo",
         "a model other than the builder's: {reviewer}"
@@ -361,19 +420,60 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
         review_prompt.contains("The builder's handover"),
         "{review_prompt}"
     );
-
-    // The verdict: the task is done, its seats close, and its unspent reservation goes back to the project.
-    let verdict = tool(
+    // The first reviewer reports; the second completes the review step.
+    let reported = tool(
         &hub,
         reviewer_cid,
         review_work,
         "plaza_verdict",
         json!({ "task": tid, "pass": true, "notes": "Accurate and complete." }),
     );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    let second_cid = session_of("reviewer#2")["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(second_cid, "hello", json!({ "role": "reviewer", "vm": 2 }));
+    assert_eq!(status, 200);
+    let (second_work, _) = first_work(&gateway, second_cid);
+    let reported = tool(
+        &hub,
+        second_cid,
+        second_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "Agreed." }),
+    );
+    assert!(text(&reported["output"]).contains("reported"), "{reported}");
+    // The verifier has nothing to prove: the change passes the chain, and the task is done.
+    let verifier = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["seat"] == "verifier" && s["cid"].is_u64())
+        })
+    });
+    let verifier = verifier
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "verifier").cloned())
+        .unwrap_or_else(|| panic!("a verifier session: {verifier}\n{}", hub.log()));
+    let verifier_cid = verifier["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(
+        verifier_cid,
+        "hello",
+        json!({ "role": "verifier", "vm": 3 }),
+    );
+    assert_eq!(status, 200);
+    let (verify_work, _) = first_work(&gateway, verifier_cid);
+    let verdict = tool(
+        &hub,
+        verifier_cid,
+        verify_work,
+        "plaza_verdict",
+        json!({ "task": tid, "pass": true, "notes": "Nothing to prove." }),
+    );
     assert!(text(&verdict["output"]).contains("passes"), "{verdict}");
     let task = hub.wait_for(&format!("/v1/tasks/{tid}"), WAIT, |t| t["state"] == "done");
     assert_eq!(task["state"], "done", "{task}");
-    let (_, seats) = hub.call("GET", &format!("/v1/tasks/{tid}/seats"), None);
+    // Its seats close as it ends (a moment after the task reads done).
+    let seats = hub.wait_for(&format!("/v1/tasks/{tid}/seats"), WAIT, |s| {
+        s.as_array().is_some_and(Vec::is_empty)
+    });
     assert_eq!(seats.as_array().map(Vec::len), Some(0), "{seats}");
     assert!(
         sessions(&hub, &tid)
@@ -402,7 +502,234 @@ fn a_task_runs_as_sessions_in_its_seats_and_waits_at_its_budget_until_the_owner_
             .is_some_and(|m| m.iter().any(|m| text(&m["text"]).contains("is done"))),
         "the task's chat says it is done: {messages}"
     );
+    // Each step session left its eval record: the reviewer's with its verdict, the builder's on its model.
+    let runs = hub.wait_for(&format!("/v1/evals/runs?project={pid}"), WAIT, |r| {
+        r.as_array().is_some_and(|r| r.len() == 4)
+    });
+    let runs = runs.as_array().cloned().unwrap_or_default();
+    let run_of = |seat: &str| {
+        runs.iter()
+            .find(|r| r["seat"] == seat)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let (builder_run, reviewer_run) = (run_of("builder"), run_of("reviewer#1"));
+    assert_eq!(
+        (builder_run["model"].as_str(), builder_run["ok"].as_bool()),
+        (Some("mock/agent"), Some(true)),
+        "{builder_run}"
+    );
+    assert!(
+        builder_run["tokens_in"].as_u64().unwrap_or(0) > 0,
+        "{builder_run}"
+    );
+    assert_eq!(
+        builder_run["tool_ms"], 30,
+        "the builder's tool time: {builder_run}"
+    );
+    assert_eq!(
+        (
+            reviewer_run["model"].as_str(),
+            reviewer_run["verdict"].as_bool(),
+            reviewer_run["ok"].as_bool()
+        ),
+        (Some("mock/echo"), Some(true), Some(true)),
+        "{reviewer_run}"
+    );
+    assert_eq!(
+        (
+            builder_run["recipe"].as_str(),
+            builder_run["engine"].as_str()
+        ),
+        (Some("change"), Some("harness")),
+        "{builder_run}"
+    );
+    let (_, scores) = hub.call("GET", "/v1/evals/scores", None);
+    let builder_score = scores
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "builder").cloned())
+        .unwrap_or_default();
+    assert_eq!(
+        (
+            builder_score["runs"].as_u64(),
+            builder_score["successes"].as_u64()
+        ),
+        (Some(1), Some(1)),
+        "{scores}"
+    );
     every_save_succeeded(&hub);
+}
+
+#[test]
+fn a_second_session_on_a_task_starts_from_the_journal_and_the_handover_its_builder_left() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-journal");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Release notes", "goal": "Write the 0.9 release notes.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": { "builder": "mock/agent", "reviewer": "mock/echo" } })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": "Draft the release notes", "project": pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let tid = text(&task["id"]);
+    hub.wait_for(&format!("/v1/tasks/{tid}/seats"), WAIT, |s| {
+        s.as_array().is_some_and(|s| s.len() == 2)
+    });
+    hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array()
+            .is_some_and(|s| s.iter().any(|s| s["cid"].as_u64().is_some()))
+    });
+    let builder = sessions(&hub, &tid)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("a session: {}", hub.log()));
+    let builder_cid = builder["cid"].as_u64().expect("its VM");
+    let (status, _) = hub.guest(builder_cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200);
+    let (work, _) = first_work(&gateway, builder_cid);
+
+    // The builder writes its journal as it goes, and ends with its handover.
+    let output = |reply: Value| text(&reply["output"]);
+    let noted = output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_note",
+        json!({ "kind": "decision", "text": "keep the notes in one file", "reason": "one place to read" }),
+    ));
+    assert_eq!(noted, format!("Noted: decision n1 on {tid}."), "{noted}");
+    output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_note",
+        json!({ "kind": "dead_end", "text": "splitting by release", "why": "the links broke" }),
+    ));
+    output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_note",
+        json!({ "kind": "open_question", "text": "is 0.8 in scope?", "thread": "th1" }),
+    ));
+    let written = output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "handover_write",
+        json!({
+            "stands": "The notes draft is in.",
+            "done": "Drafted the upgrade section.",
+            "next": "Proof the changelog links.",
+            "check_first": "The 0.9 anchor."
+        }),
+    ));
+    assert!(written.contains("Handover recorded"), "{written}");
+    let read = output(tool(
+        &hub,
+        builder_cid,
+        work,
+        "journal_read",
+        json!({ "query": "one file" }),
+    ));
+    assert!(
+        read.contains("- decision n1: keep the notes in one file Reason: one place to read"),
+        "{read}"
+    );
+    assert!(
+        !read.contains("splitting by release"),
+        "the query narrows the notes: {read}"
+    );
+    // The summary is only a fallback: the handover the builder wrote is the one the next session starts from.
+    hub.work_done(builder_cid, work, "done", "A summary the handover beats.");
+
+    // The reviewer's session, the task's second, starts from the brief, the journal and the handover.
+    let reviewer = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["seat"] == "reviewer#1" && s["cid"].is_u64())
+        })
+    });
+    let reviewer_cid = reviewer
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "reviewer#1"))
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a reviewer session: {reviewer}\n{}", hub.log()));
+    let (status, _) = hub.guest(
+        reviewer_cid,
+        "hello",
+        json!({ "role": "reviewer", "vm": 1 }),
+    );
+    assert_eq!(status, 200);
+    let (review_work, prompt) = first_work(&gateway, reviewer_cid);
+    assert!(
+        prompt.contains(&format!("Task {tid}: Draft the release notes")),
+        "{prompt}"
+    );
+    assert!(prompt.contains("The task's journal:"), "{prompt}");
+    assert!(
+        prompt.contains("- decision n1: keep the notes in one file Reason: one place to read"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- dead end n2: splitting by release Why: the links broke"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("- open question n3: is 0.8 in scope? Thread: th1"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("Where things stand: The notes draft is in."),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Proof the changelog links."), "{prompt}");
+    assert!(
+        !prompt.contains("A summary the handover beats."),
+        "{prompt}"
+    );
+    let brief = output(tool(&hub, reviewer_cid, review_work, "brief", json!({})));
+    assert!(
+        brief.starts_with(&format!("Task {tid}: Draft the release notes")),
+        "{brief}"
+    );
+    let (_, ended) = hub.call(
+        "GET",
+        &format!("/v1/sessions/{}", text(&builder["id"])),
+        None,
+    );
+    assert!(
+        text(&ended["handover"]).contains("Proof the changelog links."),
+        "{ended}"
+    );
 }
 
 /// After a saver pass (every second), no component's write failed (a child row without its parent, a bad value).
@@ -419,7 +746,7 @@ const ORCHESTRATOR: u64 = 109;
 fn the_main_orchestrator_and_a_projects_planner_are_long_sessions_their_chats_talk_to() {
     let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
     let (noded, gateway) = daemons(&vms);
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
     let roles = json!({ "roles": {
         "orchestrator": role("orchestrator", "Orchestrator"),
         "planner": role("planner", "Planner"),
@@ -547,7 +874,7 @@ fn a_vm_with_no_session_spends_from_the_plazas_own_budget() {
     let vms: Vms = Arc::default();
     let (noded, gateway) = daemons(&vms);
     let roles = json!({ "roles": {
-        "builder": { "role": "builder", "title": "Builder", "tools": ["bash", "read_file"] },
+        "builder": { "role": "builder", "title": "Builder", "tools": ["run", "read"] },
     } });
     let scratch = Scratch::new("work-engine-no-session");
     let no_weft = scratch.0.join("no-weft");
@@ -619,6 +946,351 @@ fn a_vm_with_no_session_spends_from_the_plazas_own_budget() {
     assert!(
         budget["spent"].as_u64().unwrap_or(0) > 0,
         "the call was charged to the plaza: {budget}"
+    );
+    every_save_succeeded(&hub);
+}
+
+/// How long a test lets the loop tick (every 2 s) after the team reaches its size, so a team that would overshoot does.
+const SETTLE: Duration = Duration::from_secs(5);
+
+/// A project with a budget of `cap` tokens and its builder and reviewer on two models.
+fn team_project(hub: &Hub, cap: u64) -> String {
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Changelog", "goal": "Keep the changelog.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let (status, budget) = hub.call(
+        "PUT",
+        &format!("/v1/projects/{pid}/budget"),
+        Some(json!({ "unit": "tokens", "cap": cap })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "role_models": { "builder": "mock/agent", "reviewer": "mock/echo" } })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    pid
+}
+
+/// `count` tasks of project `pid`, none after another: each is ready at once.
+fn ready_tasks(hub: &Hub, pid: &str, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| {
+            let (status, task) = hub.call(
+                "POST",
+                "/v1/tasks",
+                Some(json!({ "goal": format!("Write changelog entry {i}"), "project": pid })),
+            );
+            assert_eq!(status, 201, "{task}");
+            text(&task["id"])
+        })
+        .collect()
+}
+
+/// How many of `tasks` hold seats now, which is how many the work loop has started.
+fn holding(hub: &Hub, tasks: &[String]) -> usize {
+    tasks
+        .iter()
+        .filter(|tid| {
+            let (_, seats) = hub.call("GET", &format!("/v1/tasks/{tid}/seats"), None);
+            seats.as_array().is_some_and(|s| !s.is_empty())
+        })
+        .count()
+}
+
+/// Waits until `want` of `tasks` hold seats, then lets the loop tick for a while: how many hold them then.
+fn team_after_settling(hub: &Hub, tasks: &[String], want: usize) -> usize {
+    let deadline = std::time::Instant::now() + WAIT.mul_f64(common::slack());
+    while holding(hub, tasks) < want && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(SETTLE);
+    holding(hub, tasks)
+}
+
+#[test]
+fn a_project_runs_up_to_its_team_maximum_at_once_and_widens_when_the_maximum_does() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-team");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // Twelve independent tasks in a project with room in its budget, and a team of four.
+    let pid = team_project(&hub, 100_000_000);
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "team_max": 4 })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    let tasks = ready_tasks(&hub, &pid, 12);
+    assert_eq!(team_after_settling(&hub, &tasks, 4), 4, "{}", hub.log());
+
+    // The owner widens the team: one more task starts, and no more than the new maximum.
+    let (status, settings) = hub.call(
+        "PATCH",
+        &format!("/v1/projects/{pid}/settings"),
+        Some(json!({ "team_max": 5 })),
+    );
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(team_after_settling(&hub, &tasks, 5), 5, "{}", hub.log());
+    let (_, effective) = hub.call(
+        "GET",
+        &format!("/v1/projects/{pid}/settings/effective"),
+        None,
+    );
+    assert_eq!(
+        effective["settings"]["team_max"],
+        json!({ "value": 5, "source": "project" }),
+        "{effective}"
+    );
+}
+
+#[test]
+fn a_team_waits_at_its_projects_budget_rate_and_asks_nobody_for_more() {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-budget-rate");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // A budget of 5 000 000 tokens and tasks with none of their own: each expects the default reserve of 2 000 000,
+    // so two fit at once, though the team's maximum is the default twenty.
+    let pid = team_project(&hub, 5_000_000);
+    let tasks = ready_tasks(&hub, &pid, 12);
+    assert_eq!(team_after_settling(&hub, &tasks, 2), 2, "{}", hub.log());
+
+    // The task that waits is not short of budget: the project's running tasks hold the rest, so no card is asked.
+    let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
+    assert!(
+        cards.as_array().is_some_and(|c| c
+            .iter()
+            .all(|c| !(c["kind"] == "budget" && c["project"].as_str() == Some(pid.as_str())))),
+        "a waiting task asks the owner for nothing: {cards}"
+    );
+
+    // The owner raises the budget: the team grows to what the new budget holds beside the running tasks' reserves.
+    let (status, budget) = hub.call(
+        "PUT",
+        &format!("/v1/projects/{pid}/budget"),
+        Some(json!({ "unit": "tokens", "cap": 10_000_000 })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    assert_eq!(team_after_settling(&hub, &tasks, 5), 5, "{}", hub.log());
+}
+
+#[test]
+fn a_planner_sizes_its_projects_team_and_a_size_out_of_bounds_is_refused() {
+    let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
+    let (noded, gateway) = daemons(&vms);
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "planner": role("planner", "Planner"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+    } });
+    let scratch = Scratch::new("work-engine-team-tool");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // A project opens and gets its planner, a long-lived session on a VM of its own.
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Guide", "goal": "Write the guide.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+    let planners = hub.wait_for(&format!("/v1/sessions?project={pid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["role"] == "planner" && s["cid"].is_u64())
+        })
+    });
+    let planner_cid = planners
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["role"] == "planner"))
+        .and_then(|s| s["cid"].as_u64())
+        .unwrap_or_else(|| panic!("a planner session: {planners}\n{}", hub.log()));
+    let (status, _) = hub.guest(planner_cid, "hello", json!({ "role": "planner", "vm": 1 }));
+    assert_eq!(status, 200);
+
+    // The planner widens the team and aims it at four.
+    let reply = tool(
+        &hub,
+        planner_cid,
+        1,
+        "team_set",
+        json!({ "max": 6, "target": 4 }),
+    );
+    assert!(
+        text(&reply["output"]).contains("at most 6 tasks at once, aiming for 4"),
+        "{reply}"
+    );
+    let (_, effective) = hub.call(
+        "GET",
+        &format!("/v1/projects/{pid}/settings/effective"),
+        None,
+    );
+    assert_eq!(effective["settings"]["team_max"]["value"], 6, "{effective}");
+    assert_eq!(
+        effective["settings"]["team_target"]["value"], 4,
+        "{effective}"
+    );
+
+    // A maximum past the limit is refused, and the team stays as it was.
+    let reply = tool(&hub, planner_cid, 2, "team_set", json!({ "max": 101 }));
+    assert_eq!(reply["is_error"], true, "{reply}");
+    let (_, effective) = hub.call(
+        "GET",
+        &format!("/v1/projects/{pid}/settings/effective"),
+        None,
+    );
+    assert_eq!(effective["settings"]["team_max"]["value"], 6, "{effective}");
+}
+
+/// A helper's model call: `helper` names the helper, `tools` what its request offers.
+fn helper_call(hub: &Hub, cid: u64, req: u64, helper: u64, tools: Value) -> Value {
+    let request = json!({
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": "Read the file." }] }],
+        "tools": tools,
+    });
+    let message = json!({ "type": "model_call", "req": req, "work": 1, "request": request, "helper": helper });
+    let (status, body) = hub.guest(cid, "message", message);
+    assert_eq!(status, 200, "{body}");
+    body["reply"].clone()
+}
+
+#[test]
+fn a_helpers_model_call_is_held_on_its_sessions_budget_and_recorded_on_a_helper_session() {
+    let vms: Vms = Arc::new(Mutex::new(vec![(ORCHESTRATOR, "orchestrator".to_string())]));
+    let (noded, gateway) = daemons(&vms);
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+    } });
+    let scratch = Scratch::new("work-engine-helper");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+    let (status, budget) = hub.call(
+        "PUT",
+        "/v1/projects/plaza/budget",
+        Some(json!({ "unit": "tokens", "cap": 300 })),
+    );
+    assert_eq!(status, 200, "{budget}");
+    let (status, _) = hub.guest(
+        ORCHESTRATOR,
+        "hello",
+        json!({ "role": "orchestrator", "vm": 0 }),
+    );
+    assert_eq!(status, 200);
+    let (_, plaza) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    let main = plaza
+        .as_array()
+        .and_then(|s| s.first().cloned())
+        .unwrap_or_else(|| panic!("the main orchestrator's session: {plaza}"));
+    let main_id = text(&main["id"]);
+
+    // A helper may not be offered the tools that start helpers: refused, and nothing is held.
+    let refused = helper_call(
+        &hub,
+        ORCHESTRATOR,
+        1,
+        1,
+        json!([{ "name": "spawn_helper", "description": "start a helper", "input_schema": { "type": "object" } }]),
+    );
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        text(&refused["error"]).contains("cannot start or await helpers"),
+        "{refused}"
+    );
+
+    // Its call does not fit the plaza's 300 tokens: it waits, as the session's own call would.
+    let paused = helper_call(&hub, ORCHESTRATOR, 2, 1, json!([]));
+    assert_eq!(paused["ok"], false, "{paused}");
+    assert!(text(&paused["error"]).starts_with("paused: "), "{paused}");
+
+    // The helper is a session of its own under the main orchestrator's, on the plaza's budget.
+    let (_, listed) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    let helper = listed
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["kind"] == "helper").cloned())
+        .unwrap_or_else(|| panic!("a helper session: {listed}"));
+    assert_eq!(helper["parent"], main_id, "{helper}");
+    assert_eq!(helper["project"], "plaza", "{helper}");
+
+    // The owner raises the plaza's budget: the helper's call gets past the hold to the model (the orchestrator tier
+    // has no mock model here, so the provider refuses it for want of a key).
+    let (_, cards) = hub.call("GET", "/v1/cards?open=true", None);
+    let card = cards
+        .as_array()
+        .and_then(|c| c.iter().find(|c| c["kind"] == "budget").cloned())
+        .unwrap_or_else(|| panic!("a budget card: {cards}"));
+    let (status, answered) = hub.call(
+        "POST",
+        &format!("/v1/cards/{}", text(&card["id"])),
+        Some(json!({ "choice": "raise_to", "amount": 1_000_000 })),
+    );
+    assert_eq!(status, 200, "{answered}");
+    let reply = helper_call(&hub, ORCHESTRATOR, 3, 1, json!([]));
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(
+        text(&reply["error"]).contains("ANTHROPIC_API_KEY"),
+        "the call reached the provider: {reply}"
+    );
+    let (_, listed) = hub.call("GET", "/v1/sessions?project=plaza", None);
+    assert!(
+        listed.as_array().is_some_and(|s| s
+            .iter()
+            .any(|s| s["kind"] == "helper" && s["parent"] == main_id)),
+        "the helper session is still the orchestrator's: {listed}"
     );
     every_save_succeeded(&hub);
 }

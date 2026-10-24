@@ -1,0 +1,22 @@
+meta {
+  name: List a recipe's triggers
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/intake/triggers
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the triggers answer as a list", function () {
+    expect(res.getBody().triggers).to.be.an("array");
+  });
+}

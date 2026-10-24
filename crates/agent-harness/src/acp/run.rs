@@ -52,6 +52,7 @@ pub fn run(
     link: &dyn EngineLink,
     protocol: u16,
     spec: Option<&EngineSpec>,
+    compaction: engines::Compaction,
 ) -> Result<String, String> {
     let id = input
         .get("engine")
@@ -63,7 +64,7 @@ pub fn run(
     // folder must be its own by then (see `layout`).
     layout::prepare_engine_dirs(workspace, &instance.home, instance.version(), &request.cwd)?;
     install(workspace, &mut instance)?;
-    let (env, model) = launch(workspace, &instance, request.model.as_deref())?;
+    let (env, model) = launch(workspace, &instance, request.model.as_deref(), compaction)?;
     let extra = engines::acp_args(&instance.engine, request.model.as_deref())?;
     if instance.engine == "vibe" {
         engines::write_vibe_config(workspace, &instance.home, request.model.as_deref())?;
@@ -163,13 +164,20 @@ impl Request {
 /// The launch of an instance: its `KEY=VALUE` pairs (the harness's own, then the owner's that do not
 /// clash with them) and the model the session is given. A catalogue engine takes its own launch; any other
 /// ACP engine runs as a plain agent.
-fn launch(
+pub(crate) fn launch(
     workspace: &Workspace,
     instance: &Instance,
     model: Option<&str>,
+    compaction: engines::Compaction,
 ) -> Result<(Vec<String>, Option<String>), String> {
     let (mut env, model_id) = if catalog::entry(&instance.engine).is_some() {
-        engines::acp_launch_at(workspace, &instance.engine, &instance.home, model)?
+        engines::acp_launch_at(
+            workspace,
+            &instance.engine,
+            &instance.home,
+            model,
+            compaction,
+        )?
     } else {
         engines::plain_launch(workspace, &instance.home, model)?
     };
@@ -201,7 +209,7 @@ pub fn protocol_offer(engine_transport: &str) -> u16 {
 /// binary, its arguments and `extra` (the call's model, for an engine that takes it on the command
 /// line: see [`engines::acp_args`]). Otherwise the model is not among them: an engine takes it as a
 /// session config option.
-fn argv(instance: &Instance, env: Vec<String>, extra: &[String]) -> Vec<String> {
+pub(crate) fn argv(instance: &Instance, env: Vec<String>, extra: &[String]) -> Vec<String> {
     command(instance, env, &instance.launch_args(extra))
 }
 
@@ -1139,7 +1147,15 @@ mod tests {
         ];
         for (input, expected) in cases {
             assert_eq!(
-                run(&workspace, &input, &NoLink, 1, None).expect_err("a refused call"),
+                run(
+                    &workspace,
+                    &input,
+                    &NoLink,
+                    1,
+                    None,
+                    engines::Compaction::default()
+                )
+                .expect_err("a refused call"),
                 expected
             );
         }
@@ -1468,7 +1484,13 @@ mod spec_launch_tests {
             ..EngineSpec::default()
         };
         let instance = Instance::resolve(&ws, "local", Some(&spec)).expect("local");
-        let (pairs, model) = launch(&ws, &instance, Some("anthropic/claude-x")).expect("launched");
+        let (pairs, model) = launch(
+            &ws,
+            &instance,
+            Some("anthropic/claude-x"),
+            engines::Compaction::default(),
+        )
+        .expect("launched");
         assert!(pairs.contains(&"ANTHROPIC_BASE_URL=http://plaza.gateway/anthropic".to_string()));
         assert!(pairs.contains(&"FOO=1".to_string()));
         assert!(!pairs.iter().any(|pair| pair.contains("evil")));

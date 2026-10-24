@@ -284,7 +284,7 @@ impl Store {
         })
     }
 
-    fn platform(&self, kind: Kind, host: &str) -> Box<dyn Platform> {
+    pub(crate) fn platform(&self, kind: Kind, host: &str) -> Box<dyn Platform> {
         match kind {
             Kind::Github => Box::new(GitHub::new(host, self.http.clone())),
             Kind::Gitlab => Box::new(gitlab::GitLab::new(host, self.http.clone())),
@@ -292,7 +292,7 @@ impl Store {
         }
     }
 
-    fn github(&self, host: &str) -> GitHub {
+    pub(crate) fn github(&self, host: &str) -> GitHub {
         GitHub::new(host, self.http.clone())
     }
 

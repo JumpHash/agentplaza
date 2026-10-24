@@ -85,6 +85,7 @@ pub fn router() -> Router<App> {
     let router = crate::engine_instances::routes(router);
     let router = crate::context_track::routes(router);
     let router = crate::usage_providers::routes(router);
+    let router = crate::evals::routes(router);
     let router = decisions::routes(router);
     let router = agents::routes(router);
     let router = plaza::routes(router);
@@ -103,6 +104,7 @@ pub fn router() -> Router<App> {
     let router = crate::toolbox::routes(router);
     let router = crate::adopt::routes(router);
     let router = crate::projects::routes(router);
+    let router = crate::project_memory::routes(router);
     let router = crate::maintenance::routes(router);
     let router = crate::environments::routes(router);
     let router = crate::project_files::routes(router);
@@ -114,15 +116,20 @@ pub fn router() -> Router<App> {
     let router = crate::content::routes(router);
     let router = crate::artifacts::gateway::routes(router);
     let router = crate::shares::routes::routes(router);
+    let router = crate::previews::route::routes(router);
     let router = crate::shares::public::routes(router);
     let router = crate::shares::request::routes(router);
     let router = crate::weft_hub::routes(router);
     let router = crate::platforms::routes(router);
     let router = crate::review_graph::routes::routes(router);
+    let router = crate::recipes::routes::routes(router);
+    let router = crate::triggers::routes::routes(router);
     let router = crate::unfurl::routes(router);
     let router = crate::ide::routes(router);
     let router = crate::ide_term::routes(router);
     let router = crate::rules::routes(router);
+    let router = crate::standing_rules::routes(router);
+    let router = crate::intake::routes(router);
     let router = crate::control::routes(router);
     let router = crate::lifecycle::routes(router);
     let router = crate::sleep::routes(router);
@@ -135,6 +142,7 @@ pub fn router() -> Router<App> {
     let router = crate::agent_proposals::routes(router);
     let router = crate::nodes::routes(router);
     let router = crate::mover::routes(router);
+    let router = crate::transfer::routes(router);
     let router = crate::stations::routes(router);
     let router = crate::prices::routes(router);
     let router = crate::usage::routes(router);

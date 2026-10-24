@@ -167,6 +167,28 @@ impl Hub {
         }
     }
 
+    /// A raw call with headers of its own (a connector's signed delivery): the reply's status and its JSON body.
+    #[allow(dead_code)] // not every test binary that includes `common` uses it
+    pub fn send_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        bytes: &[u8],
+    ) -> (u16, Value) {
+        let reply = apz_http::client::send_with(
+            self.port,
+            method,
+            path,
+            headers,
+            Some(bytes),
+            CALL_TIMEOUT,
+        )
+        .unwrap_or_else(|err| panic!("{method} {path}: {err}\n{}", self.log()));
+        let value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        (reply.status, value)
+    }
+
     /// The owner's call with a raw body (a file's bytes) of `content_type`.
     pub fn send_bytes(
         &self,

@@ -305,6 +305,7 @@ pub fn specs_for(
                 _ => "",
             };
             specs.push(ToolSpec {
+                deferred: false,
                 name,
                 description: format!("[MCP {}] {}{note}", server.name, tool.description),
                 input_schema: tool.input_schema.clone(),

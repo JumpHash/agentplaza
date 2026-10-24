@@ -16,6 +16,7 @@ import { mount as files } from './files';
 import { mount as machines } from './machines';
 import { mount as history } from './history';
 import { mount as recipes } from './recipes';
+import { mount as recipeGraph } from './recipe-graph';
 import { mount as hardwareLab } from './hardware-lab';
 import { mount as lab } from './lab';
 import { mount as mcp } from './mcp';
@@ -82,6 +83,8 @@ export const SCREENS: Screen[] = [
   { key: 'setup', label: 'Setup', icon: 'wrench', section: 'Setup', mount: setup },
   { key: 'hardware-lab', label: 'Hardware lab', icon: 'wrench', section: 'Setup', mount: hardwareLab, hidden: true },
   { key: 'artifact', label: 'Artifact', icon: 'library', section: 'Plaza', mount: artifact, hidden: true },
+  // The engine's recipes as a graph to edit: `#/recipe-graph` lists them, `#/recipe-graph/<id>` opens one.
+  { key: 'recipe-graph', label: 'Recipe graphs', icon: 'rules', section: 'Plaza', mount: recipeGraph, hidden: true },
   // The IDE is reached by its route and openIde (ide/open.ts), not the sidebar; its code loads on the first visit.
   { key: 'ide', label: 'IDE', icon: 'file', section: 'Plaza', mount: lazyMount(() => import('./ide'), (m) => m.mount), hidden: true },
 ];

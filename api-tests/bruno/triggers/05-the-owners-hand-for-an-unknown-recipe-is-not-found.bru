@@ -1,0 +1,19 @@
+meta {
+  name: The owner's hand on an unknown recipe is not found
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/v1/recipes/no-such-recipe/fire
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 404
+}

@@ -3,23 +3,26 @@
 //! A project's disk is its Weft repo's bytes (the blobs its revisions name: `GET /v1/repos/{repo}/stats` in Weft) plus
 //! the `/workspace` use its live sessions' VMs report (`record_stats` in `internal.rs`, in MiB). Its quota is its
 //! budget's `disk_quota_bytes` (`PUT /v1/projects/{id}/budget`). Past the quota one `disk` card asks the owner in the
-//! project's chat: raise the quota to an amount, or keep it. Enforcement (pausing the sessions) is phase 3's; until then
-//! the card only asks.
+//! project's chat: raise the quota to an amount, or keep it. Past the quota no new fork starts (`admit_fork`, after the
+//! project prunes what it can); the sessions already running go on.
 //!
 //! The quotas are checked every [`CHECK_MS`]. A project past its quota has one card, and is asked again only about a
 //! quota it was not asked about; its card is withdrawn once its disk is back under the quota, or the quota is gone.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};
 
 use serde_json::{Value, json};
 
 use crate::budgets::OwnerKind;
 use crate::cards::{Card, Choice, Kind, NewCard};
+use crate::fleet;
 use crate::state::App;
 
 /// How often the quotas are checked (ms): a Weft stat per project with a quota is too much for every 2 s pass.
 pub const CHECK_MS: u64 = 30_000;
+/// The bases a project keeps on each pool: its current one and its previous one (10.5).
+pub const KEPT_BASES: usize = 2;
 
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
@@ -98,6 +101,59 @@ pub fn used_bytes(repo_bytes: u64, workspaces_mib: impl IntoIterator<Item = u64>
     repo_bytes + workspaces_mib.into_iter().map(|mib| mib * MIB).sum::<u64>()
 }
 
+/// Whether a new fork of a project may start (pure): under its quota, or with none, it starts; over it, it is refused, and
+/// its card asks the owner unless the card already asked about this quota (`new_card`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    Start,
+    Refuse { new_card: bool },
+}
+
+/// The admission of a fork for a project whose disk holds `used` bytes after its pruning, under `quota`, after being asked
+/// about `asked` (pure).
+pub fn admission(used: u64, quota: Option<u64>, asked: Option<u64>) -> Admission {
+    match quota {
+        Some(quota) if used > quota => Admission::Refuse {
+            new_card: asked != Some(quota),
+        },
+        _ => Admission::Start,
+    }
+}
+
+/// Whether a run's VMs are all ended (pure): `ended` says whether a VM's CID is an ended session's. A run with no VM
+/// is kept, as nothing it holds is known.
+pub fn ended_run(run: &Value, ended: impl Fn(u64) -> bool) -> bool {
+    let Some(vms) = run["vms"].as_array().filter(|vms| !vms.is_empty()) else {
+        return false;
+    };
+    vms.iter()
+        .all(|vm| vm["guest_cid"].as_u64().is_some_and(&ended))
+}
+
+/// The bases to prune (pure): of a project's bases as `(pool, built_ms, key)`, every one past the [`KEPT_BASES`] newest
+/// on its pool, by its key.
+#[allow(dead_code)] // 3.3 records the bases; nothing lists them yet.
+pub fn bases_to_prune(bases: &[(String, u64, String)]) -> Vec<String> {
+    let mut by_pool: BTreeMap<&str, Vec<(u64, &str)>> = BTreeMap::new();
+    for (pool, built_ms, key) in bases {
+        by_pool
+            .entry(pool.as_str())
+            .or_default()
+            .push((*built_ms, key.as_str()));
+    }
+    let mut pruned = Vec::new();
+    for mut built in by_pool.into_values() {
+        built.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        pruned.extend(
+            built
+                .into_iter()
+                .skip(KEPT_BASES)
+                .map(|(_, key)| key.to_string()),
+        );
+    }
+    pruned
+}
+
 /// What a quota check does for one project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -149,6 +205,72 @@ fn repo_bytes(app: &App, repo: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// The disk quota of a project's budget (none when it has none).
+fn quota_of(app: &App, project: &str) -> Option<u64> {
+    app.budgets
+        .get(OwnerKind::Project, project)
+        .and_then(|b| b.disk_quota_bytes)
+}
+
+/// Whether a new fork of `project` may start (10.5, 16.7). Over its quota, the project prunes first (see [`prune`]); if it
+/// is still over, the fork is refused with the reason, and the project's `disk` card asks the owner unless it already has.
+pub fn admit_fork(app: &App, project: &str, now: u64) -> Result<(), String> {
+    let Some(quota) = quota_of(app, project) else {
+        return Ok(());
+    };
+    let mut used = measure(app, project);
+    if used > quota {
+        prune(app, project);
+        used = measure(app, project);
+    }
+    match admission(used, Some(quota), app.disk.asked(project)) {
+        Admission::Start => Ok(()),
+        Admission::Refuse { new_card } => {
+            if new_card {
+                withdraw_card(app, project, now);
+                ask(app, project, used, quota, now);
+                app.disk.set_asked(project, Some(quota));
+            }
+            Err(format!(
+                "project {project} is past its disk quota ({} of {}): no fork starts until it is raised or pruned",
+                bytes(used),
+                bytes(quota)
+            ))
+        }
+    }
+}
+
+/// Prunes what a project over its quota can drop: the runs its ended sessions left on the nodes (their forks' blocks).
+/// A run goes only when every VM in it belongs to an ended session of this project and no agent of its CID is alive.
+fn prune(app: &App, project: &str) {
+    for (node, _status, runs) in fleet::reports(app) {
+        for run in runs["runs"].as_array().into_iter().flatten() {
+            let Some(id) = run["id"].as_str() else {
+                continue;
+            };
+            if !ended_run(run, |cid| ended_session(app, project, cid)) {
+                continue;
+            }
+            match fleet::noded(app, &node, "DELETE", &format!("/v1/runs/{id}"), None) {
+                Ok((code, _)) if (200..300).contains(&code) => {}
+                Ok((code, body)) => {
+                    eprintln!("apid: disk: pruning run {id} on {node} answered {code}: {body}")
+                }
+                Err(err) => eprintln!("apid: disk: pruning run {id} on {node}: {err}"),
+            }
+        }
+    }
+}
+
+/// Whether CID `cid` is a session's of `project` that has ended, and no agent of the CID is alive.
+fn ended_session(app: &App, project: &str, cid: u64) -> bool {
+    app.agents.get(cid).is_none()
+        && app
+            .sessions
+            .by_cid(cid)
+            .is_some_and(|session| session.project == project && session.state.is_final())
+}
+
 /// The `disk` a project's budget view shows: what it holds, and its quota (none when it has none).
 pub fn view(app: &App, project: &str, quota: Option<u64>) -> Value {
     json!({ "used_bytes": measure(app, project), "quota_bytes": quota })
@@ -161,10 +283,7 @@ pub fn tick(app: &App, now: u64) {
         return;
     }
     for project in app.projects.list() {
-        let quota = app
-            .budgets
-            .get(OwnerKind::Project, &project.id)
-            .and_then(|b| b.disk_quota_bytes);
+        let quota = quota_of(app, &project.id);
         let asked = app.disk.asked(&project.id);
         let used = if quota.is_some() {
             measure(app, &project.id)
@@ -373,6 +492,62 @@ mod tests {
         assert!(created && again.id != card.id);
         assert_eq!(cards.withdraw(Kind::Disk, "disk:pr1", 5).len(), 1);
         assert!(cards.list(true, None).is_empty());
+    }
+
+    #[test]
+    fn a_fork_starts_under_its_quota_and_is_refused_over_it_asking_once() {
+        assert_eq!(admission(5, None, None), Admission::Start, "no quota");
+        assert_eq!(
+            admission(10, Some(10), None),
+            Admission::Start,
+            "at the quota"
+        );
+        assert_eq!(
+            admission(11, Some(10), None),
+            Admission::Refuse { new_card: true },
+            "over it, and the card asks"
+        );
+        assert_eq!(
+            admission(11, Some(10), Some(10)),
+            Admission::Refuse { new_card: false },
+            "over it, asked about this quota already"
+        );
+        assert_eq!(
+            admission(11, Some(20), Some(10)),
+            Admission::Start,
+            "a raised quota starts forks again"
+        );
+    }
+
+    #[test]
+    fn a_run_is_pruned_only_when_every_vm_in_it_is_an_ended_sessions() {
+        let ended = |cid: u64| cid == 500 || cid == 501;
+        let run = |cids: &[u64]| json!({ "id": "r1", "vms": cids.iter().map(|cid| json!({ "guest_cid": cid })).collect::<Vec<_>>() });
+        assert!(ended_run(&run(&[500, 501]), ended));
+        assert!(
+            !ended_run(&run(&[500, 502]), ended),
+            "a live agent keeps it"
+        );
+        assert!(!ended_run(&run(&[]), ended), "no VM, nothing known");
+        assert!(!ended_run(&json!({ "id": "r2" }), ended));
+        assert!(
+            !ended_run(&json!({ "id": "r3", "vms": [{ "id": 0 }] }), ended),
+            "no CID"
+        );
+    }
+
+    #[test]
+    fn each_pool_keeps_its_current_and_previous_base() {
+        let base = |pool: &str, built: u64, key: &str| (pool.to_string(), built, key.to_string());
+        let bases = [
+            base("arm", 1, "old"),
+            base("arm", 3, "current"),
+            base("arm", 2, "previous"),
+            base("x86", 9, "only"),
+        ];
+        assert_eq!(bases_to_prune(&bases), vec!["old".to_string()]);
+        assert!(bases_to_prune(&[]).is_empty());
+        assert_eq!(KEPT_BASES, 2);
     }
 
     #[test]

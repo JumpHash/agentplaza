@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a manifest for a connector that does not exist
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/no-such-connector/manifest
+  body: text
+  auth: none
+}
+
+body:text {
+  id = "no-such-connector"
+  version = "1.0.0"
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "no connector"
+}

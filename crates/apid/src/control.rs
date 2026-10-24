@@ -77,6 +77,8 @@ pub fn stop_all(app: &App, by: &str, reason: &str) -> PlazaState {
         cancelled: 0,
     };
     app.control.set(state.clone());
+    // Every agent's policy empties now: a held VM runs nothing on its own (see `policy`).
+    crate::policy::push_all(app);
     // Every E2B sandbox ends too; the hold just set refuses new ones (see e2b).
     crate::e2b::stop_all(app);
     for cid in app.agents.select(|a| Some(a.cid)) {
@@ -121,6 +123,8 @@ pub fn resume(app: &App, by: &str) -> PlazaState {
         cancelled: previous.cancelled,
     };
     app.control.set(state.clone());
+    // The agents may run what their grants and laws allow again (see `policy`).
+    crate::policy::push_all(app);
     crate::stations::freeze_all(app, false, by);
     crate::weft_hub::hold(app, false);
     app.bus.publish("plaza", &state);

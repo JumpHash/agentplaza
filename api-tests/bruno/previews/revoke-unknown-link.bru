@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 when revoking a link the hub does not know
+  type: http
+  seq: 4
+}
+
+delete {
+  url: {{baseUrl}}/v1/preview-links/{{link}}
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  link: pl999
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no link pl999"
+}

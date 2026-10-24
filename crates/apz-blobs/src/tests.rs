@@ -6,6 +6,19 @@ fn big(n: u32, seed: u32) -> Vec<u8> {
         .collect()
 }
 
+/// Pseudo-random bytes: unlike [`big`], no two chunks of them repeat, so each chunk is fetched once.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
 #[test]
 fn blobs_round_trip_and_survive_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
@@ -252,4 +265,73 @@ fn a_second_process_on_the_folder_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let _first = Blobs::open(dir.path()).unwrap();
     assert!(Blobs::open(dir.path()).is_err());
+}
+
+#[test]
+fn a_node_fetches_only_the_chunks_it_lacks_when_a_base_changes() {
+    let publisher_dir = tempfile::tempdir().unwrap();
+    let node_dir = tempfile::tempdir().unwrap();
+    let publisher = Blobs::open(publisher_dir.path()).unwrap();
+    let node = Blobs::open(node_dir.path()).unwrap();
+
+    // The first base: published as content-defined chunks, none held by the node yet.
+    let mut image = noise(12_000_000, 7);
+    let (root1, _) = publisher.put_reader(&image[..]).unwrap();
+    let chunks1 = publisher
+        .chunks(&root1)
+        .unwrap()
+        .expect("a large base is chunked");
+    let first = node
+        .fetch_missing(&root1, &chunks1, |h| publisher.get(h))
+        .unwrap();
+    assert_eq!(first.fetched, chunks1.len());
+    assert_eq!(first.reused, 0);
+    assert_eq!(node.get(&root1).unwrap(), image);
+
+    // The next base changes one place: the node fetches the few chunks the change cut and reuses the rest.
+    image[6_000_000] ^= 0xff;
+    let (root2, _) = publisher.put_reader(&image[..]).unwrap();
+    let chunks2 = publisher.chunks(&root2).unwrap().unwrap();
+    let mut asked = Vec::new();
+    let second = node
+        .fetch_missing(&root2, &chunks2, |h| {
+            asked.push(*h);
+            publisher.get(h)
+        })
+        .unwrap();
+    assert!(
+        (1..=3).contains(&second.fetched),
+        "an edit changes a few chunks, not {}",
+        second.fetched
+    );
+    assert_eq!(second.fetched + second.reused, chunks2.len());
+    assert_eq!(asked.len(), second.fetched);
+    assert!(
+        asked
+            .iter()
+            .all(|h| !chunks1.iter().any(|(held, _)| held == h)),
+        "only chunks the node lacked were asked for"
+    );
+    assert_eq!(node.get(&root2).unwrap(), image);
+
+    // A base the node holds is not fetched again.
+    let again = node
+        .fetch_missing(&root2, &chunks2, |_| Err("nothing to fetch".into()))
+        .unwrap();
+    assert_eq!(again.fetched, 0);
+}
+
+#[test]
+fn a_fetched_chunk_of_the_wrong_size_is_refused_and_the_base_is_not_recorded() {
+    let publisher_dir = tempfile::tempdir().unwrap();
+    let node_dir = tempfile::tempdir().unwrap();
+    let publisher = Blobs::open(publisher_dir.path()).unwrap();
+    let node = Blobs::open(node_dir.path()).unwrap();
+    let (root, _) = publisher.put_reader(&noise(9_000_000, 3)[..]).unwrap();
+    let chunks = publisher.chunks(&root).unwrap().unwrap();
+    let err = node
+        .fetch_missing(&root, &chunks, |_| Ok(vec![0u8; 3]))
+        .unwrap_err();
+    assert!(err.contains("bytes, not"), "{err}");
+    assert!(!node.has(&root));
 }

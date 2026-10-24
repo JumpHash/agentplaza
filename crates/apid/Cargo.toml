@@ -7,15 +7,20 @@ license.workspace = true
 publish = false
 
 [dependencies]
+apz-link = { path = "../apz-link" }
 # The hub's store (SQLite, typed tables) and its caches (PLAN 30.3, 30.4).
 apz-store = { path = "../apz-store", features = ["json"] }
 # The object store (apz-blobs, storage.rs): the bytes of the Library, the artifacts, the skills and the stations.
 apz-blobs = { path = "../apz-blobs" }
+# Node-to-node transfers (transfer.rs): the grants the hub signs and the manifests the nodes offer.
+apz-transfer = { path = "../apz-transfer" }
 apz-cache = { path = "../apz-cache" }
 apz-prompt = { path = "../apz-prompt", features = ["store"] }
 apz-skill = { path = "../apz-skill", features = ["store"] }
 jhrl = { path = "../jhrl" }
 apz-acp = { path = "../apz-acp" }
+# The W40 languages and their servers (PLAN 15.2): a base's recipe starts them (base_recipe.rs).
+apz-lsp = { path = "../apz-lsp" }
 apz-proto = { workspace = true, features = ["store"] }
 apz-http = { path = "../apz-http" }
 weft = { path = "../weft" }
@@ -23,6 +28,8 @@ apz-metrics.workspace = true
 apz-uds = { path = "../apz-uds" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
+# Test selection (PLAN 15.4): the coverage maps, the build graph and the selection (test_select.rs).
+apz-testsel = { path = "../apz-testsel" }
 apz-ide = { path = "../apz-ide" }
 # The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
 apz-station = { path = "../apz-station", features = ["store"] }
@@ -37,17 +44,22 @@ serde_json.workspace = true
 # The API's OpenAPI spec (openapi.rs): the routes' request and response schemas.
 schemars = "1"
 toml = "1"
+# The glue tier (PLAN 14.4; glue.rs): connector components run under wasmtime's component model, compiled by
+# cranelift. Already in the lock (48.0.7, through tree-sitter). No WASI and no HTTP: the hub mediates both.
+wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 ureq.workspace = true
 sha2.workspace = true
 blake2.workspace = true
 apz-trust = { path = "../apz-trust" }
 apz-os = { path = "../apz-os" }
 apz-egress-rules = { path = "../apz-egress-rules" }
+apz-secrets = { path = "../apz-secrets" }
 # The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.
 chacha20poly1305.workspace = true
 argon2.workspace = true
 hkdf.workspace = true
 hmac.workspace = true
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 zeroize.workspace = true
 secrecy.workspace = true
 base64.workspace = true
@@ -83,3 +95,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# The glue tests build their components from WAT text (glue.rs).
+wat = "1"

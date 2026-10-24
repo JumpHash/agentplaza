@@ -17,6 +17,7 @@
 //! | `GET repos/{repo}/symbols/{id}?ref=` | a definition's history across renames and moves |
 //! | `GET changes/{change}` | a change: revisions, intents, records, queue and export state |
 //! | `GET revisions/{rev}`, `…/files`, `…/file?path=`, `…/tree`, `…/diff?path=` | a revision, its files, its change tree, its diff |
+//! | `GET revisions/{rev}/symbols?path=`, `…/names?name=` or `…?find=` | a file's symbols and references, a name's definitions and references (the code-intelligence fallback) |
 //! | `GET ops?since=&limit=`, `GET packs`, `GET keys`, `GET records?subject=` | the op log, packs, keys, signed records |
 //! | `GET verify?subject=&deep=` | the verification report |
 //! | `GET events` | what happens, as server-sent events |
@@ -696,6 +697,12 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             if let Some(ms) = v["stall_ms"].as_u64() {
                 opts.stall_ms = ms;
             }
+            // The queue's batch size (its project's), the owner's hold on landings, and the change the owner approved.
+            if let Some(batch) = v["batch"].as_u64() {
+                opts.batch = batch.clamp(1, 16) as usize;
+            }
+            opts.hold = v["hold"].as_bool().unwrap_or(false);
+            opts.approved = v["approved"].as_bool().unwrap_or(false);
             match h.lander.step(&h.store, &h.derived, p.get("repo"), &reference, opts) {
                 Ok(step) => ok(json!(step)),
                 Err(e) => refused(e),
@@ -729,6 +736,19 @@ fn repo_routes(router: Router<H>) -> Router<H> {
                 Err(e) => fail(502, e),
             }
         })
+        .post("/v1/repos/{repo}/lanes/{change}/export", |h: &H, req, p| {
+            if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
+                return r;
+            }
+            let v: Value = req.json().unwrap_or(Value::Null);
+            let Some(conn) = v["connection"].as_str() else { return fail(400, "a lane's export needs a connection") };
+            let Some(branch) = v["branch"].as_str() else { return fail(400, "a lane's export needs a branch") };
+            let keys = crate::export::Keys { token: v["token"].as_str().map(str::to_string), signing: h.signing.as_ref() };
+            match h.exporter.export_lane(&h.store, p.get("repo"), p.get("change"), conn, branch, keys, v["dry_run"].as_bool().unwrap_or(false)) {
+                Ok(r) => ok(json!(r)),
+                Err(e) => refused(e),
+            }
+        })
         .post("/v1/repos/{repo}/import", |h: &H, req, p| {
             if let Err(r) = hub_only(req).and_then(|_| writes_allowed(h)) {
                 return r;
@@ -755,6 +775,13 @@ fn repo_routes(router: Router<H>) -> Router<H> {
             match crate::import::adopt(&h.store, p.get("repo"), conn, v["token"].as_str().map(str::to_string)) {
                 Ok(r) => ok(json!(r)),
                 Err(e) => refused(e),
+            }
+        })
+        .get("/v1/repos/{repo}/reviews", |h: &H, _, p| {
+            let st = h.store.state();
+            match st.repo(p.get("repo")) {
+                Ok(_) => ok(json!({ "reviews": reviews_view(&st, p.get("repo")) })),
+                Err(e) => fail(404, e),
             }
         })
         .get("/v1/repos/{repo}/targets", |h: &H, req, p| {
@@ -950,6 +977,67 @@ fn revision_routes(router: Router<H>) -> Router<H> {
                     let st = h.store.state();
                     t.files.retain(|f| h.may_read(&st, &who, &repo, &f.path));
                     ok(json!(t))
+                }
+                Err(e) => fail(404, e),
+            }
+        })
+        .get("/v1/revisions/{rev}/symbols", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let Some(path) = q(req, "path") else { return fail(400, "symbols needs ?path=") };
+            let repo = match rev_repo(h, p.get("rev")) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            if !h.may_read(&h.store.state(), &who, &repo, &path) {
+                return fail(404, "no such file");
+            }
+            let tree = match h.store.tree(p.get("rev")) {
+                Ok(t) => t,
+                Err(e) => return fail(404, e),
+            };
+            let Some(entry) = tree.get(&path) else { return fail(404, "no such file") };
+            let parsed = h.derived.parse(&h.store, &path, &entry.hash);
+            ok(json!({
+                "revision": p.get("rev"),
+                "repo": repo,
+                "path": path,
+                "pack": parsed.pack,
+                "error": parsed.error,
+                "symbols": parsed.symbols,
+                "references": parsed.references,
+            }))
+        })
+        .get("/v1/revisions/{rev}/names", |h: &H, req, p| {
+            let who = match caller(req) {
+                Ok(c) => c,
+                Err(r) => return r,
+            };
+            let rev = p.get("rev");
+            let repo = match rev_repo(h, rev) {
+                Ok(r) => r,
+                Err(e) => return e,
+            };
+            // `name` is one name; `find` is every name containing the text, without case.
+            let (want, asked): (Box<dyn Fn(&str) -> bool>, Value) = match (q(req, "name"), q(req, "find")) {
+                (Some(name), _) => {
+                    let wanted = name.clone();
+                    (Box::new(move |n: &str| n == wanted), json!({ "name": name }))
+                }
+                (None, Some(text)) => {
+                    let wanted = text.to_lowercase();
+                    (Box::new(move |n: &str| n.to_lowercase().contains(&wanted)), json!({ "find": text }))
+                }
+                (None, None) => return fail(400, "names needs ?name= or ?find="),
+            };
+            match h.derived.find_names(&h.store, rev, want) {
+                Ok((defs, refs)) => {
+                    let st = h.store.state();
+                    let defs: Vec<_> = defs.into_iter().filter(|d| h.may_read(&st, &who, &repo, &d.path)).collect();
+                    let refs: Vec<_> = refs.into_iter().filter(|r| h.may_read(&st, &who, &repo, &r.path)).collect();
+                    ok(json!({ "revision": rev, "repo": repo, "query": asked, "definitions": defs, "references": refs }))
                 }
                 Err(e) => fail(404, e),
             }
@@ -1656,7 +1744,21 @@ pub fn change_view(st: &State, c: &Change) -> Value {
         "kind": c.kind, "base": c.base, "stacked_on": c.stacked_on.and_then(|s| st.changes.get(&s).map(|x| x.name.clone())), "reverts": c.reverts.and_then(|s| st.changes.get(&s).map(|x| x.name.clone())),
         "revisions": revs, "drafts": c.drafts, "rounds": c.rounds, "landed": c.landed, "intents": c.intents, "records": records,
         "conflict": c.conflict, "queue_position": queue_pos, "import": c.import, "exported": c.exported, "opened_ms": c.opened_ms,
+        "reviews": c.reviews,
     })
+}
+
+/// Every review written about the repository's changes, in order: `{change, seq, at_ms, key, outcome}`.
+pub fn reviews_view(st: &State, repo: &str) -> Vec<Value> {
+    st.changes
+        .values()
+        .filter(|c| c.repo == repo)
+        .flat_map(|c| {
+            c.reviews.iter().map(|r| {
+                json!({ "change": c.name, "seq": r.seq, "at_ms": r.at_ms, "key": r.key, "outcome": r.outcome })
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,0 +1,56 @@
+# Evals (PLAN 13.6): the eval suite runs its fixed tasks end to end on a scratch hub, on Linux: apid, vsockd and one real
+# harness process per VM, with the models scripted (crates/apz-evals). It fails when a task got worse than the committed
+# baseline (crates/apz-evals/baseline.json) beyond the tolerance: a task that passed and does not, or more tool calls,
+# model turns, tokens or dollars than 10 % over. Latencies are reported in the artifact, never compared.
+# To move the baseline, run the suite on Linux with `--out crates/apz-evals/baseline.json` and commit the file.
+name: Evals
+run-name: "Evals: ${{ github.head_ref || github.ref_name }}"
+
+on:
+  pull_request:
+    paths:
+      - "crates/apid/**"
+      - "crates/apz-gateway/**"
+      - "crates/apz-proto/**"
+      - "crates/agent-harness/**"
+      - "crates/vsockd/**"
+      - "crates/apz-evals/**"
+      - ".github/workflows/evals.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    name: Eval suite (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the hub, vsockd, the harness and the suite
+        run: cargo build --release -p apid -p vsockd -p agent-harness -p apz-evals --bins
+
+      # The harness works in /workspace, the path it is built with; the suite runs as root, as the VMs' init would. sudo
+      # resets PATH and HOME, so the runner's toolchain is passed on: the tasks' checks call rustc.
+      - name: Run the suite and compare with the baseline
+        run: |
+          sudo mkdir -p /workspace
+          sudo env "PATH=$PATH" "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" "CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            ./target/release/apz-evals \
+              --out evals-report.json \
+              --compare crates/apz-evals/baseline.json
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evals-report
+          path: evals-report.json
+          if-no-files-found: ignore

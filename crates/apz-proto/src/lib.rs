@@ -13,5 +13,6 @@
 #![forbid(unsafe_code)]
 
 pub mod chat;
+pub mod hooks;
 pub mod line;
 pub mod wire;

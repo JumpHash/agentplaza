@@ -18,12 +18,14 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use apz_http::{Body, Params, Request, Response, RouteDoc, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agents::Status;
+use crate::base_recipe::BaseKind;
 use crate::fleet::{self, LOCAL};
-use crate::nodes::{Node, OFFLINE_AFTER_MS};
+use crate::nodes::{Node, OFFLINE_AFTER_MS, Pool};
+use crate::project_stack;
 use crate::sleep;
 use crate::state::App;
 
@@ -38,11 +40,11 @@ pub const WARM_BONUS_MIB: i64 = 1024;
 /// A spreading weight per VM a node already runs, in MiB of score: the measured used memory already
 /// counts the VMs themselves, so this only nudges new agents toward the emptier nodes.
 pub const VM_PENALTY_MIB: i64 = 64;
-/// Bytes per export read (noded serves at most 4 MiB at a time).
-pub const CHUNK: u64 = 4 * 1024 * 1024;
-/// Decoded bytes per import write: noded takes at most 512 KiB per call (its body limit is 1 MiB),
-/// so each read of [`CHUNK`] is written in pieces of this size.
-pub const WRITE_CHUNK: usize = 512 * 1024;
+/// A spreading weight per idle CPU, in MiB of score: a node with more CPUs free takes the agent over a busier one.
+pub const CPU_MIB: i64 = 64;
+/// Free space a node needs to take a fork (16.9: a fork owns its own written blocks, typically 1 to 5 GB). A node
+/// that did not say how much it has free is not kept out.
+pub const FORK_DISK_GIB: u64 = 5;
 /// How long a move waits for the agent to be back after its wake.
 const WAKE_WAIT: Duration = Duration::from_secs(60);
 /// How long a reservation holds its memory back on a node (see [`reserved_mib`]).
@@ -65,86 +67,382 @@ pub struct Candidate {
     pub running_vms: u64,
     /// It holds a warm template for the role.
     pub warm: bool,
+    /// Its pool (see `nodes::Pool`); None when it reports no CPU baseline.
+    pub pool: Option<Pool>,
+    /// It holds the project's base (see [`base_key`]) that a fork of the project starts from; false for a
+    /// placement with no project.
+    pub base: bool,
+    /// Free space on its state filesystem, in GiB; None when it did not say.
+    pub disk_free_gib: Option<u64>,
+    /// CPUs not in use now (its CPU count less its load); None when it did not say.
+    pub idle_cpus: Option<u64>,
 }
 
-/// A candidate's score; the higher wins. Free memory, less the VMs it runs, plus the warm bonus.
+/// A candidate's score; the higher wins. Free memory, less the VMs it runs, plus the warm bonus and the idle CPUs.
 pub fn score(candidate: &Candidate) -> i64 {
     let free = i64::try_from(candidate.free_mib).unwrap_or(i64::MAX);
     let vms = i64::try_from(candidate.running_vms).unwrap_or(i64::MAX);
     let bonus = if candidate.warm { WARM_BONUS_MIB } else { 0 };
-    free - vms.saturating_mul(VM_PENALTY_MIB) + bonus
+    let idle = candidate
+        .idle_cpus
+        .map_or(0, |cpus| i64::try_from(cpus).unwrap_or(i64::MAX));
+    free - vms.saturating_mul(VM_PENALTY_MIB) + bonus + idle.saturating_mul(CPU_MIB)
 }
 
-/// The node a new agent goes to, from the candidates (pure). Only a node with at least [`ADMIT_MIB`]
-/// free is eligible. The highest score wins; a tie goes to `n0`, then to the earlier candidate. With
-/// no eligible candidate the agent goes to `n0`, where noded says whether it fits.
+/// Whether a candidate can take an agent (pure): at least [`ADMIT_MIB`] free, and [`FORK_DISK_GIB`] free on its
+/// disk when it says how much it has.
+fn admitted(candidate: &Candidate) -> bool {
+    candidate.free_mib >= ADMIT_MIB
+        && candidate
+            .disk_free_gib
+            .is_none_or(|free| free >= FORK_DISK_GIB)
+}
+
+/// The node a new agent goes to, from the candidates (pure). Only an [`admitted`] node is eligible. The
+/// node holding the project's base wins; then the highest score; a tie goes to `n0`, then to the earlier
+/// candidate. With no eligible candidate the agent goes to `n0`, where noded says whether it fits.
 pub fn choose(candidates: &[Candidate]) -> String {
     pick(candidates).unwrap_or_else(|| LOCAL.to_string())
 }
 
-/// The best of the eligible candidates as [`choose`] ranks them (pure); None when no candidate has
-/// [`ADMIT_MIB`] free.
+/// The best of the eligible candidates as [`choose`] ranks them (pure); None when no candidate is [`admitted`].
 pub fn pick(candidates: &[Candidate]) -> Option<String> {
-    let mut best: Option<(i64, &Candidate)> = None;
-    for candidate in candidates
-        .iter()
-        .filter(|candidate| candidate.free_mib >= ADMIT_MIB)
-    {
-        let s = score(candidate);
+    let mut best: Option<((bool, i64), &Candidate)> = None;
+    for candidate in candidates.iter().filter(|candidate| admitted(candidate)) {
+        let rank = (candidate.base, score(candidate));
         let better = match best {
             None => true,
             Some((top, held)) => {
-                s > top || (s == top && candidate.node == LOCAL && held.node != LOCAL)
+                rank > top || (rank == top && candidate.node == LOCAL && held.node != LOCAL)
             }
         };
         if better {
-            best = Some((s, candidate));
+            best = Some((rank, candidate));
         }
     }
     best.map(|(_, candidate)| candidate.node.clone())
 }
 
+/// The node a base build of `project` runs its VM on, in `pool` (`any` for a project that declares none), with the
+/// `needs` volumes (base_recipe.rs). The node that holds the project's base is preferred, as a fork's is (3.5). The
+/// node's room is reserved, as a new agent's is.
+pub fn base_node(app: &App, project: &str, pool: &str, needs: &[&str]) -> Option<String> {
+    let declared = declared_pools(app, project);
+    let needs: Vec<String> = needs.iter().map(|volume| volume.to_string()).collect();
+    let candidates: Vec<Candidate> = candidates(app, "", &needs, Some(project))
+        .into_iter()
+        .filter(|candidate| {
+            pool == "any"
+                || candidate
+                    .pool
+                    .as_ref()
+                    .is_some_and(|p| format!("{}-{}", p.arch, p.hypervisor) == pool)
+        })
+        .collect();
+    let chosen = fork_node(candidates, &declared)?;
+    reserve(&chosen);
+    Some(chosen)
+}
+
+/// The key of the base a project's forks start from (16.1): the project's `build` base. A node that holds it
+/// reports it among its `bases` (17.1).
+pub fn base_key(project: &str) -> String {
+    format!("{project}/{}", BaseKind::Build.name())
+}
+
+/// The candidates on the declared pools (17.2) of a project (pure): every candidate when none is declared,
+/// otherwise those whose pool is one of them.
+pub fn in_pools(candidates: Vec<Candidate>, declared: &[project_stack::Pool]) -> Vec<Candidate> {
+    if declared.is_empty() {
+        return candidates;
+    }
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            candidate.pool.as_ref().is_some_and(|pool| {
+                declared.iter().any(|declared| {
+                    declared.arch.name() == pool.arch
+                        && declared.hypervisor.name() == pool.hypervisor
+                })
+            })
+        })
+        .collect()
+}
+
+/// The idle CPUs of a node with `cpus` CPUs at `cpu_pct` load (pure); None when either is unknown.
+pub fn idle_cpus(cpus: Option<u64>, cpu_pct: Option<f64>) -> Option<u64> {
+    let (cpus, pct) = (cpus?, cpu_pct?);
+    let idle = cpus as f64 * (100.0 - pct.clamp(0.0, 100.0)) / 100.0;
+    Some(idle.floor() as u64)
+}
+
 /// The node a new agent of `role` goes to: among the nodes that report and are in service (`n0`
 /// included), the best by [`choose`], with the memory reserved on each node (see [`reserved_mib`])
 /// taken off its free memory. The chosen node is then reserved for the new agent. A node whose
-/// machine stats did not answer is left out.
-pub fn choose_node(app: &App, role: &str) -> String {
-    let chosen = choose(&candidates(app, role));
+/// machine stats did not answer is left out. For a session's fork (`project`) the candidates are its
+/// declared pools' (see [`in_pools`]) and the node holding its base is preferred; a project that declares
+/// pools gets no node outside them, so None when none of them has room.
+pub fn choose_node(app: &App, role: &str, project: Option<&str>) -> Option<String> {
+    let needs = app
+        .settings
+        .get()
+        .role_volumes
+        .get(role)
+        .cloned()
+        .unwrap_or_default();
+    let declared = project
+        .map(|project| declared_pools(app, project))
+        .unwrap_or_default();
+    let chosen = fork_node(candidates(app, role, &needs, project), &declared)?;
     reserve(&chosen);
-    chosen
+    Some(chosen)
 }
 
-/// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service by
-/// [`pick`], reserved for it as a new agent's would be. None when none has room.
-pub fn target_for(app: &App, role: &str, from: &str) -> Option<String> {
-    let others: Vec<Candidate> = candidates(app, role)
-        .into_iter()
-        .filter(|candidate| candidate.node != from)
-        .collect();
+/// Whether a fork of `project` has a node to start on now (see [`fork_node`]), reserving nothing: a project that
+/// declares no pool always has one (n0 takes it, as it does any agent).
+pub fn has_room_for_fork(app: &App, role: &str, project: &str) -> bool {
+    let declared = declared_pools(app, project);
+    if declared.is_empty() {
+        return true;
+    }
+    let needs = app
+        .settings
+        .get()
+        .role_volumes
+        .get(role)
+        .cloned()
+        .unwrap_or_default();
+    fork_node(candidates(app, role, &needs, Some(project)), &declared).is_some()
+}
+
+/// The node a fork goes to among the candidates (pure): by [`choose`] when the project declares no pool; otherwise the
+/// best candidate on a declared pool, and None when none of them has room.
+pub fn fork_node(candidates: Vec<Candidate>, declared: &[project_stack::Pool]) -> Option<String> {
+    if declared.is_empty() {
+        return Some(choose(&candidates));
+    }
+    pick(&in_pools(candidates, declared))
+}
+
+/// Whether every node that reports is full for a new agent of `role`: no candidate has [`ADMIT_MIB`] free (see
+/// [`pick`]). The work loop waits to start a task while this holds (PLAN 7.1). False when no node reports, since
+/// [`choose`] then falls back to n0 and noded decides, as it always has.
+pub fn fleet_full(app: &App, role: &str) -> bool {
+    full_of(&candidates(app, role, &[], None))
+}
+
+/// [`fleet_full`] over the candidates (pure).
+fn full_of(candidates: &[Candidate]) -> bool {
+    !candidates.is_empty() && pick(candidates).is_none()
+}
+
+/// The node an agent of `role` leaving `from` moves to: the best of the other nodes in service in `from`'s
+/// pool by [`pick`] that hold the `needs` volumes (see [`lacking_volumes`]), reserved for it as a new agent's
+/// would be. None when none in the pool has room.
+pub fn target_for(app: &App, role: &str, from: &str, needs: &[String]) -> Option<String> {
+    let others = in_pool(
+        candidates(app, role, needs, None),
+        from,
+        pool_of(app, from).as_ref(),
+    );
     let chosen = pick(&others)?;
     reserve(&chosen);
     Some(chosen)
 }
 
-/// The nodes that report and are in service, each as a candidate for an agent of `role`.
-fn candidates(app: &App, role: &str) -> Vec<Candidate> {
+/// The data volumes `held` lacks of `needs` (pure), in the order `needs` lists them.
+pub fn lacking_volumes(held: &[String], needs: &[String]) -> Vec<String> {
+    needs
+        .iter()
+        .filter(|name| !held.contains(name))
+        .cloned()
+        .collect()
+}
+
+/// The names of the data volumes node `node` holds (its `GET /v1/volumes`); an error when it did not
+/// answer.
+fn volumes_on(app: &App, node: &str) -> Result<Vec<String>, String> {
+    let body = answered(
+        &format!("{node} GET /v1/volumes"),
+        fleet::noded(app, node, "GET", "/v1/volumes", None),
+    )?;
+    Ok(body
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|volume| volume["name"].as_str().map(str::to_string))
+        .collect())
+}
+
+/// The data volumes agent `cid`'s run carries on `node`, as the run there names them.
+pub fn agent_volumes(app: &App, cid: u64, node: &str) -> Result<Vec<String>, String> {
+    let (run, _) = crate::lifecycle::place(app, cid).map_err(|resp| body_text(&resp))?;
+    run_volumes(app, node, &run)
+}
+
+/// The data volumes run `run` carries on `node`, from its entry in the node's run list.
+fn run_volumes(app: &App, node: &str, run: &str) -> Result<Vec<String>, String> {
+    let body = answered(
+        &format!("{node} GET /v1/runs"),
+        fleet::noded(app, node, "GET", "/v1/runs", None),
+    )?;
+    let entry = body["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["id"].as_str() == Some(run))
+        .ok_or_else(|| format!("{node} has no run {run}"))?;
+    Ok(entry["volumes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str().map(str::to_string))
+        .collect())
+}
+
+/// The nodes that report and are in service, each as a candidate for an agent of `role` that needs the
+/// `needs` volumes: a node that does not hold them all, or that did not say which it holds, is left out.
+/// With a `project`, each candidate says whether it holds the project's base.
+fn candidates(app: &App, role: &str, needs: &[String], project: Option<&str>) -> Vec<Candidate> {
     let stopped = app.nodes.stopped_ids();
     let now = Instant::now();
+    let base = project.map(base_key);
     fleet::reports(app)
         .into_iter()
         .filter(|(node, _, _)| !stopped.contains(node))
+        .filter(|(node, _, _)| {
+            needs.is_empty()
+                || volumes_on(app, node).is_ok_and(|held| lacking_volumes(&held, needs).is_empty())
+        })
         .filter_map(|(node, _status, runs)| {
             let (total, used) = memory_of(app, &node)?;
+            let facts = facts_of(app, &node);
             Some(Candidate {
                 free_mib: total
                     .saturating_sub(used)
                     .saturating_sub(reserved_mib(&node, now)),
                 running_vms: running_vms(&runs),
                 warm: warm_for(&templates_of(app, &node), role),
+                pool: pool_of(app, &node),
+                base: base.as_ref().is_some_and(|key| facts.bases.contains(key)),
+                disk_free_gib: facts.storage_free_gib,
+                idle_cpus: facts.idle_cpus,
                 node,
             })
         })
         .collect()
+}
+
+/// The pools a project declares in its `.plaza/project.toml` (17.2): none when it declares none, or when its
+/// declaration does not read yet (a project with no repo, or Weft out of reach).
+fn declared_pools(app: &App, project: &str) -> Vec<project_stack::Pool> {
+    project_stack::read(app, project)
+        .ok()
+        .flatten()
+        .map(|stack| stack.pools)
+        .unwrap_or_default()
+}
+
+/// A node's placement facts beyond its memory (pure data): the base keys it holds, its free disk in GiB and
+/// its idle CPUs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Facts {
+    bases: Vec<String>,
+    storage_free_gib: Option<u64>,
+    idle_cpus: Option<u64>,
+}
+
+/// A node's facts (17.1): what it reported (see [`reported_facts_of`]), and the bases the builds on this hub held on it
+/// (base_vm.rs), which a node's own report does not list.
+fn facts_of(app: &App, node: &str) -> Facts {
+    let mut facts = reported_facts_of(app, node);
+    for key in crate::base_vm::held_on(node) {
+        if !facts.bases.contains(&key) {
+            facts.bases.push(key);
+        }
+    }
+    facts
+}
+
+/// A node's facts as it reported them (17.1): `n0`'s from noded's machine view and stats asked now, a joined node's from
+/// its last heartbeat. Empty when they did not answer, so the node has no base and an unknown disk.
+fn reported_facts_of(app: &App, node: &str) -> Facts {
+    if node == LOCAL {
+        let machine = fleet::noded(app, LOCAL, "GET", "/v1/machine", None);
+        let stats = fleet::noded(app, LOCAL, "GET", "/v1/machine/stats", None);
+        let (Ok((200, machine)), Ok((200, stats))) = (machine, stats) else {
+            return Facts::default();
+        };
+        return Facts {
+            bases: machine["bases"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|key| key.as_str().map(str::to_string))
+                .collect(),
+            storage_free_gib: machine["storage_free_gib"].as_u64(),
+            idle_cpus: idle_cpus(machine["cpus"].as_u64(), stats["cpu_pct"].as_f64()),
+        };
+    }
+    let Some(record) = app.nodes.get(node) else {
+        return Facts::default();
+    };
+    Facts {
+        bases: record.machine.bases.clone(),
+        storage_free_gib: record.machine.storage_free_gib,
+        idle_cpus: idle_cpus(
+            record.machine.cpus,
+            record
+                .machine
+                .stats
+                .as_ref()
+                .and_then(|stats| stats.cpu_pct),
+        ),
+    }
+}
+
+/// The pool of node `node` (see `nodes::Pool`): `n0`'s from noded's machine view, a joined node's from its
+/// last heartbeat. None when the node reports no CPU baseline, or does not answer.
+pub(crate) fn pool_of(app: &App, node: &str) -> Option<Pool> {
+    if node == LOCAL {
+        let Ok((200, machine)) = fleet::noded(app, LOCAL, "GET", "/v1/machine", None) else {
+            return None;
+        };
+        return Pool::of(
+            machine["arch"].as_str(),
+            machine["backend"].as_str(),
+            machine["cpu_baseline"].as_str(),
+        );
+    }
+    app.nodes.get(node)?.machine.pool()
+}
+
+/// The candidates an agent may move to from a node of pool `from_pool` (pure): the others of that pool. A node
+/// with no pool takes no move, and no node is in its pool.
+pub fn in_pool(candidates: Vec<Candidate>, from: &str, from_pool: Option<&Pool>) -> Vec<Candidate> {
+    let Some(pool) = from_pool else {
+        return Vec::new();
+    };
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.node != from && candidate.pool.as_ref() == Some(pool))
+        .collect()
+}
+
+/// Why a move of an agent from a node of pool `from_pool` to `target` (of pool `target_pool`) is refused (pure):
+/// a VM moves only within its pool (plan 17.2), and a node with no pool is in none.
+pub fn pool_refusal(
+    target: &str,
+    from_pool: Option<&Pool>,
+    target_pool: Option<&Pool>,
+) -> Option<(u16, String)> {
+    match (from_pool, target_pool) {
+        (Some(from), Some(to)) if from == to => None,
+        _ => Some((
+            409,
+            format!("node {target} is not in the agent's pool: a VM moves only within its pool"),
+        )),
+    }
 }
 
 /// Sets [`RESERVE_MIB`] aside on `node` for an agent placed or moved there.
@@ -311,114 +609,6 @@ pub struct Moved {
     pub ms: u64,
 }
 
-/// One file of an export or import, as the node lists it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Part {
-    pub name: String,
-    pub len: u64,
-    #[serde(default)]
-    pub sha256: String,
-}
-
-/// One read from the source node: the chunk's bytes (base64, standard alphabet as noded writes it),
-/// whether it reached the end of the file, and, for a chunk of zeros, how many (with `data` empty).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Fetched {
-    pub data: String,
-    pub eof: bool,
-    pub zeros: Option<u64>,
-}
-
-/// Copies every part from the source to the target in pieces of at most `chunk` bytes. `fetch(name,
-/// offset, len)` reads a piece on the source: its base64 data and whether it ends the file. `push(name,
-/// offset, data)` writes a piece on the target. Each piece must decode to exactly the length asked
-/// for, and the source must say eof at the end of a file and nowhere else. A part of length 0 is pushed
-/// once with no data, so the target creates it. Returns the bytes copied.
-pub fn copy_files<F, P>(
-    chunk: u64,
-    parts: &[Part],
-    mut fetch: F,
-    mut push: P,
-) -> Result<u64, String>
-where
-    F: FnMut(&str, u64, u64) -> Result<Fetched, String>,
-    P: FnMut(&str, u64, &str) -> Result<(), String>,
-{
-    if chunk == 0 {
-        return Err("the chunk size must be at least one byte".into());
-    }
-    let mut copied = 0;
-    for part in parts {
-        if part.len == 0 {
-            push(&part.name, 0, "")?;
-            continue;
-        }
-        let mut offset = 0;
-        while offset < part.len {
-            let len = (part.len - offset).min(chunk);
-            let Fetched { data, eof, zeros } = fetch(&part.name, offset, len)?;
-            let decoded = match zeros {
-                // A run of zeros is not sent: the target staged the file as a hole of its length.
-                Some(zeros) if zeros == len && data.is_empty() => {
-                    let last = offset + len == part.len;
-                    if eof != last {
-                        return Err(format!(
-                            "{}: the source says eof {eof} at byte {}, of {}",
-                            part.name,
-                            offset + len,
-                            part.len
-                        ));
-                    }
-                    offset += len;
-                    copied += len;
-                    continue;
-                }
-                Some(zeros) => {
-                    return Err(format!(
-                        "{}: the piece at {offset} claims {zeros} zero bytes, not {len}",
-                        part.name
-                    ));
-                }
-                None => {
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD
-                        .decode(&data)
-                        .map_err(|e| {
-                            format!("{}: the piece at {offset} is not base64: {e}", part.name)
-                        })?
-                }
-            };
-            if u64::try_from(decoded.len()).unwrap_or(u64::MAX) != len {
-                return Err(format!(
-                    "{}: the piece at {offset} is {} bytes, not {len}",
-                    part.name,
-                    decoded.len()
-                ));
-            }
-            let last = offset + len == part.len;
-            if eof != last {
-                return Err(format!(
-                    "{}: the source says eof {eof} at byte {}, of {}",
-                    part.name,
-                    offset + len,
-                    part.len
-                ));
-            }
-            // The read is written in pieces of at most WRITE_CHUNK decoded bytes.
-            for (index, piece) in decoded.chunks(WRITE_CHUNK).enumerate() {
-                let at = offset + (index * WRITE_CHUNK) as u64;
-                push(&part.name, at, &{
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::STANDARD.encode(piece)
-                })?;
-            }
-            offset += len;
-            copied += len;
-        }
-    }
-    Ok(copied)
-}
-
 /// The record of what a move has taken so far, so an abort can undo exactly that.
 #[derive(Default)]
 struct Staged {
@@ -474,6 +664,11 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
     if let Some((status, message)) = status_refusal(cid, agent.status) {
         return Err(Response::error(status, &message));
     }
+    let (from_pool, target_pool) = (pool_of(app, &from), pool_of(app, target));
+    if let Some((status, message)) = pool_refusal(target, from_pool.as_ref(), target_pool.as_ref())
+    {
+        return Err(Response::error(status, &message));
+    }
     if app.work.current(cid).is_some() {
         return Err(Response::error(
             409,
@@ -487,6 +682,19 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
         ));
     }
     let (run, vm) = crate::lifecycle::place(app, cid)?;
+    // The target must hold every data volume the VM carries: its snapshot names their devices, and a
+    // restore needs them (noded refuses an import that lacks one, so this only says so first).
+    let needs = run_volumes(app, &from, &run)
+        .map_err(|why| Response::error(502, &format!("cannot read the VM's volumes: {why}")))?;
+    let held = volumes_on(app, target)
+        .map_err(|why| Response::error(502, &format!("move to {target} failed: {why}")))?;
+    let lacking = lacking_volumes(&held, &needs);
+    if !lacking.is_empty() {
+        return Err(Response::error(
+            409,
+            &format!("node {target} does not hold volume {}", lacking.join(", ")),
+        ));
+    }
     let was_asleep = agent.status == Status::Asleep;
     if !was_asleep {
         sleep::put_to_sleep(app, cid)?;
@@ -585,9 +793,10 @@ fn move_claimed(app: &App, cid: u64, target: &str) -> Result<Moved, Response> {
     })
 }
 
-/// The copy: export the VM's files on `from`, import them on `target`, copy every file in pieces,
-/// finish the import into a sleeping run, record the placement, and have the target's gateway serve
-/// the CID. Returns the bytes copied and the target's run. What it takes goes into `staged`.
+/// The copy (plan 17.5): export the VM's files on `from`, have `from` offer them as blobs, have `target` fetch the chunks
+/// it lacks straight from `from` under the hub's grant, and finish the import into a sleeping run, record the placement,
+/// and have the target's gateway serve the CID. The hub relays no file bytes. Returns the bytes copied and the target's
+/// run. What it takes goes into `staged`.
 fn carry(
     app: &App,
     cid: u64,
@@ -597,32 +806,63 @@ fn carry(
     vm: u32,
     staged: &mut Staged,
 ) -> Result<(u64, String), String> {
-    let exported = call(
-        app,
+    let key = crate::transfer::key(app)?;
+    let mut send = |node: &str, method: &str, path: &str, body: &Value| {
+        answered(
+            &format!("{node} {method} {path}"),
+            fleet::noded(app, node, method, path, Some(body)),
+        )
+    };
+    let exported = crate::transfer::exchange(
+        &mut send,
         from,
         "POST",
         &format!("/v1/runs/{run}/vms/{vm}/export"),
-        Some(&json!({})),
+        &json!({}),
     )?;
     let export = text(&exported, "export")?;
     staged.export = Some(export.clone());
-    let parts: Vec<Part> = serde_json::from_value(exported["files"].clone())
-        .map_err(|e| format!("the export's files: {e}"))?;
-    let imported = call(
-        app,
+    let sender = crate::transfer::sender_of(app, from)?;
+    let broker = crate::transfer::broker_addr();
+    let offered = crate::transfer::exchange(
+        &mut send,
+        from,
+        "POST",
+        &format!("/v1/exports/{export}/manifest"),
+        &crate::transfer::hub_body(&key, from, json!({"files": exported["files"]})),
+    )?;
+    let id = text(&offered, "id")?;
+    let expires = apz_transfer::now_ms() + apz_transfer::grant::TTL_MS;
+    let grant = apz_transfer::Grant::issue(
+        &key,
+        &format!("move:{cid}:{export}"),
+        &id,
+        from,
+        target,
+        &sender.pin,
+        expires,
+    );
+    let (routes, _) = crate::transfer::routes_for(&sender, broker.as_deref(), expires);
+    let imported = crate::transfer::exchange(
+        &mut send,
         target,
         "POST",
-        "/v1/imports",
-        Some(&json!({"meta": exported["meta"], "files": parts})),
+        "/v1/imports/from-transfer",
+        &crate::transfer::hub_body(
+            &key,
+            target,
+            json!({
+                "routes": routes,
+                "grant": grant.encode(),
+                "manifest": offered["manifest"],
+                "meta": exported["meta"],
+                "files": exported["files"],
+            }),
+        ),
     )?;
+    let bytes = imported["bytes"].as_u64().unwrap_or(0);
     let import = text(&imported, "import")?;
     staged.import = Some(import.clone());
-    let bytes = copy_files(
-        CHUNK,
-        &parts,
-        |name, offset, len| fetch_piece(app, from, &export, name, offset, len),
-        |name, offset, data| push_piece(app, target, &import, name, offset, data),
-    )?;
     let finished = call(
         app,
         target,
@@ -684,52 +924,6 @@ fn abort(app: &App, cid: u64, target: &str, staged: &Staged) {
             call(app, target, "DELETE", &format!("/v1/runs/{run}"), None),
         );
     }
-}
-
-/// Reads one piece of an export on `node`: its base64 data and whether it ends the file.
-fn fetch_piece(
-    app: &App,
-    node: &str,
-    export: &str,
-    name: &str,
-    offset: u64,
-    len: u64,
-) -> Result<Fetched, String> {
-    let body = call(
-        app,
-        node,
-        "GET",
-        &format!("/v1/exports/{export}/{name}?offset={offset}&len={len}"),
-        None,
-    )?;
-    let data = body["data"]
-        .as_str()
-        .ok_or("the export's piece has no data")?
-        .to_string();
-    Ok(Fetched {
-        data,
-        eof: body["eof"].as_bool().unwrap_or(false),
-        zeros: body["zeros"].as_u64(),
-    })
-}
-
-/// Writes one piece of an import on `node`.
-fn push_piece(
-    app: &App,
-    node: &str,
-    import: &str,
-    name: &str,
-    offset: u64,
-    data: &str,
-) -> Result<(), String> {
-    call(
-        app,
-        node,
-        "POST",
-        &format!("/v1/imports/{import}/{name}"),
-        Some(&json!({"offset": offset, "data": data})),
-    )
-    .map(|_| ())
 }
 
 /// Saves the node store, placements included, now (the saver's write, not its next pass). A failed write is logged
@@ -834,16 +1028,6 @@ fn move_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
 mod tests {
     use crate::fleet::node_for;
 
-    fn b64(bytes: &[u8]) -> String {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    }
-
-    fn unb64(text: &str) -> Result<Vec<u8>, base64::DecodeError> {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.decode(text)
-    }
-
     use super::*;
 
     fn candidate(node: &str, free_mib: u64, running_vms: u64, warm: bool) -> Candidate {
@@ -852,7 +1036,23 @@ mod tests {
             free_mib,
             running_vms,
             warm,
+            pool: None,
+            base: false,
+            disk_free_gib: None,
+            idle_cpus: None,
         }
+    }
+
+    /// A candidate in pool `pool`, a short name for an arm64 KVM pool or an x86_64 one.
+    fn in_pool_of(node: &str, free_mib: u64, pool: Option<Pool>) -> Candidate {
+        Candidate {
+            pool,
+            ..candidate(node, free_mib, 0, false)
+        }
+    }
+
+    fn pool(arch: &str, hypervisor: &str, baseline: &str) -> Pool {
+        Pool::of(Some(arch), Some(hypervisor), Some(baseline)).expect("a pool")
     }
 
     fn node_record(id: &str, last_seen_ms: u64, draining: bool, revoked: bool) -> Node {
@@ -868,6 +1068,9 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            path: crate::nodes::TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }
     }
 
@@ -1009,6 +1212,26 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_moves_only_to_a_node_that_holds_every_volume_it_carries() {
+        let held = vec!["data".to_string(), "models".to_string()];
+        assert!(
+            lacking_volumes(&held, &[]).is_empty(),
+            "a VM with no volumes fits any node"
+        );
+        assert!(lacking_volumes(&held, &["models".to_string()]).is_empty());
+        assert_eq!(
+            lacking_volumes(&held, &["data".to_string(), "logs".to_string()]),
+            ["logs"],
+            "the volumes the node lacks, in the VM's order"
+        );
+        assert_eq!(
+            lacking_volumes(&[], &["data".to_string()]),
+            ["data"],
+            "a node that holds none refuses every volume"
+        );
+    }
+
+    #[test]
     fn pick_takes_the_best_eligible_candidate_and_none_without_one() {
         assert_eq!(pick(&[]), None);
         assert_eq!(pick(&[candidate("n1", ADMIT_MIB - 1, 0, false)]), None);
@@ -1020,6 +1243,21 @@ mod tests {
             Some("n2".to_string())
         );
         assert_eq!(choose(&[]), "n0", "a new agent still has n0 to go to");
+    }
+
+    #[test]
+    fn the_fleet_is_full_only_when_every_node_that_reports_is_full() {
+        assert!(!full_of(&[]), "no node reports: noded decides, as before");
+        let full = [
+            candidate("n0", ADMIT_MIB - 1, 3, false),
+            candidate("n1", 10, 0, false),
+        ];
+        assert!(full_of(&full));
+        let room = [
+            candidate("n0", ADMIT_MIB - 1, 3, false),
+            candidate("n1", ADMIT_MIB, 0, false),
+        ];
+        assert!(!full_of(&room), "one node with ADMIT_MIB free has room");
     }
 
     #[test]
@@ -1057,6 +1295,9 @@ mod tests {
                 draining: false,
                 revoked: false,
                 address: String::new(),
+                path: crate::nodes::TUNNEL.to_string(),
+                mesh_address: String::new(),
+                mesh_token: String::new(),
             }]);
             let owner = |cid| store.owner_of_cid(cid).map(|n| n.id);
             assert_eq!(node_for(store.override_of(1005), owner(1005)), "n1");
@@ -1104,165 +1345,218 @@ mod tests {
         assert!(Claim::take(4242).is_some());
     }
 
-    /// A source of `files` that answers `copy_files` pieces, and a target that collects them.
-    fn copy_with(
-        files: &std::collections::BTreeMap<String, Vec<u8>>,
-        parts: &[Part],
-        chunk: u64,
-        eof_early: bool,
-    ) -> (
-        Result<u64, String>,
-        std::collections::BTreeMap<String, Vec<u8>>,
-    ) {
-        let mut target: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
-        let result = copy_files(
-            chunk,
-            parts,
-            |name, offset, len| {
-                let bytes = &files[name];
-                let end = usize::try_from(offset + len).unwrap();
-                let piece = &bytes[usize::try_from(offset).unwrap()..end];
-                let eof = end == bytes.len() || eof_early;
-                Ok(Fetched {
-                    data: b64(piece),
-                    eof,
-                    zeros: None,
-                })
-            },
-            |name, offset, data| {
-                let bytes = unb64(data).unwrap();
-                let file = target.entry(name.to_string()).or_default();
-                assert_eq!(file.len() as u64, offset, "pieces arrive in order");
-                file.extend(bytes);
-                Ok(())
-            },
-        );
-        (result, target)
-    }
-
-    fn part(name: &str, len: usize) -> Part {
-        Part {
-            name: name.to_string(),
-            len: len as u64,
-            sha256: String::new(),
-        }
+    #[test]
+    fn a_move_lands_only_in_the_pool_of_its_node() {
+        let arm = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1");
+        let x86 = pool("x86_64", "kvm", "x86_64 vendor=GenuineIntel sig=0x000806e9");
+        let fleet = vec![
+            in_pool_of("n1", 9000, Some(x86.clone())),
+            in_pool_of("n2", 4000, Some(arm.clone())),
+            in_pool_of("n3", 2000, Some(arm.clone())),
+            in_pool_of(
+                "n4",
+                9000,
+                Some(Pool {
+                    hypervisor: "hvf".into(),
+                    ..arm.clone()
+                }),
+            ),
+            in_pool_of("n5", 9000, None),
+        ];
+        // An arm64 agent leaving n2 has room on n4 and n1 (other pools) and n5 (no pool): only n3 is in its pool.
+        let movable = in_pool(fleet.clone(), "n2", Some(&arm));
+        assert_eq!(pick(&movable).as_deref(), Some("n3"));
+        // An x86_64 agent leaving n1 has no other machine in its pool.
+        assert_eq!(pick(&in_pool(fleet.clone(), "n1", Some(&x86))), None);
+        // A node with no pool takes no move out, and nothing moves to it.
+        assert!(in_pool(fleet.clone(), "n5", None).is_empty());
+        assert!(in_pool(fleet, "n2", None).is_empty());
     }
 
     #[test]
-    fn every_write_is_at_most_512_kib_and_the_file_arrives_whole() {
-        let len = 2 * WRITE_CHUNK + 5;
-        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
-        let files = std::collections::BTreeMap::from([("memory".to_string(), data.clone())]);
-        let mut target: Vec<u8> = Vec::new();
-        let mut largest = 0;
-        let result = copy_files(
-            CHUNK,
-            &[part("memory", len)],
-            |_, offset, piece_len| {
-                let piece = &files["memory"][usize::try_from(offset).unwrap()..]
-                    [..usize::try_from(piece_len).unwrap()];
-                Ok(Fetched {
-                    data: b64(piece),
-                    eof: offset + piece_len == len as u64,
-                    zeros: None,
-                })
-            },
-            |_, offset, encoded| {
-                let bytes = unb64(encoded).unwrap();
-                largest = largest.max(bytes.len());
-                assert_eq!(target.len() as u64, offset, "writes arrive in order");
-                target.extend(bytes);
-                Ok(())
-            },
+    fn a_new_agent_is_placed_on_the_best_node_of_any_pool() {
+        let arm = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1");
+        let x86 = pool("x86_64", "kvm", "x86_64 vendor=GenuineIntel sig=0x000806e9");
+        let fleet = vec![
+            in_pool_of("n2", 4000, Some(arm)),
+            in_pool_of("n1", 9000, Some(x86)),
+        ];
+        assert_eq!(
+            choose(&fleet),
+            "n1",
+            "a new agent is not pinned to a pool by placement"
         );
-        assert_eq!(result, Ok(len as u64));
-        assert!(
-            largest <= WRITE_CHUNK,
-            "the largest write was {largest} bytes"
-        );
-        assert_eq!(target, data);
     }
 
     #[test]
-    fn a_copy_ends_cleanly_or_fails_at_the_edges() {
-        // An empty file is created and copies nothing.
-        {
-            let files = std::collections::BTreeMap::from([("vmstate".to_string(), Vec::new())]);
-            let (result, target) = copy_with(&files, &[part("vmstate", 0)], CHUNK, false);
-            assert_eq!(result, Ok(0));
-            assert_eq!(target["vmstate"], Vec::<u8>::new());
-        }
-        // A source that ends early, or a short piece, fails the copy.
-        {
-            let files = std::collections::BTreeMap::from([("memory".to_string(), vec![1_u8; 10])]);
-            let (result, _) = copy_with(&files, &[part("memory", 10)], 4, true);
-            assert!(result.unwrap_err().contains("eof"), "eof before the end");
-            let mut short = |_: &str, _: u64, len: u64| {
-                Ok(Fetched {
-                    data: b64(&vec![1_u8; usize::try_from(len).unwrap() - 1]),
-                    eof: false,
-                    zeros: None,
-                })
-            };
-            let parts = [part("memory", 10)];
-            let result = copy_files(4, &parts, &mut short, |_, _, _| Ok(()));
-            assert!(result.unwrap_err().contains("bytes"), "a short piece");
-        }
-        // A failed push stops the copy.
-        {
-            let parts = [part("memory", 8)];
-            let result = copy_files(
-                4,
-                &parts,
-                |_, offset, len| {
-                    let piece = vec![0_u8; usize::try_from(len).unwrap()];
-                    Ok(Fetched {
-                        data: b64(&piece),
-                        eof: offset + len == 8,
-                        zeros: None,
-                    })
-                },
-                |_, offset, _| {
-                    if offset == 4 {
-                        Err("the import refused the piece".to_string())
-                    } else {
-                        Ok(())
-                    }
-                },
+    fn a_move_is_refused_across_pools_and_from_a_node_with_none() {
+        let arm = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1");
+        let other = pool("aarch64", "kvm", "arm64 midr=0x41:0xd0d:0x3:1");
+        assert_eq!(pool_refusal("n3", Some(&arm), Some(&arm)), None);
+        for (case, from, to) in [
+            ("another baseline", Some(&arm), Some(&other)),
+            ("the agent's node has no pool", None, Some(&arm)),
+            ("the target has no pool", Some(&arm), None),
+        ] {
+            let (status, message) = pool_refusal("n3", from, to).expect(case);
+            assert_eq!(status, 409, "{case}");
+            assert!(
+                message.contains("only within its pool"),
+                "{case}: {message}"
             );
-            assert_eq!(result, Err("the import refused the piece".to_string()));
         }
     }
 
     #[test]
-    fn a_run_of_zeros_is_counted_and_never_pushed() {
-        let parts = [part("memory", 8)];
-        let mut pushed = Vec::new();
-        let copied = copy_files(
+    fn a_heartbeat_names_the_pool_of_its_machine() {
+        let machine: crate::nodes::Machine = serde_json::from_value(json!({
+            "arch": "aarch64",
+            "backend": "hvf",
+            "cpu_baseline": "arm64 cpufamily=0x67f674b3"
+        }))
+        .unwrap();
+        assert_eq!(
+            machine.pool(),
+            Some(pool("aarch64", "hvf", "arm64 cpufamily=0x67f674b3"))
+        );
+        let without: crate::nodes::Machine = serde_json::from_value(json!({
+            "arch": "aarch64",
+            "backend": "hvf"
+        }))
+        .unwrap();
+        assert_eq!(without.pool(), None, "no baseline, no pool");
+    }
+
+    #[test]
+    fn a_fork_starts_on_the_node_that_holds_its_base() {
+        let mut holds = candidate("n2", 3000, 0, false);
+        holds.base = true;
+        assert_eq!(
+            choose(&[candidate("n1", 9000, 0, true), holds]),
+            "n2",
+            "the base outweighs the memory and the warm template"
+        );
+        assert_eq!(
+            choose(&[
+                candidate("n1", 9000, 0, false),
+                candidate("n2", 3000, 0, false)
+            ]),
+            "n1",
+            "with no base on any node, the roomier node takes it"
+        );
+        let mut without_room = candidate("n2", 100, 0, false);
+        without_room.base = true;
+        assert_eq!(
+            choose(&[without_room, candidate("n1", 2048, 0, false)]),
+            "n1",
+            "a node with no room for an agent takes no fork, base or not"
+        );
+        assert_eq!(base_key("pr1"), "pr1/build");
+    }
+
+    #[test]
+    fn a_fork_starts_only_in_the_pools_its_project_declares() {
+        let arm = project_stack::Pool {
+            arch: project_stack::Arch::Aarch64,
+            hypervisor: project_stack::Hypervisor::Kvm,
+        };
+        let fleet = vec![
+            in_pool_of(
+                "n1",
+                9000,
+                Some(pool(
+                    "x86_64",
+                    "kvm",
+                    "x86_64 vendor=GenuineIntel sig=0x000806e9",
+                )),
+            ),
+            in_pool_of(
+                "n2",
+                4000,
+                Some(pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1")),
+            ),
+            in_pool_of(
+                "n3",
+                9000,
+                Some(pool("aarch64", "hvf", "arm64 cpufamily=0x67f674b3")),
+            ),
+            in_pool_of("n4", 9000, None),
+        ];
+        assert_eq!(
+            pick(&in_pools(fleet.clone(), &[arm])).as_deref(),
+            Some("n2"),
+            "the roomier nodes are another arch, another hypervisor, or no pool"
+        );
+        assert_eq!(
+            in_pools(fleet, &[]).len(),
             4,
-            &parts,
-            |_, offset, len| {
-                Ok(if offset == 0 {
-                    Fetched {
-                        data: String::new(),
-                        eof: false,
-                        zeros: Some(len),
-                    }
-                } else {
-                    Fetched {
-                        data: b64(&[7, 7, 7, 7]),
-                        eof: true,
-                        zeros: None,
-                    }
-                })
-            },
-            |_, at, data| {
-                pushed.push((at, data.to_string()));
-                Ok(())
-            },
-        )
-        .expect("copies");
-        assert_eq!(copied, 8);
-        assert_eq!(pushed, vec![(4, b64(&[7, 7, 7, 7]))]);
+            "a project that declares no pool takes any"
+        );
+    }
+
+    #[test]
+    fn a_project_that_declares_pools_gets_no_node_outside_them() {
+        let arm = project_stack::Pool {
+            arch: project_stack::Arch::Aarch64,
+            hypervisor: project_stack::Hypervisor::Kvm,
+        };
+        let x86 = in_pool_of(
+            "n1",
+            9000,
+            Some(pool(
+                "x86_64",
+                "kvm",
+                "x86_64 vendor=GenuineIntel sig=0x000806e9",
+            )),
+        );
+        assert_eq!(
+            fork_node(vec![x86.clone()], std::slice::from_ref(&arm)),
+            None,
+            "the only node is in another pool: no fork starts"
+        );
+        assert_eq!(
+            fork_node(vec![x86.clone()], &[]).as_deref(),
+            Some("n1"),
+            "with no declared pool the fork goes where the memory is"
+        );
+        let arm_node = in_pool_of(
+            "n2",
+            4000,
+            Some(pool("aarch64", "kvm", "arm64 midr=0x41:0xd0c:0x3:1")),
+        );
+        assert_eq!(
+            fork_node(vec![x86, arm_node], &[arm]).as_deref(),
+            Some("n2")
+        );
+    }
+
+    #[test]
+    fn a_node_short_of_disk_takes_no_fork_and_one_that_does_not_say_is_not_kept_out() {
+        let mut full = candidate("n1", 9000, 0, false);
+        full.disk_free_gib = Some(FORK_DISK_GIB - 1);
+        let mut roomy = candidate("n2", 3000, 0, false);
+        roomy.disk_free_gib = Some(FORK_DISK_GIB);
+        let unknown = candidate("n3", 2000, 0, false);
+        assert_eq!(pick(&[full.clone(), roomy]).as_deref(), Some("n2"));
+        assert_eq!(pick(&[full.clone(), unknown]).as_deref(), Some("n3"));
+        assert_eq!(pick(std::slice::from_ref(&full)), None);
+        assert_eq!(choose(&[full]), LOCAL, "no node takes it: n0 decides");
+    }
+
+    #[test]
+    fn the_idle_cpus_of_a_node_count_for_it() {
+        let mut idle = candidate("n1", 4096, 0, false);
+        idle.idle_cpus = Some(8);
+        let mut busy = candidate("n2", 4096, 0, false);
+        busy.idle_cpus = Some(1);
+        assert_eq!(choose(&[busy, idle]), "n1");
+        assert_eq!(idle_cpus(Some(16), Some(25.0)), Some(12));
+        assert_eq!(
+            idle_cpus(Some(4), Some(150.0)),
+            Some(0),
+            "the load is clamped"
+        );
+        assert_eq!(idle_cpus(None, Some(10.0)), None);
+        assert_eq!(idle_cpus(Some(4), None), None);
     }
 }

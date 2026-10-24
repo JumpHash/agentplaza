@@ -1,0 +1,35 @@
+# The release recipe (PLAN 21.1, 22). Stub: it needs the release phase (22); none runs yet. A release is a candidate built
+# from main, its notes, and its publication.
+id = "release"
+name = "Release"
+description = "Stub until the release phase (22): declares its steps, none runs yet."
+version = 1
+inputs = ["main"]
+outputs = ["release"]
+triggers = ["release.requested"]
+
+[[steps]]
+id = "candidate"
+engine = "release"
+gate = ["passed"]
+
+[[steps]]
+id = "notes"
+engine = "release"
+gate = ["passed"]
+
+[[steps]]
+id = "publish"
+engine = "release"
+gate = ["passed"]
+output = "release"
+
+[[edges]]
+from = "candidate"
+to = "notes"
+when = "passed"
+
+[[edges]]
+from = "notes"
+to = "publish"
+when = "passed"

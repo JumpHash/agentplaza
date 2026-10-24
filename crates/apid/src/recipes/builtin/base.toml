@@ -1,0 +1,14 @@
+# The base recipe (PLAN 16.4, 21.1): a project's base is built from its declaration on each landing. The steps are
+# base_recipe.rs's list, run in the base's VM; the run records the build's commit as its outcome.
+id = "base"
+name = "Base"
+version = 1
+inputs = ["main"]
+outputs = ["base"]
+triggers = ["landing"]
+
+[[steps]]
+id = "build"
+engine = "base"
+gate = ["passed"]
+output = "base"

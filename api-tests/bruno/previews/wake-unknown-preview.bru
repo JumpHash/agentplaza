@@ -1,0 +1,21 @@
+meta {
+  name: Answer 404 when waking a preview the hub does not know
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/previews/{{id}}/wake
+  body: none
+  auth: none
+}
+
+vars:pre-request {
+  id: pv999
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no preview pv999"
+}

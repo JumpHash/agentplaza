@@ -47,17 +47,14 @@ const ALWAYS: &[&str] = &[
     "plaza_board_comment",
     "plaza_send_message",
     "plaza_message_seat",
+    "team_set",
+    "thread_read",
+    "thread_answer",
     "share_file",
     "plaza_get_file",
     "fetch_url",
     "download",
     "install_packages",
-    "glob",
-    "grep",
-    "multi_edit",
-    "bash_start",
-    "bash_output",
-    "bash_kill",
     "todo_write",
     "code_engine",
     "deliver_file",
@@ -76,6 +73,9 @@ const ALWAYS: &[&str] = &[
     "review_score",
     "review_verdict",
     "review_spawn",
+    "finding_verify",
+    "finding_contest",
+    "finding_arbitrate",
     "weft_status",
     "weft_diff",
     "weft_describe",
@@ -83,28 +83,72 @@ const ALWAYS: &[&str] = &[
     "weft_show",
     "weft_blame",
     "weft_map",
+    "weft_change_tree",
+    "weft_touches",
+    "tests_select",
     "plaza_maintenance",
     "plaza_maintenance_map",
     "plaza_maintenance_propose",
     "plaza_maintenance_signal",
     "plaza_environments",
     "plaza_deploy",
+    "journal_note",
+    "journal_read",
+    "handover_write",
+    "brief",
+    "memory_search",
+    "memory_get",
+    "memory_propose",
+    "memory_record_decision",
+    "memory_land",
+    "memory_anchored",
+    "memory_verify",
 ];
+
+/// The tools a seat uses on most steps: offered with their schemas. Every other tool is deferred: the model sees its name
+/// and one line, and fetches its schema through `tool_search` before it calls the tool.
+const CORE: &[&str] = &[
+    "run",
+    "run_tests",
+    "run_script",
+    "read",
+    "edit",
+    "find",
+    "search",
+    "submit_claim",
+    "plaza_tasks",
+    "plaza_board_read",
+    "plaza_send_message",
+    "plaza_message_seat",
+    "plaza_task_result",
+];
+
+/// The tool the harness serves itself: it returns the full schemas of the deferred tools that match its query.
+pub const TOOL_SEARCH: &str = "tool_search";
 
 /// The guest tools that act only inside the agent's own VM, offered to every role.
 const IN_VM: &[&str] = &[
-    "bash",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list",
+    "read",
+    "edit",
+    "find",
     "search",
+    "run",
+    "run_tests",
+    "run_script",
+    "symbols",
+    "definition",
+    "references",
+    "diagnostics",
+    "outline",
+    "spawn_helper",
+    "await_helper",
 ];
 
 /// Host tools offered only by tier (see [`permitted`]).
 const GATED: &[&str] = &[
     "plaza_agent_propose",
     "plaza_project_draft",
+    "plan_post",
     "plaza_project_open",
     "plaza_project_advance",
     "plaza_project_approve",
@@ -131,24 +175,19 @@ const GATED: &[&str] = &[
 pub fn runs(name: &str) -> Option<Runs> {
     // contract
     match name {
-        "bash"
-        | "read_file"
-        | "write_file"
-        | "edit_file"
-        | "list"
+        "read"
+        | "edit"
+        | "find"
         | "search"
+        | "run"
+        | "run_tests"
         | "share_file"
         | "fetch_url"
         | "download"
         | "install_packages"
-        | "glob"
-        | "grep"
-        | "multi_edit"
-        | "bash_start"
-        | "bash_output"
-        | "bash_kill"
         | "todo_write"
         | "code_engine"
+        | "run_script"
         | "deliver_file"
         | "artifact_create"
         | "artifact_update"
@@ -157,7 +196,14 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "tool_package"
         | "checkpoint_diff"
         | "checkpoint_restore"
-        | "checkpoint_list" => Some(Runs::Guest),
+        | "checkpoint_list"
+        | "symbols"
+        | "definition"
+        | "references"
+        | "diagnostics"
+        | "outline"
+        | "spawn_helper"
+        | "await_helper" => Some(Runs::Guest),
         "transcript_search"
         | "submit_claim"
         | "plaza_tasks"
@@ -166,6 +212,9 @@ pub fn runs(name: &str) -> Option<Runs> {
         | "plaza_board_comment"
         | "plaza_send_message"
         | "plaza_message_seat"
+        | "team_set"
+        | "thread_read"
+        | "thread_answer"
         | "plaza_agents"
         | "plaza_post_task"
         | "plaza_tasks_post"
@@ -182,8 +231,14 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::environments::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::harness_control::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::agent_proposals::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::project_memory::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::curator::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::verifier::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::test_select::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::journal::TOOLS.contains(&name) => Some(Runs::Host),
+        name if crate::planning::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::stations::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::foundry::breeder::TOOLS.contains(&name) => Some(Runs::Host),
         "plaza_connector_propose" => Some(Runs::Host),
@@ -346,6 +401,29 @@ pub fn with_library(app: &App, agent: &Agent, section: &Section) -> Vec<ToolSpec
     let mut specs = section.tools.clone();
     specs.extend(crate::library::specs_for(app, agent.cid));
     specs.extend(section.mcp.iter().cloned());
+    specs
+}
+
+/// The tools agent `agent` is offered, as its profile carries them: `specs_for_agent`, with every tool outside `CORE`
+/// deferred, and `tool_search` for the deferred ones.
+pub fn offered_to(app: &App, agent: &Agent) -> Vec<ToolSpec> {
+    let mut specs = specs_for_agent(app, agent);
+    for spec in &mut specs {
+        spec.deferred = !CORE.contains(&spec.name.as_str());
+    }
+    specs.push(ToolSpec {
+        deferred: false,
+        name: TOOL_SEARCH.to_string(),
+        description: "Fetch the full schemas of tools you were offered by name only. Give a query that matches their names or \
+            what they do; each match comes back with its input schema, and from then on you may call it. Call it before you \
+            call a deferred tool."
+            .to_string(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {"query": {"type": "string", "minLength": 1}},
+            "required": ["query"],
+        }),
+    });
     specs
 }
 
@@ -607,6 +685,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
     }
     if let Some(builtin) = BUILTIN.get(name) {
         return Some(ToolSpec {
+            deferred: false,
             name: name.to_string(),
             description: builtin.description.clone(),
             input_schema: builtin.input_schema.clone(),
@@ -620,9 +699,12 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::agent_proposals::spec(name))
         .or_else(|| crate::drafts::spec(name))
         .or_else(|| crate::review_graph::tools::spec(name))
+        .or_else(|| crate::test_select::spec(name))
         .or_else(|| crate::skills::agent_tools::spec(name))
-        .or_else(|| crate::stations::tools::spec(name))?;
+        .or_else(|| crate::stations::tools::spec(name))
+        .or_else(|| crate::planning::spec(name))?;
     Some(ToolSpec {
+        deferred: false,
         name: name.to_string(),
         description: description.to_string(),
         input_schema,
@@ -938,6 +1020,15 @@ fn host_call(
                 )
             }))
         }
+        "team_set" => crate::work_loop::team_set(app, agent, input),
+        "thread_read" => crate::work_loop::thread_read(app, agent.cid, str_arg(input, "thread")?),
+        "thread_answer" => crate::work_loop::thread_answer(
+            app,
+            agent.cid,
+            str_arg(input, "thread")?,
+            str_arg(input, "text")?,
+            input.get("close").and_then(Value::as_bool).unwrap_or(false),
+        ),
         "plaza_message_seat" => crate::work_loop::message_seat(
             app,
             agent.cid,
@@ -959,6 +1050,12 @@ fn host_call(
                 return Ok(reply);
             }
             app.work.verdict(app, task, work, pass, notes)
+        }
+        other if crate::journal::TOOLS.contains(&other) => {
+            crate::journal::run(app, agent, other, input)
+        }
+        other if crate::planning::TOOLS.contains(&other) => {
+            crate::planning::run(app, agent, other, input)
         }
         other if crate::skills::agent_tools::TOOLS.contains(&other) => {
             crate::skills::agent_tools::run(app, agent, other, input)
@@ -982,9 +1079,17 @@ fn host_call(
             crate::stations::tools::run(app, agent, other, input)
         }
         "plaza_agent_propose" => crate::agent_proposals::run(app, agent, input),
+        other if crate::project_memory::TOOLS.contains(&other) => {
+            crate::project_memory::run(app, agent, other, input)
+        }
+        other if crate::curator::TOOLS.contains(&other) => crate::curator::run(app, agent, input),
+        other if crate::verifier::TOOLS.contains(&other) => crate::verifier::run(app, agent, input),
         "plaza_project_draft" => crate::drafts::run(app, agent, input),
         other if crate::review_graph::tools::TOOLS.contains(&other) => {
             crate::review_graph::tools::run(app, agent, work, other, input)
+        }
+        other if crate::test_select::TOOLS.contains(&other) => {
+            crate::test_select::run(app, agent, input)
         }
         "plaza_connector_propose" => crate::connectors::propose(app, agent, input),
         other if crate::connectors::by_tool(other).is_some() => {
@@ -1242,10 +1347,10 @@ mod tests {
                 "{name} schema is not an object"
             );
         }
-        assert_eq!(
-            serde_json::to_string(&build_spec("bash")).expect("bash spec serializes"),
-            r#"{"name":"bash","description":"Run a shell command in your VM and return its output.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout_s":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}}"#
-        );
+        let run = build_spec("run").expect("the run spec");
+        assert_eq!(run.name, "run");
+        assert_eq!(run.description, BUILTIN["run"].description);
+        assert_eq!(run.input_schema, BUILTIN["run"].input_schema);
     }
 
     use super::*;
@@ -1492,6 +1597,8 @@ mod tests {
             assert!(has(ORCHESTRATOR_ROLE, "plaza_agent_control"));
             assert!(has(ORCHESTRATOR_ROLE, "plaza_loop"));
             assert!(has("planner", "plaza_project_advance"));
+            assert!(has("planner", "team_set"));
+            assert!(!has("builder", "team_set"));
             assert!(has(ORCHESTRATOR_ROLE, "plaza_project_approve"));
             assert!(!has("builder", "plaza_project_open"));
             assert!(!has("builder", "plaza_project_approve"));
@@ -1527,13 +1634,13 @@ mod tests {
             assert!(refusal("builder", "plaza_task_link").is_some());
             assert!(refusal(ORCHESTRATOR_ROLE, "plaza_task_link").is_none());
             assert!(refusal("planner", "plaza_tasks_post").is_some());
-            assert!(refusal("worker", "bash").is_some());
+            assert!(refusal("worker", "run").is_some());
         }
     }
 
     #[test]
     fn a_tool_spec_is_the_same_on_every_call_and_as_a_fresh_build() {
-        for name in ["bash", "read_file", "code_engine", "artifact_create"] {
+        for name in ["run", "read", "code_engine", "artifact_create"] {
             let first = spec(name).expect("a spec for each named tool");
             assert_eq!(first, spec(name).expect("the same spec again"));
             assert_eq!(
@@ -1551,7 +1658,10 @@ mod tests {
                 assert!(offered.iter().any(|n| n == name), "{role} lacks {name}");
             }
         }
-        assert!(runs("bash") == Some(Runs::Guest));
+        assert!(runs("run") == Some(Runs::Guest));
+        // A script is offered to every role with its schema, and runs in the VM as a command does.
+        assert!(runs("run_script") == Some(Runs::Guest));
+        assert!(CORE.contains(&"run_script"));
     }
 
     #[test]

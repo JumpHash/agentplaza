@@ -77,6 +77,8 @@
 //     mode switch (`log` audits a missing entry instead of killing the daemon);
 //     its probes are an integration test (`tests/jail.rs`), in a process of
 //     their own.
+//   * `clonefile::sys` (macOS, Windows) — `fclonefileat(2)` and the volume lookups and
+//     `FSCTL_DUPLICATE_EXTENTS_TO_FILE`/`FSCTL_SET_SPARSE` calls of ReFS block cloning.
 //   * `jail::jailer_sys` — the jailer's raw-syscall boundary: `unshare(2)`,
 //     `mount(2)`, `pivot_root(2)`, `chdir(2)`, `mkdir(2)`, `rmdir(2)`,
 //     `umount2(2)` and the `setresgid(2)`/`setresuid(2)` drop. See
@@ -92,7 +94,7 @@ mod sys;
 /// cgroup v2 limits for the per-VM processes of [`spawner::SpawnMode::Process`]:
 /// one cgroup per VM, sized from its shape. Set with [`spawner::set_cgroup_root`].
 pub mod cgroup;
-/// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`).
+/// Copies of disk and memory images that share blocks where the filesystem can (`FICLONE`, APFS, ReFS).
 pub mod clonefile;
 /// Pausing, resuming and snapshotting a running in-process VM (the builder installs it).
 #[cfg(all(

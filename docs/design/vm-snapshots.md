@@ -200,10 +200,12 @@ machine, not only its files.
 
 ## Reflink copies
 
-`clone_file` (`crates/vmm/src/clonefile.rs`) is `ioctl(FICLONE)` on a filesystem with reflinks (XFS, Btrfs,
-bcachefs). The copy costs time proportional to its extents, takes no space until either side is written, and is what
-makes workspace copies, snapshots and forks cheap. On any other filesystem it falls back to `copy_sparse`, which keeps
-holes as holes. `reflink_supported` probes a directory once, so a daemon can say at start which path its copies take.
+`clone_file` (`crates/vmm/src/clonefile.rs`) shares the source's blocks wherever the filesystem can: `ioctl(FICLONE)`
+on Linux (XFS, Btrfs, bcachefs), `fclonefileat(2)` on macOS (APFS, the default for every Mac volume), and
+`FSCTL_DUPLICATE_EXTENTS_TO_FILE` on Windows (ReFS and Dev Drives; NTFS cannot). The copy costs time proportional to
+its extents, takes no space until either side is written, and is what makes workspace copies, snapshots and forks
+cheap. On any other filesystem it falls back to `copy_sparse`, which keeps holes as holes. `reflink_supported` probes a
+directory once, so a daemon can say at start which path its copies take.
 
 ## Per-VM processes and cgroup limits
 

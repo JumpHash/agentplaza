@@ -9,6 +9,7 @@ use apz_proto::wire::{EngineInstall, EngineSpec};
 
 use super::catalog::{self, Install as Catalogue, ModelVia};
 use super::run::engine_dir;
+use super::shim;
 use crate::engines::{self, NPM_PREFIX};
 use crate::files::Workspace;
 
@@ -219,6 +220,11 @@ impl Instance {
     pub fn program(&self) -> String {
         match &self.pin {
             Pin::Command { command } => command.clone(),
+            // A catalogue engine with a thin adapter is started as the harness's `acp-shim <engine>`; the engine's own
+            // command is installed beside it and the adapter runs it per turn.
+            _ if self.catalogue_pin && shim::shim(&self.engine).is_some() => {
+                shim::program().display().to_string()
+            }
             _ => self
                 .bin_root
                 .join("bin")

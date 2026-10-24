@@ -1,0 +1,11 @@
+id = "elevenlabs"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read", "write"]
+egress = ["api.elevenlabs.io"]
+secrets = ["ELEVENLABS_API_KEY"]
+events = []
+actions = ["voices", "speak"]
+webhook = false
+auth_header = "xi-api-key"
+auth_format = "${SECRET}"

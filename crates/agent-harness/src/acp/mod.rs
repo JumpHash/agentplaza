@@ -11,6 +11,7 @@
 //! - [`fs`], [`terminal`]: the client methods, confined to the workspace.
 //! - [`layout`]: who owns the engine's folders (the engine user writes its job folder and its home).
 
+pub mod adapter;
 pub mod catalog;
 pub mod fs;
 pub mod gate;
@@ -21,5 +22,6 @@ pub mod link;
 pub mod mcp;
 pub mod run;
 pub mod session;
+pub mod shim;
 pub mod stream;
 pub mod terminal;

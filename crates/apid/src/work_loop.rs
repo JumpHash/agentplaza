@@ -2,8 +2,9 @@
 //!
 //! Every tick (the scheduler's, every 2 s):
 //! 1. a task that is ready to run (open, every `after` link done, its project active, no seats yet) gets its recipe's
-//!    seats (`seats.rs`: the built-in change recipe) and reserves its budget from its project (`budgets.rs`); a project
-//!    that cannot reserve it asks the owner with a `budget` card and the task waits;
+//!    seats (`seats.rs`: the built-in change recipe) and reserves its budget from its project (`budgets.rs`), when its
+//!    project's team has room (its maximum, PLAN 7.1), the fleet has room and its budget rate does; a project that
+//!    cannot reserve it with nothing else running asks the owner with a `budget` card and the task waits;
 //! 2. every ready seat gets a fresh session: a model (a reviewer's differs from the builder's, W27), a node, a VM
 //!    started for it ("a fork from today's templates until phase 3");
 //! 3. a session whose VM did not say hello in time fails, and its seat tries again.
@@ -16,18 +17,27 @@
 //! project's landing queue and the task is done when its change lands ([`landed`]); a clash on landing sends it back to
 //! the builder ([`clashed`]). The task's budget is released when it ends.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Mutex, PoisonError};
 
 use apz_plaza::tasks::FinishOutcome;
 use apz_proto::wire::{WorkKind, WorkStatus};
+use serde_json::Value;
 
+use crate::agents::Agent;
 use crate::budgets::{Amount, Notice, OwnerKind, Short, Unit};
 use crate::cards::{self, NewCard};
 use crate::chats::{Author, MessageKind, Post};
+use crate::evals::Score;
+use crate::journal;
+use crate::placement;
+use crate::project_settings;
+use crate::recipes::model::Model;
+use crate::recipes::{self, Move, Report};
+use crate::review_graph;
 use crate::scheduler::Origin;
 use crate::seats::{self, Next, Seat};
-use crate::sessions::{Kind, NewSession, PausedBy, Session, State};
+use crate::sessions::{Filter, Kind, NewSession, PausedBy, Session, State};
 use crate::state::App;
 
 /// How long a session's VM may take from its start to its hello before the session fails.
@@ -55,17 +65,24 @@ pub fn owns(app: &App, task: &str) -> bool {
 pub fn tick(app: &App) {
     let now = now();
     ensure_planners(app, now);
+    crate::curator::tick(app, now);
+    crate::verifier::tick(app, now);
     assign_tasks(app, now);
     for seat in app.seats.ready() {
+        // The plan step waits for the owner's answers to its spec's questions (planning.rs).
+        if crate::planning::waits_for_owner(app, &seat.task, &seat.step) {
+            continue;
+        }
         start_seat(app, &seat, now);
     }
     reap(app, now);
     crate::disk::tick(app, now);
+    crate::intake::tick(app, now);
 }
 
 /// Whether project `id` takes work: it exists, is not paused or archived, and is in a stage that runs tasks, or in
 /// maintenance (its planner sweeps it, and the tasks the owner picks from its proposals run).
-fn project_active(app: &App, id: &str) -> bool {
+pub fn project_active(app: &App, id: &str) -> bool {
     app.projects.get(id).is_some_and(|p| {
         !p.paused
             && !p.archived
@@ -95,8 +112,86 @@ fn reserve_for(app: &App, task: &str, project: &str) -> u64 {
     }
 }
 
-/// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats): a task that is ready to run gets its
-/// recipe's seats and reserves its budget; its seats get sessions on the loop's next steps.
+/// A seat's step ended. A crashed session is the seat's own business; otherwise the task's recipe run settles the step
+/// and its moves (what starts, what rewinds, what ends) are the seats' next.
+fn step_ended(
+    app: &App,
+    task: &str,
+    seat: &str,
+    passed: bool,
+    crashed: bool,
+    said: &str,
+    now: u64,
+) -> Option<Next> {
+    if crashed {
+        return app.seats.ended(task, seat, passed, crashed, said, now, &[]);
+    }
+    let step = app.seats.get(task, seat)?.step;
+    // A planning step holds when its file is on the lane or its plan is posted (planning.rs).
+    let passed = crate::planning::step_holds(app, task, &step, passed, now);
+    let report = Report {
+        findings: (step == "verify").then(|| review_graph::seat_findings(app, task)),
+        ..Report::verdict(passed)
+    };
+    let moves = app.recipe_runs.settle_task(task, &step, &report, now);
+    review_graph::seat_settled(app, task, &moves);
+    // A rewind sends the builder the findings the verifier confirmed (the review's own record), not the verifier's words.
+    let said = if moves.iter().any(|m| matches!(m, Move::Rewind(_))) {
+        review_graph::seat_said(app, task)
+    } else {
+        said.to_string()
+    };
+    app.seats
+        .ended(task, seat, passed, crashed, &said, now, &moves)
+}
+
+/// The tasks of project `project` that run now: those that hold seats, from their seats' opening until they end (a
+/// task that a session has claimed is no longer open, and still runs). They are the project's team (PLAN 7.1).
+fn running_tasks(app: &App, project: &str) -> Vec<String> {
+    app.plaza
+        .tasks
+        .list()
+        .iter()
+        .filter(|t| t.project() == Some(project) && !app.seats.of_task(t.id()).is_empty())
+        .map(|t| t.id().to_string())
+        .collect()
+}
+
+/// Reserves `reserve` for `task` from its project as the budget rate allows (PLAN 7.1): the expected spend of the
+/// project's running tasks, kept under what is left. A running task expects its reserve, which it holds from the
+/// project when it has a budget of its own; one without holds nothing, so its default reserve is counted here.
+/// Refused with the project's `Short` when the rest does not fit.
+fn reserve_budget(
+    app: &App,
+    task: &str,
+    project: &str,
+    reserve: u64,
+    now: u64,
+) -> Result<(), Short> {
+    let unreserved: u64 = running_tasks(app, project)
+        .iter()
+        .filter(|running| app.budgets.get(OwnerKind::Task, running).is_none())
+        .map(|running| reserve_for(app, running, project))
+        .sum();
+    if let Some(budget) = app.budgets.get(OwnerKind::Project, project)
+        && let Some(left) = budget.left()
+        && left.saturating_sub(unreserved) < reserve
+    {
+        return Err(Short::Cap {
+            owner_kind: OwnerKind::Project,
+            owner: budget.owner.clone(),
+            unit: budget.unit,
+            needed: reserve,
+            left: left.saturating_sub(unreserved),
+        });
+    }
+    app.budgets.start_task(task, project, reserve, now)
+}
+
+/// Fills the seats of every ready task (PLAN 0.4: `assign_tasks` fills seats) up to its project's team (PLAN 7.1): a
+/// task that is ready to run gets its recipe's seats and reserves its budget; its seats get sessions on the loop's next
+/// steps. A task waits while its project runs its maximum of tasks, while every node that reports is full, and while its
+/// reserve does not fit the budget's rate ([`reserve_budget`]).
 fn assign_tasks(app: &App, now: u64) {
     for task in app.plaza.tasks.list() {
         if !task.is_open() || !task.is_ready() {
@@ -108,12 +203,45 @@ fn assign_tasks(app: &App, now: u64) {
         if !project_active(app, &project) || !app.seats.of_task(task.id()).is_empty() {
             continue;
         }
+        let running = running_tasks(app, &project).len();
+        if running >= project_settings::team_max(app, &project) {
+            continue;
+        }
+        // The seat a task opens with is the builder's, so the fleet is asked for a builder's room.
+        if placement::fleet_full(app, "builder") {
+            continue;
+        }
         let reserve = reserve_for(app, task.id(), &project);
-        if let Err(short) = app.budgets.start_task(task.id(), &project, reserve, now) {
+        if let Err(short) = reserve_budget(app, task.id(), &project, reserve, now) {
+            // The running tasks hand their spend back as they end, so a task that waits for them is not short.
+            if running > 0 && matches!(short, Short::Cap { .. }) {
+                continue;
+            }
             ask_budget(app, &short, Some(task.id()), &project, now);
             continue;
         }
-        app.seats.open(task.id(), &seats::CHANGE, now);
+        // The recipe the task runs: the one planning gave it (planning.rs), else the change recipe.
+        let recipe_id = crate::planning::recipe_id_of(app, task.id());
+        let (recipe, source) = task_recipe(app, &project, &recipe_id);
+        if let Err(why) = app.seats.open(task.id(), &recipe, now) {
+            app.budgets.end_task(task.id(), now);
+            notice(
+                app,
+                &task_chat(app, task.id(), &project, now),
+                &format!("Task {} cannot start: {why}.", task.id()),
+                now,
+            );
+            continue;
+        }
+        app.recipe_runs.start(
+            &recipe,
+            source,
+            "task",
+            Some(task.id()),
+            Some(&project),
+            None,
+            now,
+        );
         notice(
             app,
             &task_chat(app, task.id(), &project, now),
@@ -124,6 +252,87 @@ fn assign_tasks(app: &App, now: u64) {
             now,
         );
     }
+}
+
+/// The planner's `team_set {max?, target?}` (PLAN 7.1): sets the team of the planner's project, the most of its tasks
+/// that run at once and the team it aims for. Only a planner is offered it (tools.jhrl). A lower maximum starts no new
+/// task until the team is back under it; the tasks running go on.
+pub fn team_set(app: &App, agent: &Agent, input: &Value) -> Result<String, String> {
+    let project = crate::projects::project_of(app, agent.cid)
+        .ok_or("team_set sets the team of a project, and you work on none")?;
+    let max = team_number(input, "max")?;
+    let target = team_number(input, "target")?;
+    if max.is_none() && target.is_none() {
+        return Err("invalid input: give max, target or both".into());
+    }
+    let mut settings = app.project_settings.get(&project);
+    if max.is_some() {
+        settings.team_max = max;
+    }
+    if target.is_some() {
+        settings.team_target = target;
+    }
+    project_settings::check(app, &settings)?;
+    app.project_settings
+        .set(&project, settings)
+        .map_err(|e| format!("the team was not saved: {e}"))?;
+    if let Some(record) = app.projects.get(&project) {
+        app.bus.publish("project", &record);
+    }
+    Ok(format!(
+        "team of {project}: at most {} tasks at once, aiming for {}",
+        project_settings::team_max(app, &project),
+        project_settings::team_target(app, &project)
+    ))
+}
+
+/// A team size from a tool's input: a whole number, or none when the key is absent.
+fn team_number(input: &Value, key: &str) -> Result<Option<u32>, String> {
+    match input.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Some)
+            .ok_or_else(|| format!("invalid input: {key:?} must be a whole number")),
+    }
+}
+
+/// The recipe a task of `project` runs (`id`): the project's own copy at main (`.plaza/recipes/`), else the newest
+/// version the owner saved, else the built-in. A copy that cannot be read or checked is named in the log, and the next
+/// one runs. Returns the recipe and where it came from.
+fn task_recipe(app: &App, project: &str, id: &str) -> (recipes::Recipe, &'static str) {
+    match project_copy(app, project, id) {
+        Ok(Some(recipe)) => return (recipe, "project"),
+        Ok(None) => {}
+        Err(why) => eprintln!("apid: recipe {id} of {project}: {why}"),
+    }
+    let recipe = app
+        .recipe_runs
+        .recipe(id, None)
+        .expect("a built-in recipe is always there");
+    let source = if recipes::model::builtin_named(id).as_ref() == Some(&recipe) {
+        "built_in"
+    } else {
+        "owner"
+    };
+    (recipe, source)
+}
+
+/// The project's copy of recipe `id` in its repo at main, when it keeps one.
+fn project_copy(app: &App, project: &str, id: &str) -> Result<Option<recipes::Recipe>, String> {
+    let Some(repo) = app.projects.get(project).and_then(|p| p.repo) else {
+        return Ok(None);
+    };
+    let detail = app.weft.get(&format!("/repos/{repo}"))?;
+    let rev = detail["refs"]["main"]
+        .as_str()
+        .ok_or_else(|| format!("{repo} has no main"))?;
+    let listing = app.weft.get(&format!("/revisions/{rev}/files"))?;
+    let client = app.weft.client("hub")?;
+    recipes::model::in_listing(id, &listing, |path| {
+        client.get_bytes(&format!("/revisions/{rev}/file?path={path}"))
+    })
 }
 
 /// The models a seat may use, best first: the project's model for the role, the project's default, the plaza's model for
@@ -161,7 +370,16 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
     if seat.model_policy == seats::ModelPolicy::Any {
         return all.into_iter().next();
     }
-    let avoid: HashSet<String> = app
+    // A differ seat never runs on the builder's model (the cross-model rule, 8.2); the other seats' models are avoided
+    // where another is allowed, so a sceptic and the verifier take other models where the project has them.
+    let author: HashSet<String> = app
+        .seats
+        .of_task(&seat.task)
+        .into_iter()
+        .filter(|s| s.role == "builder")
+        .filter_map(|s| s.last_model)
+        .collect();
+    let others: HashSet<String> = app
         .seats
         .models_to_avoid(&seat.task, &seat.name)
         .into_iter()
@@ -171,16 +389,104 @@ pub fn pick_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
         .get(project)
         .role_models
         .get(&seat.role)
-        .filter(|m| !m.is_empty() && !avoid.contains(*m))
+        .filter(|m| !m.is_empty() && !author.contains(*m) && !others.contains(*m))
     {
         return Some(chosen.clone());
     }
-    let avoid_providers: HashSet<&str> = avoid.iter().map(|m| provider_of(m)).collect();
-    let free: Vec<&String> = all.iter().filter(|m| !avoid.contains(*m)).collect();
-    free.iter()
-        .find(|m| !avoid_providers.contains(provider_of(m)))
-        .or_else(|| free.first())
+    let usable: Vec<&String> = all.iter().filter(|m| !author.contains(*m)).collect();
+    let other_providers: HashSet<&str> = others.iter().map(|m| provider_of(m)).collect();
+    usable
+        .iter()
+        .find(|m| !others.contains(**m) && !other_providers.contains(provider_of(m)))
+        .or_else(|| usable.iter().find(|m| !others.contains(**m)))
+        .or_else(|| usable.first())
         .map(|m| (*m).clone())
+}
+
+/// A builder's change is sealed: a large or risky change (the review step's `risk`) gets its extra sceptics before the
+/// round's reviews start (8.2). The walk's items and the seats grow together.
+fn size_review(app: &App, task: &str, now: u64) {
+    let Some((base, Some(risk))) = app.recipe_runs.sizing_of_task(task, "review") else {
+        return;
+    };
+    let Some(change) = app.weft.lane_of(task) else {
+        return;
+    };
+    let rev = review_graph::latest_revision(app, &change);
+    let Ok(diff) = app.weft.get(&format!("/revisions/{rev}/diff")) else {
+        return;
+    };
+    let mut lines = 0u32;
+    let mut risky = false;
+    for file in diff["files"].as_array().into_iter().flatten() {
+        let path = file["path"].as_str().unwrap_or("");
+        if risk.paths.iter().any(|g| weft::derived::glob(g, path)) {
+            risky = true;
+        }
+        for line in file["unified"].as_str().unwrap_or("").lines() {
+            if (line.starts_with('+') && !line.starts_with("+++"))
+                || (line.starts_with('-') && !line.starts_with("---"))
+            {
+                lines += 1;
+            }
+        }
+    }
+    let count = if risky || lines > risk.lines {
+        base + risk.extra
+    } else {
+        base
+    };
+    app.recipe_runs.set_items_task(task, "review", count, now);
+    app.seats.grow(task, "review", count, now);
+}
+
+/// The seat roles that review a change: the reviewers (the sceptics) and the verifier.
+pub fn review_role(role: &str) -> bool {
+    role == "reviewer" || role == "verifier"
+}
+
+/// The model for a seat's session, as its step's recipe says it. `any` and `differ` take the seat's own choice
+/// ([`pick_model`]). A model list takes its first model the project allows for the role. `eval` takes the best scorer
+/// among those the project allows for the step, by the eval results (`evals.rs`), and the seat's choice without any
+/// scored model. A named model is used as it is.
+fn pick_step_model(app: &App, project: &str, seat: &Seat) -> Option<String> {
+    let step_model = app
+        .recipe_runs
+        .step_model(&seat.task, &seat.step)
+        .unwrap_or(Model::Name("any".into()));
+    let all = candidates(app, project, &seat.role);
+    match &step_model {
+        Model::Name(name) if name == "eval" => best_scored(&app.evals.scores(), &seat.step, &all)
+            .or_else(|| pick_model(app, project, seat)),
+        Model::Name(name) if name == "any" || name == "differ" => pick_model(app, project, seat),
+        Model::Name(pinned) => Some(pinned.clone()),
+        Model::List(list) => first_listed(list, &all).or_else(|| pick_model(app, project, seat)),
+    }
+}
+
+/// The first model of `list` that `allowed` (the project's models for the role, best first) has.
+pub fn first_listed(list: &[String], allowed: &[String]) -> Option<String> {
+    list.iter().find(|m| allowed.contains(m)).cloned()
+}
+
+/// The allowed model that did best for `step` in the eval results: the highest success rate over the runs that ran,
+/// then the lower cost per success. None when no allowed model has a run for the step.
+pub fn best_scored(scores: &[Score], step: &str, allowed: &[String]) -> Option<String> {
+    scores
+        .iter()
+        .filter(|s| s.seat == step && s.runs > 0)
+        .filter(|s| s.model.as_ref().is_some_and(|m| allowed.contains(m)))
+        .max_by(|a, b| {
+            a.success_rate
+                .total_cmp(&b.success_rate)
+                .then(cost_of(b).total_cmp(&cost_of(a)))
+        })
+        .and_then(|s| s.model.clone())
+}
+
+/// A score's cost per success, for comparing: a model that never succeeded costs the most.
+fn cost_of(s: &Score) -> f64 {
+    s.cost_per_success_micros.unwrap_or(f64::INFINITY)
 }
 
 /// Starts a session for a ready seat: picks its model, places it and starts its VM.
@@ -192,10 +498,21 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     let Some(project) = task.project().map(str::to_string) else {
         return;
     };
-    let Some(model) = pick_model(app, &project, seat) else {
+    // A project past its disk quota starts no fork: the seat stays ready, and the disk card asks the owner (10.5).
+    if crate::disk::admit_fork(app, &project, now).is_err() {
+        return;
+    }
+    // Nor one whose declared pools have no node with room: the seat waits for one (16.7).
+    if !crate::placement::has_room_for_fork(app, &seat.role, &project) {
+        return;
+    }
+    let Some(model) = pick_step_model(app, &project, seat) else {
         ask_seat(app, seat, &project, now);
         return;
     };
+    if review_role(&seat.role) {
+        review_graph::open_round(app, &seat.task);
+    }
     let session = app.sessions.create(
         NewSession {
             project: project.clone(),
@@ -212,6 +529,10 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
     );
     app.seats
         .fill(&seat.task, &seat.name, &session.id, Some(&model), now);
+    app.recipe_runs
+        .task_step_started(&seat.task, &seat.step, now);
+    app.evals
+        .begin(&session.id, &seat.recipe, &seat.step, seat.round);
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     match crate::agents::spawn_agents(app, &seat.role, 1, Some(&model), None, Some(&project)) {
         Ok(started) => {
@@ -225,6 +546,9 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
                 s.cid = Some(cid);
                 s.node = node;
             });
+            if review_role(&seat.role) {
+                review_graph::seat_started(app, &seat.task, &seat.name, cid, &model, &session.id);
+            }
             let _ = app.sessions.set_state(&session.id, State::Forking, now);
             app.bus.publish("session", &app.sessions.get(&session.id));
         }
@@ -233,13 +557,13 @@ fn start_seat(app: &App, seat: &Seat, now: u64) {
 }
 
 /// A session that could not start, or whose VM went away: it fails and its seat goes again (or fails for good).
-fn fail_session(app: &App, session: &Session, why: &str, now: u64) {
-    let _ = app.sessions.finish(&session.id, why, true, now);
+pub fn fail_session(app: &App, session: &Session, why: &str, now: u64) {
+    finish_session(app, &session.id, why, true, now);
     if let Some(cid) = session.cid {
         retire(app, cid);
     }
     if let (Some(task), Some(seat)) = (&session.task, &session.seat)
-        && let Some(next) = app.seats.ended(task, seat, false, true, why, now)
+        && let Some(next) = step_ended(app, task, seat, false, true, why, now)
     {
         apply(app, task, next, now);
     }
@@ -262,7 +586,8 @@ fn reap(app: &App, now: u64) {
     }
 }
 
-/// The step's prompt for a session that just started.
+/// The step's prompt for a session that just started: the brief, the journal's notes, the handover the seat starts from
+/// (the builder's for a reviewer, the seat's own last one otherwise), the seat's instructions and the messages waiting.
 fn step_prompt(app: &App, session: &Session) -> String {
     let Some(task_id) = &session.task else {
         return String::new();
@@ -271,38 +596,65 @@ fn step_prompt(app: &App, session: &Session) -> String {
         return String::new();
     };
     let seat = session.seat.as_deref().unwrap_or("builder");
-    let mut prompt = format!("Task {task_id}: {}\n", task.goal());
-    if let Some(acceptance) = task.acceptance() {
-        prompt.push_str(&format!("\nAcceptance:\n{acceptance}\n"));
+    let mut prompt = journal::brief_text(&task);
+    if let Some(journal) = app.journal.get(task_id)
+        && !journal.notes.is_empty()
+    {
+        prompt.push_str(&format!(
+            "\nThe task's journal:\n{}",
+            journal::notes_text(&journal.notes)
+        ));
     }
+    // The newest handover of the seat this one starts from (the builder's for a reviewer), by an earlier session.
+    let source = if review_role(&session.role) {
+        "builder"
+    } else {
+        seat
+    };
+    let handover = app
+        .sessions
+        .list(&crate::sessions::Filter {
+            task: Some(task_id.clone()),
+            ..Default::default()
+        })
+        .into_iter()
+        .filter(|s| s.id != session.id && s.seat.as_deref() == Some(source))
+        .filter_map(|s| s.handover.map(|h| (s.created_ms, h)))
+        .max_by_key(|(created, _)| *created)
+        .map(|(_, handover)| handover);
     match seat {
-        "reviewer" => {
-            // The builder's newest session (its seat let go of it when its step ended).
-            let builder = app
-                .sessions
-                .list(&crate::sessions::Filter {
-                    task: Some(task_id.clone()),
-                    ..Default::default()
-                })
-                .into_iter()
-                .filter(|s| s.seat.as_deref() == Some("builder"))
-                .max_by_key(|s| s.created_ms);
-            if let Some(handover) = builder.and_then(|s| s.handover) {
+        _ if review_role(&session.role) => {
+            if let Some(handover) = handover {
                 prompt.push_str(&format!("\nThe builder's handover:\n{handover}\n"));
             }
-            prompt.push_str(
-                "\nYou are this task's reviewer, on a model other than the builder's. Try to break the change: check \
-                 it against the acceptance, run what proves it, and look for what the builder missed. Then call \
-                 plaza_verdict with pass true or false; when false, say exactly what must change.\n",
-            );
+            if session.role == "verifier" {
+                prompt.push_str(
+                    "\nYou are this task's verifier, on a model the builder and the reviewers did not use where one is \
+                     free. Prove each finding below with a test, a run or the exact lines, or drop it with its reason \
+                     (finding_verify), then call plaza_verdict with pass true.\n",
+                );
+            } else {
+                prompt.push_str(
+                    "\nYou are one of this task's sceptic reviewers, on a model other than the builder's. Try to break \
+                     the change: check it against the acceptance, run what proves it, and look for what the builder \
+                     missed.\n",
+                );
+            }
+            prompt.push_str(&review_graph::seat_brief(app, task_id, &session.role));
         }
         _ => {
+            if let Some(handover) = handover {
+                prompt.push_str(&format!("\nYour last handover on this task:\n{handover}\n"));
+            }
             if let Some(back) = app.seats.get(task_id, seat).and_then(|s| s.returned_with) {
                 prompt.push_str(&format!("\nThe review sent the change back:\n{back}\n"));
             }
             prompt.push_str(
-                "\nYou are this task's builder. Do the work, check it against the acceptance, then end your turn with \
-                 a handover: what you did, what you checked, what is left. The reviewer reads it.\n",
+                "\nYou are this task's builder. Do the work and check it against the acceptance. Write each decision \
+                 with its reason, each dead end with why it failed and each open question with journal_note as you \
+                 go. Then end with handover_write: where the task stands, what is done, what is next, what to check \
+                 first. The reviewer reads it. If nothing is left for another session, end your turn with the line \
+                 TASK DONE instead.\n",
             );
         }
     }
@@ -334,11 +686,21 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
     }
     let _ = app.sessions.set_state(&session.id, State::Running, now);
     app.bus.publish("session", &app.sessions.get(&session.id));
+    // A project's curator has no task: its work is the run it was started for (curator.rs).
+    if session.seat.as_deref() == Some(crate::curator::SEAT) && session.task.is_none() {
+        crate::curator::start_work(app, &session, cid);
+        return true;
+    }
+    if session.seat.as_deref() == Some(crate::verifier::SEAT) && session.task.is_none() {
+        crate::verifier::start_work(app, &session, cid);
+        return true;
+    }
     // A long-lived session (a planner) waits for its chats' messages and the loop's reports.
     let Some(task_id) = session.task.clone() else {
         return true;
     };
-    if session.seat.as_deref() == Some("builder")
+    // The builder claims the task, and so does a spec-and-plan task's planner (it is finished when its plan is posted).
+    if (session.seat.as_deref() == Some("builder") || crate::planning::is_plan(app, &task_id))
         && let Some(task) = app.plaza.tasks.find(&task_id)
         && task.is_open()
         && let Some(agent) = app.agents.get(cid)
@@ -349,7 +711,7 @@ pub fn on_hello(app: &App, cid: u64) -> bool {
     // A code task's work is a lane in Weft: the builder writes it (task_work opens it, or takes it over from the
     // seat's last session), the reviewer reads its sealed revision (review_work).
     let (prompt, origin) = match app.plaza.tasks.find(&task_id) {
-        Some(task) if session.seat.as_deref() == Some("reviewer") => {
+        Some(task) if review_role(&session.role) => {
             crate::weft_hub::review_work(app, &task, cid, prompt)
         }
         Some(task) => crate::weft_hub::task_work(app, &task, cid, prompt),
@@ -383,6 +745,8 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     if session.work != Some(work) {
         return false;
     }
+    // The helpers the work item started end with it.
+    end_helpers(app, &session.id, now());
     // A session that is already ending (its VM being retired) has nothing left to move on.
     if !matches!(
         session.state,
@@ -391,15 +755,26 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
         return true;
     }
     let now = now();
+    if session.seat.as_deref() == Some(crate::curator::SEAT) && session.task.is_none() {
+        // A curator's run ends with its answer (memory_land) or without one: its tasks wait for the next run.
+        end_session(app, &session, summary, status == WorkStatus::Failed, now);
+        return true;
+    }
+    if session.seat.as_deref() == Some(crate::verifier::SEAT) && session.task.is_none() {
+        // A verifier's run ends with its answer (memory_verify) or without one: the flagged entries wait for the next run.
+        end_session(app, &session, summary, status == WorkStatus::Failed, now);
+        return true;
+    }
     let (Some(task), Some(seat)) = (session.task.clone(), session.seat.clone()) else {
         return false;
     };
-    let next = if seat == "reviewer" {
-        // The reviewer's step ends with its verdict ([`on_verdict`]); one that ends without one goes again.
+    let next = if review_role(&session.role) {
+        // A review seat's step ends with its verdict ([`on_verdict`]); one that ends without one goes again.
         if session.verdict.is_some() {
             None
         } else {
-            app.seats.ended(
+            step_ended(
+                app,
                 &task,
                 &seat,
                 false,
@@ -411,12 +786,16 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
     } else {
         let passed = status == WorkStatus::Done;
         let crashed = status == WorkStatus::Stopped;
-        if passed && let Some(t) = app.plaza.tasks.find(&task) {
+        if passed
+            && !crate::planning::is_plan(app, &task)
+            && let Some(t) = app.plaza.tasks.find(&task)
+        {
             // The builder's lane is sealed while its VM still holds the key: the reviewer reviews that revision.
             crate::weft_hub::seal(app, &task, cid, summary);
+            size_review(app, &task, now);
             let _ = t.await_review(Some(summary.to_string()));
         }
-        app.seats.ended(&task, &seat, passed, crashed, summary, now)
+        step_ended(app, &task, &seat, passed, crashed, summary, now)
     };
     end_session(app, &session, summary, status == WorkStatus::Failed, now);
     app.threads.output(&task);
@@ -430,20 +809,65 @@ pub fn on_work_end(app: &App, cid: u64, work: u64, status: WorkStatus, summary: 
 /// session's reviewer.
 pub fn on_verdict(app: &App, cid: u64, task: &str, pass: bool, notes: &str) -> Option<String> {
     let session = app.sessions.by_cid(cid)?;
-    if session.seat.as_deref() != Some("reviewer") || session.task.as_deref() != Some(task) {
+    if !review_role(&session.role) || session.task.as_deref() != Some(task) {
         return None;
+    }
+    let seat = session.seat.clone()?;
+    if session.role == "verifier" && pass {
+        let open = review_graph::pending_findings(app, task);
+        if !open.is_empty() {
+            return Some(format!(
+                "Not recorded: rule on every finding first (finding_verify): {}.",
+                open.join(", ")
+            ));
+        }
+    }
+    // A contest the verifier holds holds the walk until the planner (or the owner) rules (8.5): the verdict is kept on
+    // the session, and [`resume_held_review`] settles it.
+    if session.role == "verifier" && pass && review_graph::contested_held(app, task) {
+        let _ = app.sessions.update(&session.id, |s| s.verdict = Some(pass));
+        return Some(
+            "Held: the verifier holds a contested finding, and the review goes on once it is ruled. End your turn now."
+                .to_string(),
+        );
     }
     let now = now();
     let _ = app.sessions.update(&session.id, |s| s.verdict = Some(pass));
-    let next = app.seats.ended(task, "reviewer", pass, false, notes, now)?;
-    apply(app, task, next, now);
-    Some(if pass {
-        format!("Recorded: task {task} passes. End your turn now.")
-    } else {
-        format!(
-            "Recorded: task {task} goes back to its builder with your findings. End your turn now."
-        )
+    let next = step_ended(app, task, &seat, pass, false, notes, now);
+    if let Some(next) = next.clone() {
+        apply(app, task, next, now);
+    }
+    Some(match next {
+        Some(Next::Back(_)) => format!(
+            "Recorded: task {task} goes back to its builder with the confirmed findings. End your turn now."
+        ),
+        Some(Next::Done) => format!("Recorded: task {task} passes. End your turn now."),
+        _ => format!("Recorded: seat {seat} reported. End your turn now."),
     })
+}
+
+/// A held review resumes once its contested findings are ruled: the verifier's held verdict settles on the walk, so a
+/// fix rewinds the builder and an accept or a drop lets the walk go on.
+pub fn resume_held_review(app: &App, task: &str) {
+    if review_graph::contested_held(app, task) {
+        return;
+    }
+    let Some(seat) = app.seats.get(task, "verifier") else {
+        return;
+    };
+    if seat.state != seats::SeatState::Filled {
+        return;
+    }
+    let Some(session) = seat.session.as_deref().and_then(|id| app.sessions.get(id)) else {
+        return;
+    };
+    if session.verdict != Some(true) {
+        return;
+    }
+    let now = now();
+    if let Some(next) = step_ended(app, task, "verifier", true, false, "", now) {
+        apply(app, task, next, now);
+    }
 }
 
 /// What the seats said, applied to the task.
@@ -472,27 +896,36 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
                 now,
             );
         }
+        // A spec-and-plan task is done when its plan is posted: nothing lands from it (planning.rs).
+        Next::Done if crate::planning::is_plan(app, task_id) => {
+            crate::planning::finish(app, task_id, now);
+        }
         Next::Done => {
-            // A code task lands first: its change joins the project's landing queue, and the landing finishes it.
-            if join_landing_queue(app, task_id) {
+            // The project's land hooks check the change before it joins the landing queue: a finding of a block-mode
+            // hook sends the task back to its builder, with the finding (PLAN 14.3).
+            let refusals = landing_refusals(app, task_id, &project);
+            if !refusals.is_empty() {
+                let said = format!(
+                    "the landing hooks refused the change: {}",
+                    refusals.join("; ")
+                );
+                if let Some(t) = &task {
+                    let _ = t.rework(Some(said.clone()));
+                }
                 notice(
                     app,
                     &chat,
-                    &format!("Task {task_id} passed review: its change lands next."),
+                    &format!("Task {task_id} went back to its builder: {said}."),
                     now,
                 );
                 return;
             }
-            if let Some(t) = &task {
-                let _ = t.finish(FinishOutcome::Done, Some("passed review".into()));
+            // The reviewers and the verifier ran on models other than the builder's (8.2): with one the same, the owner rules.
+            if let Some(gap) = review_graph::seat_gap(app, task_id) {
+                ask_cross_model(app, task_id, &gap, now);
+                return;
             }
-            close_task(app, task_id, now);
-            notice(
-                app,
-                &chat,
-                &format!("Task {task_id} is done: it passed review."),
-                now,
-            );
+            admit(app, task_id, now);
         }
         Next::Failed(why) => {
             if let Some(t) = &task {
@@ -520,6 +953,102 @@ fn apply(app: &App, task_id: &str, next: Next, now: u64) {
 
 /// Puts `task`'s Weft lane on its repo's landing queue (as a passed review graph does). False when the task has no
 /// lane, or Weft does not take it: the task is then done on its review.
+/// The findings the project's land hooks refuse the task's change on: the block-mode checks of its `land` hooks over
+/// the lines the change's diff adds. None when the project has no such hook, the task has no change, or Weft does not
+/// answer (the landing then goes on as it did before the hooks).
+fn landing_refusals(app: &App, task: &str, project: &str) -> Vec<String> {
+    if project.is_empty() {
+        return Vec::new();
+    }
+    let hooks = crate::project_settings::effective_hooks(&app.project_settings.get(project));
+    if !hooks
+        .iter()
+        .any(|hook| hook.on == apz_proto::hooks::On::Land)
+    {
+        return Vec::new();
+    }
+    let Some(change) = app.weft.lane_of(task) else {
+        return Vec::new();
+    };
+    let Ok(rev) = crate::project_memory::landed_revision(app, &change) else {
+        return Vec::new();
+    };
+    let Ok(diff) = app.weft.get(&format!("/revisions/{rev}/diff")) else {
+        return Vec::new();
+    };
+    let unified: Vec<&str> = diff["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file["unified"].as_str())
+        .collect();
+    crate::project_settings::land_refusals(&hooks, &unified.join("\n"))
+}
+
+/// The review passed and the change is admitted: it joins its project's landing queue, or the task is done at once
+/// when it has no lane. Its owner-approved admission (a cross-model card) and the review's pass both come here.
+pub fn admit(app: &App, task_id: &str, now: u64) {
+    let task = app.plaza.tasks.find(task_id);
+    let project = task
+        .as_ref()
+        .and_then(|t| t.project().map(str::to_string))
+        .unwrap_or_default();
+    let chat = task_chat(app, task_id, &project, now);
+    // A code task lands first: its change joins the project's landing queue, and the landing finishes it.
+    if join_landing_queue(app, task_id) {
+        notice(
+            app,
+            &chat,
+            &format!("Task {task_id} passed review: its change lands next."),
+            now,
+        );
+    } else {
+        if let Some(t) = &task {
+            let _ = t.finish(FinishOutcome::Done, Some("passed review".into()));
+        }
+        close_task(app, task_id, now);
+        notice(
+            app,
+            &chat,
+            &format!("Task {task_id} is done: it passed review."),
+            now,
+        );
+    }
+    app.bus
+        .publish("task", &serde_json::json!({ "id": task_id }));
+}
+
+/// The owner's card for a reviewer on the builder's own model: the task waits for the owner to admit it or fail it.
+fn ask_cross_model(app: &App, task: &str, gap: &str, now: u64) {
+    let Some(record) = app.plaza.tasks.find(task) else {
+        return;
+    };
+    let view = record.view();
+    let worker = view.agent_cid.unwrap_or(0);
+    let detail = serde_json::json!({
+        "gate": "cross_model",
+        "task": task,
+        "cid": worker,
+        "worker": app.agents.get(worker).map(|a| a.label()).unwrap_or_default(),
+        "goal": record.goal(),
+        "summary": gap,
+        "verdict": gap,
+        "needs_you": gap,
+        "readings": [],
+        "choices": ["pass", "fail"],
+    });
+    let item = app
+        .approvals
+        .submit(worker, "review", &format!("review of task {task}"), detail);
+    crate::approvals::announce(app, &item);
+    notice(
+        app,
+        &task_chat(app, task, record.project().unwrap_or_default(), now),
+        &format!("Task {task} waits for the owner: {gap}."),
+        now,
+    );
+}
+
 fn join_landing_queue(app: &App, task: &str) -> bool {
     let Some(change) = app.weft.lane_of(task) else {
         return false;
@@ -547,6 +1076,9 @@ pub fn landed(app: &App, task: &str, change: &str) {
         let _ = t.finish(FinishOutcome::Done, Some(format!("{change} landed")));
     }
     close_task(app, task, now);
+    if let Err(err) = app.evals.landed(task, true) {
+        eprintln!("apid: evals: the landing of {task} was not recorded: {err}");
+    }
     let project = app
         .plaza
         .tasks
@@ -569,6 +1101,8 @@ pub fn landed(app: &App, task: &str, change: &str) {
         );
     }
     app.bus.publish("task", &serde_json::json!({ "id": task }));
+    // An item the task came from hears of its landing (intake's write-back).
+    crate::intake::landed(app, task, change);
 }
 
 /// The project's chat for the loop's notices: its newest, or one made for it.
@@ -594,12 +1128,21 @@ pub fn project_chat(app: &App, project: &str, now: u64) -> String {
 /// sent it back would.
 pub fn clashed(app: &App, task: &str, prompt: &str) {
     let now = now();
-    if let Some(next) = app.seats.ended(task, "reviewer", false, false, prompt, now) {
+    if let Some(next) = step_ended(app, task, "reviewer", false, false, prompt, now) {
         apply(app, task, next, now);
     }
 }
 
-fn close_task(app: &App, task: &str, now: u64) {
+pub(crate) fn close_task(app: &App, task: &str, now: u64) {
+    // The task's journal waits for its project's curator (curator.rs).
+    if let Some(project) = app
+        .plaza
+        .tasks
+        .find(task)
+        .and_then(|t| t.project().map(str::to_string))
+    {
+        crate::curator::requested(app, &project, task);
+    }
     for s in app.sessions.list(&crate::sessions::Filter {
         task: Some(task.to_string()),
         live: true,
@@ -607,6 +1150,7 @@ fn close_task(app: &App, task: &str, now: u64) {
     }) {
         end_session(app, &s, "the task ended", false, now);
     }
+    app.recipe_runs.cancel_task(task, now);
     app.seats.close(task);
     app.budgets.end_task(task, now);
     for thread in app.threads.of_task(task) {
@@ -615,7 +1159,7 @@ fn close_task(app: &App, task: &str, now: u64) {
 }
 
 /// Ends a session with its handover and retires its VM.
-fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: u64) {
+pub fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: u64) {
     let _ = app.sessions.update(&session.id, |s| {
         if s.handover.is_none() && !handover.is_empty() {
             s.handover = Some(handover.to_string());
@@ -631,8 +1175,29 @@ fn end_session(app: &App, session: &Session, handover: &str, failed: bool, now: 
     } else {
         "the step ended"
     };
-    let _ = app.sessions.finish(&session.id, outcome, failed, now);
+    finish_session(app, &session.id, outcome, failed, now);
     app.bus.publish("session", &app.sessions.get(&session.id));
+}
+
+/// Finishes a session and writes its eval record, the first time it ends.
+fn finish_session(app: &App, id: &str, outcome: &str, failed: bool, now: u64) {
+    let was_final = app.sessions.get(id).is_none_or(|s| s.state.is_final());
+    if let Ok(ended) = app.sessions.finish(id, outcome, failed, now)
+        && !was_final
+    {
+        crate::evals::ended(app, &ended);
+        // A project's curator session is the run of its `distill` recipe: the session's end settles it.
+        if ended.seat.as_deref() == Some(crate::curator::SEAT) && ended.task.is_none() {
+            app.recipe_runs.finish_subject(
+                "curator",
+                &ended.project,
+                &Report::verdict(!failed),
+                outcome,
+                false,
+                now,
+            );
+        }
+    }
 }
 
 /// Stops a session by hand (the owner, `POST /v1/sessions/{id}/stop`): it ends and its seat goes again.
@@ -650,9 +1215,7 @@ pub fn stop(app: &App, id: &str) -> Result<Session, String> {
     }
     end_session(app, &session, "", false, now);
     if let (Some(task), Some(seat)) = (&session.task, &session.seat)
-        && let Some(next) = app
-            .seats
-            .ended(task, seat, false, true, "stopped by the owner", now)
+        && let Some(next) = step_ended(app, task, seat, false, true, "stopped by the owner", now)
     {
         apply(app, task, next, now);
     }
@@ -672,6 +1235,39 @@ pub fn on_gone(app: &App, cid: u64) {
     {
         fail_session(app, &session, "its VM went away", now());
     }
+}
+
+/// Whether a step session in `state` hands over when its machine has no other machine in its pool with room
+/// (pure, plan 17.2): a step that is placed, running or paused does; one that is already handing over or
+/// ending is left to end on its own.
+pub fn hands_over_for_pool(state: &State) -> bool {
+    matches!(
+        state,
+        State::Placing | State::Forking | State::Running | State::Paused | State::Compacting
+    )
+}
+
+/// The step session of agent `cid` hands over when its node is stopping and no machine in its pool has room
+/// (plan 17.2): it ends with a handover that the next session of its seat starts from, its VM is retired, and
+/// its seat goes again in a new session, which is placed on any machine with room. True when it did; an agent
+/// that runs no step is left to the mover to wait.
+pub fn hand_over_for_pool(app: &App, cid: u64) -> bool {
+    let Some(session) = app.sessions.by_cid(cid) else {
+        return false;
+    };
+    let (Some(task), Some(seat)) = (session.task.clone(), session.seat.clone()) else {
+        return false;
+    };
+    if !hands_over_for_pool(&session.state) {
+        return false;
+    }
+    let now = now();
+    let why = "its machine is stopping and no other machine in its pool has room; the step starts again in a new session";
+    end_session(app, &session, why, false, now);
+    if let Some(next) = step_ended(app, &task, &seat, false, true, why, now) {
+        apply(app, &task, next, now);
+    }
+    true
 }
 
 /// A project is over (archived or delivered): its open and claimed tasks are withdrawn first (so the seats that end with
@@ -1099,8 +1695,15 @@ pub fn on_card_answered(app: &App, card: &cards::Card) -> String {
         },
         cards::Kind::ToolCall | cards::Kind::Review => crate::approvals::card_answered(app, card),
         cards::Kind::Proposal => crate::agent_proposals::card_answered(app, card),
+        cards::Kind::Engine => crate::engine_watch::card_answered(app, card),
+        cards::Kind::Connector if card.subject.starts_with("tool:") => {
+            crate::tool_life::card_answered(app, card)
+        }
+        cards::Kind::Connector => crate::connectors::card_answered(app, card),
+        cards::Kind::Promote | cards::Kind::Tool => crate::tool_life::card_answered(app, card),
         cards::Kind::Disk => crate::disk::card_answered(app, card),
         cards::Kind::Start => crate::drafts::answered(app, card),
+        cards::Kind::Memory => crate::curator::card_answered(app, card),
         _ => "recorded".into(),
     }
 }
@@ -1126,6 +1729,11 @@ pub fn stop_task(app: &App, task_id: &str, why: &str, now: u64) {
 }
 
 /// The live long-lived session of `project` (its planner), if one runs.
+/// The planner session's VM of `project`, if it has a live one.
+pub fn planner_cid(app: &App, project: &str) -> Option<u64> {
+    planner_of(app, project).and_then(|s| s.cid)
+}
+
 fn planner_of(app: &App, project: &str) -> Option<Session> {
     app.sessions
         .list(&crate::sessions::Filter {
@@ -1153,7 +1761,7 @@ fn orchestrator_cid(app: &App) -> Option<u64> {
 }
 
 /// Sends `text` to `project`'s planner (or, until the project has one, to the orchestrator, naming the project).
-fn to_planner(app: &App, project: &str, text: &str) {
+pub fn to_planner(app: &App, project: &str, text: &str) {
     let (cid, prompt) = match planner_of(app, project) {
         Some(s) => (s.cid, text.to_string()),
         None => (orchestrator_cid(app), format!("[project {project}] {text}")),
@@ -1497,7 +2105,13 @@ pub fn release_call(app: &App, held: CallHold) {
 
 /// After the call: what it really cost is charged (and the hold released), its usage is added to the session, and a
 /// budget it took past its warning share says so in the task's chat. A failed call (`usage` none) charges nothing.
-pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto::chat::Usage>) {
+pub fn after_call(
+    app: &App,
+    cid: u64,
+    held: CallHold,
+    usage: Option<&apz_proto::chat::Usage>,
+    helper: Option<&str>,
+) {
     let Some(usage) = usage else {
         release_call(app, held);
         return;
@@ -1513,17 +2127,20 @@ pub fn after_call(app: &App, cid: u64, held: CallHold, usage: Option<&apz_proto:
             cache_write: usage.cache_write_tokens,
         },
         None,
+        helper,
     );
 }
 
 /// [`after_call`] for a call whose usage the caller parsed itself (the LLM proxy's, streams included): `reported_usd` is
-/// the cost the provider reported for the call when it did, and the model's price settles it when it did not.
+/// the cost the provider reported for the call when it did, and the model's price settles it when it did not. A
+/// helper's call (`helper`, its session's id) is recorded on the helper's session.
 pub fn settle_call(
     app: &App,
     cid: u64,
     held: CallHold,
     tokens: crate::prices::Tokens,
     reported_usd: Option<f64>,
+    helper: Option<&str>,
 ) {
     let now = now();
     let all_tokens = tokens.input + tokens.output + tokens.cache_read + tokens.cache_write;
@@ -1531,17 +2148,23 @@ pub fn settle_call(
         Some(usd) => Amount::of((usd * 1_000_000.0).ceil() as u64, all_tokens),
         None => call_cost(app, &held.model, tokens),
     };
-    let _ = app.sessions.add_usage(
-        cid,
-        &crate::sessions::Usage {
-            tokens_in: tokens.input,
-            tokens_out: tokens.output,
-            tokens_cached: tokens.cache_read,
-            cost_micros: actual.micros,
-            model_calls: 1,
-            tool_calls: 0,
-        },
-    );
+    let usage = crate::sessions::Usage {
+        tokens_in: tokens.input,
+        tokens_out: tokens.output,
+        tokens_cached: tokens.cache_read,
+        cost_micros: actual.micros,
+        model_calls: 1,
+        tool_calls: 0,
+    };
+    // A helper's call is recorded on the helper's session; the budget is the session's either way.
+    match helper {
+        Some(id) => {
+            let _ = app.sessions.add_usage_to(id, &usage);
+        }
+        None => {
+            let _ = app.sessions.add_usage(cid, &usage);
+        }
+    }
     let notices = app.budgets.settle(
         &held.hold,
         actual,
@@ -1588,6 +2211,64 @@ pub fn settle_call(
     }
 }
 
+/// The session of helper `helper` that the VM `cid` runs (a `Kind::Helper` session under the VM's session, on its task
+/// and project), created at the helper's first model call. None when the VM runs no session: its calls spend from the
+/// plaza's budget and are not recorded on a helper.
+pub fn helper_session(app: &App, cid: u64, helper: u64) -> Option<String> {
+    static HELPERS: Mutex<BTreeMap<(String, u64), String>> = Mutex::new(BTreeMap::new());
+    let parent = app.sessions.by_cid(cid)?;
+    let key = (parent.id.clone(), helper);
+    if let Some(id) = HELPERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+    {
+        return Some(id.clone());
+    }
+    let now = now();
+    let session = app.sessions.create(
+        NewSession {
+            project: parent.project.clone(),
+            task: parent.task.clone(),
+            seat: None,
+            kind: Kind::Helper,
+            parent: Some(parent.id.clone()),
+            role: parent.role.clone(),
+            engine: parent.engine.clone(),
+            model: parent.model.clone(),
+            attempt: 1,
+        },
+        now,
+    );
+    // A helper runs at once: it is placed and forked with its VM's.
+    for to in [State::Placing, State::Forking, State::Running] {
+        let _ = app.sessions.set_state(&session.id, to, now);
+    }
+    app.bus.publish("session", &app.sessions.get(&session.id));
+    HELPERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(key, session.id.clone());
+    Some(session.id)
+}
+
+/// Ends the helper sessions of `parent` that still run: their work item ended.
+fn end_helpers(app: &App, parent: &str, now: u64) {
+    let live = app.sessions.list(&Filter {
+        live: true,
+        ..Filter::default()
+    });
+    for helper in live
+        .into_iter()
+        .filter(|s| s.kind == Kind::Helper && s.parent.as_deref() == Some(parent))
+    {
+        let _ = app
+            .sessions
+            .finish(&helper.id, "its work item ended", false, now);
+        app.bus.publish("session", &app.sessions.get(&helper.id));
+    }
+}
+
 /// Why a call was held, in a sentence for the harness's log.
 fn short_sentence(short: &Short) -> String {
     match short {
@@ -1629,6 +2310,60 @@ fn deliveries<R>(f: impl FnOnce(&mut HashMap<u64, Delivery>) -> R) -> R {
 /// work item; with none, it waits on the seat and is the first thing the seat's next session reads. `thread` continues
 /// a thread; a new one gets `subject`. A thread that loops (more than [`crate::threads::LOOP_LIMIT`] messages with
 /// no output) is reported to the planner. Returns what happened, for the tool's answer.
+/// The seat thread `thread`, as the session of `cid` reads it: its messages, for a thread of the session's own
+/// task only. The thread as JSON.
+pub fn thread_read(app: &App, cid: u64, thread: &str) -> Result<String, String> {
+    let session = app.sessions.by_cid(cid).ok_or(
+        "only a session's seat reads seat threads: use plaza_send_message to reach an agent",
+    )?;
+    let found = own_thread(app, session.task.as_deref(), thread)?;
+    serde_json::to_string(&found).map_err(|err| err.to_string())
+}
+
+/// Answers the seat thread `thread` for the session of `cid`: to the seat its last message from another seat
+/// came from, in the same thread (see [`message_seat`]).
+pub fn thread_answer(
+    app: &App,
+    cid: u64,
+    thread: &str,
+    text: &str,
+    close: bool,
+) -> Result<String, String> {
+    let session = app.sessions.by_cid(cid).ok_or(
+        "only a session's seat answers seat threads: use plaza_send_message to reach an agent",
+    )?;
+    let found = own_thread(app, session.task.as_deref(), thread)?;
+    let from_seat = session.seat.clone().unwrap_or_else(|| session.role.clone());
+    let me = match &session.task {
+        Some(task) => format!("{task}/{from_seat}"),
+        None => from_seat,
+    };
+    let to = answer_seat(&found.messages, &me)
+        .ok_or_else(|| format!("nobody in thread {thread} waits for an answer from you"))?;
+    message_seat(app, cid, &to, text, Some(thread), None, close)
+}
+
+/// The seat an answer to a thread goes to: the seat that last wrote in it, other than `me`.
+fn answer_seat(messages: &[crate::threads::Message], me: &str) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.from_seat != me)
+        .map(|message| message.from_seat.clone())
+}
+
+/// The thread `id`, when it belongs to `task` (the session's own task).
+fn own_thread(app: &App, task: Option<&str>, id: &str) -> Result<crate::threads::Thread, String> {
+    let thread = app
+        .threads
+        .get(id)
+        .ok_or_else(|| format!("there is no thread {id}"))?;
+    if task != Some(thread.task.as_str()) {
+        return Err(format!("thread {id} is not of your task"));
+    }
+    Ok(thread)
+}
+
 pub fn message_seat(
     app: &App,
     cid: u64,
@@ -1871,6 +2606,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_team_size_is_a_whole_number_and_an_absent_one_is_none() {
+        let input = serde_json::json!({"max": 8, "target": null, "bad": "many", "neg": -1});
+        assert_eq!(team_number(&input, "max"), Ok(Some(8)));
+        assert_eq!(team_number(&input, "target"), Ok(None));
+        assert_eq!(team_number(&input, "missing"), Ok(None));
+        assert!(team_number(&input, "bad").is_err());
+        assert!(team_number(&input, "neg").is_err());
+    }
+
+    #[test]
+    fn a_step_in_flight_hands_over_when_its_pool_has_no_room() {
+        for state in [
+            State::Placing,
+            State::Forking,
+            State::Running,
+            State::Paused,
+            State::Compacting,
+        ] {
+            assert!(hands_over_for_pool(&state), "{state:?} is in flight");
+        }
+        for state in [
+            State::Queued,
+            State::HandingOver,
+            State::Ending,
+            State::Ended,
+            State::Failed,
+        ] {
+            assert!(
+                !hands_over_for_pool(&state),
+                "{state:?} is not left to hand over"
+            );
+        }
+    }
+
+    #[test]
+    fn a_model_list_takes_its_first_allowed_model_and_eval_the_best_scored_one() {
+        let allowed = vec!["a/fast".to_string(), "b/strong".to_string()];
+        let listed = ["c/none", "b/strong", "a/fast"].map(String::from);
+        assert_eq!(first_listed(&listed, &allowed), Some("b/strong".into()));
+        assert_eq!(first_listed(&["c/none".to_string()], &allowed), None);
+
+        let score = |model: &str, runs: u64, successes: u64, cost: Option<f64>| Score {
+            seat: "build".into(),
+            model: Some(model.into()),
+            engine: "harness".into(),
+            runs,
+            successes,
+            success_rate: successes as f64 / runs.max(1) as f64,
+            cost_per_success_micros: cost,
+            time_per_success_ms: None,
+        };
+        let scores = vec![
+            score("a/fast", 4, 2, Some(10.0)),
+            score("b/strong", 4, 4, Some(50.0)),
+            // Not an allowed model: it does not count, however well it did.
+            score("c/outside", 4, 4, Some(1.0)),
+        ];
+        assert_eq!(
+            best_scored(&scores, "build", &allowed),
+            Some("b/strong".into())
+        );
+        // The eval results of another step do not count.
+        assert_eq!(best_scored(&scores, "review", &allowed), None);
+        // On a tie the cheaper model wins.
+        let tie = vec![
+            score("a/fast", 2, 2, Some(30.0)),
+            score("b/strong", 2, 2, Some(20.0)),
+        ];
+        assert_eq!(
+            best_scored(&tie, "build", &allowed),
+            Some("b/strong".into())
+        );
+    }
+
+    #[test]
     fn a_call_is_held_at_its_request_size_in_tokens_and_the_answer_cap_it_names() {
         let worst = worst_case(300, 500);
         assert_eq!((worst.input, worst.output), (100, 500));
@@ -1909,5 +2719,40 @@ mod tests {
             !format!("{body}{}", choices[0].label).contains("µ$"),
             "no card says micro-dollars for a token budget"
         );
+    }
+}
+
+#[cfg(test)]
+mod thread_answer_tests {
+    use super::answer_seat;
+    use crate::threads::Message;
+
+    fn said(from: &str, seq: u64) -> Message {
+        Message {
+            seq,
+            from_seat: from.to_string(),
+            from_session: None,
+            to_seat: "x".to_string(),
+            text: format!("message {seq}"),
+            at_ms: seq,
+            delivered_session: None,
+            delivered_ms: None,
+        }
+    }
+
+    #[test]
+    fn an_answer_goes_to_the_seat_that_last_wrote_and_not_to_oneself() {
+        let thread = [
+            said("T1/reviewer", 1),
+            said("T1/builder", 2),
+            said("T1/reviewer", 3),
+        ];
+        assert_eq!(
+            answer_seat(&thread, "T1/builder").as_deref(),
+            Some("T1/reviewer")
+        );
+        // The builder's own question, unanswered: nobody but itself has written, so nothing to answer.
+        assert_eq!(answer_seat(&[said("T1/builder", 1)], "T1/builder"), None);
+        assert_eq!(answer_seat(&[], "T1/builder"), None);
     }
 }

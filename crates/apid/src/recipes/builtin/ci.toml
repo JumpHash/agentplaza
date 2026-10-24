@@ -1,0 +1,53 @@
+# The CI recipe (PLAN 21.3): the checks of a change, each in a test fork. Lint and the build start together; the
+# selected tests run once the build is green. The gate reads every result (4.5 runs them).
+id = "ci"
+name = "Checks"
+version = 1
+inputs = ["change"]
+outputs = ["checks"]
+triggers = ["change.sealed"]
+
+[[steps]]
+id = "lint"
+engine = "check"
+gate = ["passed"]
+
+[[steps]]
+id = "build"
+engine = "check"
+gate = ["passed"]
+
+# The tests are the ones `tests_select` picks for the change from the project's coverage map on main (the full suite when no
+# map is recorded): the same selection an agent asks for, and the scheduled full run on main records the map (4.5).
+[[steps]]
+id = "tests"
+engine = "check"
+tools = ["tests_select"]
+gate = ["passed", "tests green"]
+
+[[steps]]
+id = "audit"
+engine = "check"
+gate = ["passed"]
+
+[[steps]]
+id = "scan"
+engine = "check"
+gate = ["passed", "no findings"]
+
+# The preview (PLAN 18.1, 4.5): once the checks pass, the lane's app is built and started in its own VM from the project's
+# preview base, its port registered with noded, and the lane's preview is live. A project with no preview target passes.
+[[steps]]
+id = "preview"
+engine = "check"
+gate = ["passed"]
+
+[[edges]]
+from = "build"
+to = "tests"
+when = "passed"
+
+[[edges]]
+from = "tests"
+to = "preview"
+when = "passed"

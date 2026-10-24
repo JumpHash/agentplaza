@@ -1,0 +1,238 @@
+{
+  "model": "mock",
+  "tasks": [
+    {
+      "task": "add-function",
+      "outcome": "pass",
+      "state": "done",
+      "check_exit": 0,
+      "runs": 4,
+      "tool_calls": 11,
+      "model_turns": 24,
+      "tokens": {
+        "input": 155983,
+        "output": 470,
+        "cached": 0
+      },
+      "dollars": 0.0,
+      "wall_ms": 48486,
+      "tool_ms": 5,
+      "tools": [
+        {
+          "tool": "edit",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        },
+        {
+          "tool": "read",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        },
+        {
+          "tool": "run",
+          "calls": 4,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        }
+      ]
+    },
+    {
+      "task": "answer-question",
+      "outcome": "pass",
+      "state": "done",
+      "check_exit": 0,
+      "runs": 4,
+      "tool_calls": 13,
+      "model_turns": 24,
+      "tokens": {
+        "input": 154408,
+        "output": 271,
+        "cached": 0
+      },
+      "dollars": 0.0,
+      "wall_ms": 48532,
+      "tool_ms": 6,
+      "tools": [
+        {
+          "tool": "edit",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        },
+        {
+          "tool": "read",
+          "calls": 2,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 2
+        },
+        {
+          "tool": "run",
+          "calls": 3,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        }
+      ]
+    },
+    {
+      "task": "fix-test",
+      "outcome": "pass",
+      "state": "done",
+      "check_exit": 0,
+      "runs": 4,
+      "tool_calls": 11,
+      "model_turns": 24,
+      "tokens": {
+        "input": 155188,
+        "output": 352,
+        "cached": 0
+      },
+      "dollars": 0.0,
+      "wall_ms": 48606,
+      "tool_ms": 12,
+      "tools": [
+        {
+          "tool": "edit",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        },
+        {
+          "tool": "read",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 2,
+          "p95_ms": 2
+        },
+        {
+          "tool": "run",
+          "calls": 4,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 4
+        }
+      ]
+    },
+    {
+      "task": "fix-typo",
+      "outcome": "pass",
+      "state": "done",
+      "check_exit": 0,
+      "runs": 4,
+      "tool_calls": 10,
+      "model_turns": 23,
+      "tokens": {
+        "input": 147694,
+        "output": 286,
+        "cached": 0
+      },
+      "dollars": 0.0,
+      "wall_ms": 48741,
+      "tool_ms": 25,
+      "tools": [
+        {
+          "tool": "edit",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 0,
+          "p95_ms": 0
+        },
+        {
+          "tool": "read",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 1
+        },
+        {
+          "tool": "run",
+          "calls": 3,
+          "errors": 0,
+          "p50_ms": 3,
+          "p95_ms": 18
+        }
+      ]
+    },
+    {
+      "task": "rename-symbol",
+      "outcome": "pass",
+      "state": "done",
+      "check_exit": 0,
+      "runs": 4,
+      "tool_calls": 15,
+      "model_turns": 27,
+      "tokens": {
+        "input": 175650,
+        "output": 472,
+        "cached": 0
+      },
+      "dollars": 0.0,
+      "wall_ms": 48838,
+      "tool_ms": 39,
+      "tools": [
+        {
+          "tool": "edit",
+          "calls": 4,
+          "errors": 0,
+          "p50_ms": 4,
+          "p95_ms": 6
+        },
+        {
+          "tool": "read",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 7,
+          "p95_ms": 7
+        },
+        {
+          "tool": "run",
+          "calls": 4,
+          "errors": 0,
+          "p50_ms": 4,
+          "p95_ms": 6
+        }
+      ]
+    },
+    {
+      "task": "survey",
+      "outcome": "pass",
+      "state": "done",
+      "check_exit": 0,
+      "runs": 4,
+      "tool_calls": 10,
+      "model_turns": 23,
+      "tokens": {
+        "input": 148047,
+        "output": 259,
+        "cached": 0
+      },
+      "dollars": 0.0,
+      "wall_ms": 48759,
+      "tool_ms": 17,
+      "tools": [
+        {
+          "tool": "edit",
+          "calls": 1,
+          "errors": 0,
+          "p50_ms": 12,
+          "p95_ms": 12
+        },
+        {
+          "tool": "run",
+          "calls": 4,
+          "errors": 0,
+          "p50_ms": 1,
+          "p95_ms": 2
+        }
+      ]
+    }
+  ]
+}

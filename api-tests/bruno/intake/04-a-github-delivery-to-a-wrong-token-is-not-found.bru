@@ -1,0 +1,29 @@
+meta {
+  name: A GitHub delivery to a token that is not the connector's is a 404, and never kept
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/v1/hooks/github/no-such-token
+  body: json
+  auth: none
+}
+
+headers {
+  X-GitHub-Event: issues
+  X-Hub-Signature-256: sha256=00
+}
+
+body:json {
+  {
+    "action": "opened",
+    "repository": { "full_name": "acme/widgets", "private": false },
+    "issue": { "number": 1, "title": "t", "body": "b" }
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

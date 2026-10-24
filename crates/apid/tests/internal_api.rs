@@ -108,7 +108,7 @@ fn a_message_from_an_agent_that_never_said_hello_is_refused() {
     let reply = message(
         &hub,
         cid,
-        json!({ "type": "tool_request", "work": 1, "call": "toolu_0", "name": "bash", "input": {} }),
+        json!({ "type": "tool_request", "work": 1, "call": "toolu_0", "name": "run", "input": {} }),
     );
     assert_eq!(reply["reply"]["type"], "tool_decision", "{reply}");
     assert_eq!(reply["reply"]["decision"], "deny", "{reply}");
@@ -123,7 +123,7 @@ fn a_message_from_an_agent_that_never_said_hello_is_refused() {
 fn each_guest_message_type_is_answered() {
     let (noded, gateway) = daemons();
     let roles = json!({ "roles": {
-        "planner": { "role": "planner", "title": "Planner", "tools": ["bash", "read_file"] },
+        "planner": { "role": "planner", "title": "Planner", "tools": ["run", "read"] },
     } });
     let scratch = Scratch::new("internal-messages");
     let hub = Hub::start_with_roles(&scratch, Some(gateway.port), Some(noded.port), Some(&roles));
@@ -167,7 +167,7 @@ fn each_guest_message_type_is_answered() {
     let reply = message(
         &hub,
         PLANNER,
-        json!({ "type": "tool_request", "work": 1, "call": "toolu_2", "name": "bash", "input": {} }),
+        json!({ "type": "tool_request", "work": 1, "call": "toolu_2", "name": "run", "input": {} }),
     );
     assert_eq!(reply["reply"]["type"], "tool_decision", "{reply}");
     assert_eq!(reply["reply"]["call"], "toolu_2", "{reply}");
@@ -271,4 +271,189 @@ fn the_egress_report_and_check_need_the_token() {
     // With the token, the VM's report of its connection is recorded.
     let (status, body) = hub.guest(cid, "egress", report);
     assert_eq!(status, 200, "{body}");
+}
+
+#[test]
+fn a_turn_is_one_batch_decided_as_each_of_its_calls_would_be() {
+    let scratch = Scratch::new("internal-batch");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 440;
+    hello(&hub, cid);
+
+    // The five calls of one turn: decided one request at a time, then as one batch. The batch answers once, with the
+    // same decision for each call, in the calls' order.
+    let calls = [
+        ("toolu_b1", "run", json!({"command": "ls"})),
+        ("toolu_b2", "read", json!({"path": "a.txt"})),
+        ("toolu_b3", "search", json!({"pattern": "x"})),
+        ("toolu_b4", "plaza_tasks", json!({})),
+        ("toolu_b5", "no_such_tool", json!({})),
+    ];
+    let one_by_one: Vec<Value> = calls
+        .iter()
+        .map(|(call, name, input)| {
+            let reply = message(
+                &hub,
+                cid,
+                json!({ "type": "tool_request", "work": 1, "call": call, "name": name, "input": input }),
+            );
+            reply["reply"].clone()
+        })
+        .collect();
+    let batch: Vec<Value> = calls
+        .iter()
+        .map(|(call, name, input)| json!({ "call": call, "name": name, "input": input }))
+        .collect();
+    let reply = message(
+        &hub,
+        cid,
+        json!({ "type": "tool_batch", "work": 1, "calls": batch }),
+    );
+    assert_eq!(reply["reply"]["type"], "tool_batch_decision", "{reply}");
+    assert_eq!(reply["reply"]["work"], 1, "{reply}");
+    let decisions = reply["reply"]["decisions"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(decisions.len(), 5, "{reply}");
+    for (decision, single) in decisions.iter().zip(&one_by_one) {
+        assert_eq!(
+            (
+                decision["call"].clone(),
+                decision["decision"].clone(),
+                decision["output"].clone(),
+                decision["is_error"].clone()
+            ),
+            (
+                single["call"].clone(),
+                single["decision"].clone(),
+                single["output"].clone(),
+                single["is_error"].clone()
+            ),
+            "{decision} is not {single}"
+        );
+    }
+}
+
+#[test]
+fn a_session_starts_with_its_policy_and_a_report_outside_it_is_a_violation() {
+    let scratch = Scratch::new("internal-policy");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 450;
+
+    // The hello carries the agent's policy, signed by the hub: the guest tools its grant covers that read no input the
+    // laws test run in the VM on their own; a shell command does not.
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
+    let policy = body["policy"].clone();
+    let allowed = |tool: &str| {
+        policy["allow"]
+            .as_array()
+            .is_some_and(|allow| allow.iter().any(|t| t == tool))
+    };
+    assert!(allowed("read") && !allowed("run"), "{body}");
+    assert_eq!(text(&policy["id"]).len(), 64, "{body}");
+    assert!(!text(&policy["signature"]).is_empty(), "{body}");
+    let id = text(&policy["id"]);
+
+    // A call the VM reports under that policy, for a tool the policy does not allow, is recorded with the policy it
+    // was decided under and as a violation. The call stands: the report is answered with nothing.
+    let reply = message(
+        &hub,
+        cid,
+        json!({
+            "type": "tool_report", "work": 1, "call": "toolu_p1", "ok": true, "output": "ran",
+            "policy": id, "name": "run", "input": {"command": "ls"},
+        }),
+    );
+    assert!(reply["reply"].is_null(), "{reply}");
+    let (status, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
+    assert_eq!(status, 200, "{transcript}");
+    let mentions = |transcript: &Value, needle: &str| {
+        transcript
+            .as_array()
+            .is_some_and(|entries| entries.iter().any(|e| e.to_string().contains(needle)))
+    };
+    assert!(
+        mentions(&transcript, &format!("allowed by policy {id}")),
+        "{transcript}"
+    );
+    assert!(
+        mentions(&transcript, "policy violation: run ran under policy"),
+        "{transcript}"
+    );
+
+    // A report under a policy the hub never issued to this agent is a violation as well.
+    message(
+        &hub,
+        cid,
+        json!({
+            "type": "tool_report", "work": 1, "call": "toolu_p2", "ok": true, "output": "ran",
+            "policy": "not-issued", "name": "find", "input": {},
+        }),
+    );
+    let (_, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
+    assert!(
+        mentions(
+            &transcript,
+            "find was decided under policy not-issued, which the hub never issued"
+        ),
+        "{transcript}"
+    );
+}
+
+#[test]
+fn a_tool_report_of_a_call_a_script_made_names_the_script_call_in_the_transcript() {
+    let scratch = Scratch::new("internal-script");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 452;
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": "builder", "vm": 0 }));
+    assert_eq!(status, 200, "{body}");
+
+    // A call the script made is reported under the run_script call it belongs to, and the transcript keeps that link.
+    let reply = message(
+        &hub,
+        cid,
+        json!({
+            "type": "tool_report", "work": 1, "call": "toolu_s1.1", "ok": true, "output": "ran",
+            "name": "read", "input": {"files": []}, "script": "toolu_s1",
+        }),
+    );
+    assert!(reply["reply"].is_null(), "{reply}");
+    let (status, transcript) = hub.call("GET", &format!("/v1/agents/{cid}/transcript"), None);
+    assert_eq!(status, 200, "{transcript}");
+    let linked = transcript.as_array().is_some_and(|entries| {
+        entries.iter().any(|e| {
+            let text = e.to_string();
+            text.contains("toolu_s1.1") && text.contains(r#""script":"toolu_s1""#)
+        })
+    });
+    assert!(linked, "{transcript}");
+}
+
+/// A base build's VM says hello as the base session it is (`kind` base): apid registers no agent for it and answers with
+/// no profile, and its exec answers need no reply (PLAN 16.4).
+#[test]
+fn a_base_builds_vm_says_hello_as_a_base_and_its_answers_need_no_reply() {
+    let scratch = Scratch::new("internal-base-hello");
+    let hub = Hub::start(&scratch, None, None);
+    let cid = 430;
+
+    let (status, body) = hub.guest(cid, "hello", json!({ "role": "", "vm": 0, "kind": "base" }));
+    assert_eq!(status, 200, "{body}");
+    assert!(body["profile"].is_null(), "{body}");
+    assert!(body["policy"].is_null(), "{body}");
+    let (status, agents) = hub.call("GET", "/v1/agents", None);
+    assert_eq!(status, 200, "{agents}");
+    assert!(
+        !agents.to_string().contains(&format!("\"cid\":{cid}")),
+        "a base is not an agent: {agents}"
+    );
+
+    let reply = message(
+        &hub,
+        cid,
+        json!({ "type": "exec_result", "id": 1, "ok": true, "exit_code": 0, "output": "" }),
+    );
+    assert!(reply["reply"].is_null(), "{reply}");
 }

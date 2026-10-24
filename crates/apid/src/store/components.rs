@@ -128,6 +128,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.laws.load(conn),
         },
         Component {
+            name: "standing_rules",
+            def: crate::standing_rules::def,
+            rows: |app| app.standing_rules.rows(),
+            load: |app, conn| app.standing_rules.load(conn),
+        },
+        Component {
             name: "work",
             def: crate::scheduler::def,
             rows: |app| app.work.rows(),
@@ -150,6 +156,24 @@ pub fn all() -> Vec<Component> {
             def: crate::agent_proposals::def,
             rows: |app| app.agent_proposals.rows(),
             load: |app, conn| app.agent_proposals.load(conn),
+        },
+        Component {
+            name: "memory_entries",
+            def: crate::project_memory::entry_def,
+            rows: |app| app.project_memory.entry_rows(),
+            load: |app, conn| app.project_memory.load_entries(conn),
+        },
+        Component {
+            name: "memory_proposals",
+            def: crate::project_memory::proposal_def,
+            rows: |app| app.project_memory.proposal_rows(),
+            load: |app, conn| app.project_memory.load_proposals(conn),
+        },
+        Component {
+            name: "memory_curations",
+            def: crate::curator::def,
+            rows: |app| app.curator.rows(),
+            load: |app, conn| app.curator.load(conn),
         },
         Component {
             name: "nodes",
@@ -214,6 +238,36 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.seats.load(conn),
         },
         Component {
+            name: "recipe_runs",
+            def: crate::recipes::runs::def,
+            rows: |app| app.recipe_runs.rows(),
+            load: |app, conn| app.recipe_runs.load(conn),
+        },
+        Component {
+            name: "recipe_triggers",
+            def: crate::triggers::def,
+            rows: |app| app.triggers.rows(),
+            load: |app, conn| app.triggers.load(conn),
+        },
+        Component {
+            name: "recipe_trigger_pending",
+            def: crate::triggers::pending_def,
+            rows: |app| app.triggers.pending_rows(),
+            load: |app, conn| app.triggers.load_pending(conn),
+        },
+        Component {
+            name: "recipe_trigger_fired",
+            def: crate::triggers::fired_def,
+            rows: |app| app.triggers.fired_rows(),
+            load: |app, conn| app.triggers.load_fired(conn),
+        },
+        Component {
+            name: "recipe_versions",
+            def: crate::recipes::runs::versions_def,
+            rows: |app| app.recipe_runs.version_rows(),
+            load: |app, conn| app.recipe_runs.load_versions(conn),
+        },
+        Component {
             name: "budgets",
             def: crate::budgets::def,
             rows: |app| app.budgets.rows(),
@@ -236,6 +290,12 @@ pub fn all() -> Vec<Component> {
             def: crate::threads::def,
             rows: |app| app.threads.rows(),
             load: |app, conn| app.threads.load(conn),
+        },
+        Component {
+            name: "journal",
+            def: crate::journal::def,
+            rows: |app| app.journal.rows(),
+            load: |app, conn| app.journal.load(conn),
         },
         Component {
             name: "decisions",
@@ -285,6 +345,18 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.platforms.load(conn),
         },
         Component {
+            name: "intake",
+            def: crate::intake::def,
+            rows: |app| app.intake.rows(),
+            load: |app, conn| app.intake.load(conn),
+        },
+        Component {
+            name: "planning",
+            def: crate::planning::def,
+            rows: |app| app.planning.rows(),
+            load: |app, conn| app.planning.load(conn),
+        },
+        Component {
             name: "hf_imports",
             def: crate::foundry::hf_import::def,
             rows: |app| app.hf.rows(),
@@ -307,6 +379,18 @@ pub fn all() -> Vec<Component> {
             def: crate::e2b_tpl::def,
             rows: |app| app.e2b_templates.rows(),
             load: |app, conn| app.e2b_templates.load(conn),
+        },
+        Component {
+            name: "test_maps",
+            def: crate::test_select::map_def,
+            rows: |app| app.test_select.map_rows(),
+            load: |app, conn| app.test_select.load_maps(conn),
+        },
+        Component {
+            name: "test_misses",
+            def: crate::test_select::miss_def,
+            rows: |app| app.test_select.miss_rows(),
+            load: |app, conn| app.test_select.load_misses(conn),
         },
     ]
 }
@@ -333,6 +417,7 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
             crate::stations::recordings::frame_def,
         ),
         ("station sync files", crate::stations::sync::def),
+        ("eval runs", crate::evals::def),
         ("unfurl cache", crate::unfurl::def),
         ("prompt", crate::prompts::store::def),
         ("prompt version", crate::prompts::store::version_def),
@@ -343,6 +428,9 @@ pub fn written_through() -> Vec<(&'static str, fn() -> &'static TableDef)> {
         ("hub mcp settings", crate::hub_mcp::store_db::settings_def),
         ("share", crate::shares::def),
         ("share event", crate::shares::event_def),
+        ("preview", crate::previews::def),
+        ("preview link", crate::previews::link_def),
+        ("preview opening", crate::previews::opening_def),
         ("skill", crate::skills::store_db::def),
         ("skill version", crate::skills::store_db::version_def),
         ("skill file", crate::skills::store_db::file_def),

@@ -1,0 +1,11 @@
+id = "cloudflare"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read", "irreversible"]
+egress = ["api.cloudflare.com"]
+secrets = ["CLOUDFLARE_API_TOKEN"]
+events = []
+actions = ["zones", "dns_create"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

@@ -106,7 +106,7 @@ documentation comment that is the reference for its contract.
 | `vstate/snapshot.rs` | `vmm` | The snapshot format: `vmstate.json` and `memory.img`, the version and architecture checks |
 | `vstate/snapshot_memory.rs` | `vmm` | Guest memory in snapshots: touched pages, and the anonymous-page diff of a restored VM |
 | `control.rs` | `vmm` | `VmControl`: pause, resume and snapshot of a running VM, behind the device gate |
-| `clonefile.rs` | `vmm` | Reflink copies of images, with a sparse copy as the fallback |
+| `clonefile.rs` | `vmm` | Block-sharing copies of images (FICLONE, APFS clonefile, ReFS block cloning), with a sparse copy as the fallback |
 | `cgroup.rs` | `vmm` | cgroup v2 limits for a VM in its own process |
 | `spawner.rs` | `vmm` | `VmSpec::restore`, `SnapshotKind`, the in-process and per-process boot modes |
 | `snapshots.rs` | `noded` | Where a node keeps its snapshots, per CID, and the snapshot views |

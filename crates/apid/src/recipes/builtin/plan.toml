@@ -1,0 +1,31 @@
+# The plan recipe (PLAN 21.1, 21.2). A spec-and-plan task runs it. The `spec` step is the planner's session on the task's
+# lane: it writes `.plaza/specs/<id>.md` (behaviour, acceptance tests, areas touched, open questions), and the step passes
+# when that file is on the lane; its questions are answered from project memory or sent to the owner. The `tasks` step is
+# the same planner, which posts the task list with plan_post (links, recipes, files and budgets; coupled tasks merged).
+# The task is done when its plan is posted.
+id = "plan"
+name = "Plan"
+description = "Turns an intake item into a spec on its lane, then the spec into tasks with links, recipes and budgets."
+version = 1
+inputs = ["item"]
+outputs = ["spec", "plan"]
+triggers = ["item.spec"]
+
+[[steps]]
+id = "spec"
+role = "planner"
+model = "any"
+gate = ["passed"]
+output = "spec"
+
+[[steps]]
+id = "tasks"
+role = "planner"
+model = "any"
+gate = ["passed"]
+output = "plan"
+
+[[edges]]
+from = "spec"
+to = "tasks"
+when = "passed"

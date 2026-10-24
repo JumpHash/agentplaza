@@ -91,9 +91,10 @@ pub fn session<S: Duplex, W: Write + Send>(
     identity: &Identity,
     workspace: &Workspace,
     role: Option<&str>,
+    kind: Option<&str>,
     heartbeat: Duration,
 ) -> Result<u64, KeepaliveError> {
-    let profile = handshake(lines, log, identity, role)?;
+    let profile = handshake(lines, log, identity, role, kind)?;
     if let Some(profile) = &profile {
         // The profile's CA is what the guest trusts from now on; `None` retires a rule that was removed.
         trust::install(workspace, profile.egress_ca.as_deref());
@@ -111,6 +112,7 @@ fn handshake<S: Read + Write, W: Write>(
     log: &mut W,
     identity: &Identity,
     role: Option<&str>,
+    kind: Option<&str>,
 ) -> Result<Option<AgentProfile>, SessionError> {
     let hello = GuestMessage::Hello {
         vm: identity.vm,
@@ -119,6 +121,7 @@ fn handshake<S: Read + Write, W: Write>(
         keepalive: Some(true),
         // This harness runs ACP engines, so the hub may hold their permission requests for the owner.
         caps: vec![CAP_ACP.to_string()],
+        kind: kind.map(str::to_string),
     };
     send(lines, log, &hello)?;
     let accepted = await_host(lines, log, "welcome", |message| match message {
@@ -228,7 +231,9 @@ mod tests {
         let (mut guest, host) = pair();
         let hub = thread::spawn(move || hub(host));
         let mut log = Vec::new();
-        let result = session(&mut guest, &mut log, &IDENTITY, workspace, role, HEARTBEAT);
+        let result = session(
+            &mut guest, &mut log, &IDENTITY, workspace, role, None, HEARTBEAT,
+        );
         drop(guest);
         hub.join().expect("the scripted hub finished");
         (result, String::from_utf8(log).expect("UTF-8"))
@@ -312,15 +317,18 @@ mod tests {
             host.send(WELCOME).unwrap();
             let calls = [
                 (
-                    r#"{"name":"write_file","args":{"path":"notes.txt","content":"one\ntwo\n"}}"#,
+                    r#"{"name":"edit","args":{"create":[{"path":"notes.txt","content":"one\ntwo\n"}]}}"#,
                     true,
                 ),
                 (
-                    r#"{"name":"edit_file","args":{"path":"notes.txt","find":"two","replace":"TWO"}}"#,
+                    r#"{"name":"edit","args":{"edits":[{"path":"notes.txt","old":"two","new":"TWO"}]}}"#,
                     true,
                 ),
-                (r#"{"name":"read_file","args":{"path":"notes.txt"}}"#, true),
-                (r#"{"name":"read_file","args":{"path":"../escape"}}"#, false),
+                (
+                    r#"{"name":"read","args":{"files":[{"path":"notes.txt"}]}}"#,
+                    true,
+                ),
+                (r#"{"name":"read","args":{"files":"../escape"}}"#, false),
                 (
                     r#"{"name":"conversation","args":{"from_role":"builder","from_cid":100,"text":"hi"}}"#,
                     true,
@@ -341,7 +349,8 @@ mod tests {
                 if index == 2 {
                     let output: serde_json::Value =
                         serde_json::from_str(answer["output"].as_str().unwrap()).unwrap();
-                    assert_eq!(output["content"], "     1\tone\n     2\tTWO\n");
+                    // The edit before it recorded the file as read, so the read is answered without the content.
+                    assert_eq!(output["files"][0]["unchanged_since"], 2, "{output}");
                 }
             }
             host.send(r#"{"type":"stop","reason":"done"}"#).unwrap();

@@ -176,23 +176,30 @@ pub enum Entry {
         #[table(content)]
         output: String,
     },
-    /// A tool's report: whether it worked, and its output (capped by the caller).
+    /// A tool's report: whether it worked, and its output (capped by the caller). A call a script made names the
+    /// `run_script` call it belongs to.
     ToolResult {
         call: String,
         ok: bool,
         #[table(content)]
         output: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
     },
     /// One item of an ACP engine's session feed (`{call, item, ...}`), as the feed keeps it.
     EngineUpdate(#[table(content)] Value),
     /// An error the hub recorded for the agent.
     Error { message: String },
-    /// The agent's context was compressed: its size before and after, the turns folded, and why.
+    /// The agent's context was compressed: its size before and after, the turns folded, why, and the
+    /// summary that stands in for them.
     Compressed {
         before: u64,
         after: u64,
         folded: u32,
         reason: String,
+        #[serde(default)]
+        #[table(content)]
+        summary: String,
     },
     /// An egress decision of the agent's VM, as the egress proxy reported it.
     Egress {
@@ -803,7 +810,7 @@ mod tests {
             Entry::ModelRequest {
                 model: "m".into(),
                 messages: 3,
-                tools: json!(["read", "bash"]),
+                tools: json!(["read", "run"]),
                 last_user: "hi".into(),
             },
             Entry::ModelResponse {
@@ -833,6 +840,7 @@ mod tests {
                 call: "c1".into(),
                 ok: true,
                 output: "42".into(),
+                script: None,
             },
             Entry::EngineUpdate(
                 json!({"call": "e1", "item": "message", "message_id": null, "text": "hi"}),
@@ -845,6 +853,7 @@ mod tests {
                 after: 40,
                 folded: 3,
                 reason: "auto".into(),
+                summary: "Decisions: sessions, not named agents.".into(),
             },
             Entry::Egress {
                 host: "example.com".into(),
@@ -1280,6 +1289,7 @@ mod tests {
                     call: "c".into(),
                     ok: true,
                     output: big.clone(),
+                    script: None,
                 },
             );
         }
@@ -1294,6 +1304,7 @@ mod tests {
                     call: "c".into(),
                     ok: true,
                     output: big.clone(),
+                    script: None,
                 },
             })
             .collect();
@@ -1335,6 +1346,7 @@ mod tests {
                 call: "c".into(),
                 ok: true,
                 output: huge,
+                script: None,
             },
         );
         let kept = store.last(7, usize::MAX);

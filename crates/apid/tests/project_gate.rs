@@ -17,7 +17,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 /// The roles the planner's project needs: a project's planner is the `planner` role.
 fn roles() -> Value {
-    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["bash", "read_file"] });
+    let role =
+        |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "read"] });
     json!({ "roles": {
         "builder": role("builder", "Builder"),
         "planner": role("planner", "Planner"),
@@ -136,7 +137,8 @@ fn an_agent_with_no_session_is_on_no_project_and_takes_no_task() {
     let (status, body) = hub.guest(310, "hello", json!({ "role": "builder", "vm": 0 }));
     assert_eq!(status, 200, "{body}");
     assert!(
-        text(&body["profile"]["system"]).contains("You have no project"),
+        // The project paragraph is part 3 of the system prompt (PLAN 13.3).
+        text(&body["profile"]["system_parts"][2]["text"]).contains("You have no project"),
         "{body}"
     );
     let (_, agent) = hub.call("GET", "/v1/agents/310", None);

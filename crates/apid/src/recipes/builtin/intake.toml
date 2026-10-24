@@ -1,0 +1,39 @@
+# The intake recipe (PLAN 21.1, 14.5, 21.2). An item's words, title and text together, are classed against its project's
+# spec threshold (`spec_over_words`): `classify` scores 1 above it and 0 below, and its edges start one step. Below the
+# threshold the `task` step makes the item's task on its rule's recipe, as intake always did. Above it the `spec` step
+# starts the item's spec-and-plan task, which runs the `plan` recipe. The steps are engine steps: planning.rs and
+# intake/mod.rs run them, and the run records what classed the item and what it started.
+id = "intake"
+name = "Intake"
+description = "Classes an intake item against its project's spec threshold: a task below it, a spec and plan above it."
+version = 1
+inputs = ["item"]
+outputs = ["task", "spec"]
+triggers = ["item.received"]
+
+[[steps]]
+id = "classify"
+engine = "intake"
+gate = ["passed"]
+
+[[steps]]
+id = "task"
+engine = "intake"
+gate = ["passed"]
+output = "task"
+
+[[steps]]
+id = "spec"
+engine = "intake"
+gate = ["passed"]
+output = "spec"
+
+[[edges]]
+from = "classify"
+to = "task"
+when = "score == 0"
+
+[[edges]]
+from = "classify"
+to = "spec"
+when = "score >= 1"
