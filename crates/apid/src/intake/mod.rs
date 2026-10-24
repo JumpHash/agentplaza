@@ -1216,6 +1216,10 @@ fn start_route(app: &App, _: &Request, p: &Params<'_>) -> Response {
 }
 
 fn poll_route(app: &App, _: &Request, _: &Params<'_>) -> Response {
+    // An off connection is the owner's state, not Notion failing.
+    if !app.intake.connection(NOTION).enabled {
+        return Response::error(409, "the Notion connection is off");
+    }
     match poll_notion(app, apz_plaza::now_ms()) {
         Ok(count) => Response::json(200, &json!({ "read": count })),
         Err(why) => Response::error(502, &why),
