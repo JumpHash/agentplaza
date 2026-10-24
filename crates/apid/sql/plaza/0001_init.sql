@@ -1003,6 +1003,8 @@ CREATE TABLE "settings" (
     "idle_sleep_min" INTEGER NOT NULL CHECK ("idle_sleep_min" >= 0),
     "doze_idle_s" INTEGER NOT NULL CHECK ("doze_idle_s" >= 0),
     "health_interval_s" INTEGER NOT NULL CHECK ("health_interval_s" >= 0),
+    "eval_min_samples" INTEGER NOT NULL CHECK ("eval_min_samples" >= 0),
+    "eval_explore_pct" INTEGER NOT NULL CHECK ("eval_explore_pct" >= 0),
     PRIMARY KEY ("pos")
 ) STRICT;
 CREATE TABLE "settings_role_models" (
@@ -4739,6 +4741,8 @@ CREATE TABLE "eval_run" (
     "memory_cites" INTEGER NOT NULL CHECK ("memory_cites" >= 0),
     "qual_stages" INTEGER NOT NULL CHECK ("qual_stages" >= 0),
     "lab_minutes" INTEGER NOT NULL CHECK ("lab_minutes" >= 0),
+    "choice" TEXT NOT NULL,
+    "choice_reason" TEXT NOT NULL,
     PRIMARY KEY ("id")
 ) STRICT;
 CREATE INDEX "eval_run_project" ON "eval_run" ("project");
