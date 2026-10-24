@@ -1810,6 +1810,22 @@ CREATE TABLE "node_machine_phone" (
     PRIMARY KEY ("nodes_pos", "nodes_pos_2", "phones_pos"),
     FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
+CREATE TABLE "node_machine_shell" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "shells_pos" INTEGER NOT NULL CHECK ("shells_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "shells_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "node_machine_tool" (
+    "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
+    "nodes_pos_2" INTEGER NOT NULL CHECK ("nodes_pos_2" >= 0),
+    "tools_pos" INTEGER NOT NULL CHECK ("tools_pos" >= 0),
+    "value" TEXT NOT NULL,
+    PRIMARY KEY ("nodes_pos", "nodes_pos_2", "tools_pos"),
+    FOREIGN KEY ("nodes_pos", "nodes_pos_2") REFERENCES "node_machine" ("nodes_pos", "nodes_pos_2") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
 CREATE TABLE "node_code" (
     "nodes_pos" INTEGER NOT NULL CHECK ("nodes_pos" >= 0),
     "codes_pos" INTEGER NOT NULL CHECK ("codes_pos" >= 0),
@@ -2962,6 +2978,19 @@ CREATE TABLE "release_store_step" (
     "reason" TEXT NOT NULL,
     "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
     PRIMARY KEY ("release_id", "store_steps_pos"),
+    FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "release_compat" (
+    "release_id" TEXT NOT NULL,
+    "compatibility_pos" INTEGER NOT NULL CHECK ("compatibility_pos" >= 0),
+    "cell" TEXT NOT NULL,
+    "product" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "pool" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "evidence" TEXT NOT NULL,
+    "finding" TEXT NOT NULL,
+    PRIMARY KEY ("release_id", "compatibility_pos"),
     FOREIGN KEY ("release_id") REFERENCES "release" ("id") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
