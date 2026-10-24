@@ -30,7 +30,7 @@ mod mock;
 mod openai;
 mod responses;
 mod sigv4;
-pub use sigv4::signed_headers;
+pub use sigv4::{signed_headers, signed_headers_s3};
 #[cfg(test)]
 mod testutil;
 
