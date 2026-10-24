@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "In-memory caches kept true by source generations: single-flight builds, conditional stores, stale-while-revalidate, ETags over responses as sent."
+publish = false
 
 [dependencies]
 sha2 = { workspace = true }

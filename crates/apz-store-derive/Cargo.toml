@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "derive(Table) and derive(Column) for apz-store: structs and enums as typed SQLite tables and columns."
+publish = false
 
 [lib]
 proc-macro = true
