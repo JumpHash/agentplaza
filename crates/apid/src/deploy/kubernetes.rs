@@ -1,5 +1,6 @@
-//! The Kubernetes platform of a deploy (PLAN 23, 11.2): the release's manifests are applied by server-side apply, the
-//! Deployment's image is set to the release's image, and the rollout is watched until it completes or times out.
+//! The Kubernetes platform of a deploy (PLAN 23, 11.2): the release's image is taken from the release's pushed OCI image
+//! (pinned by digest), the release's manifests are applied by server-side apply with the Deployment's image set to it, and
+//! the rollout is watched until it completes or times out. A project may deploy a Helm chart instead ([`helm`]).
 //!
 //! A project that declares a canary (`KUBERNETES_CANARY`) runs a second Deployment beside the stable one. Each stage below
 //! 100% gives the canary its share of the stable Deployment's replicas (at least one, never all), and the checks of the
@@ -12,18 +13,28 @@
 //! connector's, read on the hub and attached to each request here, never in a fork, an error or a log. A private cluster
 //! CA is the connector's `ca` (`platforms::http::PrivateCa`).
 //!
+//! The image: a release's registry row for the OCI registry (9.5) holds the pushed reference and its manifest digest, and
+//! the deploy runs `<reference>@<digest>`. `KUBERNETES_IMAGE` only replaces the repository. A release with no pushed image
+//! fails its stage with that reason.
+//!
 //! Environment variables (not secret): `KUBERNETES_DEPLOYMENT` (names the platform: the stable Deployment),
-//! `KUBERNETES_IMAGE` (the image repository; the release's image is `KUBERNETES_IMAGE:<version>`), `KUBERNETES_NAMESPACE`
-//! (`default`), `KUBERNETES_CONTAINER` (the Deployment's first container), `KUBERNETES_CANARY`, `KUBERNETES_ARTIFACT`
-//! (`manifests`: the release artifact, a YAML stream), `KUBERNETES_TIMEOUT_SECS` (300), and the health watch's variables
+//! `KUBERNETES_IMAGE` (an image repository override), `KUBERNETES_NAMESPACE` (`default`), `KUBERNETES_CONTAINER` (the
+//! Deployment's first container), `KUBERNETES_CANARY`, `KUBERNETES_ARTIFACT` (`manifests`: the release artifact, a YAML
+//! stream), `KUBERNETES_TIMEOUT_SECS` (300), `KUBERNETES_HELM_CHART` (a Helm chart to deploy instead of the manifests) and
+//! `KUBERNETES_HELM_RELEASE` (the release's name, the Deployment's by default), and the health watch's variables
 //! ([`super::Settings::watch_of`]: `ROLLOUT_STAGES` is the canary's stages).
 //!
-//! The manifests are the stream's own documents. A `kind: Kustomization` document in it is an overlay: its `namespace` and
-//! `images` are applied here, and its other fields that kustomize builds (generators, patches, components) are refused,
-//! as are its `resources` (they would be files). A Helm release needs helm on the hub, which this platform does not run.
+//! The manifests are the stream's own documents. A `kind: Kustomization` document in it is an overlay, built by `kubectl
+//! kustomize` (or `kustomize build`) when one is on the hub's PATH (detected, never installed). Without either, the overlay's
+//! namespace and images are resolved here, and its fields that only kustomize builds are refused.
 
+pub mod helm;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -52,6 +63,8 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 const MAX_TIMEOUT_SECS: u64 = 3600;
 /// How often a rollout's status is read.
 const POLL: Duration = Duration::from_secs(5);
+/// The OCI registry's connector: its sync rows (9.5) name a release's pushed image.
+const OCI_PLATFORM: &str = "oci-registry/";
 /// Kinds without a namespace.
 const CLUSTER_SCOPED: [&str; 8] = [
     "Namespace",
@@ -63,7 +76,7 @@ const CLUSTER_SCOPED: [&str; 8] = [
     "IngressClass",
     "PriorityClass",
 ];
-/// Overlay fields that kustomize builds and this platform does not.
+/// Overlay fields that kustomize builds and the fallback resolver does not.
 const UNBUILT_OVERLAY_FIELDS: [&str; 9] = [
     "commonLabels",
     "patches",
@@ -86,11 +99,14 @@ pub struct Settings {
     pub container: Option<String>,
     /// A second Deployment that carries each stage's share of the replicas before the promotion.
     pub canary: Option<String>,
-    /// The image repository: the release's image is this with the release's version as its tag.
-    pub image: String,
+    /// An image repository that replaces the release's (`KUBERNETES_IMAGE`); the release's digest is kept.
+    pub image: Option<String>,
     /// The release artifact the manifests are read from.
     pub artifact: String,
-    /// How long one Deployment may take to complete its rollout.
+    /// A Helm chart to deploy instead of the manifests, and the release's name.
+    pub chart: Option<String>,
+    pub helm_release: String,
+    /// How long one Deployment (or the helm release) may take to complete its rollout.
     pub timeout: Duration,
     pub poll: Duration,
     /// The stages and the health watch (shared with the Cloudflare platform).
@@ -108,10 +124,10 @@ impl Settings {
                 "KUBERNETES_DEPLOYMENT is a Deployment's name: lower-case letters, digits and dashes".into(),
             );
         }
-        let image = super::variable(env, "KUBERNETES_IMAGE").ok_or(
-            "KUBERNETES_IMAGE names the image repository the release's image is pushed to (its tag is the release's version)",
-        )?;
-        if image.chars().any(char::is_whitespace) || image.contains('@') {
+        let image = super::variable(env, "KUBERNETES_IMAGE");
+        if let Some(repository) = &image
+            && (repository.chars().any(char::is_whitespace) || repository.contains('@'))
+        {
             return Err(
                 "KUBERNETES_IMAGE is an image repository, without a tag or a digest".into(),
             );
@@ -127,6 +143,13 @@ impl Settings {
         {
             return Err("KUBERNETES_CANARY names a second Deployment, not the stable one".into());
         }
+        let chart = super::variable(env, "KUBERNETES_HELM_CHART");
+        if chart.is_some() && canary.is_some() {
+            return Err(
+                "KUBERNETES_CANARY is not run with a Helm chart: a Helm release has one stage"
+                    .into(),
+            );
+        }
         let timeout = match super::variable(env, "KUBERNETES_TIMEOUT_SECS") {
             Some(text) => text
                 .parse::<u64>()
@@ -139,6 +162,8 @@ impl Settings {
             None => Duration::from_secs(DEFAULT_TIMEOUT_SECS),
         };
         Ok(Some(Settings {
+            helm_release: super::variable(env, "KUBERNETES_HELM_RELEASE")
+                .unwrap_or_else(|| deployment.clone()),
             deployment,
             namespace,
             container: super::variable(env, "KUBERNETES_CONTAINER"),
@@ -146,25 +171,45 @@ impl Settings {
             image,
             artifact: super::variable(env, "KUBERNETES_ARTIFACT")
                 .unwrap_or_else(|| DEFAULT_ARTIFACT.to_string()),
+            chart,
             timeout,
             poll: POLL,
             watch: super::Settings::watch_of(env)?,
         }))
     }
 
-    /// The release's image: the repository with the release's version as its tag.
-    fn image_for(&self, version: &str) -> Result<String, String> {
-        let tag_ok = version.len() <= 128
-            && version.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
-            && version
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
-        if !tag_ok {
-            return Err(format!(
-                "{version} is not an image tag, so it names no image"
-            ));
-        }
-        Ok(format!("{}:{version}", self.image))
+    /// The release's image: its pushed OCI reference, pinned by the digest the registry row holds. `KUBERNETES_IMAGE`, when
+    /// set, replaces the repository and keeps the digest.
+    pub fn image_for(&self, release: &Release) -> Result<String, String> {
+        let reference = release
+            .sync
+            .iter()
+            .find(|s| s.state == "published" && s.platform.starts_with(OCI_PLATFORM))
+            .and_then(|s| s.url.as_deref())
+            .ok_or_else(|| {
+                format!(
+                    "{} has no pushed image: no OCI registry row of it is published, so there is no image to deploy",
+                    release.version
+                )
+            })?;
+        let reference = reference.trim_start_matches("https://");
+        let (named, digest) = reference
+            .rsplit_once('@')
+            .filter(|(_, d)| d.starts_with("sha256:") && d.len() == "sha256:".len() + 64)
+            .ok_or_else(|| {
+                format!(
+                    "{}'s pushed image {reference} is not pinned by a sha256 digest",
+                    release.version
+                )
+            })?;
+        let repository = match &self.image {
+            Some(repository) => repository.clone(),
+            None => match named.rsplit_once(':') {
+                Some((repository, tag)) if !tag.contains('/') => repository.to_string(),
+                _ => named.to_string(),
+            },
+        };
+        Ok(format!("{repository}@{digest}"))
     }
 }
 
@@ -187,10 +232,25 @@ fn safe(text: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || "-._/".contains(c))
 }
 
-/// The API server's client: its address and the connector's bearer token, through the platforms' HTTP path.
+/// A name for a private temporary file or directory: unique to this process and call.
+pub fn private_name(label: &str) -> String {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "apz-{label}-{}-{nanos}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// The API server's client: its address, its CA and the connector's bearer token, through the platforms' HTTP path.
 pub struct Client {
     http: Arc<dyn Http>,
     base: String,
+    ca: Option<String>,
     token: String,
 }
 
@@ -210,7 +270,31 @@ impl Client {
         Ok(Client {
             http,
             base: base.to_string(),
+            ca: None,
             token: token.to_string(),
+        })
+    }
+
+    /// The cluster's CA certificate (PEM), which helm's kubeconfig trusts; without one, the system roots.
+    pub fn with_ca(mut self, ca: Option<String>) -> Client {
+        self.ca = ca;
+        self
+    }
+
+    /// The kubeconfig helm reads for one call: the server, its CA and the token. It is written to a private file for
+    /// that call only ([`helm`]).
+    fn kubeconfig(&self) -> Value {
+        let mut cluster = json!({ "server": self.base });
+        if let Some(ca) = &self.ca {
+            cluster["certificate-authority-data"] = json!(crate::connectors::base64(ca.as_bytes()));
+        }
+        json!({
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [{ "name": "hub", "cluster": cluster }],
+            "users": [{ "name": "hub", "user": { "token": self.token } }],
+            "contexts": [{ "name": "hub", "context": { "cluster": "hub", "user": "hub" } }],
+            "current-context": "hub",
         })
     }
 
@@ -312,6 +396,68 @@ impl Client {
             Some((STRATEGIC, &patch)),
         )
         .map(|_| ())
+    }
+}
+
+/// The tools the hub may run, found on the PATH it is given. They are detected, never installed.
+pub struct Tools {
+    path: String,
+}
+
+impl Tools {
+    /// The hub's own PATH.
+    pub fn from_env() -> Tools {
+        Tools {
+            path: std::env::var("PATH").unwrap_or_default(),
+        }
+    }
+
+    /// The tools on `path` (a PATH-style list of directories).
+    #[cfg(test)]
+    pub fn on(path: &str) -> Tools {
+        Tools {
+            path: path.to_string(),
+        }
+    }
+
+    /// The first executable file called `name` on the path.
+    pub fn find(&self, name: &str) -> Option<PathBuf> {
+        self.path
+            .split(':')
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| Path::new(dir).join(name))
+            .find(|candidate| is_executable(candidate))
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+/// A private scratch directory, removed when it goes out of scope.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(label: &str) -> Result<Scratch, String> {
+        let dir = std::env::temp_dir().join(private_name(label));
+        std::fs::create_dir(&dir)
+            .map_err(|e| format!("the hub could not make {label}'s directory: {e}"))?;
+        Ok(Scratch(dir))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -475,7 +621,58 @@ fn parse(text: &str) -> Result<Vec<Value>, String> {
     Ok(docs)
 }
 
-/// The manifests with the Kustomize overlay in them applied: its namespace, and its image names and tags.
+/// The manifests with their Kustomize overlay built: by `kubectl kustomize` or `kustomize build` when the hub has one, else
+/// by [`resolve`]. A stream without an overlay is its own documents.
+fn build(docs: Vec<Value>, tools: &Tools) -> Result<Vec<Value>, String> {
+    if !docs.iter().any(|d| kind_of(d) == "Kustomization") {
+        return Ok(docs);
+    }
+    if let Some(kubectl) = tools.find("kubectl") {
+        return render(&kubectl, &["kustomize"], docs);
+    }
+    if let Some(kustomize) = tools.find("kustomize") {
+        return render(&kustomize, &["build"], docs);
+    }
+    resolve(docs)
+}
+
+/// Builds the overlay with a tool: the stream's other documents are written as the overlay's resources in a private
+/// directory, the tool renders it, and its output is the manifests. A failed build fails the stage with the tool's words.
+fn render(bin: &Path, args: &[&str], docs: Vec<Value>) -> Result<Vec<Value>, String> {
+    let (overlays, others): (Vec<Value>, Vec<Value>) = docs
+        .into_iter()
+        .partition(|d| kind_of(d) == "Kustomization");
+    let [mut overlay] = <[Value; 1]>::try_from(overlays)
+        .map_err(|_| "the manifests hold more than one Kustomization".to_string())?;
+    let mut stream = String::new();
+    for doc in &others {
+        stream.push_str("---\n");
+        stream.push_str(&serde_yaml_ng::to_string(doc).map_err(|e| e.to_string())?);
+    }
+    overlay["resources"] = json!(["resources.yaml"]);
+    let scratch = Scratch::new("kustomize")?;
+    std::fs::write(scratch.0.join("resources.yaml"), stream)
+        .and_then(|_| {
+            std::fs::write(
+                scratch.0.join("kustomization.yaml"),
+                serde_yaml_ng::to_string(&overlay).unwrap_or_default(),
+            )
+        })
+        .map_err(|e| format!("the hub could not write the overlay: {e}"))?;
+    let output = Command::new(bin)
+        .args(args)
+        .arg(&scratch.0)
+        .output()
+        .map_err(|e| format!("kustomize did not start: {e}"))?;
+    if !output.status.success() {
+        let why = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("the overlay did not build: {}", why.trim()));
+    }
+    parse(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The manifests with the Kustomize overlay in them applied, when no tool builds it: its namespace, and its image names
+/// and tags.
 fn resolve(docs: Vec<Value>) -> Result<Vec<Value>, String> {
     let (overlays, mut docs): (Vec<Value>, Vec<Value>) = docs
         .into_iter()
@@ -489,7 +686,7 @@ fn resolve(docs: Vec<Value>) -> Result<Vec<Value>, String> {
     for field in UNBUILT_OVERLAY_FIELDS {
         if !overlay[field].is_null() {
             return Err(format!(
-                "the overlay's {field} is built by kustomize, which the hub does not run: the manifests must be written out"
+                "the overlay's {field} is built by kustomize, and no kustomize or kubectl is on the hub's PATH"
             ));
         }
     }
@@ -543,12 +740,13 @@ fn manifests(
     bytes: &[u8],
     settings: &Settings,
     image: &str,
+    tools: &Tools,
 ) -> Result<(Value, Vec<Value>), String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| "the release's manifests are not UTF-8 text".to_string())?;
     let mut target: Option<Value> = None;
     let mut others = Vec::new();
-    for mut doc in resolve(parse(text)?)? {
+    for mut doc in build(parse(text)?, tools)? {
         if !CLUSTER_SCOPED.contains(&kind_of(&doc)) && doc["metadata"]["namespace"].is_null() {
             doc["metadata"]["namespace"] = json!(settings.namespace);
         }
@@ -612,29 +810,32 @@ fn with_replicas(doc: &Value, replicas: u32) -> Value {
     doc
 }
 
-/// The ports a rollout uses: the cluster, the release's bytes, the checks, the incidents, and the recipe run.
+/// The ports a rollout uses: the cluster, the tools, the release's bytes, the checks, the incidents, and the recipe run.
 pub struct Ports<'a> {
     pub client: &'a Client,
+    pub tools: &'a Tools,
     pub artifacts: &'a dyn Artifacts,
     pub checks: &'a dyn Checks,
     pub incidents: &'a dyn Incidents,
     pub runs: &'a Runs,
 }
 
-/// What a rollout has changed on the cluster, so a failed stage can put it back.
+/// What a rollout has changed on the cluster (or in helm), so a failed stage can put it back.
 #[derive(Default)]
 struct Track {
-    /// The stable Deployment's revision before the deploy: what a rollback undoes to.
+    /// The stable Deployment's revision (or the helm release's) before the deploy: what a rollback returns to.
     prior: Option<u64>,
     /// The stable Deployment's replicas before the deploy.
     total: u32,
     canary: bool,
     scaled: bool,
     applied: bool,
+    /// The helm release this rollout installs, when the environment deploys a chart.
+    helm: Option<helm::Helm>,
 }
 
-/// Rolls `release` out to the Kubernetes Deployment of `settings`, in stages when it has a canary. The recipe run's step
-/// passes when the rollout and every check pass, and fails otherwise after the cluster is put back.
+/// Rolls `release` out to the Kubernetes Deployment of `settings` (or its Helm chart), in stages when it has a canary. The
+/// recipe run's step passes when the rollout and every check pass, and fails otherwise after the cluster is put back.
 pub fn roll(
     ports: &Ports,
     project: &str,
@@ -664,6 +865,7 @@ pub fn roll(
             ports
                 .runs
                 .settle(run, super::STEP, &Report::verdict(false), super::now());
+            let changed = track.applied || track.scaled || track.canary;
             let notes = restore(ports.client, settings, &track);
             let why = stop.why().to_string();
             if matches!(stop, Stop::Breach(_)) {
@@ -671,16 +873,16 @@ pub fn roll(
                     .incidents
                     .open(project, &env.name, &release.version, &why);
             }
-            let (status, detail) = if notes.is_empty() {
-                (
+            let (status, detail) = match (notes.is_empty(), changed) {
+                (true, true) => (
                     "rolled_back",
                     format!("{why}; restored the previous version"),
-                )
-            } else {
-                (
+                ),
+                (true, false) => ("rolled_back", format!("{why}; nothing had changed")),
+                (false, _) => (
                     "failed",
                     format!("{why}; not restored: {}", notes.join("; ")),
-                )
+                ),
             };
             Rolled { status, detail }
         }
@@ -698,12 +900,15 @@ fn rollout(
     let client = ports.client;
     let ns = settings.namespace.as_str();
     let name = settings.deployment.as_str();
+    let image = settings.image_for(release).map_err(Stop::Check)?;
+    if let Some(chart) = settings.chart.as_deref() {
+        return helm_rollout(ports, project, env, settings, release, chart, &image, track);
+    }
     let bytes = ports
         .artifacts
         .bytes(release, &settings.artifact)
         .map_err(Stop::Check)?;
-    let image = settings.image_for(&release.version).map_err(Stop::Check)?;
-    let (target, others) = manifests(&bytes, settings, &image).map_err(Stop::Check)?;
+    let (target, others) = manifests(&bytes, settings, &image, ports.tools).map_err(Stop::Check)?;
     let stable = client.deployment(ns, name).map_err(Stop::Check)?;
     track.prior = stable.as_ref().and_then(revision_of);
     track.total = stable.as_ref().map_or(1, replicas_of);
@@ -759,6 +964,40 @@ fn rollout(
         .map_err(|s| s.at(&format!("{name} at 100%")))
 }
 
+/// A Helm chart's rollout: `helm upgrade --install` with the release's image, the status read with `helm status`, and the
+/// checks after it. The previous revision is recorded first, so a failed stage can roll back to it.
+fn helm_rollout(
+    ports: &Ports,
+    project: &str,
+    env: &Environment,
+    settings: &Settings,
+    release: &Release,
+    chart: &str,
+    image: &str,
+    track: &mut Track,
+) -> Result<(), Stop> {
+    let client = ports.client;
+    let ns = settings.namespace.as_str();
+    let installed =
+        helm::locate(ports.tools, chart, &settings.helm_release).map_err(Stop::Check)?;
+    let before = helm::status(&installed, client, ns).map_err(Stop::Check)?;
+    track.prior = before.map(|s| s.revision);
+    track.helm = Some(installed.clone());
+    track.applied = true;
+    helm::upgrade(&installed, client, ns, image, settings.timeout).map_err(Stop::Check)?;
+    let after = helm::status(&installed, client, ns)
+        .map_err(Stop::Check)?
+        .ok_or_else(|| Stop::Check(format!("helm reports no release {}", installed.release)))?;
+    if after.status != "deployed" {
+        return Err(Stop::Check(format!(
+            "helm reports {} as {}",
+            installed.release, after.status
+        )));
+    }
+    super::checks(ports.checks, project, env, &settings.watch, release)
+        .map_err(|s| s.at(&format!("{} at 100%", installed.release)))
+}
+
 /// Puts back what a rollout changed, newest first. Returns what could not be put back (none when all of it was).
 fn restore(client: &Client, settings: &Settings, track: &Track) -> Vec<String> {
     let ns = settings.namespace.as_str();
@@ -776,9 +1015,13 @@ fn restore(client: &Client, settings: &Settings, track: &Track) -> Vec<String> {
         notes.push(format!("{name} replicas: {e}"));
     }
     if track.applied {
-        let undone = match track.prior {
-            Some(revision) => client.undo(ns, name, revision),
-            None => Err("it has no earlier revision to return to".to_string()),
+        let undone = match (&track.helm, track.prior) {
+            (Some(installed), Some(revision)) => {
+                helm::rollback(installed, client, ns, revision, settings.timeout)
+            }
+            (Some(_), None) => Err("the release has no earlier revision to return to".to_string()),
+            (None, Some(revision)) => client.undo(ns, name, revision),
+            (None, None) => Err("it has no earlier revision to return to".to_string()),
         };
         if let Err(e) = undone {
             notes.push(format!("{name}: {e}"));

@@ -369,8 +369,10 @@ pub fn oci(a: &Artifact) -> Result<Plan, String> {
     .map_err(|e| e.to_string())?;
     let base = format!("https://ghcr.io/v2/{repo}");
     let version = a.version;
+    // The image's digest is the manifest's: the row names the pushed reference pinned by it (a deploy runs that digest).
+    let digest = sha256_hex(&manifest);
     Ok(Plan {
-        page: format!("https://ghcr.io/{repo}:{version}"),
+        page: format!("https://ghcr.io/{repo}:{version}@sha256:{digest}"),
         requests: vec![
             Request::new(
                 "POST",
@@ -923,6 +925,14 @@ mod tests {
         assert_eq!(
             doc["config"]["digest"],
             format!("sha256:{}", sha256_hex(&config.body))
+        );
+        // The row's reference is pinned by the manifest's digest, as a registry names the image.
+        assert_eq!(
+            plan.page,
+            format!(
+                "https://ghcr.io/app:0.1.0@sha256:{}",
+                sha256_hex(&manifest.body)
+            )
         );
     }
 

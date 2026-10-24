@@ -710,8 +710,10 @@ fn spawn(
                 roll(&ports, &project, &env, &settings, &release, &run)
             }
             Connected::Kubernetes(client, settings) => {
+                let tools = kubernetes::Tools::from_env();
                 let ports = kubernetes::Ports {
                     client: &client,
+                    tools: &tools,
                     artifacts: &artifacts,
                     checks: &checks,
                     incidents: &incidents,
@@ -784,7 +786,12 @@ fn kubernetes_client(app: &App) -> Result<kubernetes::Client, String> {
             Some(pem) => Arc::new(crate::platforms::http::PrivateCa(pem.to_string())),
             None => Arc::new(crate::platforms::http::Ureq),
         };
-    kubernetes::Client::new(http, url, token)
+    Ok(kubernetes::Client::new(http, url, token)?.with_ca(
+        values
+            .get("ca")
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty()),
+    ))
 }
 
 /// Writes one notice to the project's chat (the loop's notice path).
