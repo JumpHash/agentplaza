@@ -1,0 +1,25 @@
+meta {
+  name: Read one incident with its steps and lessons
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents/{{incidentId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the incident names its alert, its act and its lessons", function () {
+    const b = res.getBody();
+    expect(b.id).to.eql(bru.getVar("incidentId"));
+    expect(b.status).to.be.oneOf(["open", "resolved"]);
+    expect(b.lesson_texts).to.be.an("array");
+  });
+}

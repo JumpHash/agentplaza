@@ -185,6 +185,15 @@ fn hook_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if !stored.is_some_and(|s| same(&s, token)) {
         return Response::error(404, "no such webhook");
     }
+    // An alert source's delivery: its signature (or secret), its alerts (24.1).
+    if crate::incidents::alert::is_source(connector) {
+        return crate::incidents::delivery(
+            app,
+            connector,
+            &|name| req.header(name).map(str::to_string),
+            &req.body,
+        );
+    }
     if matches!(connector, "github" | "linear") {
         let Some(secret) = app
             .vault

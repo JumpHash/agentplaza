@@ -572,7 +572,18 @@ max = 2
         let deploy = builtin_named("deploy").unwrap();
         assert!(!deploy.description.contains("Stub"), "deploy is real");
         assert_eq!(deploy.steps[0].fan_out, Fan::Named("per_target".into()));
-        for stub in ["incident", "upgrade", "cve"] {
+        // The incident recipe is real (incidents/): its four steps are the engine's.
+        let incident = builtin_named("incident").unwrap();
+        assert!(!incident.description.contains("Stub"), "incident is real");
+        assert_eq!(
+            incident
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["triage", "act", "tell", "after"]
+        );
+        for stub in ["upgrade", "cve"] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
                 r.description.contains("Stub until"),

@@ -52,6 +52,12 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.environments.rows(),
             load: |app, conn| app.environments.load(conn),
         },
+        Component {
+            name: "incidents",
+            def: crate::incidents::def,
+            rows: |app| app.incidents.rows(),
+            load: |app, conn| app.incidents.load(conn),
+        },
         // batch C2
         Component {
             name: "toolbox",

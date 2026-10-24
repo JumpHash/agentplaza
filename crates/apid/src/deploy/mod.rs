@@ -36,7 +36,6 @@ use std::time::Duration;
 use cloudflare::{Api, Target};
 use health::{Health, Prometheus};
 
-use crate::cards::{Kind, NewCard};
 use crate::environments::{self, Deploy, Environment};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::Runs;
@@ -809,32 +808,13 @@ impl Checks for AppChecks {
     }
 }
 
-/// Records an incident for a breach: a card of the incident kind in the project's chat, with the breach's numbers. The
-/// incident recipe (12.1) takes it from there.
+/// Records an incident for a breach (12.1): the incident recipe runs on it, and its chat card carries the breach's numbers.
 struct AppIncidents {
     app: Arc<App>,
 }
 
 impl Incidents for AppIncidents {
     fn open(&self, project: &str, env: &str, version: &str, detail: &str) {
-        let now = now();
-        let chat = work_loop::project_chat(&self.app, project, now);
-        work_loop::open_card(
-            &self.app,
-            NewCard {
-                kind: Kind::Incident,
-                chat: Some(chat),
-                project: Some(project.to_string()),
-                task: None,
-                session: None,
-                subject: format!("incident:{env}:{version}"),
-                title: format!("{version} breached its health window on {env}"),
-                body: Some(format!(
-                    "{detail}. The deploy was rolled back to the previous release."
-                )),
-                choices: Vec::new(),
-            },
-            now,
-        );
+        crate::incidents::breach(&self.app, project, env, version, detail);
     }
 }

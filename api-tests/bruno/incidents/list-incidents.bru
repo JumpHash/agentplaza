@@ -1,0 +1,24 @@
+meta {
+  name: List the project's incidents
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the incidents are a list, oldest first, each with its steps", function () {
+    const b = res.getBody();
+    expect(b.incidents).to.be.an("array");
+    b.incidents.forEach((i) => expect(i.steps).to.be.an("array"));
+  });
+}
