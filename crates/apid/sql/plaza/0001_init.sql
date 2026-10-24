@@ -128,6 +128,8 @@ CREATE TABLE "project_setting" (
     "spec_over_words" INTEGER CHECK ("spec_over_words" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
+    "upgrade_minutes" INTEGER CHECK ("upgrade_minutes" >= 0),
+    "upgrade_auto_land" INTEGER NOT NULL CHECK ("upgrade_auto_land" IN (0, 1)),
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),
     "subscription_fallback" INTEGER NOT NULL CHECK ("subscription_fallback" IN (0, 1)),
@@ -453,6 +455,42 @@ CREATE TABLE "incident_landing_areas" (
     "value" TEXT NOT NULL,
     PRIMARY KEY ("incident_landing_key", "areas_pos"),
     FOREIGN KEY ("incident_landing_key") REFERENCES "incident_landing" ("key") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+
+-- component upgrades
+CREATE TABLE "project_upgrade" (
+    "project" TEXT NOT NULL,
+    "pos" INTEGER NOT NULL CHECK ("pos" >= 0),
+    "detected" INTEGER NOT NULL CHECK ("detected" IN (0, 1)),
+    PRIMARY KEY ("project")
+) STRICT;
+CREATE TABLE "upgrade_schedule" (
+    "project_upgrade_project" TEXT NOT NULL,
+    "schedules_pos" INTEGER NOT NULL CHECK ("schedules_pos" >= 0),
+    "ecosystem" TEXT NOT NULL,
+    "next_ms" INTEGER NOT NULL CHECK ("next_ms" >= 0),
+    "skipped" TEXT NOT NULL,
+    PRIMARY KEY ("project_upgrade_project", "schedules_pos"),
+    FOREIGN KEY ("project_upgrade_project") REFERENCES "project_upgrade" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+) STRICT;
+CREATE TABLE "upgrade_batch" (
+    "project_upgrade_project" TEXT NOT NULL,
+    "batches_pos" INTEGER NOT NULL CHECK ("batches_pos" >= 0),
+    "id" TEXT NOT NULL,
+    "ecosystem" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "change" TEXT NOT NULL,
+    "hold" INTEGER NOT NULL CHECK ("hold" IN (0, 1)),
+    "task" TEXT NOT NULL,
+    "task_state" TEXT NOT NULL,
+    "summary" TEXT NOT NULL,
+    "tests" TEXT NOT NULL,
+    "changelog" TEXT NOT NULL,
+    "reason" TEXT NOT NULL,
+    "at_ms" INTEGER NOT NULL CHECK ("at_ms" >= 0),
+    PRIMARY KEY ("project_upgrade_project", "batches_pos"),
+    FOREIGN KEY ("project_upgrade_project") REFERENCES "project_upgrade" ("project") ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
 ) STRICT;
 
 -- component toolbox
@@ -2943,6 +2981,8 @@ CREATE TABLE "chat_draft_settings" (
     "queue_batch" INTEGER CHECK ("queue_batch" >= 0),
     "land_approval" INTEGER NOT NULL CHECK ("land_approval" IN (0, 1)),
     "release_continuous" INTEGER NOT NULL CHECK ("release_continuous" IN (0, 1)),
+    "upgrade_minutes" INTEGER CHECK ("upgrade_minutes" >= 0),
+    "upgrade_auto_land" INTEGER NOT NULL CHECK ("upgrade_auto_land" IN (0, 1)),
     "preview_grace_hours" INTEGER CHECK ("preview_grace_hours" >= 0),
     "spec_over_words" INTEGER CHECK ("spec_over_words" >= 0),
     "hook_defaults" INTEGER NOT NULL CHECK ("hook_defaults" IN (0, 1)),

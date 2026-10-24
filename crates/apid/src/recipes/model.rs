@@ -838,7 +838,17 @@ max = 2
                 .collect::<Vec<_>>(),
             ["triage", "act", "tell", "after"]
         );
-        for stub in ["upgrade", "cve"] {
+        let upgrade = builtin_named("upgrade").unwrap();
+        assert!(!upgrade.description.contains("Stub"), "upgrade is real");
+        assert_eq!(
+            upgrade
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            crate::upgrades::STEPS
+        );
+        for stub in ["cve"] {
             let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
             assert!(
                 r.description.contains("Stub until"),

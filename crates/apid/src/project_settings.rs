@@ -90,6 +90,14 @@ pub struct ProjectSettings {
     /// Whether the project releases continuously: each landing starts the release recipe (22; a stub until then, 4.6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub release_continuous: bool,
+    /// The minutes between the dependency upgrades of each ecosystem the project has (PLAN 24.2); 0 turns them off;
+    /// [`crate::upgrades::DEFAULT_MINUTES`] (a week) when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_minutes: Option<u32>,
+    /// Whether a passing patch or minor upgrade batch lands by itself (PLAN 24.2). Off by default: it waits for the
+    /// owner's approval, as a landing does under `land_approval`. A major upgrade always waits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upgrade_auto_land: bool,
     /// How many hours a project's previews outlive their lane's landing or closing (PLAN 18.1). A preview target's own
     /// `grace_hours` overrides it; 24 when neither is set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +239,8 @@ struct SettingsRow {
     spec_over_words: Option<u32>,
     land_approval: bool,
     release_continuous: bool,
+    upgrade_minutes: Option<u32>,
+    upgrade_auto_land: bool,
     preview_grace_hours: Option<u64>,
     hook_defaults: bool,
     subscription_fallback: bool,
@@ -308,6 +318,8 @@ impl SettingsRow {
             spec_over_words: settings.spec_over_words,
             land_approval: settings.land_approval,
             release_continuous: settings.release_continuous,
+            upgrade_minutes: settings.upgrade_minutes,
+            upgrade_auto_land: settings.upgrade_auto_land,
             preview_grace_hours: settings.preview_grace_hours,
             hook_defaults: settings.hook_defaults,
             subscription_fallback: settings.subscription_fallback,
@@ -337,6 +349,8 @@ impl SettingsRow {
             spec_over_words: self.spec_over_words,
             land_approval: self.land_approval,
             release_continuous: self.release_continuous,
+            upgrade_minutes: self.upgrade_minutes,
+            upgrade_auto_land: self.upgrade_auto_land,
             preview_grace_hours: self.preview_grace_hours,
             hooks: self.hooks,
             intake: self.intake,
@@ -429,6 +443,11 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         && !(1..=10_080).contains(&minutes)
     {
         return Err("review_timeout_minutes must be 1 to 10080 (a week)".into());
+    }
+    if let Some(minutes) = settings.upgrade_minutes
+        && minutes > 10080
+    {
+        return Err("upgrade_minutes must be 0 (off) to 10080 (a week)".into());
     }
     if let Some(minutes) = settings.full_suite_minutes
         && minutes > 10_080
@@ -739,6 +758,8 @@ pub fn effective(app: &App, id: &str) -> Value {
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
             "full_suite_minutes": pick(own.full_suite_minutes.map(Value::from), json!(crate::full_run::DEFAULT_MINUTES)),
+            "upgrade_minutes": pick(own.upgrade_minutes.map(Value::from), json!(crate::upgrades::DEFAULT_MINUTES)),
+            "upgrade_auto_land": own.upgrade_auto_land,
             "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
             "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },

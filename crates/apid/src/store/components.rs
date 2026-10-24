@@ -64,6 +64,12 @@ pub fn all() -> Vec<Component> {
             rows: |app| app.incidents.landing_rows(),
             load: |app, conn| app.incidents.load_landings(conn),
         },
+        Component {
+            name: "upgrades",
+            def: crate::upgrades::def,
+            rows: |app| app.upgrades.rows(),
+            load: |app, conn| app.upgrades.load(conn),
+        },
         // batch C2
         Component {
             name: "toolbox",

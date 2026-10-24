@@ -144,6 +144,7 @@ mod transfer;
 mod triggers;
 mod tunnel;
 mod unfurl;
+mod upgrades;
 mod upstream;
 mod usage;
 mod usage_providers;
