@@ -14,8 +14,12 @@
 //! own thread (checks.rs is the same shape). The target is the one the step's config names (`opener`): the stand-in
 //! (target.rs, in-process data), or a web page or a terminal program placed in the lane's test fork (fork.rs): the browser
 //! and the program run in the fork, and the hub only drives them over the fork's exec channel and its port streams. The
-//! desktop, simulator and device targets of 8.3–8.5 implement the same trait.
+//! desktop target (desktop.rs) is a station's screen, leased for the run and driven through the station tools; the
+//! simulator and device targets of 8.4–8.5 implement the same trait.
 
+pub mod desktop;
+#[cfg(test)]
+mod desktop_test;
 pub mod fork;
 pub mod models;
 pub mod run;
@@ -44,6 +48,7 @@ use crate::recipes::{Move, Report};
 use crate::review_graph::user::by;
 use crate::review_graph::{Finding, Verdict};
 use crate::state::App;
+use desktop::{Gui, Hub};
 use fork::{Channel, DEVTOOLS_PORT, browser_command, port_dial};
 use models::{GatewayModels, Models, PlanRequest, Roles};
 use run::{Ctx, Failure, Timed, run_scenario};
@@ -424,11 +429,11 @@ fn placed_for<'h>(
     project: &str,
     change: &str,
 ) -> Result<Option<Placed<'h>>, String> {
-    if config.stand_in.is_some() {
+    if config.stand_in.is_some() || config.desktop.is_some() {
         return Ok(None);
     }
     if config.web.is_none() && config.tui.is_none() {
-        return Err("the step names no target (stand_in, web or tui)".into());
+        return Err("the step names no target (stand_in, web, tui or desktop)".into());
     }
     let rev = project_memory::landed_revision(app, change)?;
     let stack = project_stack::read(app, project)?
@@ -528,7 +533,14 @@ fn opener<'a, 'h>(
         });
         return Ok(open);
     }
-    let placed = placed.ok_or("the step names no target (stand_in, web or tui)")?;
+    if let Some(desk) = &config.desktop {
+        let (station, os) = (desk.station.clone(), desk.os.clone());
+        let open: Opener<'a> = Box::new(move || -> Result<Box<dyn Target + 'a>, String> {
+            Ok(Box::new(Gui::open(Box::new(Hub { app }), &station, &os)?))
+        });
+        return Ok(open);
+    }
+    let placed = placed.ok_or("the step names no target (stand_in, web, tui or desktop)")?;
     if let Some(page) = &config.web {
         let url = format!(
             "http://127.0.0.1:{}/{}",
@@ -548,7 +560,7 @@ fn opener<'a, 'h>(
         return Ok(open);
     }
     let Some(tui) = &config.tui else {
-        return Err("the step names no target (stand_in, web or tui)".into());
+        return Err("the step names no target (stand_in, web, tui or desktop)".into());
     };
     let channel: &'a dyn Channel = &placed.fork;
     let (command, cols, rows) = (tui.command.clone(), tui.cols, tui.rows);

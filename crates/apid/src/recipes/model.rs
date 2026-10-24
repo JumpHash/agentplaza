@@ -148,6 +148,9 @@ pub struct UserTest {
     /// A terminal target (PLAN 19.3): a program in a pseudo-terminal in the lane's test fork, typed into by the scenarios.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tui: Option<TuiTarget>,
+    /// A desktop target (PLAN 19.3): a Linux or Windows station's screen, leased for the run and driven through its tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<DesktopTarget>,
     /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acceptance: Vec<String>,
@@ -193,12 +196,19 @@ impl UserTest {
             self.stand_in.is_some(),
             self.web.is_some(),
             self.tui.is_some(),
+            self.desktop.is_some(),
         ]
         .iter()
         .filter(|set| **set)
         .count();
         if named > 1 {
-            return Err("a test:user step names one target: stand_in, web or tui".into());
+            return Err("a test:user step names one target: stand_in, web, tui or desktop".into());
+        }
+        if let Some(desk) = &self.desktop {
+            if desk.station.trim().is_empty() {
+                return Err("a desktop target names its station".into());
+            }
+            crate::user_test::desktop::kind_of(&desk.os)?;
         }
         if let Some(web) = &self.web
             && web.path.contains("://")
@@ -245,6 +255,14 @@ fn columns() -> u16 {
 
 fn rows() -> u16 {
     30
+}
+
+/// A desktop target's configuration (PLAN 19.3): the station whose desktop the scenarios drive (its id) and the operating
+/// system that desktop runs, `linux` or `windows`. The station must be online and report that OS in its facts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopTarget {
+    pub station: String,
+    pub os: String,
 }
 
 /// What makes a change large or risky: more than `lines` changed lines, or a path one of `paths` matches. Then the

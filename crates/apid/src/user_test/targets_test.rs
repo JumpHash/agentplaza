@@ -77,7 +77,7 @@ impl Models for Fake {
 }
 
 /// One scenario on the targets `make` opens (a fresh one for each run), through the loop.
-fn run<'a>(
+pub(super) fn run<'a>(
     scenario: Scenario,
     pick: fn(usize, &PickRequest) -> Pick,
     make: impl Fn() -> Result<Box<dyn Target + 'a>, String>,
@@ -109,11 +109,11 @@ fn run<'a>(
 }
 
 /// Pressing Pay reaches the receipt.
-fn pay_scenario() -> Scenario {
+pub(super) fn pay_scenario() -> Scenario {
     scenario("Paying reaches the receipt", "press Pay", "Receipt")
 }
 
-fn scenario(title: &str, goal: &str, shows: &str) -> Scenario {
+pub(super) fn scenario(title: &str, goal: &str, shows: &str) -> Scenario {
     Scenario {
         id: "pay".into(),
         title: title.into(),
@@ -131,7 +131,7 @@ fn scenario(title: &str, goal: &str, shows: &str) -> Scenario {
 }
 
 /// Clicks the button the goal names: the option whose description names a "Pay" button.
-fn press_pay(_n: usize, req: &PickRequest) -> Pick {
+pub(super) fn press_pay(_n: usize, req: &PickRequest) -> Pick {
     match req.options.iter().find(|(_, d)| d.contains("\"Pay\"")) {
         Some((id, why)) => Pick {
             action: Some(Action::Click {
@@ -627,6 +627,7 @@ fn a_step_names_one_target_and_a_terminal_names_a_program() {
         stand_in: None,
         web: None,
         tui: None,
+        desktop: None,
         acceptance: vec![],
         threshold: 0.6,
         actions: 8,
