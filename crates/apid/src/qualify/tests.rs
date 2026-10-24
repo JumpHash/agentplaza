@@ -3,7 +3,14 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
+use apz_topology::node_loss::NodeStop;
+use apz_topology::spec::{self, Scenario, Topology};
 use serde_json::json;
 
 use crate::releases::entity::ReleaseState;
@@ -11,11 +18,12 @@ use crate::releases::flow::{self, Cut, Deps};
 use crate::releases::tests::{FakeBuilder, World, cut, lab};
 
 use super::accept::{Answer, Judge};
+use super::compat::CompatPort;
 use super::engine::{self, Setup};
 use super::plan::Stage;
 use super::report;
 use super::result::{Metric, StageResult, State};
-use super::stages::{self, Check, Cx, Lab, LabState};
+use super::stages::{self, Check, Cx, Lab, LabState, Scrubbed};
 use super::store::{FixTask, LabTest, QualifyRun, Store};
 
 /// A lab that records what the test gives its runs: their states, checks, numbers, and the re-runs its runner answers.
@@ -27,6 +35,18 @@ struct FakeLab {
     metrics: RefCell<BTreeMap<String, Vec<Metric>>>,
     reruns: RefCell<VecDeque<bool>>,
     next: RefCell<u32>,
+    /// Each topology name's TOML, and the topology each run observes.
+    texts: RefCell<BTreeMap<String, String>>,
+    run_topology: RefCell<BTreeMap<String, String>>,
+    /// What the scrub answers (copied when unset), and the outcome each run's copy came to.
+    scrub_answer: RefCell<Option<Scrubbed>>,
+    scrubs: RefCell<BTreeMap<String, Scrubbed>>,
+    /// Where each machine runs, and the probe address the hub reaches a service at.
+    placed: RefCell<BTreeMap<String, String>>,
+    probe_url: RefCell<Option<String>>,
+    /// The node stop's state: the probe server answers 503 while `down` is set; `answered` is the stops and resumes.
+    down: Arc<AtomicBool>,
+    answered: RefCell<Vec<String>>,
 }
 
 impl FakeLab {
@@ -65,6 +85,12 @@ impl FakeLab {
             });
     }
 
+    fn with_topology(&self, name: &str, text: &str) {
+        self.texts
+            .borrow_mut()
+            .insert(name.to_string(), text.to_string());
+    }
+
     fn measure(&self, run: &str, name: &str, value: f64) {
         self.metrics
             .borrow_mut()
@@ -86,10 +112,13 @@ impl Lab for FakeLab {
         &self,
         _project: &str,
         _release: &crate::releases::entity::Release,
-        _topology: &str,
+        topology: &str,
     ) -> Result<String, String> {
         *self.next.borrow_mut() += 1;
         let run = format!("lab-{}", self.next.borrow());
+        self.run_topology
+            .borrow_mut()
+            .insert(run.clone(), topology.to_string());
         self.states.borrow_mut().insert(
             run.clone(),
             LabState {
@@ -119,14 +148,103 @@ impl Lab for FakeLab {
         self.reruns
             .borrow_mut()
             .pop_front()
-            .ok_or_else(|| "no re-run was scripted".to_string())
+            .ok_or_else(|| "not run: no lab runner can re-run it".to_string())
+    }
+
+    fn topology(&self, run: &str) -> Option<Topology> {
+        let name = self.run_topology.borrow().get(run)?.clone();
+        let text = self.texts.borrow().get(&name)?.clone();
+        spec::parse(&text).ok()
+    }
+
+    fn scrub(&self, run: &str, _source: &str) -> Scrubbed {
+        let answer = self
+            .scrub_answer
+            .borrow()
+            .clone()
+            .unwrap_or(Scrubbed::Copied);
+        self.scrubs
+            .borrow_mut()
+            .insert(run.to_string(), answer.clone());
+        answer
+    }
+
+    fn scrubbed(&self, run: &str) -> Option<Scrubbed> {
+        self.scrubs.borrow().get(run).cloned()
+    }
+
+    fn placement(&self, _run: &str, _topology: &Topology) -> BTreeMap<String, String> {
+        self.placed.borrow().clone()
+    }
+
+    fn probe(&self, _run: &str, _scenario: &Scenario) -> Option<String> {
+        self.probe_url.borrow().clone()
+    }
+
+    fn node_stop(&self, _placement: &BTreeMap<String, String>) -> Box<dyn NodeStop + '_> {
+        Box::new(FakeNodes { lab: self })
     }
 }
 
-/// The compatibility part a test gives stage 9 (production is the adapter that reports not run until 10.10).
-fn compat_passes(_release: &crate::releases::entity::Release, now: u64) -> StageResult {
-    StageResult::new(Stage::Ux, State::Passed, "", now)
+/// The hub's node stop, faked: a stop takes the dependants' probe server down and a resume brings it back.
+struct FakeNodes<'a> {
+    lab: &'a FakeLab,
 }
+
+impl NodeStop for FakeNodes<'_> {
+    fn stop(&mut self, _machine: &str) -> Result<(), String> {
+        self.lab.down.store(true, Ordering::SeqCst);
+        self.lab.answered.borrow_mut().push("stopped".into());
+        Ok(())
+    }
+    fn resume(&mut self, _machine: &str) -> Result<(), String> {
+        self.lab.down.store(false, Ordering::SeqCst);
+        self.lab.answered.borrow_mut().push("active".into());
+        Ok(())
+    }
+}
+
+/// A probe server answering 503 while `down` is set and 200 otherwise (the dependants of a lost node).
+fn serve(down: Arc<AtomicBool>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let status = if down.load(Ordering::SeqCst) {
+                "503 Service Unavailable"
+            } else {
+                "200 OK"
+            };
+            let _ = stream.write_all(
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            );
+        }
+    });
+    format!("http://{addr}/")
+}
+
+impl CompatPort for FakeLab {
+    fn judge(&self, _release: &crate::releases::entity::Release, now: u64) -> StageResult {
+        StageResult::new(Stage::Ux, State::Passed, "", now)
+    }
+}
+
+/// A two-machine topology whose node loss takes the data machine out and probes the edge's service.
+const NODE_LOSS: &str = "name = \"pair\"\n\
+[[service]]\nname = \"web\"\nimage = \"web:1\"\n\
+[[service]]\nname = \"db\"\nimage = \"postgres:17\"\n\
+[[machine]]\nname = \"edge\"\nservices = [\"web\"]\n\
+[[machine]]\nname = \"data\"\nservices = [\"db\"]\n\
+[[resilience]]\nid = \"lose-data\"\naction = \"stop_node\"\ntarget = \"data\"\nat_secs = 0\nfor_secs = 1\nrecover_within_secs = 2\nprobe = { service = \"web\", path = \"/\" }\nexpect = { max_error_percent = 100.0 }\n";
+
+/// A topology that declares a production source for its data stage.
+const PRODUCTION: &str = "name = \"shop\"\n\
+[[service]]\nname = \"api\"\nimage = \"api:1\"\n\
+[data]\nproduction = \"prod\"\n";
 
 /// A judge that answers the planner's proposal and the second model's agreement from fixed answers.
 struct Scripted {
@@ -169,7 +287,7 @@ fn cx<'a>(
         release,
         project: "app",
         now,
-        compat: &compat_passes,
+        compat: lab,
     }
 }
 
@@ -638,4 +756,167 @@ fn a_candidate_that_the_planner_would_not_run_for_a_stage_is_out_of_the_depth_wi
         name: String::new(),
         value: 0.0,
     };
+}
+
+/// The data stage's production copy: a refused scan settles the stage as not run, and a clean one lets the stage judge.
+#[test]
+fn the_production_copy_is_made_as_its_run_is_queued_and_a_refused_scan_never_passes_the_data_stage()
+{
+    let (client, _handle, _dir, _change, _agent) = lab("qualify-scrub-refused");
+    let world = World::new(client, "qualify-scrub-refused");
+    let d = world.deps();
+    let store = Store::default();
+    let fake = FakeLab::with(&["shop"]);
+    fake.with_topology("shop", PRODUCTION);
+    *fake.scrub_answer.borrow_mut() = Some(Scrubbed::Refused(vec![
+        "users.email: email (2 samples)".into(),
+    ]));
+    let release = candidate(&d, "v0.1.0", "stable");
+    let lab_cx = cx(&d, &fake, &store, &release, 1);
+    let q = engine::start(&lab_cx, None, &setup()).unwrap();
+    let run = q.lab_runs[0].clone();
+    assert!(
+        fake.scrubs.borrow().contains_key(&run),
+        "the copy was asked as the run was queued"
+    );
+    healthy_run(&fake, &store, &run, 100.0);
+    let lab_cx = cx(&d, &fake, &store, &release, 2);
+    let q = engine::advance(&lab_cx, None, &q.id).unwrap();
+    let data = q.result(Stage::Data).expect("the data stage was judged");
+    assert_eq!(data.state, State::NotRun, "{data:?}");
+    assert_eq!(data.reason, "not run: personal data found");
+    assert!(
+        data.findings.iter().any(|f| f.text.contains("users.email")),
+        "{data:?}"
+    );
+    assert_ne!(q.verdict, "passed", "a refused scan never passes");
+}
+
+#[test]
+fn a_clean_production_copy_lets_the_data_stage_judge_its_run() {
+    let (client, _handle, _dir, _change, _agent) = lab("qualify-scrub-clean");
+    let world = World::new(client, "qualify-scrub-clean");
+    let d = world.deps();
+    let store = Store::default();
+    let fake = FakeLab::with(&["shop"]);
+    fake.with_topology("shop", PRODUCTION);
+    let release = candidate(&d, "v0.1.0", "stable");
+    let lab_cx = cx(&d, &fake, &store, &release, 1);
+    let q = engine::start(&lab_cx, None, &setup()).unwrap();
+    let run = q.lab_runs[0].clone();
+    healthy_run(&fake, &store, &run, 100.0);
+    let lab_cx = cx(&d, &fake, &store, &release, 2);
+    let q = engine::advance(&lab_cx, None, &q.id).unwrap();
+    assert_eq!(fake.scrubbed(&run), Some(Scrubbed::Copied));
+    let data = q.result(Stage::Data).expect("the data stage was judged");
+    assert_eq!(data.state, State::Passed, "{data:?}");
+}
+
+/// A node loss runs through the hub's node stop, and its judgement counts in the resilience stage.
+#[test]
+fn a_node_loss_runs_through_the_hub_node_stop_and_its_judgement_counts_in_the_resilience_stage() {
+    let (client, _handle, _dir, _change, _agent) = lab("qualify-node-loss");
+    let world = World::new(client, "qualify-node-loss");
+    let d = world.deps();
+    let store = Store::default();
+    let fake = FakeLab::with(&["pair"]);
+    fake.with_topology("pair", NODE_LOSS);
+    *fake.placed.borrow_mut() = BTreeMap::from([
+        ("edge".to_string(), "n1".to_string()),
+        ("data".to_string(), "n2".to_string()),
+    ]);
+    *fake.probe_url.borrow_mut() = Some(serve(Arc::clone(&fake.down)));
+    let release = candidate(&d, "v0.1.0", "stable");
+    let lab_cx = cx(&d, &fake, &store, &release, 1);
+    let q = engine::start(&lab_cx, None, &setup()).unwrap();
+    let run = q.lab_runs[0].clone();
+    healthy_run(&fake, &store, &run, 100.0);
+    let lab_cx = cx(&d, &fake, &store, &release, 2);
+    let q = engine::advance(&lab_cx, None, &q.id).unwrap();
+    let resilience = q.result(Stage::Resilience).expect("resilience was judged");
+    assert_eq!(resilience.state, State::Passed, "{resilience:?}");
+    assert!(
+        resilience
+            .parts
+            .iter()
+            .any(|p| p.name == "node loss: lose-data" && p.state == State::Passed),
+        "{resilience:?}"
+    );
+    assert_eq!(*fake.answered.borrow(), ["stopped", "active"]);
+    // The lost node's probes failed while it was out: that is the degradation the spec allows.
+    assert!(
+        !fake.down.load(Ordering::SeqCst),
+        "the node is back in service"
+    );
+}
+
+/// A topology whose machines share one node cannot lose one: its node loss is not run, with the reason.
+#[test]
+fn a_topology_without_a_multi_node_placement_shows_its_node_loss_not_run_with_the_reason() {
+    let (client, _handle, _dir, _change, _agent) = lab("qualify-node-loss-one");
+    let world = World::new(client, "qualify-node-loss-one");
+    let d = world.deps();
+    let store = Store::default();
+    let fake = FakeLab::with(&["pair"]);
+    fake.with_topology("pair", NODE_LOSS);
+    *fake.placed.borrow_mut() = BTreeMap::from([
+        ("edge".to_string(), "n1".to_string()),
+        ("data".to_string(), "n1".to_string()),
+    ]);
+    let release = candidate(&d, "v0.1.0", "stable");
+    let lab_cx = cx(&d, &fake, &store, &release, 1);
+    let q = engine::start(&lab_cx, None, &setup()).unwrap();
+    let run = q.lab_runs[0].clone();
+    healthy_run(&fake, &store, &run, 100.0);
+    let lab_cx = cx(&d, &fake, &store, &release, 2);
+    let q = engine::advance(&lab_cx, None, &q.id).unwrap();
+    let resilience = q.result(Stage::Resilience).expect("resilience was judged");
+    assert_eq!(resilience.state, State::NotRun, "{resilience:?}");
+    assert!(
+        resilience.reason.contains("needs a multi-VM topology"),
+        "{resilience:?}"
+    );
+    assert!(fake.answered.borrow().is_empty(), "no node was stopped");
+    assert_ne!(q.verdict, "passed");
+}
+
+/// A failed test whose re-run no lab runner can take is recorded as not run, and the test keeps its failure.
+#[test]
+fn a_failed_test_whose_re_run_no_lab_runner_can_take_is_not_run_and_keeps_its_failure() {
+    let (client, _handle, _dir, _change, _agent) = lab("qualify-rerun-none");
+    let world = World::new(client, "qualify-rerun-none");
+    let d = world.deps();
+    let store = Store::default();
+    let fake = FakeLab::with(&["web"]);
+    let release = candidate(&d, "v0.1.0", "stable");
+    let lab_cx = cx(&d, &fake, &store, &release, 1);
+    let q = engine::start(&lab_cx, None, &setup()).unwrap();
+    let run = q.lab_runs[0].clone();
+    fake.finish(&run, "passed");
+    store.record_lab_tests(
+        &run,
+        &[LabTest {
+            run: run.clone(),
+            name: "cart::pay".into(),
+            passed: false,
+        }],
+    );
+    // No re-run is scripted: the runner cannot take one.
+    let lab_cx = cx(&d, &fake, &store, &release, 2);
+    let q = engine::advance(&lab_cx, None, &q.id).unwrap();
+    let functional = q.result(Stage::Functional).expect("functional was judged");
+    assert_eq!(functional.state, State::Failed, "{functional:?}");
+    assert!(
+        functional
+            .findings
+            .iter()
+            .any(|f| f.text.contains("re-run not run")),
+        "{functional:?}"
+    );
+    let failed = functional
+        .metrics
+        .iter()
+        .find(|m| m.name == "tests.failed")
+        .unwrap();
+    assert_eq!(failed.value, 1.0, "the test still counts as failed");
 }

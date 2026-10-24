@@ -6,7 +6,7 @@
 //! - `result.rs`: a stage's result, the findings and metrics it reports, and the verdict over the stages (pure).
 //! - `testcases.rs`: re-runs of failed tests, the flake history, and quarantine (pure, the clock is given).
 //! - `accept.rs`: a failure accepted with a reason, the planner's proposal and the second model's agreement.
-//! - `compat.rs`: the adapter the compatibility part of stage 9 reads (10.10 fills it).
+//! - `compat.rs`: the compatibility part of stage 9: the candidate's matrix, judged on the pools (10.10).
 //! - `stages.rs`: each stage's result path over the lab (the [`stages::Lab`] port) and the release's artifacts.
 //! - `engine.rs`: starts and walks a qualification on the restricted recipe, judges the verdict, and files the release's
 //!   review graph.

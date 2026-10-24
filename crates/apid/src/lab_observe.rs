@@ -22,7 +22,7 @@ use apz_topology::collector::TOKEN_HEADER;
 use apz_topology::compare::Limit;
 use apz_topology::observe::{self, LogLine, PointKind, SpanRec};
 use apz_topology::resilience;
-use apz_topology::spec::{self, Assertion, Scenario, Topology};
+use apz_topology::spec::{self, Action, Assertion, Scenario, Topology};
 use apz_topology::stage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
@@ -577,7 +577,12 @@ pub fn assess(
     }
     // Each resilience scenario is judged by the numbers its run recorded (PLAN 22.8). A scenario with no numbers did not
     // run here: its verdict fails it with the reason, and files nothing, since nothing was observed to be wrong.
-    for scenario in &topology.resilience {
+    // A node loss is run by the qualification's resilience stage through the hub's node stop (10.11), not measured here.
+    for scenario in topology
+        .resilience
+        .iter()
+        .filter(|s| s.action != Action::StopNode)
+    {
         let names = resilience::names(&scenario.id);
         let values = lab_performance::values(metrics, &run.id, &names);
         let (check, measured) = match resilience::from_metrics(&scenario.id, &values) {
@@ -686,6 +691,63 @@ fn file_stage(
     reviews
         .attach_finding(&run.change, finding)
         .map_or_else(String::new, |(review, id)| format!("{review}/{id}"))
+}
+
+/// Judges a done run over its topology: the assessment, the security judgements of the outcomes given (`None`: the
+/// security stages were not posted, so they are not judged), and the qualification's eval records (13.1).
+fn judge(
+    app: &App,
+    run: &LabRun,
+    topology: &Topology,
+    security: Option<&[apz_topology::security::Outcome]>,
+) -> Result<Vec<LabVerdict>, (u16, String)> {
+    let (releases, limits) = lab_performance::context(app, &run.project);
+    let mut verdicts = assess(
+        &app.test_lab,
+        &app.metrics,
+        &app.reviews,
+        &run.id,
+        topology,
+        &releases,
+        &limits,
+    )?;
+    if let Some(outcomes) = security {
+        verdicts.extend(lab_security::assess(
+            &app.test_lab,
+            &app.reviews,
+            run,
+            topology,
+            outcomes,
+        ));
+    }
+    record_qualification(app, run, &verdicts);
+    Ok(verdicts)
+}
+
+/// Assesses a run as it ends (PLAN 22.7, 22.10): the run's topology from its project's repository, judged over what the
+/// run observed and measured. Once per run (the lab's `finish` calls it, and a second call is a no-op): the qualification's
+/// stage polls then see the verdicts without a manual assessment. The security stages are not judged here: their
+/// outcomes come from the lab VM's runner and are posted to the assessment route. A run with no topology has nothing to
+/// assess.
+pub fn assess_ended(app: &App, run_id: &str) -> Result<Vec<LabVerdict>, String> {
+    if !app.test_lab.first_assessment(run_id) {
+        return Ok(Vec::new());
+    }
+    let run = app
+        .test_lab
+        .runs()
+        .into_iter()
+        .find(|r| r.id == run_id)
+        .ok_or_else(|| "no such run".to_string())?;
+    if run.topology.is_empty() {
+        return Ok(Vec::new());
+    }
+    let found = crate::topology::read(app, &run.project)?;
+    let topology = found
+        .into_iter()
+        .find_map(|f| f.topology.ok().filter(|t| t.name == run.topology))
+        .ok_or_else(|| format!("topology {} is not in the project", run.topology))?;
+    judge(app, &run, &topology, None).map_err(|(_, why)| why)
 }
 
 /// What a run observed, for `GET .../observations`: its state, the counts of its logs, errors and spans, and its
@@ -1005,27 +1067,8 @@ fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             }
         }
     };
-    let (releases, limits) = lab_performance::context(app, &run.project);
-    match assess(
-        &app.test_lab,
-        &app.metrics,
-        &app.reviews,
-        id,
-        &topology,
-        &releases,
-        &limits,
-    ) {
-        Ok(mut verdicts) => {
-            verdicts.extend(lab_security::assess(
-                &app.test_lab,
-                &app.reviews,
-                &run,
-                &topology,
-                &security,
-            ));
-            record_qualification(app, &run, &verdicts);
-            Response::json(200, &json!({"run": id, "verdicts": verdicts}))
-        }
+    match judge(app, &run, &topology, Some(security.as_slice())) {
+        Ok(verdicts) => Response::json(200, &json!({"run": id, "verdicts": verdicts})),
         Err((status, message)) => Response::error(status, &message),
     }
 }

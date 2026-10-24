@@ -196,7 +196,20 @@ pub fn advance(cx: &Cx, judge: Option<&dyn Judge>, id: &str) -> Result<QualifyRu
                 let mut failure = None;
                 for topology in cx.lab.topologies(cx.project) {
                     match cx.lab.enqueue(cx.project, cx.release, &topology) {
-                        Ok(run) => ids.push(run),
+                        Ok(run) => {
+                            // A topology that declares a production source gets its scrubbed copy as its run is queued
+                            // (10.13): the data stage reads the copy's outcome. The copy is made before the data stage
+                            // can start, which waits on the runs.
+                            let source = cx
+                                .lab
+                                .topology(&run)
+                                .and_then(|t| t.data)
+                                .and_then(|data| data.production);
+                            if let Some(source) = source {
+                                cx.lab.scrub(&run, &source);
+                            }
+                            ids.push(run);
+                        }
                         Err(why) => {
                             failure = Some(why);
                             break;
