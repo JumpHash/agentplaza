@@ -508,11 +508,17 @@ mod tests {
                 "screenrecord"
             ])
         );
+        // The app is a file on this node, so its path is absolute the host's way.
+        let apk = std::env::temp_dir().join("app.apk");
         assert_eq!(
-            words(&Adb::Install {
-                apk: PathBuf::from("/Users/ci/app.apk")
-            }),
-            list(&["-s", "emulator-5554", "install", "-r", "/Users/ci/app.apk"])
+            words(&Adb::Install { apk: apk.clone() }),
+            list(&[
+                "-s",
+                "emulator-5554",
+                "install",
+                "-r",
+                &apk.to_string_lossy()
+            ])
         );
         assert_eq!(
             words(&Adb::Start {
