@@ -51,6 +51,9 @@ toml = "1"
 wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 ureq.workspace = true
 sha2.workspace = true
+# The checksum files of a Maven publish (9.5: releases/registries/wire.rs): the .md5 and .sha1 next to each file.
+md-5 = "0.10"
+sha1 = "0.10"
 blake2.workspace = true
 apz-trust = { path = "../apz-trust" }
 apz-os = { path = "../apz-os" }

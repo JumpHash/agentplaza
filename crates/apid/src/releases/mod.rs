@@ -12,6 +12,7 @@
 //! - `sync.rs`: the release on GitHub, GitLab and Forgejo: its tag, notes, assets, pre-release flag, checks and yanks (22.4).
 //! - `sbom.rs`, `attest.rs`, `signing.rs`: each artifact's CycloneDX SBOM, its in-toto provenance in a DSSE envelope,
 //!   and its platform signatures (9.3); publish verifies them all first.
+//! - `registries/`: each artifact published to its ecosystem's package registry after the release is published (9.5).
 
 pub mod attest;
 pub mod builder;
@@ -19,6 +20,7 @@ pub mod channels;
 pub mod entity;
 pub mod flow;
 pub mod lanes;
+pub mod registries;
 pub mod routes;
 pub mod sbom;
 #[cfg(test)]

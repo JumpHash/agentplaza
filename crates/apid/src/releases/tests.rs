@@ -185,6 +185,14 @@ fn put(store: &Store, path: &str, text: &str) -> Delta {
 /// A Weft on a scratch store with one landed change (a Cargo package declaring two targets), served in-process.
 /// Returns the client the flow uses, the server's handle (it serves while the handle lives) and the directory.
 pub(super) fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
+    lab_with(name, &[])
+}
+
+/// [`lab`], with `files` added to the landed change (the build files of other ecosystems: a release declares their targets).
+pub(super) fn lab_with(
+    name: &str,
+    files: &[(&str, &str)],
+) -> (Client, apz_http::Handle, PathBuf, String, String) {
     let dir = std::env::temp_dir().join(format!("apid-release-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let owner = KeyPair::generate();
@@ -238,11 +246,18 @@ pub(super) fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, Str
                 json!({ "change": change, "n": 1, "intents": [{ "title": "Add the app entry point", "summary": "main prints hello", "kind": "feature" }] }),
             )
             .unwrap();
-        let deltas = vec![
-            put(&store, "Cargo.toml", CARGO),
-            put(&store, "Cargo.lock", CARGO_LOCK),
-            put(&store, "src/main.rs", "fn main() {}\n"),
+        // The defaults, each replaced by a file of the same path in `files`.
+        let defaults = [
+            ("Cargo.toml", CARGO),
+            ("Cargo.lock", CARGO_LOCK),
+            ("src/main.rs", "fn main() {}\n"),
         ];
+        let mut deltas: Vec<Delta> = defaults
+            .iter()
+            .filter(|(path, _)| !files.iter().any(|(f, _)| f == path))
+            .map(|(path, text)| put(&store, path, text))
+            .collect();
+        deltas.extend(files.iter().map(|(path, text)| put(&store, path, text)));
         store
             .append(Statement::new("revision.draft", writer.clone(), json!({ "change": change, "n": 1, "deltas": deltas, "tool_calls": ["ide_write#1"], "turn": 1, "model": "claude-opus-5-5" })).sign(&agent))
             .unwrap();
