@@ -166,11 +166,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         .persist_dir
         .as_deref()
         .map(workspace_image::default_path);
+    // The guest build's workspace template sits beside the initrd (a Mac makes the image from it).
+    let template = config
+        .initrd
+        .parent()
+        .map(|dir| dir.join(workspace_image::TEMPLATE_NAME))
+        .filter(|path| path.is_file());
     if let Some(image) = config
         .workspace
         .clone()
         .filter(|image| Some(image) == default_image.as_ref())
-        && let Err(why) = workspace_image::ensure(&image)
+        && let Err(why) = workspace_image::ensure(&image, template.as_deref())
     {
         eprintln!("noded: no workspace image: {why}; agents run without a workspace volume");
         config.workspace = None;

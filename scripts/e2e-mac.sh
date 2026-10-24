@@ -128,6 +128,36 @@ T_ANSWER=$(now_ms)
 echo "e2e-mac: answer: $answer"
 echo "e2e-mac: timing (ms): apid listening $T_API, orchestrator VM connected $T_READY, answer $(( T_ANSWER - T0 )) from start (reply $(( T_ANSWER - T_SEND )) after the message)"
 total=$(( T_ANSWER - T0 ))
+
+# The workspace: the orchestrator's /workspace is an ext4 volume the guest mounted and grew to the workspace's size.
+# The file its reply names must be on that volume once the journal commits (ext4 commits every 5 s), so this waits
+# 6 s and reads the image with the container's e2fsprogs (a read-only debugfs and dumpe2fs).
+WS_DIR="$HOME_DIR/Library/Application Support/AgentPlaza/data/node/workspaces"
+ws_image=$(ls "$WS_DIR"/cid-*.ext4 2>/dev/null | head -1 || true)
+if [ -z "$ws_image" ] || ! command -v docker >/dev/null 2>&1; then
+  echo "e2e-mac: workspace check skipped (no workspace image, or no docker for e2fsprogs)"
+else
+  sleep 6
+  ws_name=$(basename "$ws_image")
+  super=$(docker run --rm -v "$WS_DIR:/w:ro" apz-linux-build:1.88 dumpe2fs -h "/w/$ws_name" 2>/dev/null || true)
+  blocks=$(printf '%s\n' "$super" | awk -F: '/^Block count/ {gsub(/ /, "", $2); print $2}')
+  block_size=$(printf '%s\n' "$super" | awk -F: '/^Block size/ {gsub(/ /, "", $2); print $2}')
+  bytes=$(( ${blocks:-0} * ${block_size:-0} ))
+  note=$(printf '%s' "$answer" | grep -o 'notes/[^ ]*\.md' | head -1 | sed 's|^notes/||' || true)
+  # The guest's writes are committed to the journal and not yet checkpointed: a copy of the image is replayed
+  # (e2fsck) before it is read, so the image itself is left as the guest left it.
+  listing=$(docker run --rm -v "$WS_DIR:/w:ro" apz-linux-build:1.88 sh -c "cp /w/$ws_name /tmp/check.ext4 && e2fsck -fy /tmp/check.ext4 >/dev/null 2>&1; debugfs -R 'ls /notes' /tmp/check.ext4 2>/dev/null" || true)
+  echo "e2e-mac: workspace $ws_name: $bytes bytes (${blocks:-?} blocks of ${block_size:-?})"
+  if [ -n "$note" ] && printf '%s' "$listing" | grep -q "$note"; then
+    echo "e2e-mac: the reply's file is on the workspace: /notes/$note"
+  else
+    echo "e2e-mac: FAIL: /notes/${note:-?} is not on the workspace"; echo "$listing"; exit 1
+  fi
+  if [ "$bytes" != "4294967296" ]; then
+    echo "e2e-mac: FAIL: the workspace filesystem is $bytes bytes, not grown to 4 GiB"; exit 1
+  fi
+fi
+
 if [ "$total" -lt 60000 ]; then
   echo "e2e-mac: PASS: the chat with the orchestrator in ${total} ms (under a minute)"
 else

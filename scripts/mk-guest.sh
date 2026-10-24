@@ -35,12 +35,18 @@ scripts/mk-guest-kernel.sh "$arch" "$out/vmlinux"
 APZ_GUEST_MODULES=builtin sh scripts/mk-initrd.sh "$arch"
 cp "target/guest/initrd.$arch.gz" "$out/initrd.gz"
 
+# The workspace template: an empty ext4 filesystem, 64 MiB, beside the initrd. A host without mkfs.ext4 (a Mac) makes
+# each agent's workspace by cloning it and truncating the clone to the workspace's size; the guest's init then grows the
+# filesystem to fill the disk (resize2fs, see mk-initrd.sh). It is built with the same flags as the default image.
+APZ_WORKSPACE_MIB=64 APZ_WORKSPACE_IMAGE="$out/workspace-template.ext4" sh scripts/mk-workspace-image.sh
+
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 cat > "$out/guest.json" <<EOF
 {
   "arch": "$arch",
   "kernel": { "version": "$(cat "$out/kernel.version")", "file": "vmlinux", "sha256": "$(sha "$out/vmlinux")" },
   "initrd": { "file": "initrd.gz", "sha256": "$(sha "$out/initrd.gz")" },
+  "workspace_template": { "file": "workspace-template.ext4", "mib": 64, "sha256": "$(sha "$out/workspace-template.ext4")" },
   "source": "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 }
 EOF
