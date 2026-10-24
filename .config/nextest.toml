@@ -5,6 +5,13 @@
 slow-timeout = { period = "30s", terminate-after = 4 }
 fail-fast = false
 
+# The coverage job runs the tests under this profile, instrumented and slower: the hub's integration tests get the
+# same room as under `ci` (see the override there).
+[[profile.default.overrides]]
+filter = 'package(apid) & kind(test)'
+threads-required = 2
+slow-timeout = { period = "30s", terminate-after = 8 }
+
 [profile.ci]
 slow-timeout = { period = "30s", terminate-after = 4 }
 fail-fast = false
