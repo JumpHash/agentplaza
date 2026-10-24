@@ -18,12 +18,20 @@
 //! staging stage, and its deploy waits for the owner in Approvals as any protected deploy does. The deploy's status and
 //! the environment's version follow the outcome, and the project's chat is told at each step.
 //!
+//! AWS (11.3, [`aws`]) is a platform of the same path: an environment names a Lambda alias (`AWS_LAMBDA_FUNCTION`,
+//! `AWS_LAMBDA_ALIAS`), an ECS service (`AWS_ECS_CLUSTER`, `AWS_ECS_SERVICE`, `AWS_ECS_CONTAINER`, `AWS_ECS_FAMILY`,
+//! `ECS_MIN_HEALTHY_PERCENT`, `ECS_MAX_PERCENT`), a static site (`AWS_S3_BUCKET`, `AWS_S3_PREFIX`,
+//! `AWS_CLOUDFRONT_DISTRIBUTION`) or a CloudFormation stack (`AWS_CLOUDFORMATION_STACK`), in `AWS_REGION` (else the
+//! connector's region). The artifact of each is named by `DEPLOY_ARTIFACT`.
+//!
 //! Environment variables (not secret): `CLOUDFLARE_WORKER`, `CLOUDFLARE_PAGES`, `ROLLOUT_STAGES` (`10,50,100`),
 //! `DEPLOY_WINDOW_SECS` (300), `DEPLOY_MAX_ERRORS` (0), `DEPLOY_ARTIFACT` (`web`), `HEALTH_MAX_ERROR_RATE` (0.05),
 //! `HEALTH_MAX_P95_MS` (2000), `HEALTH_ERROR_QUERY`, `HEALTH_LATENCY_QUERY` (the monitoring queries, see [`health`]). The
 //! Cloudflare account ID and API token are the Cloudflare connector's (`connectors::hub_values`), read on the hub only; the
-//! monitoring source is the `prometheus` connector's URL and optional token.
+//! AWS base credentials and role are the `aws` connector's, the same way; the monitoring source is the `prometheus`
+//! connector's URL and optional token.
 
+pub mod aws;
 pub mod cloudflare;
 pub mod health;
 #[cfg(test)]
@@ -33,7 +41,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cloudflare::{Api, Target};
 use health::{Health, Prometheus};
 
 use crate::environments::{self, Deploy, Environment};
@@ -59,10 +66,98 @@ const MAX_WINDOW_SECS: u64 = 3600;
 /// Who a rollback's deploy record names.
 pub const ROLLBACK_BY: &str = "rollback";
 
+/// What a rollout deploys to: a Cloudflare target or an AWS one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Cloudflare(cloudflare::Target),
+    Aws(aws::Target),
+}
+
+impl Target {
+    /// The target as the logs and the chat name it.
+    pub fn label(&self) -> String {
+        match self {
+            Target::Cloudflare(target) => target.label(),
+            Target::Aws(target) => target.label(),
+        }
+    }
+
+    /// Whether the target can serve several versions at once, at percentages: Workers' percentage deployments and Lambda's
+    /// weighted aliases. The rest serve one version, so their first stage is the whole deploy.
+    fn staged(&self) -> bool {
+        matches!(
+            self,
+            Target::Cloudflare(cloudflare::Target::Workers(_))
+                | Target::Aws(aws::Target::Lambda { .. })
+        )
+    }
+}
+
+/// The calls a rollout makes to its platforms, by target: `live` reads the version that serves now, `upload` makes a
+/// version from the release's artifact, `split` serves versions at percentages, `restore` serves an earlier one again.
+pub trait Api: Send + Sync {
+    fn live(&self, target: &Target) -> Result<Option<String>, String>;
+    fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String>;
+    fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String>;
+    fn restore(&self, target: &Target, to: &str) -> Result<(), String>;
+}
+
+/// The platforms a rollout reaches, each present when an environment's targets need it.
+pub struct Platforms {
+    pub cloudflare: Option<cloudflare::Client>,
+    pub aws: Option<aws::Client>,
+}
+
+impl Platforms {
+    fn cloudflare(&self) -> Result<&cloudflare::Client, String> {
+        self.cloudflare
+            .as_ref()
+            .ok_or_else(|| "no Cloudflare connector serves this rollout".to_string())
+    }
+
+    fn aws(&self) -> Result<&aws::Client, String> {
+        self.aws
+            .as_ref()
+            .ok_or_else(|| "no AWS connector serves this rollout".to_string())
+    }
+}
+
+impl Api for Platforms {
+    fn live(&self, target: &Target) -> Result<Option<String>, String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.live(t),
+            Target::Aws(t) => self.aws()?.live(t),
+        }
+    }
+
+    fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.upload(t, bytes),
+            Target::Aws(t) => self.aws()?.upload(t, bytes),
+        }
+    }
+
+    fn split(&self, target: &Target, versions: &[(String, u32)]) -> Result<(), String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.split(t, versions),
+            Target::Aws(t) => self.aws()?.split(t, versions),
+        }
+    }
+
+    fn restore(&self, target: &Target, to: &str) -> Result<(), String> {
+        match target {
+            Target::Cloudflare(t) => self.cloudflare()?.restore(t, to),
+            Target::Aws(t) => self.aws()?.restore(t, to),
+        }
+    }
+}
+
 /// An environment's rollout settings, read from its variables.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub targets: Vec<Target>,
+    /// The AWS region the environment deploys in (`AWS_REGION`), when it names one; else the connector's.
+    pub aws_region: Option<String>,
     pub stages: Vec<u32>,
     pub window: Duration,
     pub max_errors: u32,
@@ -86,10 +181,51 @@ impl Settings {
         };
         let mut targets = Vec::new();
         if let Some(name) = var("CLOUDFLARE_WORKER") {
-            targets.push(Target::Workers(name));
+            targets.push(Target::Cloudflare(cloudflare::Target::Workers(name)));
         }
         if let Some(name) = var("CLOUDFLARE_PAGES") {
-            targets.push(Target::Pages(name));
+            targets.push(Target::Cloudflare(cloudflare::Target::Pages(name)));
+        }
+        if let Some(function) = var("AWS_LAMBDA_FUNCTION") {
+            targets.push(Target::Aws(aws::Target::Lambda {
+                function,
+                alias: var("AWS_LAMBDA_ALIAS").unwrap_or_else(|| "live".to_string()),
+            }));
+        }
+        if var("AWS_ECS_CLUSTER").is_some() || var("AWS_ECS_SERVICE").is_some() {
+            let (Some(cluster), Some(service), Some(container)) = (
+                var("AWS_ECS_CLUSTER"),
+                var("AWS_ECS_SERVICE"),
+                var("AWS_ECS_CONTAINER"),
+            ) else {
+                return Err(
+                    "an ECS rollout names AWS_ECS_CLUSTER, AWS_ECS_SERVICE and AWS_ECS_CONTAINER"
+                        .into(),
+                );
+            };
+            targets.push(Target::Aws(aws::Target::Ecs {
+                family: var("AWS_ECS_FAMILY").unwrap_or_else(|| service.clone()),
+                cluster,
+                service,
+                container,
+                min_healthy: var_u32(&var, "ECS_MIN_HEALTHY_PERCENT", 100)?,
+                max_percent: var_u32(&var, "ECS_MAX_PERCENT", 200)?,
+            }));
+        }
+        if let Some(bucket) = var("AWS_S3_BUCKET") {
+            let prefix = var("AWS_S3_PREFIX").unwrap_or_default();
+            let prefix = match prefix.trim_matches('/') {
+                "" => String::new(),
+                trimmed => format!("{trimmed}/"),
+            };
+            targets.push(Target::Aws(aws::Target::Site {
+                bucket,
+                prefix,
+                distribution: var("AWS_CLOUDFRONT_DISTRIBUTION"),
+            }));
+        }
+        if let Some(name) = var("AWS_CLOUDFORMATION_STACK") {
+            targets.push(Target::Aws(aws::Target::Stack { name }));
         }
         if targets.is_empty() {
             return Ok(None);
@@ -132,6 +268,7 @@ impl Settings {
         };
         Ok(Some(Settings {
             targets,
+            aws_region: var("AWS_REGION"),
             stages,
             window: Duration::from_secs(window),
             max_errors,
@@ -143,6 +280,16 @@ impl Settings {
             latency_query: var("HEALTH_LATENCY_QUERY")
                 .unwrap_or_else(|| health::LATENCY_QUERY.to_string()),
         }))
+    }
+}
+
+/// A whole-number variable, or its default when the environment does not name it.
+fn var_u32(var: &impl Fn(&str) -> Option<String>, key: &str, default: u32) -> Result<u32, String> {
+    match var(key) {
+        Some(text) => text
+            .parse::<u32>()
+            .map_err(|_| format!("{key} is a whole number")),
+        None => Ok(default),
     }
 }
 
@@ -399,9 +546,10 @@ fn rollout_all(
             .upload(target, &bytes)
             .map_err(|e| Stop::Check(format!("{label}: {e}")))?;
         changed.push((target.clone(), previous.clone()));
-        // Pages has no percentages, and a first deploy has nothing to split with: both go to 100% at once.
-        let stages: Vec<u32> = match (target, &previous) {
-            (Target::Workers(_), Some(_)) => settings.stages.clone(),
+        // Pages, a site, a service and a stack have no percentages, and a first deploy has nothing to split with: both go
+        // to 100% at once.
+        let stages: Vec<u32> = match &previous {
+            Some(_) if target.staged() => settings.stages.clone(),
             _ => vec![100],
         };
         for pct in stages {
@@ -573,7 +721,7 @@ fn spawn(
     deploy: &Deploy,
     prior: Option<String>,
 ) {
-    let client = match cloudflare_client(app) {
+    let client = match platforms(app, &settings) {
         Ok(client) => client,
         Err(why) => {
             environments::settle_deploy(app, project, &env.name, &deploy.id, "failed", &why, None);
@@ -672,6 +820,70 @@ fn record_rollback(app: &App, project: &str, env: &str, to: Option<&str>, from: 
         ),
         Err(why) => eprintln!("apid: recording the rollback of {project} {env}: {why}"),
     }
+}
+
+/// The clients the environment's targets need: Cloudflare's when a Worker or Pages target is named, AWS's when an AWS one is.
+/// Each is built from its connector on the hub, so a missing connector refuses the deploy before anything is called.
+fn platforms(app: &App, settings: &Settings) -> Result<Platforms, String> {
+    let cloudflare_targets = settings
+        .targets
+        .iter()
+        .any(|t| matches!(t, Target::Cloudflare(_)));
+    let aws_targets = settings.targets.iter().any(|t| matches!(t, Target::Aws(_)));
+    Ok(Platforms {
+        cloudflare: cloudflare_targets
+            .then(|| cloudflare_client(app))
+            .transpose()?,
+        aws: aws_targets
+            .then(|| aws_client(app, settings.aws_region.as_deref()))
+            .transpose()?,
+    })
+}
+
+/// The AWS client: the `aws` connector's role and base credentials (or web identity token), read on the hub. The region is
+/// the environment's `AWS_REGION`, else the connector's, else us-east-1.
+fn aws_client(app: &App, region: Option<&str>) -> Result<aws::Client, String> {
+    let values = crate::connectors::hub_values(app, "aws")?;
+    let value = |key: &str| {
+        values
+            .get(key)
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let region = region
+        .map(str::to_string)
+        .or_else(|| value("region"))
+        .unwrap_or_else(|| aws::DEFAULT_REGION.to_string());
+    let base = match (
+        value("web_identity_token"),
+        value("access_key_id"),
+        value("secret_access_key"),
+    ) {
+        (Some(token), _, _) => aws::Base::WebIdentity { token },
+        (None, Some(access_key), Some(secret_key)) => aws::Base::Keys {
+            access_key,
+            secret_key,
+        },
+        _ => {
+            return Err(
+                "the AWS connector holds neither a web identity token nor an access key and secret"
+                    .into(),
+            );
+        }
+    };
+    let role = value("role_arn").ok_or("the AWS connector has no role ARN")?;
+    aws::Client::new(
+        Arc::new(crate::platforms::http::Ureq),
+        aws::Endpoints::from_env(&region),
+        &region,
+        &role,
+        base,
+        aws::system_clock(),
+        aws::Wait {
+            interval: Duration::from_secs(15),
+            attempts: 80,
+        },
+    )
 }
 
 /// The Cloudflare client for the environment's account, with the connector's token read on the hub.

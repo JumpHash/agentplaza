@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use super::cloudflare::{Api, Client, Target};
+use super::cloudflare::{Client, Target as CfTarget};
 use super::health::{self, Health, Monitor};
 use super::{
-    Artifacts, Checks, Incidents, Ports, Rolled, Settings, breach, check_gate, eligible, roll,
-    starting, telling,
+    Api, Artifacts, Checks, Incidents, Ports, Rolled, Settings, Target, breach, check_gate,
+    eligible, roll, starting, telling,
 };
 use crate::environments::{Deploy, Environment};
 use crate::platforms::http::{Body, Fake};
@@ -614,7 +614,7 @@ fn the_client_sends_versions_and_percentages_and_the_token_only_in_its_header() 
             json!({"success": false, "errors": [{"message": "no such route"}]}),
         ),
     });
-    let target = Target::Workers("site".into());
+    let target = CfTarget::Workers("site".into());
     assert_eq!(client.live(&target).unwrap().as_deref(), Some("v0"));
     assert_eq!(client.upload(&target, b"export default {};").unwrap(), "v1");
     client
@@ -682,7 +682,7 @@ fn a_pages_deploy_and_a_rollback_use_the_deployment_endpoints() {
             json!({"success": false, "errors": [{"message": "no such route"}]}),
         ),
     });
-    let target = Target::Pages("docs".into());
+    let target = CfTarget::Pages("docs".into());
     assert_eq!(client.live(&target).unwrap().as_deref(), Some("d0"));
     assert_eq!(client.upload(&target, b"<h1>docs</h1>").unwrap(), "d1");
     client.split(&target, &[("d1".into(), 100)]).unwrap();
@@ -708,7 +708,7 @@ fn an_error_from_cloudflare_never_carries_the_token() {
             json!({"success": false, "errors": [{"message": "token cf-test-token is not valid"}]}),
         )
     });
-    let err = client.live(&Target::Workers("site".into())).unwrap_err();
+    let err = client.live(&CfTarget::Workers("site".into())).unwrap_err();
     assert!(err.contains("[redacted]"), "{err}");
     assert!(!err.contains("cf-test-token"), "{err}");
 }
