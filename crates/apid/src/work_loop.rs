@@ -1822,12 +1822,7 @@ pub fn deliver_owner_message(app: &App, chat: &str, text: &str) {
                 );
                 record_work(app, chat, work);
             } else {
-                notice(
-                    app,
-                    chat,
-                    "The orchestrator is not running: it reads this when it starts.",
-                    now,
-                );
+                notice(app, chat, NOT_RUNNING, now);
             }
         }
         crate::chats::Kind::Project => {
@@ -2537,7 +2532,37 @@ fn adopt_orchestrator(app: &App, cid: u64, now: u64) -> Option<Session> {
     let _ = app.sessions.update(&session.id, |s| s.cid = Some(cid));
     let _ = app.sessions.set_state(&session.id, State::Placing, now);
     let _ = app.sessions.set_state(&session.id, State::Forking, now);
+    deliver_waiting_main(app, now);
     app.sessions.get(&session.id)
+}
+
+/// The notice the main chat gets for an owner's message when no orchestrator runs for it yet.
+const NOT_RUNNING: &str = "The orchestrator is not running: it reads this when it starts.";
+
+/// The owner's message to the main chat that got [`NOT_RUNNING`] (the chat's last two messages) goes to the
+/// orchestrator now that it is adopted: a message said in the window before the orchestrator's role is known is
+/// not dropped. A notice says it went.
+fn deliver_waiting_main(app: &App, now: u64) {
+    let Some(chat) = app.chats.get(crate::chats::MAIN) else {
+        return;
+    };
+    let [.., owner, waiting] = chat.messages.as_slice() else {
+        return;
+    };
+    if !matches!(owner.author, Author::Owner)
+        || !matches!(waiting.kind, MessageKind::Notice)
+        || waiting.text != NOT_RUNNING
+    {
+        return;
+    }
+    let text = owner.text.clone();
+    deliver_owner_message(app, crate::chats::MAIN, &text);
+    notice(
+        app,
+        crate::chats::MAIN,
+        "The orchestrator has your message.",
+        now,
+    );
 }
 
 /// The live long-lived sessions of `project`.

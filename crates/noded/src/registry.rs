@@ -901,7 +901,8 @@ fn prepare_persistent_workspace(
     let image = persistent_workspace_path(persist_dir, cid);
     if !image.exists() {
         let partial = dir.join(format!("cid-{cid}.ext4.partial"));
-        vmm::spawner::copy_sparse(base, &partial)?;
+        // A clone where the filesystem shares blocks (APFS clonefile), else a sparse copy.
+        vmm::clonefile::clone_file(base, &partial)?;
         std::fs::rename(&partial, &image)?;
     }
     Ok(image)
