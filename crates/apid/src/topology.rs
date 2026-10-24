@@ -52,10 +52,14 @@ pub fn read(app: &App, project: &str) -> Result<Vec<Found>, String> {
     let Some(repo) = app.projects.get(project).and_then(|p| p.repo) else {
         return Ok(Vec::new());
     };
-    let detail = app.weft.get(&format!("/repos/{repo}"))?;
-    let rev = detail["refs"]["main"]
-        .as_str()
-        .ok_or_else(|| format!("{repo} has no main"))?;
+    // A repository Weft has not made yet, or one with nothing on main, has no topologies.
+    let detail = match app.weft.get(&format!("/repos/{repo}")) {
+        Err(e) if e.contains("(404)") => return Ok(Vec::new()),
+        other => other?,
+    };
+    let Some(rev) = detail["refs"]["main"].as_str() else {
+        return Ok(Vec::new());
+    };
     let listing = app.weft.get(&format!("/revisions/{rev}/files"))?;
     let client = app.weft.client("hub")?;
     Ok(in_listing(&listing, |path| {
