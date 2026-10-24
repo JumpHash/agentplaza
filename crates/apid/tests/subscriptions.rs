@@ -185,19 +185,22 @@ fn open_cards(hub: &Hub) -> Vec<Value> {
 }
 
 /// A hub on `scratch`, with the roles a builder, a reviewer and a verifier need and the work engine's stand-ins.
-fn start_hub(scratch: &Scratch, gateway: &FakeDaemon, noded: &FakeDaemon) -> Hub {
-    let roles = json!({ "roles": {
+fn roles() -> Value {
+    json!({ "roles": {
         "orchestrator": { "role": "orchestrator", "title": "Orchestrator", "tools": ["run", "read"] },
         "builder": { "role": "builder", "title": "Builder", "tools": ["run", "run_tests", "read"] },
         "reviewer": { "role": "reviewer", "title": "Reviewer", "tools": ["run", "read"] },
         "verifier": { "role": "verifier", "title": "Verifier", "tools": ["run", "read"] },
-    } });
+    } })
+}
+
+fn start_hub(scratch: &Scratch, gateway: &FakeDaemon, noded: &FakeDaemon) -> Hub {
     let no_weft = scratch.0.join("no-weft");
     Hub::start_with_env(
         scratch,
         Some(gateway.port),
         Some(noded.port),
-        Some(&roles),
+        Some(&roles()),
         &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
     )
 }
@@ -234,8 +237,14 @@ fn restart(rig: Rig) -> Rig {
         _noded,
         _scratch,
     } = rig;
-    drop(hub);
-    let hub = start_hub(&_scratch, &gateway, &_noded);
+    // A stop signal, so the saver's last pass writes the owner's choice, and the same state comes back.
+    let no_weft = _scratch.0.join("no-weft");
+    let hub = hub.restart_with_env(
+        Some(gateway.port),
+        Some(_noded.port),
+        Some(&roles()),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
     Rig {
         hub,
         gateway,

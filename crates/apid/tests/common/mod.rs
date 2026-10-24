@@ -65,12 +65,37 @@ pub struct Hub {
     pub port: u16,
     /// The internal token the agent gateway sends; apid writes it to its state dir.
     token: String,
+    /// The directory of the attempt that came up: its state and config.
+    dir: PathBuf,
 }
 
 impl Drop for Hub {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Hub {
+    /// Stops the hub as a stop signal does (its last state writes run), waits for it to exit, and starts it again on
+    /// the same state: the directory of the attempt that came up, not a fresh one.
+    #[allow(dead_code)] // not every test binary that includes `common` restarts its hub
+    pub fn restart_with_env(
+        mut self,
+        gateway: Option<u16>,
+        noded: Option<u16>,
+        roles: Option<&Value>,
+        env: &[(&str, &str)],
+    ) -> Hub {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status();
+        let _ = self.child.wait();
+        let dir = self.dir.clone();
+        drop(self);
+        (1..=ATTEMPTS)
+            .find_map(|_| boot(&dir, gateway, noded, roles, env))
+            .expect("the hub comes up again")
     }
 }
 
@@ -341,6 +366,7 @@ fn boot(
         output,
         port,
         token,
+        dir: dir.to_path_buf(),
     })
 }
 
