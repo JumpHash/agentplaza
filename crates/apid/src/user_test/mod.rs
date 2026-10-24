@@ -33,6 +33,8 @@ pub mod target;
 #[cfg(test)]
 mod targets_test;
 pub mod tui;
+#[cfg(test)]
+mod ux_test;
 pub mod web;
 
 use std::cell::RefCell;
