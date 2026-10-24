@@ -1,0 +1,30 @@
+{
+  "matches": [
+    {
+      "vulnerability": {
+        "id": "CVE-2024-3333",
+        "dataSource": "https://nvd.nist.gov/vuln/detail/CVE-2024-3333",
+        "namespace": "nvd:cpe",
+        "severity": "Critical",
+        "urls": [],
+        "cvss": [],
+        "fix": {"versions": [], "state": "not-fixed"},
+        "advisories": []
+      },
+      "relatedVulnerabilities": [],
+      "matchDetails": [],
+      "artifact": {
+        "name": "libssl3",
+        "version": "3.0.11",
+        "type": "deb",
+        "locations": [],
+        "language": "",
+        "licenses": [],
+        "cpes": [],
+        "purl": ""
+      }
+    }
+  ],
+  "source": {"type": "image"},
+  "distro": {"name": "debian", "version": "12"}
+}

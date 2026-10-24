@@ -105,6 +105,7 @@ pub fn convert(text: &str, name: &str) -> Result<Conversion, String> {
         assertions: Vec::new(),
         resilience: Vec::new(),
         egress: Default::default(),
+        security: Default::default(),
     };
     topology.check()?;
     Ok(Conversion { topology, report })

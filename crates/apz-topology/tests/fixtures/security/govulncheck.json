@@ -1,0 +1,48 @@
+{
+  "config": {
+    "protocol_version": "v1.0.0",
+    "scanner_name": "govulncheck",
+    "scanner_version": "v1.1.0",
+    "db": "https://vuln.go.dev",
+    "db_last_modified": "2024-06-01T00:00:00Z",
+    "go_version": "go1.22.3",
+    "scan_level": "symbol",
+    "scan_mode": "source"
+  }
+}
+{
+  "progress": {
+    "message": "Scanning your code and 40 packages across 12 dependent modules for known vulnerabilities..."
+  }
+}
+{
+  "osv": {
+    "id": "GO-2024-2611",
+    "modified": "2024-06-01T00:00:00Z",
+    "published": "2024-05-01T00:00:00Z",
+    "aliases": ["CVE-2023-45288"],
+    "summary": "HTTP/2 CONTINUATION flood in net/http",
+    "affected": []
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2024-2611",
+    "fixed_version": "v0.23.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.20.0",
+        "package": "golang.org/x/net/http2",
+        "function": "ReadFrame"
+      },
+      {
+        "module": "example.com/api",
+        "version": "",
+        "package": "example.com/api/server",
+        "function": "Serve",
+        "position": {"filename": "server.go", "offset": 214, "line": 12, "column": 2}
+      }
+    ]
+  }
+}

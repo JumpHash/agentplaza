@@ -873,6 +873,8 @@ dependencies = [
 name = "apz-topology"
 version = "1.0.0"
 dependencies = [
+ "apz-secrets",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml_ng",

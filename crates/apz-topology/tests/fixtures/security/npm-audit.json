@@ -1,0 +1,53 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "lodash": {
+      "name": "lodash",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1065,
+          "name": "lodash",
+          "dependency": "lodash",
+          "title": "Prototype Pollution in lodash",
+          "url": "https://github.com/advisories/GHSA-jf85-cpcp-j695",
+          "severity": "high",
+          "cwe": ["CWE-1321"],
+          "cvss": {"score": 7.4, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:L"},
+          "range": "<4.17.21"
+        }
+      ],
+      "effects": [],
+      "range": "<4.17.21",
+      "nodes": ["node_modules/lodash"],
+      "fixAvailable": true
+    },
+    "minimist": {
+      "name": "minimist",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1179,
+          "name": "minimist",
+          "dependency": "minimist",
+          "title": "Prototype Pollution in minimist",
+          "url": "https://github.com/advisories/GHSA-vh95-rmgr-6w4m",
+          "severity": "critical",
+          "cwe": ["CWE-1321"],
+          "cvss": {"score": 9.8, "vectorString": null},
+          "range": "<0.2.4"
+        }
+      ],
+      "effects": ["mkdirp"],
+      "range": "<0.2.4",
+      "nodes": ["node_modules/minimist"],
+      "fixAvailable": {"name": "mkdirp", "version": "1.0.4", "isSemVerMajor": true}
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {"info": 0, "low": 0, "moderate": 0, "high": 1, "critical": 1, "total": 2},
+    "dependencies": {"prod": 2, "dev": 0, "optional": 0, "peer": 0, "peerOptional": 0, "total": 2}
+  }
+}

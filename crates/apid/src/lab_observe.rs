@@ -29,6 +29,7 @@ use sha2::{Digest, Sha256};
 
 use crate::agents::Agent;
 use crate::lab_performance;
+use crate::lab_security;
 use crate::metrics::Metrics;
 use crate::releases::entity::Release;
 use crate::review_graph::{By, Finding, Reviews, Verdict as FindingVerdict};
@@ -493,7 +494,12 @@ fn file_resilience(
 
 /// Stores one verdict with its run (a re-assessment replaces it). A failing one is filed once as a finding: `file`
 /// files it, and a finding that an earlier assessment filed is kept.
-fn record(lab: &Store, run: &LabRun, check: &Check, file: impl FnOnce() -> String) -> LabVerdict {
+pub(crate) fn record(
+    lab: &Store,
+    run: &LabRun,
+    check: &Check,
+    file: impl FnOnce() -> String,
+) -> LabVerdict {
     let prior = lock(&lab.inner)
         .verdicts
         .iter()
@@ -799,7 +805,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
         .get("/v1/test-lab/runs/{id}/observations", observations_route)
         .doc(RouteDoc::new("What a lab run observed: its counts of logs, errors and spans, and the verdicts its assessment gave").errors(&[404]))
         .post("/v1/test-lab/runs/{id}/assess", assess_route)
-        .doc(RouteDoc::new("Checks a done run's topology assertions over what it observed, and its performance against its release's baseline; each failing step is filed as a finding on the run's change").errors(&[400, 404, 409]));
+        .doc(RouteDoc::new("Checks a done run's topology assertions over what it observed, its performance against its release's baseline, and the outcomes of its security stages posted in the body (`security`: what apz-security printed; a stage that did not run is a verdict that did not pass); each failing step is filed as a finding on the run's change").errors(&[400, 404, 409]));
     lab_performance::routes(router)
 }
 
@@ -834,6 +840,9 @@ fn observations_route(app: &App, _req: &Request, p: &Params<'_>) -> Response {
 struct AssessBody {
     #[serde(default)]
     topology: Option<String>,
+    /// The outcomes of the run's security stages, as apz-security prints them (PLAN 22.8): judged with its assessment.
+    #[serde(default)]
+    security: Vec<apz_topology::security::Outcome>,
 }
 
 fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
@@ -851,6 +860,7 @@ fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let Some(run) = app.test_lab.runs().into_iter().find(|r| r.id == id) else {
         return Response::error(404, "no such run");
     };
+    let security = body.security;
     let topology = match body.topology {
         Some(text) => match spec::parse(&text) {
             Ok(topology) => topology,
@@ -888,7 +898,16 @@ fn assess_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         &releases,
         &limits,
     ) {
-        Ok(verdicts) => Response::json(200, &json!({"run": id, "verdicts": verdicts})),
+        Ok(mut verdicts) => {
+            verdicts.extend(lab_security::assess(
+                &app.test_lab,
+                &app.reviews,
+                &run,
+                &topology,
+                &security,
+            ));
+            Response::json(200, &json!({"run": id, "verdicts": verdicts}))
+        }
         Err((status, message)) => Response::error(status, &message),
     }
 }
