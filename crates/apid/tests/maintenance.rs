@@ -307,12 +307,20 @@ fn a_finished_project_is_watched_and_the_owner_picks_its_work() {
         !names.contains(&"plaza_deploy".to_string()),
         "a planner does not deploy"
     );
+    // The first sweep is due as the project enters maintenance, so the hub may have started it with the planner; else
+    // the owner starts it now.
     let (status, started) = hub.call(
         "POST",
         &format!("/v1/projects/{pid}/maintenance/sweep"),
         None,
     );
-    assert_eq!(status, 202, "{started}\n{}", hub.log());
+    let under_way =
+        text(&started["error"]).starts_with(&format!("a sweep is under way (agent {PLANNER}"));
+    assert!(
+        status == 202 || (status == 409 && under_way),
+        "{status} {started}\n{}",
+        hub.log()
+    );
     let thread = format!("maintenance-{pid}");
     let (sweep, prompt) = next_work(&gateway, PLANNER, &thread, 0);
     assert!(prompt.contains("has no map yet"), "{prompt}");
