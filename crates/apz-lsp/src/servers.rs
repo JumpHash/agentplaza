@@ -63,7 +63,9 @@ pub const SOURCEKIT_LSP: ServerSpec = ServerSpec {
     id: "sourcekit-lsp",
     command: "sourcekit-lsp",
     args: &[],
-    init_options: "{}",
+    // References come from its index: with background indexing it builds one itself (Swift 6.0 on), with no prior
+    // `swift build`. An older server ignores the option.
+    init_options: r#"{"backgroundIndexing": true}"#,
     limits: DEFAULT_LIMITS,
 };
 pub const KOTLIN_LANGUAGE_SERVER: ServerSpec = ServerSpec {

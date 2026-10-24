@@ -10,9 +10,7 @@
 //! The recipe engine (4.1) takes this list over as the built-in `base` recipe (21.1): the steps and their order move
 //! there unchanged. Its caller is base_builds.rs, the hub's build of a base on a landing (16.4).
 
-use std::path::Path;
-
-use apz_lsp::bridge::{self, WARM_DIR};
+use apz_lsp::bridge;
 use apz_lsp::{Language, ServerSpec};
 
 use crate::project_stack::{Stack, Toolchain};
@@ -322,9 +320,7 @@ fn servers(languages: &[Language]) -> Vec<&'static ServerSpec> {
 /// The harness's command for a server (PLAN 3.8): `lsp-serve` runs the server behind its socket, `lsp-warm` warms it.
 /// Both name the server by its id, and the socket it listens on in the VM's warm directory.
 fn harness_argv(verb: &str, spec: &ServerSpec, rest: &[&str]) -> Vec<String> {
-    let socket = bridge::socket_path(Path::new(WARM_DIR), spec.id)
-        .to_string_lossy()
-        .into_owned();
+    let socket = bridge::guest_socket(spec.id);
     let mut argv = vec![
         HARNESS,
         verb,

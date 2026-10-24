@@ -693,10 +693,24 @@ struct Placed {
     vm: Option<u32>,
 }
 
+/// Whether a reconcile pass may call `agent` gone: its node's gateway, asked at `asked_ms`, does not list it, and it
+/// is not asleep, dozing or offline. An asleep agent has no session by design, and a dozing one's paused session
+/// may go unlisted while its VM is paused. An agent that said hello at or after `asked_ms` is not judged: the answer
+/// it is missing from was taken before its hello, and the next pass judges it on a newer one.
+fn vanished(agent: &Agent, listed: &BTreeSet<u64>, asked_ms: u64) -> bool {
+    !matches!(
+        agent.status,
+        Status::Offline | Status::Asleep | Status::Dozing
+    ) && !listed.contains(&agent.cid)
+        && agent.connected_at_ms < asked_ms
+}
+
 /// One reconcile pass over every node (`fleet::reports`). A node whose gateway or noded did not
 /// answer changes nothing: its agents are only marked gone when its own gateway says so.
 fn reconcile_once(app: &App) {
     let mut placements: BTreeMap<u64, (String, u32)> = BTreeMap::new();
+    // The gateways are asked now: their answers are no newer than this instant.
+    let asked_ms = apz_plaza::now_ms();
     for (node, status, runs) in crate::fleet::reports(app) {
         // Sessions: register unknown or offline sessions, then mark this node's vanished agents offline.
         if let Some(rows) = status["agents"].as_array() {
@@ -715,15 +729,9 @@ fn reconcile_once(app: &App) {
                     hello(app, cid, role, 0, &[]);
                 }
             }
-            // An asleep agent has no session by design: it is not gone. Nor is a dozing one, whose paused
-            // session the gateway keeps (quiet) and may not list while its VM is paused.
-            let missing = app.agents.select(|agent| {
-                (!matches!(
-                    agent.status,
-                    Status::Offline | Status::Asleep | Status::Dozing
-                ) && !live.contains(&agent.cid))
-                .then_some(agent.cid)
-            });
+            let missing = app
+                .agents
+                .select(|agent| vanished(agent, &live, asked_ms).then_some(agent.cid));
             for cid in missing {
                 if crate::fleet::node_of(app, cid) == node {
                     gone(app, cid, "session not on its node's gateway");
@@ -1392,6 +1400,32 @@ mod route_tests {
             }
         });
         assert_eq!(roster.get(42).map(|a| a.status), Some(Status::Asleep));
+    }
+
+    #[test]
+    fn reconcile_judges_an_agent_only_by_a_status_that_could_list_it() {
+        let listed = BTreeSet::from([7]);
+        let asked = 1_000;
+        // Idle, said hello before the status was asked for, and absent from it: gone.
+        let mut before = agent("builder");
+        before.connected_at_ms = asked - 1;
+        assert!(vanished(&before, &listed, asked));
+        // Listed by the status: not gone.
+        let mut seen = agent("builder");
+        seen.cid = 7;
+        seen.connected_at_ms = asked - 1;
+        assert!(!vanished(&seen, &listed, asked));
+        // Said hello after the status was asked for (a VM started and hello'd while the pass waited): not judged.
+        let mut fresh = agent("verifier");
+        fresh.connected_at_ms = asked;
+        assert!(!vanished(&fresh, &listed, asked));
+        // Asleep, dozing or offline: not gone by the status.
+        for status in [Status::Asleep, Status::Dozing, Status::Offline] {
+            let mut quiet = agent("builder");
+            quiet.connected_at_ms = asked - 1;
+            quiet.status = status;
+            assert!(!vanished(&quiet, &listed, asked), "{status:?}");
+        }
     }
 
     fn agent(role: &str) -> Agent {

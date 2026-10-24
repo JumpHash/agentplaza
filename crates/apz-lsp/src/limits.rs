@@ -65,6 +65,7 @@ mod tests {
     use super::*;
 
     /// The address-space cap as the child sees it, in kilobytes (`ulimit -v`), or `unlimited`.
+    #[cfg(unix)]
     fn child_address_space(limits: Limits) -> String {
         let mut cmd = Command::new("/bin/sh");
         cmd.args(["-c", "ulimit -v"]);
@@ -73,6 +74,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_child_is_capped_where_the_os_enforces_it_and_only_there() {
         let seen = child_address_space(Limits {
@@ -88,5 +90,23 @@ mod tests {
             );
         }
         assert_eq!(child_address_space(Limits::NONE), "unlimited");
+    }
+
+    /// Windows has no `ulimit` to read the cap with, and sets none: a child with the limits asked for still starts and
+    /// runs as it would without them.
+    #[cfg(windows)]
+    #[test]
+    fn windows_sets_no_cap_and_the_child_still_runs() {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "exit 0"]);
+        apply(
+            &mut cmd,
+            Limits {
+                address_space: 4 << 30,
+                cpu_seconds: 0,
+            },
+        );
+        let status = cmd.status().expect("cmd runs");
+        assert!(status.success(), "{status}");
     }
 }

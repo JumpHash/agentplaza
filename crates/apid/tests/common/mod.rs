@@ -31,7 +31,9 @@ pub fn slack() -> f64 {
 const APID: &str = env!("CARGO_BIN_EXE_apid");
 /// Ports the owner's own hub and daemons use. A test never picks one of them.
 const OWNER_PORTS: [u16; 3] = [7700, 8899, 19080];
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+/// A hub's start, to its listening line. Generous: the first hubs of a coverage run start cold, all at once, and took
+/// about thirty seconds there.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 /// One request's answer. Generous: a busy CI runner (thousands of tests at once) can take over ten seconds for a
 /// call that compiles a Weft language pack on its first use (review_tree), and a hang still fails.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);

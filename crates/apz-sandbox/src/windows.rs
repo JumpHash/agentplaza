@@ -5,8 +5,9 @@
 //! - The container reaches only what is granted: the workdir and the read-write
 //!   paths (modify), the read-only paths and the program (read and execute). Those
 //!   ACEs stay on the files after the child exits.
-//! - A container with no capabilities has no network. The loopback exemption that
-//!   `LoopbackPort` needs is not set here, so that spec is refused.
+//! - A container with no capabilities has no network. `LoopbackPort` needs the container
+//!   on the loopback exemption list, which only an administrator can change (see
+//!   [`loopback`]): until it is there, that spec is refused.
 //! - The process starts suspended, joins the job (kill on close, memory, active
 //!   processes, per-process CPU time), and only then resumes.
 //! - stdin, stdout and stderr are always pipes: std cannot tell what a `Stdio` is.
@@ -57,6 +58,7 @@ use windows_sys::Win32::System::Threading::{
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
+use crate::loopback;
 use crate::{Network, SandboxError, Spec, Support};
 
 const CONTAINER_PREFIX: &str = "apz-sbx-";
@@ -78,7 +80,9 @@ const TAB: u16 = b'\t' as u16;
 pub(crate) fn support() -> Support {
     Support {
         kind: "appcontainer",
-        detail: "AppContainer with no capabilities: no network, and no loopback exemption, so \
+        detail: "AppContainer with no capabilities: no network. LoopbackPort needs the container \
+                 on the loopback exemption list, which an administrator grants once (the hub \
+                 asks the owner), and a filter that keeps it to the proxy's port; until then \
                  LoopbackPort is refused. Reads and writes only where granted: workdir and \
                  read_write (modify), read_only and the program file (read, execute); those \
                  ACEs stay on the files after the child exits, and the program's directory is \
@@ -106,12 +110,6 @@ pub(crate) fn spawn(
     // The three Stdio values cannot be read on Windows, so they are dropped here and
     // all three streams are piped instead (see the module docs).
     let p = crate::prepare(spec)?;
-    if let Network::LoopbackPort(port) = p.network {
-        return Err(SandboxError::Unsupported(format!(
-            "LoopbackPort({port}): an AppContainer reaches loopback only through a loopback \
-             exemption, which only an administrator can grant, and this backend does not grant one"
-        )));
-    }
     let memory = match p.limits.memory_bytes {
         Some(bytes) => Some(
             usize::try_from(bytes)
@@ -129,7 +127,16 @@ pub(crate) fn spawn(
         None => None,
     };
 
-    let sid = container_sid(&container_name(&p.workdir))?;
+    let sid = sid_of(&p.workdir)?;
+    if let Network::LoopbackPort(port) = p.network
+        && !loopback::exempt(sid.0)?
+    {
+        return Err(SandboxError::Unsupported(format!(
+            "LoopbackPort({port}): the container is not exempt from loopback, and only an \
+             administrator can exempt it: the hub asks the owner once, or run `apid windows-loopback \
+             grant` from an elevated prompt"
+        )));
+    }
     grant(&p.workdir, sid.0, MODIFY, Need::Yes)?;
     for path in &p.read_write {
         grant(path, sid.0, MODIFY, Need::Yes)?;
@@ -208,7 +215,18 @@ pub(crate) fn spawn(
         )
     };
     if created == FALSE {
-        return Err(os_error("CreateProcessW"));
+        // The names of the environment variables, never their values, so a failure says what it was given.
+        let err = io::Error::last_os_error();
+        let names: Vec<&str> = p.env.iter().map(|(key, _)| key.as_str()).collect();
+        return Err(SandboxError::Io(io::Error::new(
+            err.kind(),
+            format!(
+                "CreateProcessW of {} in {} with environment variables [{}]: {err}",
+                p.program_real.display(),
+                p.workdir.display(),
+                names.join(", ")
+            ),
+        )));
     }
     // SAFETY: CreateProcessW succeeded, so these two handles are valid and ours to own.
     let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
@@ -314,7 +332,7 @@ impl Process {
 }
 
 /// The AppContainer's SID, freed on drop.
-struct OwnedSid(PSID);
+pub(crate) struct OwnedSid(pub(crate) PSID);
 
 impl Drop for OwnedSid {
     fn drop(&mut self) {
@@ -324,9 +342,9 @@ impl Drop for OwnedSid {
     }
 }
 
-/// A `LocalAlloc` block (a security descriptor or ACL from the Win32 security API),
-/// freed on drop.
-struct Local(HLOCAL);
+/// A `LocalAlloc` block from the Win32 security API (a descriptor, an ACL, a SID or a
+/// list), freed on drop.
+pub(crate) struct Local(pub(crate) HLOCAL);
 
 impl Drop for Local {
     fn drop(&mut self) {
@@ -407,6 +425,11 @@ fn container_name(workdir: &Path) -> String {
         }
     }
     format!("{CONTAINER_PREFIX}{hash:016x}")
+}
+
+/// The SID of the container of `workdir` (a canonical path), created on first use.
+pub(crate) fn sid_of(workdir: &Path) -> Result<OwnedSid, SandboxError> {
+    container_sid(&container_name(workdir))
 }
 
 fn container_sid(name: &str) -> Result<OwnedSid, SandboxError> {
@@ -669,7 +692,7 @@ fn env_block(env: &[(String, String)]) -> Vec<u16> {
 }
 
 /// A NUL-terminated UTF-16 copy of `text`.
-fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
+pub(crate) fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
     text.as_ref()
         .encode_wide()
         .chain(std::iter::once(0))
@@ -677,13 +700,13 @@ fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
 }
 
 /// The error for the last Win32 call on this thread, with the call's name.
-fn os_error(call: &str) -> SandboxError {
+pub(crate) fn os_error(call: &str) -> SandboxError {
     let err = io::Error::last_os_error();
     SandboxError::Io(io::Error::new(err.kind(), format!("{call}: {err}")))
 }
 
 /// The error for a call that returns a Win32 error code directly.
-fn win32_error(call: &str, code: u32) -> SandboxError {
+pub(crate) fn win32_error(call: &str, code: u32) -> SandboxError {
     let err = io::Error::from_raw_os_error(code as i32);
     SandboxError::Io(io::Error::new(err.kind(), format!("{call}: {err}")))
 }
