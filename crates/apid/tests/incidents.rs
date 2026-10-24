@@ -366,10 +366,27 @@ fn a_sentry_alert_rolls_the_correlating_deploy_back_and_writes_the_postmortem() 
     );
 
     // The rollback deploys the first release through the deploy path, recorded by the incident.
+    // The incident's own deploy of the first release, not the owner's earlier one of the same version.
+    let rollback = |e: &Value| {
+        e.as_array()?
+            .iter()
+            .find(|e| e["name"] == json!("production"))?["deploys"]
+            .as_array()?
+            .iter()
+            .find(|d| {
+                d["version"] == json!(first)
+                    && d["by"] == json!("incident")
+                    && !matches!(
+                        d["status"].as_str(),
+                        Some("rolling" | "recorded" | "sending" | "waiting")
+                    )
+            })
+            .cloned()
+    };
     let envs = hub.wait_for(&format!("/v1/projects/{pid}/environments"), WAIT, |e| {
-        ended_deploy(e, "production", &first).is_some_and(|d| d["by"] == json!("incident"))
+        rollback(e).is_some()
     });
-    let back = ended_deploy(&envs, "production", &first).expect("the rollback ends");
+    let back = rollback(&envs).expect("the rollback ends");
     assert_eq!(back["status"], json!("passed"), "{envs}\n{}", hub.log());
     let production = envs
         .as_array()
