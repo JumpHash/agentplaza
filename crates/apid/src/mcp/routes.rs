@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use super::client::{ServerInfo, ToolInfo};
 use super::config::{self, McpServer, Setting, StoreError};
+use super::loopback;
 use super::runtime::{Ctx, LogLine, Status};
 use super::{McpSecrets, OnBehalf, VaultSecrets, auto_risk, risk_for, wire_names};
 use crate::state::App;
@@ -230,6 +231,8 @@ fn delete_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
         Err(response) => return response,
     };
     app.mcp.runtime.stop(id);
+    let revoked = loopback::revoke_for_delete(&app.mcp.runtime, &app.mcp.runtime.workdir(&server));
+    loopback::withdraw(app, id);
     app.mcp.store.remove(id);
     if let Err(why) = app
         .vault
@@ -251,7 +254,10 @@ fn delete_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
             None,
         );
     }
-    Response::new(204, "application/json", Vec::new())
+    match revoked {
+        Some(note) => Response::json(200, &json!({ "note": note })),
+        None => Response::new(204, "application/json", Vec::new()),
+    }
 }
 
 /// The node a request names, or the default.
@@ -283,10 +289,13 @@ fn test_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     let was_running = app.mcp.runtime.summary(id).status == Status::Running;
     let started = Instant::now();
     let secrets = VaultSecrets::new(app);
-    let outcome = app
-        .mcp
-        .runtime
-        .probe(&server, &owner_ctx(app, &secrets, node));
+    let outcome = loopback::asked(
+        app,
+        &server,
+        app.mcp
+            .runtime
+            .probe(&server, &owner_ctx(app, &secrets, node)),
+    );
     let ms = started.elapsed().as_millis() as u64;
     if !was_running {
         app.mcp.runtime.stop(id);
@@ -323,11 +332,14 @@ fn start_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     };
     app.mcp.runtime.reset(id);
     let secrets = VaultSecrets::new(app);
-    match app
-        .mcp
-        .runtime
-        .probe(&server, &owner_ctx(app, &secrets, node_of(req)))
-    {
+    let outcome = loopback::asked(
+        app,
+        &server,
+        app.mcp
+            .runtime
+            .probe(&server, &owner_ctx(app, &secrets, node_of(req))),
+    );
+    match outcome {
         Ok(probe) => app.mcp.store.set_tools(id, probe.tools),
         Err(why) => eprintln!("apid: MCP server {id} did not start: {why}"),
     }

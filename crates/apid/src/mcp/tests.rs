@@ -1,10 +1,11 @@
 //! MCP tests: the runtime against the fixture server (a process over stdio, and HTTP), the vault scoping,
 //! access and risk, and the laws. The fixture is the `mcp_fixture` binary (src/bin, built with apid).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(not(windows))]
 use std::io::Read;
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 #[cfg(not(windows))]
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
@@ -20,6 +21,9 @@ use super::config::{
 };
 use super::egress::Egress;
 use super::http::check_endpoint;
+use super::loopback::{
+    Helper, KIND, Machine, Need, approval_for, parse_helper, revoke_for_delete, settle,
+};
 use super::runtime::{Ctx, Runtime, Status};
 use super::runtimes::{Fetch, sha256_hex};
 use super::stdio::{Child as ServerChild, SandboxLauncher};
@@ -63,7 +67,7 @@ fn fixture_package() -> Package {
     Package::Binary {
         url: FIXTURE_URL.into(),
         sha256: sha256_hex(&bytes),
-        entry: "mcp_fixture".into(),
+        entry: format!("mcp_fixture{}", std::env::consts::EXE_SUFFIX),
     }
 }
 
@@ -889,7 +893,9 @@ fn a_start_that_fails_before_launch_leaves_its_reason_on_the_server_view() {
     );
 }
 
-// The egress proxy needs a loopback port, which the Windows AppContainer cannot reach (no loopback exemption).
+// The sandboxed server reaches the proxy only through its container's loopback exemption, which on Windows an
+// administrator grants through UAC. The CI runner cannot click that prompt, so these run off Windows only. The
+// fake-machine tests at the end of this file run everywhere.
 #[test]
 #[cfg(not(windows))]
 fn the_sandboxed_fixture_reaches_the_proxy_port_and_nothing_else() {
@@ -954,7 +960,9 @@ fn a_server_runs_in_a_microvm_with_its_directories_as_volumes_and_the_proxy_on_t
         request.program
     );
     assert!(
-        request.program.ends_with("/mcp_fixture"),
+        request
+            .program
+            .ends_with(&format!("/mcp_fixture{}", std::env::consts::EXE_SUFFIX)),
         "{}",
         request.program
     );
@@ -1019,4 +1027,295 @@ fn a_server_on_another_node_or_without_a_proxy_is_not_sent_to_a_microvm() {
     );
     unproxied.stop("fixture");
     assert!(vm.launched.lock().unwrap().is_empty());
+}
+
+/// Windows' loopback check, faked: a container is exempt when it is in `exempt`. Each grant and revoke is recorded
+/// and fails with `refusal` when one is given (a declined prompt, say). `desktop` says whether the prompt can show.
+struct FakeLoopback {
+    exempt: Mutex<BTreeSet<String>>,
+    desktop: bool,
+    refusal: Option<String>,
+    /// The helper's runs, in order: `grant <sid> <port>` or `revoke <sid>`.
+    elevated: Mutex<Vec<String>>,
+}
+
+/// The container of every fake server.
+const SID: &str = "S-1-15-2-1111";
+
+impl FakeLoopback {
+    fn new(desktop: bool, refusal: Option<&str>) -> Arc<FakeLoopback> {
+        Arc::new(FakeLoopback {
+            exempt: Mutex::new(BTreeSet::new()),
+            desktop,
+            refusal: refusal.map(str::to_string),
+            elevated: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn elevated(&self) -> Vec<String> {
+        self.elevated.lock().unwrap().clone()
+    }
+}
+
+impl Machine for FakeLoopback {
+    fn container_sid(&self, _workdir: &Path) -> Result<String, String> {
+        Ok(SID.to_string())
+    }
+
+    fn is_exempt(&self, sid: &str) -> Result<bool, String> {
+        Ok(self.exempt.lock().unwrap().contains(sid))
+    }
+
+    fn has_desktop(&self) -> bool {
+        self.desktop
+    }
+
+    fn grant(&self, sid: &str, port: u16) -> Result<(), String> {
+        self.elevated
+            .lock()
+            .unwrap()
+            .push(format!("grant {sid} {port}"));
+        if let Some(why) = &self.refusal {
+            return Err(why.clone());
+        }
+        self.exempt.lock().unwrap().insert(sid.to_string());
+        Ok(())
+    }
+
+    fn revoke(&self, sid: &str) -> Result<(), String> {
+        self.elevated.lock().unwrap().push(format!("revoke {sid}"));
+        if let Some(why) = &self.refusal {
+            return Err(why.clone());
+        }
+        self.exempt.lock().unwrap().remove(sid);
+        Ok(())
+    }
+}
+
+/// A runtime whose stdio servers reach a proxy on a free port, with `machine` checking their containers. Returns the
+/// port too.
+fn loopback_runtime(machine: Arc<FakeLoopback>) -> (Runtime, u16) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "apz-mcp-loopback-tests-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let machine: Arc<dyn Machine> = machine;
+    let runtime = Runtime::new(
+        dir,
+        Arc::new(FixtureFetch),
+        Arc::new(SandboxLauncher),
+        Some(Egress::new(port)),
+    )
+    .with_loopback(Some(machine));
+    (runtime, port)
+}
+
+/// Starts `server` at `now`, which must be refused: returns the refusal.
+fn refused_start(runtime: &Runtime, server: &str, now: u64) -> String {
+    let vault = Vault::default();
+    let Err(why) = runtime.probe(
+        &stdio_server(server, &[]),
+        &ctx(&vault, owner("n0"), "n0", now),
+    ) else {
+        panic!("a start without the loopback exemption must be refused");
+    };
+    why
+}
+
+#[test]
+fn a_sandboxed_server_is_refused_until_its_container_is_exempt_from_loopback() {
+    let fake = FakeLoopback::new(true, None);
+    let (runtime, port) = loopback_runtime(fake.clone());
+    let why = refused_start(&runtime, "gated", T0);
+    assert!(why.contains("not exempt from loopback"), "{why}");
+    assert_eq!(
+        runtime.loopback_need("gated"),
+        Some(Need {
+            sid: SID.into(),
+            port
+        })
+    );
+    assert!(fake.elevated().is_empty());
+    assert_eq!(runtime.summary("gated").status, Status::Error);
+}
+
+#[test]
+fn one_pending_approval_serves_every_refusal_of_a_server() {
+    let fake = FakeLoopback::new(true, None);
+    let (runtime, _) = loopback_runtime(fake);
+    refused_start(&runtime, "asks", T0);
+    let need = runtime.loopback_need("asks").unwrap();
+    let store = crate::approvals::Store::default();
+    let first = approval_for(&store.list(), "asks", &need, |subject, detail| {
+        store.submit(0, KIND, subject, detail)
+    });
+    let again = approval_for(&store.list(), "asks", &need, |subject, detail| {
+        store.submit(0, KIND, subject, detail)
+    });
+    assert_eq!(first.id, again.id);
+    assert_eq!(store.list().len(), 1);
+    assert_eq!(first.kind, KIND);
+    assert_eq!(first.detail["server"], json!("asks"));
+    assert_eq!(first.detail["port"], json!(need.port));
+    approval_for(&store.list(), "other", &need, |subject, detail| {
+        store.submit(0, KIND, subject, detail)
+    });
+    assert_eq!(store.list().len(), 2);
+}
+
+#[test]
+#[cfg(not(windows))]
+fn an_approved_exemption_lets_the_next_start_run() {
+    // On Windows the real check runs in the spawn too, which needs the exemption an administrator grants: the CI
+    // runner cannot, so this runs off Windows only.
+    let fake = FakeLoopback::new(true, None);
+    let (runtime, port) = loopback_runtime(fake.clone());
+    refused_start(&runtime, "approved", T0);
+    let need = runtime.loopback_need("approved").unwrap();
+    let store = crate::approvals::Store::default();
+    let item = approval_for(&store.list(), "approved", &need, |subject, detail| {
+        store.submit(0, KIND, subject, detail)
+    });
+    assert!(store.decide(&item.id, true, None).is_ok());
+    settle(&runtime, "approved", &need, true).unwrap();
+    assert_eq!(fake.elevated(), vec![format!("grant {SID} {port}")]);
+    let vault = Vault::default();
+    let started = runtime.probe(
+        &stdio_server("approved", &[]),
+        &ctx(&vault, owner("n0"), "n0", T0 + 120_000),
+    );
+    assert!(started.is_ok(), "{}", started.err().unwrap_or_default());
+    assert_eq!(runtime.loopback_need("approved"), None);
+    runtime.stop("approved");
+}
+
+#[test]
+fn a_denied_approval_grants_nothing_and_the_server_stays_refused() {
+    let fake = FakeLoopback::new(true, None);
+    let (runtime, _) = loopback_runtime(fake.clone());
+    refused_start(&runtime, "denied", T0);
+    let need = runtime.loopback_need("denied").unwrap();
+    settle(&runtime, "denied", &need, false).unwrap();
+    assert!(fake.elevated().is_empty());
+    let why = refused_start(&runtime, "denied", T0 + 120_000);
+    assert!(why.contains("not exempt"), "{why}");
+}
+
+#[test]
+fn a_declined_prompt_leaves_the_server_refused_with_that_reason() {
+    let fake = FakeLoopback::new(
+        true,
+        Some("sandbox I/O error: the administrator prompt was declined"),
+    );
+    let (runtime, _) = loopback_runtime(fake.clone());
+    refused_start(&runtime, "declined", T0);
+    let need = runtime.loopback_need("declined").unwrap();
+    let why = settle(&runtime, "declined", &need, true).unwrap_err();
+    assert!(why.contains("declined"), "{why}");
+    assert!(
+        runtime
+            .summary("declined")
+            .last_error
+            .unwrap_or_default()
+            .contains("declined")
+    );
+    assert_eq!(fake.elevated().len(), 1);
+    let again = refused_start(&runtime, "declined", T0 + 120_000);
+    assert!(again.contains("not exempt"), "{again}");
+}
+
+#[test]
+fn without_a_desktop_the_refusal_stays_and_the_command_is_printed() {
+    let fake = FakeLoopback::new(false, None);
+    let (runtime, port) = loopback_runtime(fake.clone());
+    refused_start(&runtime, "headless", T0);
+    let need = runtime.loopback_need("headless").unwrap();
+    let why = settle(&runtime, "headless", &need, true).unwrap_err();
+    assert!(
+        why.contains(&format!(
+            "apid windows-loopback grant --sid {SID} --port {port}"
+        )),
+        "{why}"
+    );
+    assert!(fake.elevated().is_empty());
+}
+
+#[test]
+fn deleting_an_exempt_server_takes_its_container_exemption_away() {
+    let fake = FakeLoopback::new(true, None);
+    fake.exempt.lock().unwrap().insert(SID.into());
+    let (runtime, _) = loopback_runtime(fake.clone());
+    assert_eq!(revoke_for_delete(&runtime, Path::new("unused")), None);
+    assert_eq!(fake.elevated(), vec![format!("revoke {SID}")]);
+    assert!(!fake.exempt.lock().unwrap().contains(SID));
+}
+
+#[test]
+fn deleting_a_server_that_is_not_exempt_runs_nothing() {
+    let fake = FakeLoopback::new(true, None);
+    let (runtime, _) = loopback_runtime(fake.clone());
+    assert_eq!(revoke_for_delete(&runtime, Path::new("unused")), None);
+    assert!(fake.elevated().is_empty());
+}
+
+#[test]
+fn a_revoke_that_fails_on_delete_is_a_note_with_the_command() {
+    let fake = FakeLoopback::new(true, Some("the administrator prompt was declined"));
+    fake.exempt.lock().unwrap().insert(SID.into());
+    let (runtime, _) = loopback_runtime(fake);
+    let note = revoke_for_delete(&runtime, Path::new("unused")).unwrap();
+    assert!(
+        note.contains(&format!("apid windows-loopback revoke --sid {SID}")),
+        "{note}"
+    );
+}
+
+#[test]
+fn a_server_without_the_proxy_is_not_checked_for_the_exemption() {
+    let fake = FakeLoopback::new(true, None);
+    let machine: Arc<dyn Machine> = fake.clone();
+    let runtime = runtime().with_loopback(Some(machine));
+    let vault = Vault::default();
+    let started = runtime.probe(
+        &stdio_server("direct", &[]),
+        &ctx(&vault, owner("n0"), "n0", T0),
+    );
+    assert!(started.is_ok(), "{}", started.err().unwrap_or_default());
+    assert!(runtime.loopback_need("direct").is_none());
+    assert!(fake.elevated().is_empty());
+    runtime.stop("direct");
+}
+
+#[test]
+fn the_helper_takes_one_grant_or_revoke_of_an_appcontainer() {
+    let args = |text: &str| text.split(' ').map(str::to_string).collect::<Vec<_>>();
+    assert_eq!(
+        parse_helper(&args(&format!("grant --sid {SID} --port 19128"))),
+        Ok(Helper::Grant {
+            sid: SID.into(),
+            port: 19128
+        })
+    );
+    assert_eq!(
+        parse_helper(&args(&format!("revoke --sid {SID}"))),
+        Ok(Helper::Revoke { sid: SID.into() })
+    );
+    for bad in [
+        "grant --sid S-1-5-18 --port 19128",
+        "grant --sid S-1-15-2-1",
+        "grant --sid S-1-15-2-1 --port 0",
+        "grant --sid S-1-15-2-1 --port 70000",
+        "delete --sid S-1-15-2-1",
+        "revoke --sid S-1-15-2-1 --all",
+    ] {
+        assert!(parse_helper(&args(bad)).is_err(), "{bad}");
+    }
 }

@@ -195,6 +195,9 @@ fn main() -> ExitCode {
         store::print_schema();
         return ExitCode::SUCCESS;
     }
+    if args.first().is_some_and(|a| a == "windows-loopback") {
+        return mcp::loopback::helper_main(&args[1..]);
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

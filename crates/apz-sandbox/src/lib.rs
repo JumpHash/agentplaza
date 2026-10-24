@@ -33,6 +33,8 @@ mod unix;
 mod windows;
 #[cfg(windows)]
 use windows as backend;
+#[cfg(windows)]
+pub mod loopback;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod other;
@@ -64,8 +66,9 @@ pub enum Network {
     /// No network access.
     None,
     /// TCP to localhost on this port only: the hub's egress proxy, or a loose trainer job's hub. Each backend's exact
-    /// reach is described in [`support`]'s `detail`. Windows refuses this variant, and Linux refuses it below Landlock
-    /// ABI 4 (Linux 6.7), where the kernel cannot filter TCP ports.
+    /// reach is described in [`support`]'s `detail`. Windows refuses this variant until the container is exempt from
+    /// loopback (the `loopback` module), and Linux refuses it below Landlock ABI 4 (Linux 6.7), where the kernel cannot
+    /// filter TCP ports.
     LoopbackPort(u16),
 }
 
