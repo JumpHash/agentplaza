@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 apz-http.workspace = true
+apz-link = { path = "../apz-link" }
+apz-topology = { path = "../apz-topology" }
 # What the node records for the hub (metrics.rs), the batch it sends (apz_metrics::wire), and its Prometheus
 # metrics and timing lines (apz_metrics::prom).
 apz-metrics.workspace = true

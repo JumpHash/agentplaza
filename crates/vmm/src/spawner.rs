@@ -167,6 +167,63 @@ pub struct VmSpec {
     /// device id (`VIRTIO_BLK_T_GET_ID`), which is the volume's name. Every backend carries them (KVM, WHP and
     /// Hypervisor.framework).
     pub volumes: Vec<DataVolume>,
+    /// What the VM is for (see [`VmKind`]). Every VM is a session's unless its caller says it is a lab
+    /// topology's: only a lab topology's VM may carry a network device.
+    pub kind: VmKind,
+    /// The VM's network interface on a lab topology's private segment, `None` for no network device
+    /// (every session's VM has none). The device is attached to the switch when the VM boots; see
+    /// [`NetAttachment`] and [`check_net`].
+    pub net: Option<NetAttachment>,
+}
+
+/// What a VM is for. A session's VM (and any fork of one) has no network device by construction: the
+/// VMM's guests reach the outside through the hub, not a network. A lab topology's VM may carry one,
+/// on the private segment its topology declares.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VmKind {
+    /// A session's VM, or a fork of one.
+    #[default]
+    Session,
+    /// A test topology's VM (PLAN 22.6): one of the VMs of a multi-VM topology, on its segment.
+    LabTopology,
+}
+
+/// The network interface of a lab topology's VM: the segment it joins, its MAC, and the switch that
+/// carries the segment (one per node: the overlay joins the nodes' switches, see
+/// [`crate::devices::virtio::net::overlay`]).
+#[derive(Clone)]
+pub struct NetAttachment {
+    /// The segment the VM's interface is on. The switch must have it.
+    pub segment: String,
+    /// The MAC the interface presents to the guest.
+    pub mac: [u8; 6],
+    /// The switch the segment lives on.
+    pub switch: Arc<crate::devices::virtio::net::switch::Switch>,
+}
+
+impl std::fmt::Debug for NetAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetAttachment")
+            .field("segment", &self.segment)
+            .field("mac", &crate::devices::virtio::net::mac_text(&self.mac))
+            .finish()
+    }
+}
+
+/// Checks a VM's network device, which every backend runs before it builds the VM: a session's VM
+/// (a fork of one included) never carries one, and a VM with one cannot be restored from a snapshot,
+/// because the device's queues are not in a snapshot.
+pub fn check_net(spec: &VmSpec) -> Result<(), SpawnError> {
+    let Some(_) = &spec.net else {
+        return Ok(());
+    };
+    if spec.kind == VmKind::Session {
+        return Err(SpawnError::NetOnSessionVm);
+    }
+    if spec.restore.is_some() {
+        return Err(SpawnError::NetRestore);
+    }
+    Ok(())
 }
 
 /// The most shared data volumes one VM carries.
@@ -235,6 +292,8 @@ impl Default for VmSpec {
             balloon: None,
             restore: None,
             volumes: Vec::new(),
+            kind: VmKind::Session,
+            net: None,
         }
     }
 }
@@ -394,6 +453,15 @@ pub enum SpawnError {
         /// bytes once the guest has drained the console's input queue.
         reason: String,
     },
+    /// A session's VM may not carry a network device: only a lab topology's VM may
+    #[error("a session's VM may not carry a network device: only a lab topology's VM may")]
+    NetOnSessionVm,
+    /// A VM with a network device cannot be restored: its device's queues are not in a snapshot
+    #[error("a VM with a network device cannot be restored from a snapshot yet")]
+    NetRestore,
+    /// A VM with a network device runs in-process: the segment's switch is in this process
+    #[error("a VM with a network device must boot in this process, not in a child process")]
+    NetInChildProcess,
     /// The boot mode is misconfigured: {reason}
     #[error("the VMM's boot mode is misconfigured: {reason}")]
     SpawnMode {
@@ -1288,6 +1356,7 @@ fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
 /// config space claims a reserved (or unconvertible) CID and that no host
 /// listener path can match, so it is refused before any VM is built.
 fn validate_spec(spec: &VmSpec) -> Result<(), SpawnError> {
+    check_net(spec)?;
     if let Some(vsock) = &spec.vsock
         && !(MIN_GUEST_CID..=MAX_GUEST_CID).contains(&vsock.guest_cid)
     {
@@ -1668,6 +1737,9 @@ pub(crate) fn boot_route(mode: SpawnMode, child_supported: bool) -> Result<BootR
 /// the two modes interchangeable to a caller.
 fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
     if boot_route(spawn_mode()?, CHILD_PROCESS_SUPPORTED)? == BootRoute::Child {
+        if spec.net.is_some() {
+            return Err(SpawnError::NetInChildProcess);
+        }
         return process::boot(spec, runtime);
     }
 
@@ -1902,6 +1974,67 @@ mod tests {
         assert_eq!(std::fs::read(&copy).expect("the copy"), want);
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A network attachment on a fresh switch's segment `lab`, for the refusal tests.
+    fn a_net_attachment() -> NetAttachment {
+        let switch = crate::devices::virtio::net::switch::Switch::new();
+        switch.create_segment("lab");
+        NetAttachment {
+            segment: "lab".into(),
+            mac: [0x02, 0x41, 0x50, 0x01, 0x00, 0x02],
+            switch,
+        }
+    }
+
+    #[test]
+    fn a_net_device_is_for_lab_topologies_only() {
+        // A session's VM, and a fork of one, may not carry a net device: the builder refuses it.
+        let session = VmSpec {
+            net: Some(a_net_attachment()),
+            ..VmSpec::default()
+        };
+        assert!(matches!(
+            check_net(&session),
+            Err(SpawnError::NetOnSessionVm)
+        ));
+        assert!(matches!(
+            validate_spec(&session),
+            Err(SpawnError::NetOnSessionVm)
+        ));
+        let session_fork = VmSpec {
+            net: Some(a_net_attachment()),
+            restore: Some(PathBuf::from("/snapshots/session")),
+            ..VmSpec::default()
+        };
+        assert!(matches!(
+            check_net(&session_fork),
+            Err(SpawnError::NetOnSessionVm)
+        ));
+
+        // A lab topology's VM may carry one, booted fresh.
+        let lab = VmSpec {
+            kind: VmKind::LabTopology,
+            net: Some(a_net_attachment()),
+            ..VmSpec::default()
+        };
+        assert!(check_net(&lab).is_ok());
+
+        // A lab VM restored from a snapshot is refused: the device's queues are not in one.
+        let lab_restore = VmSpec {
+            kind: VmKind::LabTopology,
+            net: Some(a_net_attachment()),
+            restore: Some(PathBuf::from("/snapshots/lab")),
+            ..VmSpec::default()
+        };
+        assert!(matches!(
+            check_net(&lab_restore),
+            Err(SpawnError::NetRestore)
+        ));
+
+        // A VM with no net device is never refused for it, whatever its kind.
+        assert!(check_net(&VmSpec::default()).is_ok());
+        assert_eq!(VmSpec::default().kind, VmKind::Session);
     }
 
     fn spec_with_cid(guest_cid: u64) -> VmSpec {

@@ -99,6 +99,7 @@ pub fn convert(text: &str, name: &str) -> Result<Conversion, String> {
         name: name.to_string(),
         kind: Kind::Services,
         services,
+        machines: Vec::new(),
         k3s: None,
         observe: Default::default(),
         traffic: None,

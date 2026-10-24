@@ -101,7 +101,12 @@ pub struct VirtioMmioFdtInfo {
 /// device, the workspace volume and `volumes` shared data volumes (at most
 /// [`crate::spawner::MAX_DATA_VOLUMES`]). The KVM and Hypervisor.framework backends both describe
 /// their devices with it, and put each transport on its bus at the same window.
-pub fn virtio_transports(vsock: bool, workspace: bool, volumes: usize) -> Vec<VirtioMmioFdtInfo> {
+pub fn virtio_transports(
+    vsock: bool,
+    workspace: bool,
+    volumes: usize,
+    net: bool,
+) -> Vec<VirtioMmioFdtInfo> {
     let mut transports = Vec::new();
     if vsock {
         transports.push(VirtioMmioFdtInfo {
@@ -122,6 +127,13 @@ pub fn virtio_transports(vsock: bool, workspace: bool, volumes: usize) -> Vec<Vi
             addr: layout::DATA_MMIO_START + index as u64 * layout::MMIO_LEN,
             len: layout::MMIO_LEN,
             gsi: layout::DATA_GSI_START + index as u32,
+        });
+    }
+    if net {
+        transports.push(VirtioMmioFdtInfo {
+            addr: layout::NET_MMIO_START,
+            len: layout::MMIO_LEN,
+            gsi: layout::NET_GSI,
         });
     }
     transports
@@ -611,7 +623,7 @@ mod tests {
     #[test]
     fn virtio_transports_follow_the_layout() {
         let max = crate::spawner::MAX_DATA_VOLUMES;
-        let transports = virtio_transports(true, true, 6);
+        let transports = virtio_transports(true, true, 6, false);
         assert_eq!(transports.len(), 1 + 1 + max);
 
         let mut expected_addrs = vec![layout::VSOCK_MMIO_START, layout::WORKSPACE_MMIO_START];
@@ -632,7 +644,7 @@ mod tests {
         assert_eq!(distinct.len(), gsis.len());
         assert!(!gsis.contains(&layout::GSI_LEGACY_START));
 
-        assert!(virtio_transports(false, false, 0).is_empty());
+        assert!(virtio_transports(false, false, 0, false).is_empty());
     }
 
     /// Every transport of the shared list gets its `virtio_mmio@` node in the
@@ -648,7 +660,7 @@ mod tests {
             len: layout::MMIO_LEN,
             gsi: layout::GSI_LEGACY_START,
         };
-        let transports = virtio_transports(true, true, 4);
+        let transports = virtio_transports(true, true, 4, false);
         assert_eq!(transports.len(), 6);
 
         let dtb = create_fdt(
@@ -670,6 +682,20 @@ mod tests {
                 transport.addr
             );
         }
+    }
+
+    /// A lab topology's net device gets its own `virtio,mmio` node in the net slot, on its interrupt.
+    #[test]
+    fn virtio_transports_list_the_net_device_in_its_slot() {
+        let transports = virtio_transports(false, false, 0, true);
+        assert_eq!(transports.len(), 1);
+        assert_eq!(transports[0].addr, layout::NET_MMIO_START);
+        assert_eq!(transports[0].gsi, layout::NET_GSI);
+        // Past the data volumes' slots, so no two transports share a window.
+        let all = virtio_transports(true, true, 4, true);
+        let net = all.last().expect("the net transport comes last");
+        assert_eq!(net.addr, layout::NET_MMIO_START);
+        assert!(all[..all.len() - 1].iter().all(|t| t.addr < net.addr));
     }
 
     /// A VM with a vsock device gets a `virtio,mmio` node at the window its

@@ -96,6 +96,7 @@ pub enum BootError {
 
 /// Boots the VM described by `spec` and returns once its vCPU threads run.
 pub fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
+    crate::spawner::check_net(spec)?;
     boot_inner(spec, &runtime).map_err(SpawnError::backend)
 }
 
@@ -153,6 +154,7 @@ fn boot_inner(spec: &VmSpec, runtime: &Arc<VmRuntime>) -> Result<(), BootError> 
         spec.vsock.is_some(),
         spec.workspace.is_some(),
         spec.volumes.len(),
+        spec.net.is_some(),
     );
     let fdt = create_fdt(
         &memory,
@@ -316,6 +318,20 @@ fn attach_devices(
             irq,
         );
         attach_transport(vm, transport, VSOCK_MMIO_START, VSOCK_GSI)?;
+    }
+    // The lab topology's network device (PLAN 22.6): a transport in the layout's net slot on its own SPI,
+    // its interface on the segment's switch. A session VM has none (`check_net`).
+    if let Some(attachment) = &spec.net {
+        use crate::arch::aarch64::layout::{NET_GSI, NET_MMIO_START};
+        let irq = new_irq(&mut sources, NET_GSI)?;
+        let device = crate::devices::virtio::net::attach(
+            &attachment.switch,
+            &attachment.segment,
+            attachment.mac,
+        )
+        .map_err(VirtioError::from)?;
+        let transport = VirtioMmioTransport::new(Box::new(device), vm.memory.clone(), irq);
+        attach_transport(vm, transport, NET_MMIO_START, NET_GSI)?;
     }
     Ok(sources)
 }

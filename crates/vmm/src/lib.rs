@@ -13,7 +13,8 @@
 //! - [`arch`] — per-architecture boot, register setup, GIC (v2/v3) and FDT
 //! - [`devices`] — `BusDevice`, the legacy serial console and the virtio
 //!   devices: the MMIO transport and, behind it, the vsock device that carries
-//!   the guest's only channel to the host (there is no network device)
+//!   the guest's only channel to the host; a lab topology's VMs also get a virtio-net device on their
+//!   private segment ([`devices::virtio::net`]), never a session's
 //! - [`builder`] — single-VM build and boot orchestration
 //! - [`spawner`] — the public multi-VM API: [`spawner::spawn`] /
 //!   [`spawner::spawn_n`] return [`spawner::VmHandle`]s with `wait`, `kill`

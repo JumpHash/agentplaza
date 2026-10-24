@@ -231,6 +231,9 @@ pub struct WhpControl {
     pub vsock: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub workspace: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
+    /// The lab topology's network device, when the VM has one: such a VM cannot be snapshotted, because
+    /// the device's queues are not in a snapshot (see [`crate::spawner::check_net`]).
+    pub net: Option<Weak<Mutex<VirtioMmioTransport>>>,
     /// The data volumes' names, in the spec's order, recorded in the snapshot.
     pub volume_names: Vec<String>,
     pub gate: DeviceGate,
@@ -284,6 +287,11 @@ impl VmControl for WhpControl {
 
     fn snapshot(&self, dir: &Path, _kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
         let _busy = lock(&self.busy);
+        if self.net.is_some() {
+            return Err(failed(
+                "a VM with a network device cannot be snapshotted yet: its device's queues are not in a snapshot",
+            ));
+        }
         let vm = self.live_vm()?;
         let started = Instant::now();
         self.pause_vm(&vm)?;

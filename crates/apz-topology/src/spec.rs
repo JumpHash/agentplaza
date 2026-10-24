@@ -56,6 +56,11 @@ pub struct Topology {
     pub kind: Kind,
     #[serde(rename = "service", default)]
     pub services: Vec<Service>,
+    /// The VMs of a multi-VM topology (PLAN 22.6, W58): each runs some of the services. Two or more machines make the
+    /// topology multi-VM: they share a private segment named by the topology, and a `stop_node` scenario can take one
+    /// machine's node out of service. No machines: the topology runs in one lab VM, as before.
+    #[serde(rename = "machine", default)]
+    pub machines: Vec<Machine>,
     #[serde(default)]
     pub k3s: Option<K3s>,
     #[serde(default)]
@@ -486,6 +491,14 @@ pub struct Scenario {
     pub expect: Expect,
 }
 
+/// One VM of a multi-VM topology: its name, and the services it runs (each service runs on exactly one machine).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Machine {
+    pub name: String,
+    pub services: Vec<String>,
+}
+
 /// What a scenario does to its target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -500,6 +513,9 @@ pub enum Action {
     FillDisk,
     /// The target's clock is moved by `secs`, and moved back when lifted.
     ClockSkew,
+    /// The node that runs the target machine (a `[[machine]]` of a multi-VM topology) is stopped through the hub's
+    /// node stop, and resumed when lifted (see [`crate::node_loss`]).
+    StopNode,
 }
 
 /// The traffic a scenario judges: a GET of `path` on `service`, through the run.
@@ -525,6 +541,45 @@ pub struct Expect {
     pub max_p95_ms: Option<u64>,
 }
 
+impl Topology {
+    /// The machines of a multi-VM topology: each named and unique, each running some services, and each service
+    /// on exactly one of them. A topology with no machines has none of this to check.
+    fn check_machines(&self) -> Result<(), String> {
+        if self.machines.is_empty() {
+            return Ok(());
+        }
+        let services: BTreeSet<&str> = self.services.iter().map(|s| s.name.as_str()).collect();
+        let mut names = BTreeSet::new();
+        let mut placed = BTreeSet::new();
+        for machine in &self.machines {
+            if !is_label(&machine.name) {
+                return Err(format!("machine {:?} is not a DNS label", machine.name));
+            }
+            if !names.insert(machine.name.as_str()) {
+                return Err(format!("machine {} is declared twice", machine.name));
+            }
+            if machine.services.is_empty() {
+                return Err(format!("machine {} runs no services", machine.name));
+            }
+            for service in &machine.services {
+                if !services.contains(service.as_str()) {
+                    return Err(format!(
+                        "machine {} runs {service}, which is no service",
+                        machine.name
+                    ));
+                }
+                if !placed.insert(service.as_str()) {
+                    return Err(format!("service {service} is on two machines"));
+                }
+            }
+        }
+        if let Some(service) = services.iter().find(|s| !placed.contains(*s)) {
+            return Err(format!("service {service} is on no machine"));
+        }
+        Ok(())
+    }
+}
+
 impl Scenario {
     /// What the scenario's fields must say for its action, and that its names are in the topology.
     fn check(&self, topology: &Topology) -> Result<(), String> {
@@ -533,7 +588,17 @@ impl Scenario {
             return Err(format!("{who}: the id is not a DNS label"));
         }
         let names: BTreeSet<&str> = topology.services.iter().map(|s| s.name.as_str()).collect();
-        if !names.contains(self.target.as_str()) {
+        if self.action == Action::StopNode {
+            // A node stop takes out a machine's node, so the target is a machine of a multi-VM topology.
+            if topology.machines.len() < 2 {
+                return Err(format!(
+                    "{who} stops a node, which needs a multi-VM topology (two or more [[machine]] tables)"
+                ));
+            }
+            if !topology.machines.iter().any(|m| m.name == self.target) {
+                return Err(format!("{who} stops {}, which is no machine", self.target));
+            }
+        } else if !names.contains(self.target.as_str()) {
             return Err(format!(
                 "{who} targets {}, which is no service",
                 self.target
@@ -583,6 +648,11 @@ impl Scenario {
                 only("secs", self.secs.is_some(), "clock_skew")?;
             }
             Action::Kill | Action::Restart => {
+                only("fault", self.fault.is_some(), "fault")?;
+                only("volume", self.volume.is_some(), "fill_disk")?;
+                only("secs", self.secs.is_some(), "clock_skew")?;
+            }
+            Action::StopNode => {
                 only("fault", self.fault.is_some(), "fault")?;
                 only("volume", self.volume.is_some(), "fill_disk")?;
                 only("secs", self.secs.is_some(), "clock_skew")?;
@@ -817,6 +887,8 @@ impl Topology {
         if !is_label(&self.name) {
             return Err(format!("topology name {:?} is not a DNS label", self.name));
         }
+        self.check_machines()?;
+        self.check_machines()?;
         if let Some(stage) = &self.data {
             stage
                 .check()

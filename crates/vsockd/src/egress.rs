@@ -387,7 +387,8 @@ pub fn serve_tcp(
 
 /// Bridges one TCP connection to a socket pair and serves the pair's other end. The TCP stream is shut down when the
 /// connection is served, which ends both copies.
-fn serve_bridged(tcp: TcpStream, cid: u32, policy: &Policy, apid: &Apid) {
+/// Serves one TCP connection as a guest's: the same proxy code the vsock path runs, on a socket pair.
+pub fn serve_bridged(tcp: TcpStream, cid: u32, policy: &Policy, apid: &Apid) {
     let Ok((ours, theirs)) = UnixStream::pair() else {
         return;
     };
@@ -1081,12 +1082,78 @@ fn checked_addrs(
     Ok(addrs)
 }
 
+#[cfg(any(test, feature = "test-support"))]
+/// The egress check's test token, and a stand-in for apid's `/internal/egress/check`. Every
+/// check that carries the token is answered by `decide` on its JSON body and counted. The
+/// responder serves until the test process ends. Returns apid and the token file (the test
+/// removes it).
+pub fn fake_apid(
+    name: &str,
+    decide: impl Fn(&serde_json::Value) -> serde_json::Value + Send + 'static,
+) -> (
+    Apid,
+    Arc<std::sync::atomic::AtomicUsize>,
+    std::path::PathBuf,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let token_file =
+        std::env::temp_dir().join(format!("vsockd-egress-check-{name}-{}", std::process::id()));
+    std::fs::write(&token_file, "test-token\n").unwrap();
+    let apid = Apid::new(
+        &format!("http://127.0.0.1:{port}"),
+        Some(token_file.clone()),
+    )
+    .unwrap();
+    let checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&checks);
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let _ = conn.set_read_timeout(Some(Duration::from_secs(20)));
+            let Ok((head, mut body)) = read_head(&mut conn) else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while body.len() < length {
+                let mut chunk = [0u8; 256];
+                match conn.read(&mut chunk) {
+                    Ok(n) if n > 0 => body.extend_from_slice(&chunk[..n]),
+                    _ => break,
+                }
+            }
+            let trusted = head
+                .to_ascii_lowercase()
+                .contains("x-apz-internal: test-token");
+            let (status, reply) =
+                if trusted && head.starts_with("POST /internal/egress/check HTTP/1.1\r\n") {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&body[..length.min(body.len())]).unwrap_or_default();
+                    (200, decide(&request).to_string())
+                } else {
+                    (403, "{}".to_string())
+                };
+            let out = format!(
+                "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                if status == 200 { "OK" } else { "Forbidden" },
+                reply.len()
+            );
+            let _ = conn.write_all(out.as_bytes());
+        }
+    });
+    (apid, checks, token_file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
-    use std::path::PathBuf;
-    use std::sync::atomic::AtomicUsize;
 
     #[test]
     fn the_policy_allows_only_the_web_ports_and_the_listed_ones() {
@@ -1401,70 +1468,6 @@ mod tests {
             "a closed socket frees its slot"
         );
         assert!(Stop::TooMany.answer().starts_with(b"HTTP/1.1 429 "));
-    }
-
-    /// The egress check's test token, and a stand-in for apid's `/internal/egress/check`. Every
-    /// check that carries the token is answered by `decide` on its JSON body and counted. The
-    /// responder serves until the test process ends. Returns apid and the token file (the test
-    /// removes it).
-    fn fake_apid(
-        name: &str,
-        decide: impl Fn(&serde_json::Value) -> serde_json::Value + Send + 'static,
-    ) -> (Apid, Arc<AtomicUsize>, PathBuf) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let token_file =
-            std::env::temp_dir().join(format!("vsockd-egress-check-{name}-{}", std::process::id()));
-        std::fs::write(&token_file, "test-token\n").unwrap();
-        let apid = Apid::new(
-            &format!("http://127.0.0.1:{port}"),
-            Some(token_file.clone()),
-        )
-        .unwrap();
-        let checks = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&checks);
-        thread::spawn(move || {
-            for conn in listener.incoming() {
-                let Ok(mut conn) = conn else { continue };
-                let _ = conn.set_read_timeout(Some(Duration::from_secs(20)));
-                let Ok((head, mut body)) = read_head(&mut conn) else {
-                    continue;
-                };
-                let length = head
-                    .lines()
-                    .filter_map(|line| line.split_once(':'))
-                    .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
-                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
-                while body.len() < length {
-                    let mut chunk = [0u8; 256];
-                    match conn.read(&mut chunk) {
-                        Ok(n) if n > 0 => body.extend_from_slice(&chunk[..n]),
-                        _ => break,
-                    }
-                }
-                let trusted = head
-                    .to_ascii_lowercase()
-                    .contains("x-apz-internal: test-token");
-                let (status, reply) = if trusted
-                    && head.starts_with("POST /internal/egress/check HTTP/1.1\r\n")
-                {
-                    counter.fetch_add(1, Ordering::SeqCst);
-                    let request: serde_json::Value =
-                        serde_json::from_slice(&body[..length.min(body.len())]).unwrap_or_default();
-                    (200, decide(&request).to_string())
-                } else {
-                    (403, "{}".to_string())
-                };
-                let out = format!(
-                    "HTTP/1.1 {status} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                    if status == 200 { "OK" } else { "Forbidden" },
-                    reply.len()
-                );
-                let _ = conn.write_all(out.as_bytes());
-            }
-        });
-        (apid, checks, token_file)
     }
 
     /// A loopback listener nobody accepts from. A connect to it succeeds (it waits in the backlog),

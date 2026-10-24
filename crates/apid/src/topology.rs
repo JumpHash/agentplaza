@@ -115,6 +115,7 @@ fn convert_source(
                 name: name.clone(),
                 kind: Kind::K3s,
                 services: Vec::new(),
+                machines: Vec::new(),
                 k3s: Some(K3s {
                     version: version.to_string(),
                     manifests: vec![manifest.clone()],

@@ -1599,6 +1599,7 @@ mod tests {
                     image: PathBuf::from("/tmp/data/b.ext4"),
                 },
             ],
+            ..Default::default()
         };
         let args = child_args(&spec);
         let pairs: Vec<(&str, &str)> = args

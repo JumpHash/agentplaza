@@ -714,3 +714,60 @@ impl Drop for Running {
         let _ = std::fs::remove_dir_all(&self.scratch);
     }
 }
+
+/// Hands the VM `machine` of a segment its guest config under `dir`: the hosts file that resolves the segment's
+/// names, and the interface script (`net.sh`) that brings its interface up on `device`. The lab image copies both to
+/// `/etc/apz/net` at boot and runs `lab-net.sh` (`scripts/guest/lab-net.sh`). Returns the files written.
+pub fn hand_guest_net(
+    dir: &Path,
+    plan: &crate::segment::Plan,
+    machine: &str,
+    device: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let net = plan
+        .guest_net(machine, device)
+        .ok_or_else(|| format!("{machine} is not on the segment {}", plan.segment))?;
+    std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    let hosts = dir.join("hosts");
+    let script = dir.join("net.sh");
+    std::fs::write(&hosts, net.hosts).map_err(|err| format!("{}: {err}", hosts.display()))?;
+    std::fs::write(&script, net.script).map_err(|err| format!("{}: {err}", script.display()))?;
+    Ok(vec![hosts, script])
+}
+
+#[cfg(test)]
+mod guest_net_tests {
+    use super::*;
+    use crate::segment::Plan;
+
+    /// The guest config the runner hands the VM of `api`, read back from the files it wrote: the names resolve, the
+    /// interface is the plan's, and its default route is the gateway's and no other.
+    #[test]
+    fn the_runner_hands_each_vm_its_hosts_file_and_interface_script() {
+        let plan = Plan::new("web", 7, &["api", "db"]).unwrap();
+        let dir = std::env::temp_dir().join(format!("apz-topo-guest-net-{}", std::process::id()));
+        let written = hand_guest_net(&dir, &plan, "api", "eth0").unwrap();
+        assert_eq!(written.len(), 2);
+
+        let hosts = std::fs::read_to_string(dir.join("hosts")).unwrap();
+        assert!(
+            hosts.contains("10.7.0.2 api\n") && hosts.contains("10.7.0.3 db\n"),
+            "every name resolves: {hosts}"
+        );
+        let script = std::fs::read_to_string(dir.join("net.sh")).unwrap();
+        assert!(
+            script.contains("ip addr add 10.7.0.2/24 dev eth0\n"),
+            "{script}"
+        );
+        assert!(
+            script.contains("ip route add default via 10.7.0.1 dev eth0\n"),
+            "{script}"
+        );
+        assert!(
+            !script.contains("10.7.0.3"),
+            "the VM does not reach the other member directly: {script}"
+        );
+        assert!(hand_guest_net(&dir, &plan, "nobody", "eth0").is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

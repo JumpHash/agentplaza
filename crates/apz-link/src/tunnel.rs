@@ -161,6 +161,13 @@ fn refused_status(message: &str) -> Option<u16> {
 }
 
 /// Opens the tunnel: the node's signed WebSocket upgrade to its path on the hub.
+/// Opens this node's trunk for `segment` on `mux`: a stream the hub splices to the other node's trunk for the same
+/// segment (`apz_http::trunk`). The overlay of the segment reads and writes it as bytes.
+pub fn open_trunk(mux: &Mux, segment: &str) -> io::Result<Stream> {
+    let header = json!({"kind": apz_http::trunk::KIND, "segment": segment}).to_string();
+    mux.open(header.as_bytes())
+}
+
 pub fn connect(identity: &Identity, key: &NodeKey) -> Result<Arc<Mux>, Connect> {
     let path = format!("/v1/nodes/{}/tunnel", identity.node_id);
     let target = identity

@@ -436,6 +436,7 @@ fn parse(args: &[String]) -> Result<Launch, String> {
         balloon,
         restore,
         volumes,
+        ..Default::default()
     };
     Ok(Launch {
         spec,
@@ -952,6 +953,7 @@ mod tests {
                     image: PathBuf::from("/tmp/data/b.ext4"),
                 },
             ],
+            ..Default::default()
         };
         let args = vmm::spawner::process::child_args(&spec);
         let Launch {

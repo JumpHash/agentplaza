@@ -117,6 +117,7 @@ fn spec(dir: &Path, cid: u64, cmdline: &str) -> VmSpec {
         balloon: None,
         restore: None,
         volumes: Vec::new(),
+        ..Default::default()
     }
 }
 
