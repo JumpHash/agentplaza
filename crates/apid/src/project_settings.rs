@@ -129,6 +129,14 @@ pub struct ProjectSettings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[table(child)]
     pub performance_limits: Vec<PerfLimit>,
+    /// The stages a channel's qualification runs, by channel (PLAN 22.10): a comma-separated list of stage keys or numbers
+    /// (`qualify::plan::parse_stages`); a channel with none keeps the channel's depth.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[table(map_value)]
+    pub qualify_depth: BTreeMap<String, String>,
+    /// Whether the project asks for a soak in its stable qualifications (stage 10, PLAN 22.10).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub qualify_soak: bool,
 }
 
 /// One limit on a performance comparison: the metric's name and the largest change it may make, in tenths of a
@@ -252,6 +260,9 @@ struct SettingsRow {
     intake: Vec<IntakeRule>,
     #[table(child)]
     performance_limits: Vec<PerfLimit>,
+    #[table(map_value)]
+    qualify_depth: BTreeMap<String, String>,
+    qualify_soak: bool,
 }
 
 /// One hook of a project as its row: the action is a kind and, for a rule, the rule's id, and its paths and languages
@@ -327,6 +338,8 @@ impl SettingsRow {
             hooks: settings.hooks.clone(),
             intake: settings.intake.clone(),
             performance_limits: settings.performance_limits.clone(),
+            qualify_depth: settings.qualify_depth.clone(),
+            qualify_soak: settings.qualify_soak,
         }
     }
 
@@ -355,6 +368,8 @@ impl SettingsRow {
             hooks: self.hooks,
             intake: self.intake,
             performance_limits: self.performance_limits,
+            qualify_depth: self.qualify_depth,
+            qualify_soak: self.qualify_soak,
             hook_defaults: self.hook_defaults,
             subscription_fallback: self.subscription_fallback,
         };
@@ -376,6 +391,10 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         return Err("queue_batch: a batch holds from 1 to 16 lanes".into());
     }
     crate::intake::check_rules(&settings.intake)?;
+    for (channel, stages) in &settings.qualify_depth {
+        crate::qualify::plan::parse_stages(stages)
+            .map_err(|e| format!("qualify_depth.{channel}: {e}"))?;
+    }
     for limit in &settings.performance_limits {
         if limit.metric.trim().is_empty() || limit.max_tenths == 0 {
             return Err(

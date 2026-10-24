@@ -1,0 +1,151 @@
+# The qualification recipe (PLAN 22.10): a candidate release's eleven stages as steps with gates. Independent stages run in
+# parallel (the walker starts every step whose edges are taken). The engine (qualify/) runs the stages: each stage's step
+# is settled by its gate, and a run is planned to its channel's depth before it starts (qualify/plan.rs drops the stages
+# outside it and the walker is given the restricted graph, so a nightly candidate runs only its stages).
+id = "qualify"
+name = "Qualification"
+description = "Qualifies a release candidate: verify the artifacts, stand up the topologies, run the functional, data, observability, performance, resilience, security and UX stages, then the verdict and the report (PLAN 22.10)"
+version = 1
+inputs = ["release"]
+outputs = ["qualification"]
+triggers = ["release.qualify"]
+
+[[steps]]
+id = "verify"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "topologies"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "functional"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "data"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "observe"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "performance"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "resilience"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "security"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "ux"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "soak"
+engine = "qualify"
+gate = ["passed"]
+
+[[steps]]
+id = "verdict"
+engine = "qualify"
+gate = ["passed"]
+
+[[edges]]
+from = "verify"
+to = "topologies"
+when = "passed"
+
+[[edges]]
+from = "verify"
+to = "security"
+when = "passed"
+
+[[edges]]
+from = "topologies"
+to = "functional"
+when = "passed"
+
+[[edges]]
+from = "topologies"
+to = "data"
+when = "passed"
+
+[[edges]]
+from = "topologies"
+to = "observe"
+when = "passed"
+
+[[edges]]
+from = "topologies"
+to = "performance"
+when = "passed"
+
+[[edges]]
+from = "topologies"
+to = "resilience"
+when = "passed"
+
+[[edges]]
+from = "topologies"
+to = "ux"
+when = "passed"
+
+[[edges]]
+from = "performance"
+to = "soak"
+when = "passed"
+
+[[edges]]
+from = "functional"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "data"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "observe"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "performance"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "resilience"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "security"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "ux"
+to = "verdict"
+when = "passed"
+
+[[edges]]
+from = "soak"
+to = "verdict"
+when = "passed"

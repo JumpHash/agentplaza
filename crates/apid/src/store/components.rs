@@ -212,6 +212,12 @@ pub fn all() -> Vec<Component> {
             load: |app, conn| app.test_lab.load(conn),
         },
         Component {
+            name: "qualification",
+            def: crate::qualify::store::def,
+            rows: |app| app.qualify.rows(),
+            load: |app, conn| app.qualify.load(conn),
+        },
+        Component {
             name: "stations",
             def: crate::stations::store_def,
             rows: |app| app.stations.rows(),

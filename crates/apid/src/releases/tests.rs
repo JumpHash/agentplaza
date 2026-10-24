@@ -24,11 +24,11 @@ use std::sync::Arc;
 
 const TOKEN: &str = "release-test-token";
 /// The lock file of the test package: 9.3's SBOM is read from it at the revision the release is cut from.
-pub(super) const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"5f0e2c6ed6606019b4e29e69dbaae37b4f5b6fc1c0a2e2ef3b6f7f4b4d2f7a10\"\n";
+pub(crate) const CARGO_LOCK: &str = "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[package]]\nname = \"serde\"\nversion = \"1.0.219\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"5f0e2c6ed6606019b4e29e69dbaae37b4f5b6fc1c0a2e2ef3b6f7f4b4d2f7a10\"\n";
 const CARGO: &str = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[package.metadata.weft]\ntargets = [\"linux-x86_64\", \"macos-aarch64\"]\n";
 
 /// Weft's client as the flow reads and writes through it.
-pub(super) struct WeftLedger(Client);
+pub(crate) struct WeftLedger(Client);
 
 impl Ledger for WeftLedger {
     fn read(&self, path: &str) -> Result<Value, String> {
@@ -67,7 +67,7 @@ impl Ledger for WeftLedger {
 }
 
 /// A builder that builds every target and records what it built.
-struct FakeBuilder;
+pub(crate) struct FakeBuilder;
 
 impl Builder for FakeBuilder {
     fn build(&self, release: &Release, target: &str) -> Result<Outcome, String> {
@@ -184,12 +184,12 @@ fn put(store: &Store, path: &str, text: &str) -> Delta {
 
 /// A Weft on a scratch store with one landed change (a Cargo package declaring two targets), served in-process.
 /// Returns the client the flow uses, the server's handle (it serves while the handle lives) and the directory.
-pub(super) fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
+pub(crate) fn lab(name: &str) -> (Client, apz_http::Handle, PathBuf, String, String) {
     lab_with(name, &[])
 }
 
 /// [`lab`], with `files` added to the landed change (the build files of other ecosystems: a release declares their targets).
-pub(super) fn lab_with(
+pub(crate) fn lab_with(
     name: &str,
     files: &[(&str, &str)],
 ) -> (Client, apz_http::Handle, PathBuf, String, String) {
@@ -302,16 +302,16 @@ pub(super) fn lab_with(
 }
 
 /// The dependencies of one test: its Weft, the recipe runs, the review graph's store and the release store.
-pub(super) struct World {
-    pub(super) ledger: WeftLedger,
-    pub(super) runs: Runs,
-    pub(super) reviews: Reviews,
-    pub(super) releases: Releases,
-    pub(super) signing: TestSigning,
+pub(crate) struct World {
+    pub(crate) ledger: WeftLedger,
+    pub(crate) runs: Runs,
+    pub(crate) reviews: Reviews,
+    pub(crate) releases: Releases,
+    pub(crate) signing: TestSigning,
 }
 
 impl World {
-    pub(super) fn new(client: Client, name: &str) -> World {
+    pub(crate) fn new(client: Client, name: &str) -> World {
         let dir =
             std::env::temp_dir().join(format!("apid-release-blobs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -325,7 +325,7 @@ impl World {
         }
     }
 
-    pub(super) fn deps(&self) -> Deps<'_> {
+    pub(crate) fn deps(&self) -> Deps<'_> {
         Deps {
             weft: &self.ledger,
             runs: &self.runs,
@@ -337,15 +337,15 @@ impl World {
 }
 
 /// The release step's keys in a test: generated here, never the owner's or the vault's.
-pub(super) struct TestSigning {
+pub(crate) struct TestSigning {
     hub: String,
     android: String,
     windows: String,
-    pub(super) notary: RecordingNotary,
+    pub(crate) notary: RecordingNotary,
 }
 
 impl TestSigning {
-    pub(super) fn new() -> TestSigning {
+    pub(crate) fn new() -> TestSigning {
         TestSigning {
             hub: KeyPair::generate().seed_hex(),
             android: KeyPair::generate().seed_hex(),
@@ -375,8 +375,8 @@ impl Signing for TestSigning {
 
 /// A notary that records what it was sent and issues a ticket per digest.
 #[derive(Default)]
-pub(super) struct RecordingNotary {
-    pub(super) submitted: std::sync::Mutex<Vec<String>>,
+pub(crate) struct RecordingNotary {
+    pub(crate) submitted: std::sync::Mutex<Vec<String>>,
 }
 
 impl Notary for RecordingNotary {
@@ -391,7 +391,7 @@ impl Notary for RecordingNotary {
     }
 }
 
-pub(super) fn cut(version: &str) -> Cut {
+pub(crate) fn cut(version: &str) -> Cut {
     Cut {
         version: Some(version.into()),
         changes: vec![],

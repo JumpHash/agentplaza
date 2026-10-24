@@ -61,3 +61,46 @@ pub mod source;
 pub mod spec;
 pub mod stage;
 pub mod steps;
+
+#[cfg(test)]
+mod lab_tools_tests {
+    //! The lab image's tool list (`scripts/guest/lab-tools.txt`): every `bin` line names a binary of this crate, and the
+    //! tools the lab needs are all listed.
+
+    const LIST: &str = include_str!("../../../scripts/guest/lab-tools.txt");
+    const MANIFEST: &str = include_str!("../Cargo.toml");
+
+    fn entries() -> Vec<(String, String)> {
+        LIST.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| {
+                let (kind, name) = l.split_once(' ')?;
+                Some((kind.to_string(), name.trim().to_string()))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_listed_binary_is_a_binary_of_the_crate_and_the_lab_tools_are_listed() {
+        let entries = entries();
+        for (kind, name) in &entries {
+            if kind == "bin" {
+                assert!(
+                    MANIFEST.contains(&format!("name = \"{name}\"")),
+                    "{name} is listed for the lab image but is not a binary of apz-topology"
+                );
+            }
+        }
+        for tool in ["apz-topo-run", "apz-fault", "apz-stage", "apz-security"] {
+            assert!(
+                entries.contains(&("bin".to_string(), tool.to_string())),
+                "{tool} is not in the lab image's list"
+            );
+        }
+        assert!(
+            entries.contains(&("data".to_string(), "scrub".to_string())),
+            "the scrubber's copy is not listed"
+        );
+    }
+}

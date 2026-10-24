@@ -1,7 +1,8 @@
 // The Releases screen. `#/releases` lists the project's releases, grouped by channel; `#/releases/<id>` is one release's
 // page: its life (state, candidate, verdicts, promotions, sync), its changes (change, title, review run), its artifacts
-// per target (target, artifact, digest, size, pool, run), and the owner's actions on it. The rules are in
-// releases-model.ts. Every text from the hub is set as text (h() and the components), never as markup.
+// per target (target, artifact, digest, size, pool, run), and the owner's actions on it. `#/releases/<id>/report` is its
+// qualification report (release-report.ts). The rules are in releases-model.ts. Every text from the hub is set as text
+// (h() and the components), never as markup.
 
 import '../styles/releases.css';
 import { releasesApi, type Release, type ReleaseArtifact, type ReleaseChange, type ReleasePromotion, type ReleaseVerdict } from '../api-releases';
@@ -9,6 +10,7 @@ import { go, href } from '../router';
 import { projectTitle, scope } from '../scope';
 import { ago, attempt, badge, button, card, empty, field, input, modal, table, textarea, toast, type Column } from '../ui/components';
 import { h, lu, replace } from '../ui/dom';
+import { reportPage } from './release-report';
 import {
   candidateText,
   groupByChannel,
@@ -27,7 +29,7 @@ export function mount(root: HTMLElement, params: string[]): () => void {
   const view = h('div.rel');
   root.append(view);
   const id = params[0];
-  const stop = id ? releasePage(view, id) : releaseList(view);
+  const stop = !id ? releaseList(view) : params[1] === 'report' ? reportPage(view, id) : releasePage(view, id);
   return () => {
     stop();
     view.remove();
@@ -313,9 +315,10 @@ function releasePage(view: HTMLElement, id: string): () => void {
       return;
     }
     const r = rel;
+    const report = h('a.rel-back', { href: href('releases', id, 'report') }, lu('file-text', 14), h('span', null, 'Qualification report'));
     replace(
       view,
-      back,
+      h('div.rel-nav', null, back, report),
       h(
         'header.rel-h',
         null,

@@ -1,0 +1,19 @@
+meta {
+  name: A qualification of an unknown release is not found
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/qualify
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 404
+}

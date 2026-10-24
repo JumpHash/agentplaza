@@ -265,10 +265,6 @@ pub fn routes(router: Router<App>) -> Router<App> {
             RouteDoc::new("Record the checks of a release's commit (ci): passed or failed")
                 .errors(&[400, 404, 409]),
         )
-        .post("/v1/releases/{id}/qualify", |app, _, p: &Params<'_>| {
-            answer(flow::qualify(&deps(app), p.get("id")))
-        })
-        .doc(RouteDoc::new("Send a candidate to qualification").errors(&[404, 409]))
         .post("/v1/releases/{id}/publish", |app, _, p: &Params<'_>| {
             let outbound = HttpsOutbound;
             let public = app.config.public_url.trim_end_matches('/');
@@ -479,7 +475,12 @@ pub fn routes(router: Router<App>) -> Router<App> {
                 .unwrap_or(Value::Null);
             Response::json(
                 200,
-                &json!({ "release": release, "run": run, "life": life }),
+                &json!({
+                    "release": release,
+                    "run": run,
+                    "life": life,
+                    "qualification": crate::qualify::routes::report_for(app, &release),
+                }),
             )
         })
         .doc(

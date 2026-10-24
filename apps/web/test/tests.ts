@@ -2001,6 +2001,8 @@ import './attachments-tests';
 import './new-project-tests';
 import './environments-tests';
 import './releases-tests';
+import './release-report-tests';
+import './project-trends-tests';
 import './previews-tests';
 import './maintenance-tests';
 import './chat-tools-tests';

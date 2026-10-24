@@ -30,8 +30,56 @@ export interface Release {
   sync: ReleaseSync[]; created_ms: number; updated_ms: number;
 }
 
-/** `GET /v1/releases/{id}/report`: the release, its run (null when it has none) and its life, as the hub reports it. */
-export interface ReleaseReport { release: Release; run: Record<string, unknown> | null; life: Record<string, unknown> }
+/** A stage's state in the qualification report. `not_in_depth` is a stage the qualification did not go deep on. */
+export type QualificationStageState = 'passed' | 'accepted' | 'failed' | 'not_run' | 'pending' | 'not_in_depth';
+
+/** A link the hub gives as evidence or as a finding: a label, and a hub path (same origin). */
+export interface QualificationLink { kind?: string; label?: string; text?: string; id?: string; href: string }
+
+/** One stage of the qualification (1 to 11), with what it found. */
+export interface QualificationStage {
+  number: number; key: string; title: string; in_depth: boolean; short: boolean; state: QualificationStageState; reason: string;
+  evidence: QualificationLink[]; findings: QualificationLink[]; metrics: { name: string; value: number | string }[];
+  parts: { name: string; state: string; reason: string }[];
+}
+
+/** The qualification record itself (the run that qualified the release). */
+export interface QualificationRecord {
+  id: string; state: string; verdict: '' | 'passed' | 'failed' | 'incomplete'; reasons: string[];
+  depth: { stages: string[]; short: string[]; reason: string; excluded: { stage: string; why: string }[] };
+  lab_runs: string[]; review_run: string; started_ms: number; ended_ms: number | null;
+}
+
+/** A change in a metric against the release it was compared with. */
+export interface QualificationDelta { name: string; previous: number; current: number; change_pct: number }
+
+/** A test the hub has quarantined until it is fixed. `flaked_runs` is a count (or the runs themselves). */
+export interface QualificationQuarantine { test: string; since_ms: number; flaked_runs: number | string[]; fix_task: string }
+
+/** A stage the planner asked to accept, and what the planner and a second model answered. */
+export interface QualificationAcceptance {
+  id: string; release: string; stage: number | string; key: string; reason: string; planner: string; planner_says: string;
+  second: string; second_says: string; tokens: number; at_ms: number;
+}
+
+/** `GET /v1/releases/{id}/report` → `qualification`: the whole report of a release's qualification. */
+export interface QualificationReport {
+  release: { id: string; version: string; channel: string; state: string };
+  qualification: QualificationRecord;
+  stages: QualificationStage[];
+  compared_with: { release: string; version: string; id: string } | null;
+  deltas: QualificationDelta[];
+  findings: { new: string[]; fixed: string[] };
+  acceptances: QualificationAcceptance[];
+  quarantine: QualificationQuarantine[];
+  flaky: string[];
+  matrices: { name: string; state: string; reason: string }[];
+  cost: { model_tokens: number; lab_minutes: number; lab_runs: number };
+  fix_tasks: { stage: string; goal: string; task: string }[];
+}
+
+/** `GET /v1/releases/{id}/report`: the release, its run (null when it has none), its life, and its qualification report (null when it has none). */
+export interface ReleaseReport { release: Release; run: Record<string, unknown> | null; life: Record<string, unknown>; qualification: QualificationReport | null }
 
 /** `GET /v1/releases/{id}/artifacts/{target}`: one artifact, with what the weft store says about it. */
 export interface ReleaseArtifactAnswer { artifact: ReleaseArtifact; weft: Record<string, unknown> }

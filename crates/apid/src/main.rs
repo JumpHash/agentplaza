@@ -106,6 +106,7 @@ mod prompts;
 mod provider_health;
 mod provider_listings;
 mod providers;
+mod qualify;
 mod recipes;
 mod releases;
 mod replan;
