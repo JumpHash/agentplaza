@@ -71,7 +71,9 @@ fn remote(root: &Path, name: &str) -> (PathBuf, String) {
             bare.to_str().unwrap(),
         ],
     );
-    let url = format!("file://{}", bare.display());
+    // A URL's path is `/`-separated on every host: the hub reads the owner and the name from it (`slug_of`), and a
+    // Windows path's `\` would leave no owner segment.
+    let url = format!("file://{}", bare.to_string_lossy().replace('\\', "/"));
     (bare, url)
 }
 

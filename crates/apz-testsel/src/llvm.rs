@@ -107,13 +107,23 @@ fn to_u32(value: u64) -> Result<u32, Error> {
     u32::try_from(value).map_err(|_| Error::Export(format!("line {value} is out of range")))
 }
 
-/// `path` relative to `root` (both `/`-separated), or `path` as it is when it lies outside the root.
+/// `path` relative to `root`, or `path` (normalized) when it lies outside the root. Both are read with `/` separators on
+/// every host, so an id or a package's directory is the same on Windows as on Unix: `\` becomes `/`, and a Windows
+/// verbatim prefix (`\\?\`, which a canonical path carries) is dropped.
 pub fn relative(path: &str, root: &str) -> String {
-    let root = root.trim_end_matches('/');
-    match path.strip_prefix(root) {
+    let path = slashed(path);
+    let root = slashed(root);
+    match path.strip_prefix(root.as_str()) {
         Some(rest) => rest.trim_start_matches('/').to_string(),
-        None => path.to_string(),
+        None => path,
     }
+}
+
+/// `path` with `/` separators, without a verbatim prefix and without a trailing separator.
+fn slashed(path: &str) -> String {
+    let forward = path.replace('\\', "/");
+    let plain = forward.strip_prefix("//?/").unwrap_or(&forward);
+    plain.trim_end_matches('/').to_string()
 }
 
 /// Records a map from the tests' runs. `packages` and `tests` are the build graph and the inventory (every test that
