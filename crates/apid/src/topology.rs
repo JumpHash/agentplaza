@@ -207,6 +207,12 @@ fn import(app: &App, project: &str, body: &Value) -> Result<Value, (u16, String)
     let source = body["source"]
         .as_str()
         .ok_or_else(|| bad("source is \"compose\" or \"manifests\"".into()))?;
+    // A source the hub does not read is refused before the repository is.
+    if !matches!(source, "compose" | "manifests") {
+        return Err(bad(format!(
+            "source is \"compose\" or \"manifests\", not {source:?}"
+        )));
+    }
     let path_in = body["path"]
         .as_str()
         .ok_or_else(|| bad("path is the file in the repository at main".into()))?;

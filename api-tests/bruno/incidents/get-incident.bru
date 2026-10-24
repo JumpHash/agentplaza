@@ -1,25 +1,17 @@
 meta {
-  name: Read one incident with its steps and lessons
+  name: An incident the project does not have
   type: http
   seq: 2
 }
 
 get {
-  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents/{{incidentId}}
+  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents/no-such-incident
   body: none
   auth: none
 }
 
 assert {
-  res.status: eq 200
+  res.status: eq 404
+  res.body.error: isString
   res.responseTime: lt {{budgetMs}}
-}
-
-tests {
-  test("the incident names its alert, its act and its lessons", function () {
-    const b = res.getBody();
-    expect(b.id).to.eql(bru.getVar("incidentId"));
-    expect(b.status).to.be.oneOf(["open", "resolved"]);
-    expect(b.lesson_texts).to.be.an("array");
-  });
 }

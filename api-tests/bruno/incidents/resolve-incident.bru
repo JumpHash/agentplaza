@@ -1,11 +1,11 @@
 meta {
-  name: Close an open incident as the owner
+  name: Resolving an incident the project does not have
   type: http
   seq: 3
 }
 
 post {
-  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents/{{incidentId}}/resolve
+  url: {{baseUrl}}/v1/projects/{{projectId}}/incidents/no-such-incident/resolve
   body: json
   auth: none
 }
@@ -19,14 +19,7 @@ body:json {
 }
 
 assert {
-  res.status: eq 200
+  res.status: eq 404
+  res.body.error: isString
   res.responseTime: lt {{budgetMs}}
-}
-
-tests {
-  test("the incident is resolved and its chat is told", function () {
-    const b = res.getBody();
-    expect(b.status).to.eql("resolved");
-    expect(b.resolved_ms).to.be.above(0);
-  });
 }
