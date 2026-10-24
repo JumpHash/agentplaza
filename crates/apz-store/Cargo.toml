@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "The hub's SQLite store: a writer thread and a reader pool per file, embedded migrations, the schema lint, backups, and typed tables for structs (derive Table)."
+publish = false
 
 [dependencies]
 rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "cache", "fallible_uint"] }

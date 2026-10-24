@@ -142,10 +142,22 @@ impl Stack {
         stack.children.push(vsockd);
         let socket = uds.join(format!("vm{}_{}", noded::FIRST_CID, noded::PORT));
         wait_until(|| socket.exists(), "vsockd's socket")?;
+        // vsockd's API takes the machine's internal token, as the node daemons' APIs do.
+        let token_file = state.join("internal.token");
         wait_until(
             || {
-                apz_http::client::send(hub_port, "GET", "/v1/status", None, Duration::from_secs(2))
-                    .is_ok_and(|reply| reply.status == 200)
+                let Ok(token) = std::fs::read_to_string(&token_file) else {
+                    return false;
+                };
+                apz_http::client::send_with(
+                    hub_port,
+                    "GET",
+                    "/v1/status",
+                    &[(apz_http::auth::HEADER, token.trim())],
+                    None,
+                    Duration::from_secs(2),
+                )
+                .is_ok_and(|reply| reply.status == 200)
             },
             "vsockd's HTTP surface",
         )?;

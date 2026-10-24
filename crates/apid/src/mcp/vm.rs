@@ -361,7 +361,8 @@ fn text_of(body: &Value, field: &str) -> Result<String, String> {
         .ok_or_else(|| format!("the node's reply has no {field}"))
 }
 
-#[cfg(test)]
+// Unix sockets stand in for the node's VM sockets, so the tests run where the microVM path does.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::BufRead;
