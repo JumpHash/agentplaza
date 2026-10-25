@@ -3,7 +3,7 @@
   "info": {
     "title": "AgentPlaza hub API",
     "description": "The hub's HTTP API (apid). Generated from its router by `apid openapi`: do not edit by hand. A request from the hub's own machine (a loopback peer whose Host names this machine, and not a cross-origin browser request) is the owner's without a token: an operation's security lists the empty requirement `{}` for that.",
-    "version": "1.0.0",
+    "version": "0.1.0",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
