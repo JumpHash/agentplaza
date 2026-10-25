@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
+use wgpu::util::DeviceExt;
 
 use super::fleet::WRAP_PERIOD;
 use super::scene::{
@@ -346,60 +347,120 @@ fn over_area(part_min: Vec3, part_max: Vec3, area_min: Vec3, area_max: Vec3) -> 
 }
 
 /// Overlays: a textured rectangle per instance, in the widget's NDC.
-const OVERLAY: &str = r"
-@group(0) @binding(0) var tex: texture_2d<f32>;
-@group(0) @binding(1) var smp: sampler;
-struct Out { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex fn vs(@builtin(vertex_index) i: u32, @location(0) rect: vec4<f32>) -> Out {
-    var corners = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(0.0, 1.0),
-    );
-    let c = corners[i];
-    var o: Out;
-    o.clip = vec4<f32>(mix(rect.x, rect.z, c.x), mix(rect.y, rect.w, c.y), 0.0, 1.0);
-    o.uv = c;
-    return o;
-}
-@fragment fn fs(o: Out) -> @location(0) vec4<f32> { return textureSample(tex, smp, o.uv); }
-";
+const OVERLAY: &str = include_str!("shaders/overlay_rect.wgsl");
 
-const BLIT: &str = r"
-@group(0) @binding(0) var tex: texture_2d<f32>;
-@group(0) @binding(1) var smp: sampler;
-struct Out { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex fn vs(@builtin(vertex_index) i: u32) -> Out {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    var o: Out;
-    o.clip = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    o.uv = vec2<f32>(x, y);
-    return o;
-}
-@fragment fn fs(o: Out) -> @location(0) vec4<f32> { return textureSample(tex, smp, o.uv); }
-";
+const BLIT: &str = include_str!("shaders/blit_full.wgsl");
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     position: [f32; 3],
-    normal: [f32; 3],
-    uv: [f32; 2],
-    color: [f32; 3],
+    /// The normal as snorm16 (w is 0); the shader reads `.xyz`.
+    normal: [i16; 4],
+    /// The texture coordinates as f16 bits.
+    uv: [u16; 2],
+    /// The colour as unorm8 (alpha is 255).
+    color: [u8; 4],
     /// The robot slot (0 unchanged, 1 shell, 2 shell2, 3 panel, 4 glass); see `RobotHues`.
+    /// The lift slot sits above it, and all 32 bits are kept.
     slot: u32,
 }
 
 /// One drawn thing (or one instance, or one point): its matrix and material values.
+///
+/// The model matrix is affine, so only its top three rows are kept.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct Row {
-    model: [[f32; 4]; 4],
-    color: [f32; 4],
-    emissive: [f32; 4],
+    /// Row 0 of the model matrix; the translation x is in w.
+    r0: [f32; 4],
+    /// Row 1 of the model matrix; the translation y is in w.
+    r1: [f32; 4],
+    /// Row 2 of the model matrix; the translation z is in w.
+    r2: [f32; 4],
+    /// The colour as unorm8 (rgb), with the opacity in alpha.
+    color: [u8; 4],
+    /// The emissive colour as f16 bits (rgb), with the flags in alpha.
+    emissive: [u16; 4],
     uv: [f32; 4],
-    /// The robot hues (rgb; shell, shell2, panel), used when the flags carry 8 (robot).
-    robot: [[f32; 4]; 3],
+    /// The robot hues as unorm8 (rgb; shell), used when the flags carry 8 (robot).
+    robot_shell: [u8; 4],
+    /// The robot hues as unorm8 (rgb; shell2).
+    robot_shell2: [u8; 4],
+    /// The robot hues as unorm8 (rgb; panel).
+    robot_panel: [u8; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<Vertex>() == 32);
+const _: () = assert!(std::mem::size_of::<Row>() == 88);
+
+impl Vertex {
+    /// Packs one vertex: the normal as snorm16, the uv as f16 and the colour as unorm8.
+    #[inline]
+    fn new(position: [f32; 3], normal: [f32; 3], uv: [f32; 2], color: [f32; 3], slot: u32) -> Self {
+        Self {
+            position,
+            normal: [
+                pack_snorm16(normal[0]),
+                pack_snorm16(normal[1]),
+                pack_snorm16(normal[2]),
+                0,
+            ],
+            uv: uv.map(pack_f16),
+            color: [
+                pack_unorm8(color[0]),
+                pack_unorm8(color[1]),
+                pack_unorm8(color[2]),
+                255,
+            ],
+            slot,
+        }
+    }
+}
+
+impl Row {
+    /// Packs one instance. Only the top three rows of its affine model are kept.
+    /// The colour and robot hues are unorm8, and the emissive is f16.
+    #[inline]
+    fn new(
+        model: [[f32; 4]; 4],
+        color: [f32; 4],
+        emissive: [f32; 4],
+        uv: [f32; 4],
+        robot: [[f32; 4]; 3],
+    ) -> Self {
+        debug_assert!(model[..3].iter().all(|c| c[3].abs() < 1e-4));
+        debug_assert!((model[3][3] - 1.0).abs() < 1e-4);
+        Self {
+            r0: [model[0][0], model[1][0], model[2][0], model[3][0]],
+            r1: [model[0][1], model[1][1], model[2][1], model[3][1]],
+            r2: [model[0][2], model[1][2], model[2][2], model[3][2]],
+            color: color.map(pack_unorm8),
+            emissive: emissive.map(pack_f16),
+            uv,
+            robot_shell: robot[0].map(pack_unorm8),
+            robot_shell2: robot[1].map(pack_unorm8),
+            robot_panel: robot[2].map(pack_unorm8),
+        }
+    }
+}
+
+/// Packs a value from -1 to 1 as snorm16, the format of the normal.
+#[inline]
+fn pack_snorm16(x: f32) -> i16 {
+    (x.clamp(-1.0, 1.0) * 32767.0).round() as i16
+}
+
+/// Packs a value from 0 to 1 as unorm8.
+#[inline]
+fn pack_unorm8(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Packs a float as f16 bits.
+#[inline]
+fn pack_f16(x: f32) -> u16 {
+    half::f16::from_f32(x).to_bits()
 }
 
 /// The fleet's fan-angle table: 4 angles per vec4 (`fleet::MACHINE_SLOTS` machines).
@@ -543,7 +604,7 @@ struct AnimPipelines {
     blink_outline: wgpu::RenderPipeline,
 }
 
-/// One animated batch on the GPU: its `AnimVertex` stream (19 floats each), its indices, its kind, whether it is an
+/// One animated batch on the GPU: its `AnimVertexGpu` stream (60 bytes each), its indices, its kind, whether it is an
 /// ink hull, and whether it casts a shadow.
 struct GpuAnimBatch {
     kind: super::scene::AnimKind,
@@ -561,31 +622,44 @@ impl Drop for GpuAnimBatch {
     }
 }
 
-/// The fleet's fan-angle table as the Globals block holds it (`MACHINE_VEC4` vec4s, zero past the fleet).
+/// The fleet's fan-angle table as the Globals block holds it: the angle table's bytes read as `MACHINE_VEC4` vec4s,
+/// zero with no fleet.
 fn machine_angles(fleet: Option<&crate::fleet::FleetInstances>) -> [[f32; 4]; MACHINE_VEC4] {
-    let mut out = [[0.0; 4]; MACHINE_VEC4];
-    if let Some(f) = fleet {
-        for (i, a) in f.machine_angles.iter().enumerate().take(MACHINE_VEC4 * 4) {
-            out[i / 4][i % 4] = *a;
-        }
-    }
-    out
+    fleet.map_or([[0.0; 4]; MACHINE_VEC4], |f| {
+        bytemuck::cast(f.machine_angles)
+    })
 }
 
-/// A fleet table of one vec4 per machine (`fleet::MACHINE_SLOTS` rows), zero past the fleet.
-fn machine_rows(rows: Option<&[[f32; 4]]>) -> [[f32; 4]; crate::fleet::MACHINE_SLOTS] {
-    let mut out = [[0.0; 4]; crate::fleet::MACHINE_SLOTS];
-    for (o, r) in out.iter_mut().zip(rows.unwrap_or(&[])) {
-        *o = *r;
-    }
-    out
+/// A fleet table of one vec4 per machine (`fleet::MACHINE_SLOTS` rows), zero with no fleet.
+fn machine_rows(
+    rows: Option<&[[f32; 4]; crate::fleet::MACHINE_SLOTS]>,
+) -> [[f32; 4]; crate::fleet::MACHINE_SLOTS] {
+    rows.copied()
+        .unwrap_or([[0.0; 4]; crate::fleet::MACHINE_SLOTS])
 }
 
-/// The bytes of one animated vertex: position, normal, colour, params, axis and machine, 19 floats.
-const ANIM_STRIDE: u64 = 20 * 4;
+/// One animated vertex as the GPU reads it (60 bytes): see `anim_layout`. `upload_anim` packs the CPU's
+/// `scene::AnimVertex` (f32 fields) into it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct AnimVertexGpu {
+    pos: [f32; 3],
+    /// The normal as snorm16 (w is 0).
+    normal: [i16; 4],
+    /// The colour as unorm8.
+    color: [u8; 4],
+    params: [f32; 4],
+    axis: [f32; 4],
+    /// The fleet machine + 1 (0 none) in the low 16 bits, the lift slot in the high 16.
+    slots: u32,
+}
+const _: () = assert!(std::mem::size_of::<AnimVertexGpu>() == 60);
+
+/// The bytes of one animated vertex: position, normal, colour, params, axis and slots (`AnimVertexGpu`).
+const ANIM_STRIDE: u64 = std::mem::size_of::<AnimVertexGpu>() as u64;
 
 fn anim_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 7] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32, 6 => Float32];
+    const ATTRS: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Snorm16x4, 2 => Unorm8x4, 3 => Float32x4, 4 => Float32x4, 5 => Uint32];
     wgpu::VertexBufferLayout {
         array_stride: ANIM_STRIDE,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -630,7 +704,6 @@ impl AnimGpu {
     fn prepare(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         format: wgpu::TextureFormat,
         samples: u32,
         version: u64,
@@ -643,7 +716,7 @@ impl AnimGpu {
                     !b.vertices.is_empty()
                         && matches!(b.draw.kind, DrawKind::Mesh | DrawKind::Outline)
                 })
-                .map(|b| upload_anim(device, queue, b))
+                .map(|b| upload_anim(device, b))
                 .collect();
             self.version = Some(version);
         }
@@ -744,44 +817,49 @@ impl AnimGpu {
     }
 }
 
-/// An animated batch's buffers: its vertices as flat `AnimVertex` floats, and its indices (identity when the
-/// geometry has none).
-fn upload_anim(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    b: &super::scene::AnimBatch,
-) -> GpuAnimBatch {
-    let mut flat: Vec<f32> = Vec::with_capacity(b.vertices.len() * 20);
-    for v in &b.vertices {
-        flat.extend(v.pos);
-        flat.extend(v.normal);
-        flat.extend(v.color);
-        flat.extend(v.params);
-        flat.extend(v.axis);
-        flat.push(v.machine);
-        flat.push(v.lift);
-    }
+/// An animated batch's buffers: its vertices packed as `AnimVertexGpu` (60 bytes each), and its indices (identity
+/// when the geometry has none).
+fn upload_anim(device: &wgpu::Device, b: &super::scene::AnimBatch) -> GpuAnimBatch {
+    let gpu: Vec<AnimVertexGpu> = b
+        .vertices
+        .iter()
+        .map(|v| {
+            // The fleet machine + 1 in the low 16 bits (0: none), the lift slot in the high 16.
+            let machine = if v.machine >= 0.0 {
+                v.machine as u32 + 1
+            } else {
+                0
+            };
+            AnimVertexGpu {
+                pos: v.pos,
+                normal: [
+                    pack_snorm16(v.normal[0]),
+                    pack_snorm16(v.normal[1]),
+                    pack_snorm16(v.normal[2]),
+                    0,
+                ],
+                color: v.color.map(pack_unorm8),
+                params: v.params,
+                axis: v.axis,
+                slots: machine | ((v.lift as u32) << 16),
+            }
+        })
+        .collect();
     let indices: Vec<u32> = if b.draw.geo.indices.is_empty() {
         (0..b.vertices.len() as u32).collect()
     } else {
         b.draw.geo.indices.clone()
     };
-    let vertex_bytes: &[u8] = bytemuck::cast_slice(&flat);
-    let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
-    let vertices = device.create_buffer(&wgpu::BufferDescriptor {
+    let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("hardware animation vertices"),
-        size: vertex_bytes.len() as u64,
+        contents: bytemuck::cast_slice(&gpu),
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
     });
-    queue.write_buffer(&vertices, 0, vertex_bytes);
-    let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("hardware animation indices"),
-        size: index_bytes.len() as u64,
+        contents: bytemuck::cast_slice(&indices),
         usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
     });
-    queue.write_buffer(&index_buffer, 0, index_bytes);
     let outline = matches!(b.draw.kind, DrawKind::Outline);
     let shadow = !outline && b.draw.cast_shadow && b.kind == super::scene::AnimKind::Spin;
     GpuAnimBatch {
@@ -1253,7 +1331,9 @@ impl Pipeline {
 }
 
 fn mesh_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 10 => Float32x3, 11 => Uint32];
+    const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        0 => Float32x3, 1 => Snorm16x4, 2 => Float16x2, 10 => Unorm8x4, 11 => Uint32
+    ];
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<Vertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -1262,9 +1342,10 @@ fn mesh_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 fn row_layout() -> wgpu::VertexBufferLayout<'static> {
-    const ATTRS: [wgpu::VertexAttribute; 10] = wgpu::vertex_attr_array![
-        3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4, 9 => Float32x4,
-        12 => Float32x4, 13 => Float32x4, 14 => Float32x4
+    const ATTRS: [wgpu::VertexAttribute; 9] = wgpu::vertex_attr_array![
+        3 => Float32x4, 4 => Float32x4, 5 => Float32x4,
+        7 => Unorm8x4, 8 => Float16x4, 9 => Float32x4,
+        12 => Unorm8x4, 13 => Unorm8x4, 14 => Unorm8x4
     ];
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<Row>() as u64,
@@ -1384,14 +1465,16 @@ impl Pipeline {
         geo: &super::scene::Geometry,
     ) {
         let mut vertices: Vec<Vertex> = (0..geo.positions.len())
-            .map(|i| Vertex {
-                position: geo.positions[i],
-                normal: geo.normals[i],
-                uv: geo.uvs[i],
-                color: geo.colors.get(i).copied().unwrap_or([1.0; 3]),
-                // The robot slot in the low byte, the lift slot (scene::Node::lift) above it.
-                slot: u32::from(geo.slots.get(i).copied().unwrap_or(0))
-                    | (u32::from(geo.lifts.get(i).copied().unwrap_or(0)) << 8),
+            .map(|i| {
+                Vertex::new(
+                    geo.positions[i],
+                    geo.normals[i],
+                    geo.uvs[i],
+                    geo.colors.get(i).copied().unwrap_or([1.0; 3]),
+                    // The robot slot in the low byte, the lift slot (scene::Node::lift) above it.
+                    u32::from(geo.slots.get(i).copied().unwrap_or(0))
+                        | (u32::from(geo.lifts.get(i).copied().unwrap_or(0)) << 8),
+                )
             })
             .collect();
         let mut indices: Vec<u32> = if geo.indices.is_empty() {
@@ -1866,13 +1949,13 @@ impl Pipeline {
             }
             self.static_meshes.insert(merged.id);
             let start = self.static_rows.len() as u32;
-            self.static_rows.push(Row {
-                model: Mat4::IDENTITY.to_cols_array_2d(),
-                color: [1.0, 1.0, 1.0, 1.0],
-                emissive: [0.0; 4],
-                uv: [1.0, 1.0, 0.0, 0.0],
-                robot: [[0.0; 4]; 3],
-            });
+            self.static_rows.push(Row::new(
+                Mat4::IDENTITY.to_cols_array_2d(),
+                [1.0, 1.0, 1.0, 1.0],
+                [0.0; 4],
+                [1.0, 1.0, 0.0, 0.0],
+                [[0.0; 4]; 3],
+            ));
             self.static_shadow.push((merged.id, start..start + 1));
         }
         self.static_opaque.sort_by_key(|c| c.order);
@@ -1968,12 +2051,14 @@ fn rows_of(draw: &Draw, world_ink: [f32; 3], shadows: bool, alpha: f32) -> Vec<R
             [t.repeat[0], t.repeat[1], t.offset[0], t.offset[1]]
         }
     });
-    let row = |model: Mat4, color: [f32; 3], uv: [f32; 4]| Row {
-        model: model.to_cols_array_2d(),
-        color: [color[0], color[1], color[2], alpha],
-        emissive: [emissive.r, emissive.g, emissive.b, flags],
-        uv,
-        robot: hues,
+    let row = |model: Mat4, color: [f32; 3], uv: [f32; 4]| {
+        Row::new(
+            model.to_cols_array_2d(),
+            [color[0], color[1], color[2], alpha],
+            [emissive.r, emissive.g, emissive.b, flags],
+            uv,
+            hues,
+        )
     };
     match &draw.kind {
         DrawKind::Mesh | DrawKind::Lines => vec![row(draw.model, m.color.to_array(), uv)],
@@ -2120,16 +2205,13 @@ impl Primitive {
                 0.0,
             ],
             machine_angle: machine_angles(f.animated.as_deref()),
-            machine_state: machine_rows(f.animated.as_deref().map(|x| x.machine_states.as_slice())),
-            machine_status: machine_rows(
-                f.animated.as_deref().map(|x| x.machine_statuses.as_slice()),
-            ),
+            machine_state: machine_rows(f.animated.as_deref().map(|x| &x.machine_states)),
+            machine_status: machine_rows(f.animated.as_deref().map(|x| &x.machine_statuses)),
             leds: crate::fleet::led_colours(),
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         p.anim.prepare(
             device,
-            queue,
             p.format,
             samples,
             f.statics_version,
@@ -2670,8 +2752,9 @@ mod tests {
                 + 2 * crate::fleet::MACHINE_SLOTS * 16
                 + 2 * 16
         );
-        // 112 bytes of material and transform, plus the robot hues (shell, shell2, panel) as three vec4s.
-        assert_eq!(std::mem::size_of::<Row>(), 112 + 3 * 16);
+        // The affine transform's three rows (48 bytes), the colour (unorm8x4), the emissive (f16x4), the uv transform
+        // (16 bytes), and the robot hues (shell, shell2, panel) as three unorm8x4.
+        assert_eq!(std::mem::size_of::<Row>(), 48 + 4 + 8 + 16 + 3 * 4);
     }
 }
 

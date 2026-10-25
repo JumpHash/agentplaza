@@ -18,6 +18,8 @@ gltf = { version = "1.4", default-features = false, features = ["utils", "names"
 ktx2 = "0.5"
 ruzstd = "0.9"
 bytemuck = { version = "1", features = ["derive"] }
+# Half floats for the packed vertex and instance formats (render.rs's Vertex and Row).
+half = "2"
 serde.workspace = true
 serde_json.workspace = true
 apz-theme = { path = "../apz-theme" }

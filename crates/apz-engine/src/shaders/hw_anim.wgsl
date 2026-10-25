@@ -199,17 +199,26 @@ fn hull(world: vec3<f32>, normal: vec3<f32>) -> Out {
 
 struct SpinIn {
     @location(0) pos: vec3<f32>,          // rest position, world space
-    @location(1) normal: vec3<f32>,
+    @location(1) normal: vec4<f32>,       // xyz normal; w is 0
     @location(2) color: vec4<f32>,
     @location(3) pivot_phase: vec4<f32>,  // xyz pivot (the part's origin), w phase (radians at time 0)
     @location(4) axis_rps: vec4<f32>,     // xyz unit axis, w revolutions per second
-    @location(5) machine: f32,            // the fleet machine whose fan angle it turns by, or -1 for its own rate
-    @location(6) lift: f32,               // the lift slot: the fleet machine + 1 whose hover lift it rises by, or 0
+    @location(5) slots: u32,              // low 16 bits: the fleet machine + 1 whose fan angle it turns by (0: its own rate); high 16: the lift slot (the fleet machine + 1 whose hover lift it rises by, or 0)
+}
+
+// The fleet machine of a vertex's slots, or -1 (render.rs `AnimVertexGpu::slots`: the machine + 1 in the low 16 bits).
+fn machine_of(slots: u32) -> i32 {
+    return i32(slots & 0xffffu) - 1;
+}
+
+// The lift slot of a vertex's slots (the high 16 bits).
+fn lift_of(slots: u32) -> u32 {
+    return slots >> 16u;
 }
 
 // The hover lift of a part with lift slot `slot` (floor.wgsl's `lift`).
-fn lift_at(slot: f32) -> vec3<f32> {
-    let k = u32(clamp(slot, 0.0, 128.0));
+fn lift_at(slot: u32) -> vec3<f32> {
+    let k = min(slot, 128u);
     if k == 0u {
         return vec3<f32>(0.0);
     }
@@ -222,18 +231,19 @@ struct Pose {
 }
 
 // A fan's angle: its fleet machine's entry in the table (clamped to the table).
-fn fan_angle(machine: f32) -> f32 {
-    let k = u32(clamp(machine, 0.0, 127.0));
+fn fan_angle(machine: u32) -> f32 {
+    let k = min(machine, 127u);
     return g.machine_angle[k / 4u][k % 4u];
 }
 
 fn spin_pose(v: SpinIn) -> Pose {
     let own = v.pivot_phase.w + TAU * v.axis_rps.w * g.counts.z;
-    let angle = select(own, fan_angle(v.machine), v.machine >= 0.0);
+    let m = machine_of(v.slots);
+    let angle = select(own, fan_angle(u32(max(m, 0i))), m >= 0);
     let k = v.axis_rps.xyz;
     var p: Pose;
-    p.world = v.pivot_phase.xyz + rotate_about(k, angle, v.pos - v.pivot_phase.xyz) + lift_at(v.lift);
-    p.normal = rotate_about(k, angle, v.normal);
+    p.world = v.pivot_phase.xyz + rotate_about(k, angle, v.pos - v.pivot_phase.xyz) + lift_at(lift_of(v.slots));
+    p.normal = rotate_about(k, angle, v.normal.xyz);
     return p;
 }
 
@@ -266,20 +276,20 @@ fn vs_spin_shadow(v: SpinIn) -> @builtin(position) vec4<f32> {
 
 struct BlinkIn {
     @location(0) pos: vec3<f32>,
-    @location(1) normal: vec3<f32>,
+    @location(1) normal: vec4<f32>,
     @location(2) color: vec4<f32>,
     @location(3) blink: vec4<f32>, // x period (s), y phase (s), z glow, w off level
-    @location(6) lift: f32,        // the lift slot (SpinIn's)
+    @location(5) slots: u32,       // the lift slot in the high 16 bits (SpinIn's)
 }
 
 @vertex
 fn vs_blink(v: BlinkIn) -> Out {
     let on = ((g.counts.z + v.blink.y) % v.blink.x) < v.blink.x * 0.5;
-    let pos = v.pos + lift_at(v.lift);
+    let pos = v.pos + lift_at(lift_of(v.slots));
     var o: Out;
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.color = v.color;
-    o.normal = v.normal;
+    o.normal = v.normal.xyz;
     o.emissive = v.color.rgb * select(v.blink.z * v.blink.w, v.blink.z, on);
     o.world = pos;
     o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
@@ -288,19 +298,18 @@ fn vs_blink(v: BlinkIn) -> Out {
 
 @vertex
 fn vs_blink_outline(v: BlinkIn) -> Out {
-    return hull(v.pos + lift_at(v.lift), v.normal);
+    return hull(v.pos + lift_at(lift_of(v.slots)), v.normal.xyz);
 }
 
 // ---- Machines (status LEDs, activity LEDs, screens) ------------------------------------------
 
 struct MachineIn {
     @location(0) pos: vec3<f32>,
-    @location(1) normal: vec3<f32>,
+    @location(1) normal: vec4<f32>,
     @location(2) color: vec4<f32>,
     @location(3) params: vec4<f32>, // x: the LED (0 status, 1 activity, 2 screen), y: the part's glow
     @location(4) axis: vec4<f32>,   // xyz: the part's own emissive colour (an activity LED and a screen keep it)
-    @location(5) machine: f32,      // the fleet machine whose row it reads, or -1 (no row: the baked colour, idle)
-    @location(6) lift: f32,         // the lift slot (SpinIn's)
+    @location(5) slots: u32,        // low 16 bits: the fleet machine + 1 whose row it reads (0: no row, the baked colour, idle); high 16: the lift slot (SpinIn's)
 }
 
 // vs_machine: a kit part's colour from its machine's row (`kit::KitModel::instantiate` tags the parts).
@@ -311,8 +320,9 @@ struct MachineIn {
 // fs_emissive then shades it as the CPU material (base colour lit, plus the emissive term).
 @vertex
 fn vs_machine(v: MachineIn) -> Out {
-    let has = v.machine >= 0.0;
-    let k = u32(clamp(v.machine, 0.0, 127.0));
+    let m = machine_of(v.slots);
+    let has = m >= 0;
+    let k = u32(clamp(m, 0i, 127i));
     let state = select(vec4<f32>(0.0), g.machine_state[k], has);
     let busy = state.x > 0.5;
     let activity = state.y;
@@ -332,11 +342,11 @@ fn vs_machine(v: MachineIn) -> Out {
     } else {
         e = v.params.y * (0.5 + 0.5 * activity);
     }
-    let pos = v.pos + lift_at(v.lift);
+    let pos = v.pos + lift_at(lift_of(v.slots));
     var o: Out;
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.color = vec4<f32>(c, v.color.a);
-    o.normal = v.normal;
+    o.normal = v.normal.xyz;
     o.emissive = emit * e;
     o.world = pos;
     o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;

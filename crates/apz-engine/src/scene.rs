@@ -395,7 +395,7 @@ pub enum Shading {
 }
 
 /// three's `side`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
     Front,
     Back,
@@ -1144,7 +1144,7 @@ pub struct Draw {
 pub const GPU_HW_ANIM: bool = true;
 
 /// The kind of a GPU animation batch: the shader that animates it (`vs_spin` or `vs_blink`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AnimKind {
     Spin,
     Blink,
@@ -1945,39 +1945,73 @@ fn anim_params(anim: &NodeAnim, model: Mat4) -> (AnimKind, [f32; 4], [f32; 4], f
 /// The animated draws merged per animation, material and state (as [`merge_draws`] does for statics),
 /// each vertex carrying its part's animation parameters.
 fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
+    use std::collections::hash_map::Entry;
     // Per part: its geometry, world matrix, tint, and animation parameters.
     type Part = (Geo, Mat4, Option<[f32; 3]>, [f32; 4], [f32; 4], f32, u8);
+    // The state a merged draw groups by, with its animation kind.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum AnimKey {
+        Outline {
+            kind: AnimKind,
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+        Class {
+            kind: AnimKind,
+            class: MatClass,
+            cast_shadow: bool,
+            receive_shadow: bool,
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+        MatId {
+            kind: AnimKind,
+            mat_id: u64,
+            cast_shadow: bool,
+            receive_shadow: bool,
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+    }
     let mut groups: Vec<(Draw, AnimKind, Vec<Part>)> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut index: HashMap<AnimKey, usize> = HashMap::with_capacity(items.len());
     for AnimDraw { draw: d, anim } in items {
         let (kind, params, axis, machine) = anim_params(&anim, d.model);
-        let tag = match kind {
-            AnimKind::Spin => "s",
-            AnimKind::Blink => "b",
-            AnimKind::Machine => "m",
-        };
         let (key, tint) = match d.kind {
             DrawKind::Outline => (
-                format!("o|{tag}|{}|{}|{}", d.render_order, d.lod, d.fade),
+                AnimKey::Outline {
+                    kind,
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade: d.fade,
+                },
                 None,
             ),
             _ if d.geo.slots.is_empty() => (
-                format!(
-                    "c|{tag}|{}|{}|{}|{}|{}|{}",
-                    class_of(&d.material),
-                    d.cast_shadow,
-                    d.receive_shadow,
-                    d.render_order,
-                    d.lod,
-                    d.fade
-                ),
+                AnimKey::Class {
+                    kind,
+                    class: class_key(&d.material),
+                    cast_shadow: d.cast_shadow,
+                    receive_shadow: d.receive_shadow,
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade: d.fade,
+                },
                 Some(d.material.color.to_array()),
             ),
             _ => (
-                format!(
-                    "m|{tag}|{}|{}|{}|{}|{}|{}",
-                    d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, d.fade
-                ),
+                AnimKey::MatId {
+                    kind,
+                    mat_id: d.mat_id,
+                    cast_shadow: d.cast_shadow,
+                    receive_shadow: d.receive_shadow,
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade: d.fade,
+                },
                 None,
             ),
         };
@@ -1990,10 +2024,10 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
             machine,
             d.lift,
         );
-        match index.get(&key) {
-            Some(&at) => groups[at].2.push(part),
-            None => {
-                index.insert(key, groups.len());
+        match index.entry(key) {
+            Entry::Occupied(at) => groups[*at.get()].2.push(part),
+            Entry::Vacant(slot) => {
+                slot.insert(groups.len());
                 groups.push((d, kind, vec![part]));
             }
         }
@@ -2044,71 +2078,123 @@ fn merge_anim(items: Vec<AnimDraw>) -> Vec<AnimBatch> {
 /// only plain geometry, which a batch can hold. Outlines share one ink. With `by_fade`, a cutaway's
 /// draws never merge with the rest. Other draws (instances, points) pass through.
 fn merge_draws(draws: Vec<Draw>, by_fade: bool) -> Vec<Draw> {
+    use std::collections::hash_map::Entry;
     // One merged draw per key.
     type Part = (Geo, Mat4, Option<[f32; 3]>, u8);
+    // The state a merged draw groups by: its kind with the fields that decide it.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+    enum DrawKey {
+        Toon {
+            class: MatClass,
+            cast_shadow: bool,
+            receive_shadow: bool,
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+        Lines {
+            class: MatClass,
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+        Basic {
+            class: MatClass,
+            cast_shadow: bool,
+            receive_shadow: bool,
+            render_order: i32,
+            lod: u8,
+            no_uvs: bool,
+            no_normals: bool,
+            fade: u32,
+        },
+        Mesh {
+            mat_id: u64,
+            cast_shadow: bool,
+            receive_shadow: bool,
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+        Outline {
+            render_order: i32,
+            lod: u8,
+            fade: u32,
+        },
+    }
     let mut groups: Vec<(Draw, Vec<Part>)> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut index: HashMap<DrawKey, usize> = HashMap::with_capacity(draws.len());
     let mut rest = Vec::new();
     for d in draws.into_iter().flat_map(unfold) {
         let fade = if by_fade { d.fade } else { 0 };
         let (key, tint) = match d.kind {
             DrawKind::Mesh if d.material.shading == Shading::Toon && d.geo.slots.is_empty() => (
-                format!(
-                    "c|{}|{}|{}|{}|{}|{}",
-                    class_of(&d.material),
-                    d.cast_shadow,
-                    d.receive_shadow,
-                    d.render_order,
-                    d.lod,
-                    fade
-                ),
+                DrawKey::Toon {
+                    class: class_key(&d.material),
+                    cast_shadow: d.cast_shadow,
+                    receive_shadow: d.receive_shadow,
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade,
+                },
                 Some(d.material.color.to_array()),
             ),
             // Lines merge like the toon meshes: by everything but their colour, which becomes the vertex colour.
             DrawKind::Lines => (
-                format!(
-                    "l|{}|{}|{}|{}",
-                    class_of(&d.material),
-                    d.render_order,
-                    d.lod,
-                    fade
-                ),
+                DrawKey::Lines {
+                    class: class_key(&d.material),
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade,
+                },
                 Some(d.material.color.to_array()),
             ),
             DrawKind::Mesh if d.material.shading == Shading::Basic && d.geo.slots.is_empty() => (
-                format!(
-                    "b|{}|{}|{}|{}|{}|{}|{}|{}",
-                    class_of(&d.material),
-                    d.cast_shadow,
-                    d.receive_shadow,
-                    d.render_order,
-                    d.lod,
-                    d.geo.uvs.is_empty(),
-                    d.geo.normals.is_empty(),
-                    fade
-                ),
+                DrawKey::Basic {
+                    class: class_key(&d.material),
+                    cast_shadow: d.cast_shadow,
+                    receive_shadow: d.receive_shadow,
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    no_uvs: d.geo.uvs.is_empty(),
+                    no_normals: d.geo.normals.is_empty(),
+                    fade,
+                },
                 Some(d.material.color.to_array()),
             ),
             DrawKind::Mesh => (
-                format!(
-                    "m|{}|{}|{}|{}|{}|{}",
-                    d.mat_id, d.cast_shadow, d.receive_shadow, d.render_order, d.lod, fade
-                ),
+                DrawKey::Mesh {
+                    mat_id: d.mat_id,
+                    cast_shadow: d.cast_shadow,
+                    receive_shadow: d.receive_shadow,
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade,
+                },
                 None,
             ),
             // Outlines share one ink: key them by their state alone.
-            DrawKind::Outline => (format!("o|{}|{}|{}", d.render_order, d.lod, fade), None),
+            DrawKind::Outline => (
+                DrawKey::Outline {
+                    render_order: d.render_order,
+                    lod: d.lod,
+                    fade,
+                },
+                None,
+            ),
             _ => {
                 rest.push(d);
                 continue;
             }
         };
-        match index.get(&key) {
-            Some(&at) => groups[at]
-                .1
-                .push((Arc::clone(&d.geo), d.model, tint, d.lift)),
-            None => {
-                index.insert(key, groups.len());
+        match index.entry(key) {
+            Entry::Occupied(at) => {
+                groups[*at.get()]
+                    .1
+                    .push((Arc::clone(&d.geo), d.model, tint, d.lift))
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(groups.len());
                 let parts = vec![(Arc::clone(&d.geo), d.model, tint, d.lift)];
                 groups.push((d, parts));
             }
@@ -2195,6 +2281,42 @@ fn class_of(m: &Material) -> String {
         m.visible,
         m.map.as_ref().map(|t| t.id)
     )
+}
+
+/// The batching class of a material, as [`class_of`] names it: everything but `color`. Floats
+/// compare by their bits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MatClass {
+    emissive: [u32; 3],
+    emissive_intensity: u32,
+    opacity: u32,
+    transparent: bool,
+    additive: bool,
+    depth_write: bool,
+    depth_test: bool,
+    decal: bool,
+    side: Side,
+    fog: bool,
+    visible: bool,
+    map: Option<u64>,
+}
+
+/// [`class_of`] as a value: the same fields, so no string is built for a draw's class.
+fn class_key(m: &Material) -> MatClass {
+    MatClass {
+        emissive: m.emissive.to_array().map(f32::to_bits),
+        emissive_intensity: m.emissive_intensity.to_bits(),
+        opacity: m.opacity.to_bits(),
+        transparent: m.transparent,
+        additive: m.additive,
+        depth_write: m.depth_write,
+        depth_test: m.depth_test,
+        decal: m.decal,
+        side: m.side,
+        fog: m.fog,
+        visible: m.visible,
+        map: m.map.as_ref().map(|t| t.id),
+    }
 }
 
 /// Geometries moved by their matrices into one (normals by the normal matrix).

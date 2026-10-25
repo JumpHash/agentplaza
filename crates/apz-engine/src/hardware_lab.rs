@@ -145,11 +145,7 @@ impl Lab {
 
     /// The GPU tables for the models shown: each one's row has the fan angle, the busy flag and the lamp's colour.
     pub fn instances(&self) -> FleetInstances {
-        let mut out = FleetInstances {
-            machine_angles: vec![0.0; MACHINE_SLOTS],
-            machine_states: vec![[0.0; 4]; MACHINE_SLOTS],
-            machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS],
-        };
+        let mut out = FleetInstances::ZERO;
         let busy = if self.lamp == Lamp::Working { 1.0 } else { 0.0 };
         for slot in 0..self.count {
             out.machine_angles[slot] = self.fan_angle;
