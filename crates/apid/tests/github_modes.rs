@@ -615,7 +615,13 @@ fn a_signed_push_imports_github_main_now_and_an_unsigned_one_is_refused() {
         body.as_bytes(),
     );
     assert_eq!(status, 202, "{reply}\n{}", hub.log());
-    assert_eq!(reply["imported"], json!([weft_repo.clone()]), "{reply}");
+    // An import that fails says why in the hub's log ("importing <repo>'s main after a push: …").
+    assert_eq!(
+        reply["imported"],
+        json!([weft_repo.clone()]),
+        "{reply}\n{}",
+        hub.log()
+    );
     let (_, repo) = hub.call("GET", &format!("/v1/weft/repos/{weft_repo}"), None);
     assert_eq!(repo["connections"][0]["head"], outside.as_str(), "{repo}");
 }
