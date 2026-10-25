@@ -2092,7 +2092,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let text: &[u8] = b"a,b\n1,2\n";
         let hash = Blobs::put(&blobs, text).unwrap();
         assert_eq!(hash, Hash::of(text).to_string(), "named by its BLAKE3 hash");

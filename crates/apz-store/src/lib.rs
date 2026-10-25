@@ -3,8 +3,8 @@
 //! - **One hub per folder.** [`Store::open`] takes an exclusive lock on the folder; a second hub on it refuses to
 //!   start ([`StoreError::Locked`]).
 //! - **Files.** A store opens the database files it is given ([`FileSpec`]): each with its own durability
-//!   ([`Durability::Full`] for state that must survive a power loss, [`Durability::Normal`] for streams), WAL, foreign
-//!   keys and a busy timeout on every connection.
+//!   ([`Durability::Full`] for state that must survive a power loss, [`Durability::Normal`] for streams,
+//!   [`Durability::Scratch`] for a test's throwaway store), WAL, foreign keys and a busy timeout on every connection.
 //! - **One writer per file.** A dedicated thread owns the file's only write connection ([`Writer`]). Callers send it
 //!   typed operations (closures over the open transaction, never SQL strings from outside); it runs the operations
 //!   that arrive together in one `BEGIN IMMEDIATE` transaction, each in its own savepoint, commits once, and answers

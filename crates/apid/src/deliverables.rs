@@ -657,7 +657,7 @@ mod tests {
 
     /// The object store in `<dir>/blobs`, as the hub opens it at start.
     fn blobs_in(dir: &Path) -> Arc<apz_blobs::Blobs> {
-        Arc::new(apz_blobs::Blobs::open(&dir.join("blobs")).expect("the object store opens"))
+        Arc::new(apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the object store opens"))
     }
 
     #[test]

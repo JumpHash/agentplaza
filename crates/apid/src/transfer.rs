@@ -445,7 +445,7 @@ mod tests {
             .into_iter()
             .map(|id| {
                 let dir = tempfile::tempdir().unwrap();
-                let blobs = Arc::new(Blobs::open(dir.path()).unwrap());
+                let blobs = Arc::new(Blobs::scratch(dir.path()).unwrap());
                 let identity = apz_trust::tls::self_signed(&["localhost".to_string()]).unwrap();
                 let node = Node::new(id, blobs, &identity).unwrap();
                 node.trust(hub.verifying_key());

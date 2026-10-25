@@ -1163,7 +1163,7 @@ pub(crate) mod tests {
         reopen: &mut dyn FnMut(&StandIn) -> Box<dyn Target>,
     ) -> Execution {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = Blobs::open(dir.path()).unwrap();
+        let blobs = Blobs::scratch(dir.path()).unwrap();
         let roles = roles(escalate);
         let gateway = gateway();
         let models = GatewayModels {

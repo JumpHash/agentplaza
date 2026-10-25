@@ -1196,7 +1196,7 @@ mod tests {
         let files: &'static [apz_store::FileSpec] = Box::leak(Box::new([apz_store::FileSpec {
             name: "plaza",
             file: "plaza.db",
-            durability: apz_store::Durability::Full,
+            durability: apz_store::Durability::Scratch,
             migrations,
         }]));
         let store = apz_store::Store::open(dir.path(), files).unwrap();

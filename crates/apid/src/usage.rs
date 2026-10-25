@@ -944,7 +944,7 @@ mod tests {
     /// does not hold them yet (the migration is regenerated from these definitions by `apid schema`).
     fn fixture() -> (tempfile::TempDir, apz_store::Store, Ledger) {
         let dir = tempfile::tempdir().unwrap();
-        let store = apz_store::Store::open(dir.path(), crate::store::FILES).unwrap();
+        let store = crate::store::open(dir.path()).unwrap();
         let db = Arc::clone(store.db(PLAZA));
         db.write(|conn| {
             for table in [def(), call_def(), hour_def(), work_def()] {

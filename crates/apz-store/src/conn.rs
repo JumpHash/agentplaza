@@ -15,6 +15,9 @@ pub enum Durability {
     /// `synchronous = NORMAL`: an acknowledged commit survives a crash of the hub, not always a power loss
     /// (transcripts and metrics: large streams that need no transaction with the main file).
     Normal,
+    /// `synchronous = OFF`: never synced; a commit survives the process's crash (the kernel holds it), not the
+    /// machine's. Throwaway stores only (the tests'): a hub's own files are never scratch.
+    Scratch,
 }
 
 impl Durability {
@@ -22,6 +25,7 @@ impl Durability {
         match self {
             Durability::Full => "FULL",
             Durability::Normal => "NORMAL",
+            Durability::Scratch => "OFF",
         }
     }
 }

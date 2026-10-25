@@ -68,6 +68,9 @@ mod tests {
 
     /// A plaza.db at its migrations, as the hub opens it.
     fn migrated(conn: &Connection) {
+        // A test's file is never synced: the migration's statements each commit, and a sync apiece took minutes on a
+        // shared CI disk.
+        conn.pragma_update(None, "synchronous", "OFF").unwrap();
         conn.pragma_update(None, "foreign_keys", true).unwrap();
         for m in crate::store::PLAZA_MIGRATIONS {
             conn.execute_batch(m.sql).unwrap();

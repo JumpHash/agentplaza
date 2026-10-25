@@ -960,7 +960,7 @@ mod tests {
         let dir = state_dir("lifecycle");
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let recs = Recordings::default();
         let settings = StationSettings::default();
 
@@ -1119,7 +1119,7 @@ mod tests {
         let dir = state_dir("persist");
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let recs = Recordings::default();
         let id = recs
             .begin(db, &StationSettings::default(), "w1", &view("l1", 7), 1000)
@@ -1175,7 +1175,7 @@ mod tests {
         let dir = state_dir("frame-times");
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let recs = Recordings::default();
         let id = recs
             .begin(db, &StationSettings::default(), "w1", &view("l1", 7), 1000)
@@ -1232,7 +1232,7 @@ mod tests {
         let dir = state_dir("delete");
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let recs = Recordings::default();
         let id = recs
             .begin(db, &StationSettings::default(), "w1", &view("l1", 7), 1000)
@@ -1284,7 +1284,7 @@ mod tests {
         let dir = state_dir("sweep");
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let recs = Recordings::default();
         let day = |n: u64| n * DAY_MS;
         let w1 = StationSettings {
@@ -1418,7 +1418,7 @@ mod tests {
         let dir = state_dir("frame-blob");
         let store = crate::store::open(&dir).expect("the store opens");
         let db = store.db(crate::store::PLAZA);
-        let blobs = apz_blobs::Blobs::open(&dir.join("blobs")).expect("the blobs open");
+        let blobs = apz_blobs::Blobs::scratch(&dir.join("blobs")).expect("the blobs open");
         let recs = Recordings::default();
         let id = recs
             .begin(db, &StationSettings::default(), "w1", &view("l1", 7), 1000)

@@ -55,6 +55,12 @@ const FILES: &[FileSpec] = &[FileSpec {
     migrations: MIGRATIONS,
 }];
 
+/// The index of a test's throwaway store ([`Blobs::scratch`]).
+const SCRATCH_FILES: &[FileSpec] = &[FileSpec {
+    durability: Durability::Scratch,
+    ..FILES[0]
+}];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Loc {
     pack: u32,
@@ -119,6 +125,8 @@ pub struct Blobs {
     sweeping: Mutex<()>,
     /// Entries read from the packs (a range read reads only the chunks it covers).
     entry_reads: AtomicU64,
+    /// Whether a put syncs its pack before it answers (not in a test's scratch store).
+    sync: bool,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -149,8 +157,18 @@ impl Blobs {
     /// Opens the store in `dir` (created if needed): opens its index, indexes what the packs hold past it (a crash
     /// between a pack write and its index row), and cuts a torn entry off the last pack.
     pub fn open(dir: &Path) -> Result<Blobs, String> {
+        Blobs::open_with(dir, FILES, true)
+    }
+
+    /// [`Blobs::open`] for a test's throwaway store: neither the packs nor the index are synced, so what a put wrote
+    /// survives the process's crash, not the machine's. A store tests write frame by frame waited on a sync apiece.
+    pub fn scratch(dir: &Path) -> Result<Blobs, String> {
+        Blobs::open_with(dir, SCRATCH_FILES, false)
+    }
+
+    fn open_with(dir: &Path, files: &[FileSpec], sync: bool) -> Result<Blobs, String> {
         fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let index = Store::open(dir, FILES).map_err(err)?;
+        let index = Store::open(dir, files).map_err(err)?;
         let mut packs: Vec<u32> = fs::read_dir(dir)
             .map_err(|e| format!("{}: {e}", dir.display()))?
             .filter_map(Result::ok)
@@ -181,6 +199,7 @@ impl Blobs {
             index,
             sweeping: Mutex::new(()),
             entry_reads: AtomicU64::new(0),
+            sync,
         })
     }
 
@@ -557,10 +576,12 @@ impl Blobs {
             .file
             .write_all(&entry)
             .map_err(|e| format!("blob write: {e}"))?;
-        current
-            .file
-            .sync_data()
-            .map_err(|e| format!("blob sync: {e}"))?;
+        if self.sync {
+            current
+                .file
+                .sync_data()
+                .map_err(|e| format!("blob sync: {e}"))?;
+        }
         let loc = Loc {
             pack: current.no,
             offset: current.len + HEAD as u64,

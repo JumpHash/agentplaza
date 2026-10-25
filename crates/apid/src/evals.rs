@@ -1378,7 +1378,7 @@ mod tests {
     /// Evals over a fresh plaza.db in a temporary folder.
     fn fixture() -> (tempfile::TempDir, apz_store::Store, Evals) {
         let dir = tempfile::tempdir().unwrap();
-        let store = apz_store::Store::open(dir.path(), crate::store::FILES).unwrap();
+        let store = crate::store::open(dir.path()).unwrap();
         let evals = Evals::new(Arc::clone(store.db(crate::store::PLAZA)));
         (dir, store, evals)
     }
