@@ -82,26 +82,31 @@ impl Value {
         }
     }
 
-    /// Canonical encoding: equal values give equal bytes (sets and maps are ordered).
+    /// Canonical encoding: equal values give equal bytes (sets and maps are ordered). Compact and
+    /// self-delimiting: each value starts with a tag byte, lengths and counts are LEB128 varints,
+    /// and an integer with no dimension is one zigzag varint (one or two bytes when small).
     pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.tag());
-        let s = |out: &mut Vec<u8>, s: &str| {
-            out.extend((s.len() as u32).to_le_bytes());
-            out.extend(s.as_bytes());
-        };
         match self {
-            Value::Bool(b) => out.push(*b as u8),
-            Value::Unknown(r) => s(out, r),
-            Value::None => {}
+            Value::Bool(b) => out.push(u8::from(*b)),
+            Value::Unknown(r) => {
+                out.push(2);
+                put_str(out, r);
+            }
+            Value::None => out.push(3),
+            Value::Num(Num::Rat(a, 1), d) if d.is_none() => {
+                out.push(4);
+                put_ivar(out, *a);
+            }
             Value::Num(n, d) => {
+                out.push(5);
                 for e in d.0 {
                     out.push(e as u8);
                 }
                 match n {
                     Num::Rat(a, b) => {
                         out.push(0);
-                        out.extend(a.to_le_bytes());
-                        out.extend(b.to_le_bytes());
+                        put_ivar(out, *a);
+                        put_uvar(out, *b as u128);
                     }
                     Num::Real(x) => {
                         out.push(1);
@@ -109,31 +114,161 @@ impl Value {
                     }
                 }
             }
-            Value::Str(x) | Value::Model(x) => s(out, x),
-            Value::List(v) | Value::Tuple(v) => {
-                out.extend((v.len() as u32).to_le_bytes());
-                v.iter().for_each(|x| x.encode(out));
+            Value::Str(x) => {
+                out.push(6);
+                put_str(out, x);
             }
-            Value::Set(v) => {
-                out.extend((v.len() as u32).to_le_bytes());
-                v.iter().for_each(|x| x.encode(out));
+            Value::Model(x) => {
+                out.push(7);
+                put_str(out, x);
             }
+            Value::List(v) => put_values(out, 8, v.iter()),
+            Value::Set(v) => put_values(out, 9, v.iter()),
             Value::Map(m) => {
-                out.extend((m.len() as u32).to_le_bytes());
+                out.push(10);
+                put_uvar(out, m.len() as u128);
                 for (k, v) in m.iter() {
                     k.encode(out);
                     v.encode(out);
                 }
             }
             Value::Record(m) => {
-                out.extend((m.len() as u32).to_le_bytes());
+                out.push(11);
+                put_uvar(out, m.len() as u128);
                 for (k, v) in m.iter() {
-                    s(out, k);
+                    put_str(out, k);
                     v.encode(out);
                 }
             }
+            Value::Tuple(v) => put_values(out, 12, v.iter()),
         }
     }
+
+    /// Reads one value written by [`Value::encode`] from the front of `b` and advances `b` past it.
+    /// The bytes must come from `encode`: anything else is a bug, and it panics.
+    pub fn decode(b: &mut &[u8]) -> Value {
+        match take(b, 1)[0] {
+            0 => Value::Bool(false),
+            1 => Value::Bool(true),
+            2 => Value::Unknown(take_str(b).to_owned()),
+            3 => Value::None,
+            4 => Value::Num(Num::int(take_ivar(b)), Dim::NONE),
+            5 => {
+                let d = Dim(std::array::from_fn(|_| take(b, 1)[0] as i8));
+                let n = match take(b, 1)[0] {
+                    0 => {
+                        let a = take_ivar(b);
+                        Num::Rat(a, take_uvar(b) as i128)
+                    }
+                    1 => Num::Real(f64::from_bits(u64::from_le_bytes(take_array(b)))),
+                    k => unreachable!("bad number kind {k}"),
+                };
+                Value::Num(n, d)
+            }
+            6 => Value::Str(Arc::from(take_str(b))),
+            7 => Value::Model(Arc::from(take_str(b))),
+            8 => Value::List(Arc::new(take_values(b))),
+            9 => Value::Set(Arc::new(
+                (0..take_len(b)).map(|_| Value::decode(b)).collect(),
+            )),
+            10 => Value::Map(Arc::new(
+                (0..take_len(b))
+                    .map(|_| (Value::decode(b), Value::decode(b)))
+                    .collect(),
+            )),
+            11 => Value::Record(Arc::new(
+                (0..take_len(b))
+                    .map(|_| (take_str(b).to_owned(), Value::decode(b)))
+                    .collect(),
+            )),
+            12 => Value::Tuple(Arc::new(take_values(b))),
+            t => unreachable!("bad value tag {t}"),
+        }
+    }
+}
+
+/// Splits `n` bytes off the front of `b`.
+fn take<'a>(b: &mut &'a [u8], n: usize) -> &'a [u8] {
+    let (head, rest) = std::mem::take(b).split_at(n);
+    *b = rest;
+    head
+}
+
+/// Splits `N` bytes off the front of `b`, as an array.
+fn take_array<const N: usize>(b: &mut &[u8]) -> [u8; N] {
+    take(b, N).try_into().unwrap()
+}
+
+/// Writes `x` as an unsigned LEB128 varint: seven bits per byte, the high bit set on every byte
+/// but the last.
+fn put_uvar(out: &mut Vec<u8>, mut x: u128) {
+    while x >= 0x80 {
+        out.push((x as u8) | 0x80);
+        x >>= 7;
+    }
+    out.push(x as u8);
+}
+
+/// Writes a signed integer as a zigzag varint, so small negative numbers stay short.
+fn put_ivar(out: &mut Vec<u8>, a: i128) {
+    put_uvar(out, ((a << 1) ^ (a >> 127)) as u128);
+}
+
+/// Writes a length-prefixed UTF-8 string.
+fn put_str(out: &mut Vec<u8>, s: &str) {
+    put_uvar(out, s.len() as u128);
+    out.extend_from_slice(s.as_bytes());
+}
+
+/// Writes a tag, a count and the elements: the body of a list, set or tuple.
+fn put_values<'a>(out: &mut Vec<u8>, tag: u8, items: impl ExactSizeIterator<Item = &'a Value>) {
+    out.push(tag);
+    put_uvar(out, items.len() as u128);
+    for x in items {
+        x.encode(out);
+    }
+}
+
+/// Reads an unsigned varint, the inverse of `put_uvar`. One too long for a u128 panics.
+fn take_uvar(b: &mut &[u8]) -> u128 {
+    let (mut x, mut shift) = (0u128, 0u32);
+    loop {
+        let byte = take(b, 1)[0];
+        x |= u128::from(byte & 0x7f)
+            .checked_shl(shift)
+            .expect("varint is too long");
+        if byte < 0x80 {
+            return x;
+        }
+        shift += 7;
+    }
+}
+
+/// Reads a zigzag varint, the inverse of `put_ivar`.
+fn take_ivar(b: &mut &[u8]) -> i128 {
+    let z = take_uvar(b);
+    ((z >> 1) as i128) ^ -((z & 1) as i128)
+}
+
+/// Reads a varint length or count.
+fn take_len(b: &mut &[u8]) -> usize {
+    take_uvar(b) as usize
+}
+
+/// Reads a length-prefixed UTF-8 string.
+fn take_str<'a>(b: &mut &'a [u8]) -> &'a str {
+    let n = take_len(b);
+    std::str::from_utf8(take(b, n)).expect("encoded strings are UTF-8")
+}
+
+/// Reads a count and that many values: the body of a list or a tuple.
+fn take_values(b: &mut &[u8]) -> Vec<Value> {
+    let n = take_len(b);
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..n {
+        v.push(Value::decode(b));
+    }
+    v
 }
 
 /// A 128-bit fingerprint of a canonical encoding: two std SipHash streams with different
@@ -244,5 +379,75 @@ mod tests {
         Value::list(vec![Value::str("a"), Value::str("b")]).encode(&mut e2);
         assert_ne!(e1, e2);
         assert_ne!(fingerprint(&e1), fingerprint(&e2));
+    }
+
+    #[test]
+    fn decode_reverses_encode() {
+        let values = vec![
+            Value::Bool(true),
+            Value::Unknown("x is missing".into()),
+            Value::None,
+            Value::int(-42),
+            Value::Num(Num::Real(0.5), Dim::TIME),
+            Value::str("héllo"),
+            Value::Model("ready".into()),
+            Value::list(vec![Value::int(1), Value::str("two")]),
+            Value::set([Value::str("x"), Value::str("y")]),
+            Value::map(BTreeMap::from([
+                (Value::str("k1"), Value::int(1)),
+                (Value::str("k2"), Value::int(2)),
+            ])),
+            Value::record(BTreeMap::from([
+                ("a".to_string(), Value::Bool(false)),
+                ("b".to_string(), Value::None),
+            ])),
+            Value::tuple(vec![Value::int(3), Value::Bool(true)]),
+        ];
+        let mut bytes = Vec::new();
+        for v in &values {
+            v.encode(&mut bytes);
+        }
+        // Equality is the total order, which cannot tell Rat from Real, so also compare bytes.
+        let mut rest = bytes.as_slice();
+        let mut again = Vec::new();
+        for v in &values {
+            let d = Value::decode(&mut rest);
+            assert_eq!(&d, v);
+            d.encode(&mut again);
+        }
+        assert!(rest.is_empty());
+        assert_eq!(again, bytes);
+    }
+
+    #[test]
+    fn compact_integers_and_lengths() {
+        let bytes = |v: &Value| {
+            let mut out = Vec::new();
+            v.encode(&mut out);
+            out
+        };
+        assert_eq!(bytes(&Value::int(0)), [4u8, 0]);
+        assert_eq!(bytes(&Value::int(-1)), [4u8, 1]);
+        assert_eq!(bytes(&Value::int(300)).len(), 3);
+        assert_eq!(bytes(&Value::Bool(true)), [1u8]);
+        // Each value decodes back to an equal value, consumes exactly its bytes, and re-encodes
+        // to the same bytes.
+        let values = [
+            Value::int(i128::MIN),
+            Value::int(i128::MAX),
+            Value::Num(Num::rat(1, 3).unwrap(), Dim::NONE),
+            Value::Num(Num::int(5), Dim::MONEY),
+            Value::Num(Num::rat(-7, 2).unwrap(), Dim::TIME.inv().unwrap()),
+            Value::str(""),
+            Value::list(vec![Value::int(-300), Value::Unknown("u".repeat(200))]),
+        ];
+        for v in &values {
+            let e = bytes(v);
+            let mut rest = e.as_slice();
+            let d = Value::decode(&mut rest);
+            assert!(rest.is_empty());
+            assert_eq!(&d, v);
+            assert_eq!(bytes(&d), e);
+        }
     }
 }

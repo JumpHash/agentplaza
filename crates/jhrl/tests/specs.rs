@@ -126,10 +126,10 @@ fn agent_session_quick_model_holds() {
     assert_eq!(r.states.len(), 64316);
 }
 
-/// The full bounds of AgentSession (2 machines, 2 calls, 3 VMs): 4,144,576 states, about 17 minutes
-/// and 22 GB of memory.
+/// The full bounds of AgentSession (2 machines, 2 calls, 3 VMs): 4,144,576 states, about 16 minutes
+/// and 1.1 GB of memory (the states are kept packed, see `mc::States`).
 #[test]
-#[ignore = "explores 4.1 million states (minutes, ~22 GB); run with --release -- --ignored"]
+#[ignore = "explores 4.1 million states (minutes, ~1.1 GB); run with --release -- --ignored"]
 fn agent_session_full_bounds_hold() {
     let p = load_specs();
     let (pk, m) = p
