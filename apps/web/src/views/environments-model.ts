@@ -2,7 +2,7 @@
 // NAME=value lines of their variables, the names they and their secrets may take, the defaults a new one starts with,
 // and the line that says what is deployed there now. No DOM here; project-environments.ts draws them.
 
-import type { Deploy, DeployStatus, EnvKind, Environment, EnvTrack, EphemeralInstance, InstanceState } from '../api-projects';
+import type { Deploy, DeployStatus, EnvKind, Environment, EnvTrack, EphemeralInstance, InstanceStateName } from '../api-projects';
 import { ago } from '../ui/components';
 
 const KIND_ORDER: EnvKind[] = ['production', 'staging', 'preview', 'development', 'other'];
@@ -65,19 +65,19 @@ export function isEphemeral(env: Environment): boolean {
   return (env.variables?.EPHEMERAL ?? '').trim().toLowerCase() === 'true';
 }
 
-const INSTANCE_STATE_TEXT: Record<InstanceState, string> = {
+const INSTANCE_STATE_TEXT: Record<InstanceStateName, string> = {
   creating: 'Creating',
   ready: 'Ready',
   failed: 'Failed',
   torn_down: 'Torn down',
 };
 
-export function instanceStateText(state: InstanceState): string {
+export function instanceStateText(state: InstanceStateName): string {
   return INSTANCE_STATE_TEXT[state] ?? state;
 }
 
 /** The badge tone of an instance: ready is ok, creating is warn, failed is danger, torn down is muted. */
-export function instanceTone(state: InstanceState): 'ok' | 'warn' | 'danger' | 'muted' {
+export function instanceTone(state: InstanceStateName): 'ok' | 'warn' | 'danger' | 'muted' {
   switch (state) {
     case 'ready':
       return 'ok';
@@ -98,7 +98,7 @@ export function instanceSubject(instance: EphemeralInstance): string {
 }
 
 /** An instance can be torn down while it is not already torn down. */
-export function canTearDown(state: InstanceState): boolean {
+export function canTearDown(state: InstanceStateName): boolean {
   return state !== 'torn_down';
 }
 

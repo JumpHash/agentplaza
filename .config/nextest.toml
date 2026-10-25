@@ -47,3 +47,13 @@ threads-required = "num-test-threads"
 filter = 'package(apid) & kind(test)'
 threads-required = 2
 slow-timeout = { period = "30s", terminate-after = 8 }
+
+# The engine's tests render offscreen, each on a GPU device of its own; a runner with no GPU (Windows' WARP, Mesa's
+# llvmpipe) renders them in system memory, and six at once took the Windows job past its memory and ended it with no
+# log. They run two at a time (a few seconds of the job).
+[test-groups]
+gpu = { max-threads = 2 }
+
+[[profile.ci.overrides]]
+filter = 'package(apz-engine)'
+test-group = "gpu"

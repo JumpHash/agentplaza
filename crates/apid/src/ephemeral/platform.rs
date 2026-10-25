@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use super::{EPHEMERAL, Ports, Subject, Target};
 use crate::base_vm::Live;
@@ -19,7 +20,9 @@ use crate::state::App;
 use crate::targets;
 
 /// The default name patterns: `{project}`, `{subject}`, `{instance}`, `{environment}` and, in an address, `{name}`.
-const NAME: &str = "apz-{project}-{subject}";
+/// The default name of a namespace, Worker script or stack carries the instance, so two instances of one change never share
+/// a live resource; [`fit`] keeps it within the platform's limit.
+const NAME: &str = "apz-{project}-{environment}-{subject}-{instance}";
 const BRANCH: &str = "apz-{subject}-{instance}";
 /// The ConfigMap and the Secret an instance's variables and vault secrets are kept in.
 const CONFIG: &str = "apz-ephemeral-env";
@@ -34,6 +37,27 @@ const LABEL: usize = 63;
 const STACK: usize = 128;
 /// The longest subject slug an instance name carries.
 const SLUG: usize = 40;
+/// The hex characters of the hash a default name too long for its platform ends in.
+const HASH: usize = 8;
+/// The cluster-scoped kinds an instance's bundle may not carry: `kubernetes::is_cluster_scoped` names some of them, and the
+/// rest would be misplaced by the namespace redirect or outlive the instance.
+const CLUSTER_KINDS: &[&str] = &[
+    "Namespace",
+    "Node",
+    "PersistentVolume",
+    "StorageClass",
+    "ClusterRole",
+    "ClusterRoleBinding",
+    "CustomResourceDefinition",
+    "MutatingWebhookConfiguration",
+    "ValidatingWebhookConfiguration",
+    "PriorityClass",
+    "IngressClass",
+    "APIService",
+    "RuntimeClass",
+    "VolumeSnapshotClass",
+    "CSIDriver",
+];
 
 /// The parts a name pattern is expanded from.
 pub struct Names {
@@ -101,17 +125,21 @@ fn stack_ok(text: &str) -> bool {
         && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// The name a pattern gives, checked; a name the platform would refuse says which variable to change.
+/// The name a pattern gives, checked; a name the platform would refuse says which variable to change. The default
+/// pattern's name is kept within `max` by [`fit`]; a variable's pattern must fit as it is written.
 fn named(
     env: &Environment,
     key: &str,
     default: &str,
     names: &Names,
+    max: usize,
     ok: fn(&str) -> bool,
     what: &str,
 ) -> Result<String, String> {
-    let pattern = deploy::variable(env, key).unwrap_or_else(|| default.to_string());
-    let name = expand(&pattern, names, "");
+    let name = match deploy::variable(env, key) {
+        Some(pattern) => expand(&pattern, names, ""),
+        None => fit(&expand(default, names, ""), max),
+    };
     if ok(&name) {
         Ok(name)
     } else {
@@ -119,6 +147,17 @@ fn named(
             "{key} gives {name:?}, which is not {what}: change the pattern"
         ))
     }
+}
+
+/// A default name kept within `max` characters: one too long keeps its readable prefix and ends in a short hash of the whole
+/// name, so two names that differ only past the cut stay apart.
+fn fit(name: &str, max: usize) -> String {
+    if name.len() <= max {
+        return name.to_string();
+    }
+    let head: String = name.chars().take(max - HASH - 1).collect();
+    let digest = format!("{:x}", Sha256::digest(name.as_bytes()));
+    format!("{}-{}", head.trim_end_matches('-'), &digest[..HASH])
 }
 
 /// Refuses an instance name that is the environment's own deploy target (`own`, named by `key`): an instance never takes
@@ -170,6 +209,7 @@ pub fn plan(
                 "EPHEMERAL_NAMESPACE",
                 NAME,
                 &names,
+                LABEL,
                 label_ok,
                 "a namespace name (lower-case letters, digits and dashes, at most 63)",
             )?;
@@ -187,6 +227,7 @@ pub fn plan(
                 "EPHEMERAL_BRANCH",
                 BRANCH,
                 &names,
+                LABEL,
                 label_ok,
                 "a branch name (lower-case letters, digits and dashes, at most 63)",
             )?;
@@ -203,6 +244,7 @@ pub fn plan(
                 "EPHEMERAL_WORKER",
                 NAME,
                 &names,
+                LABEL,
                 label_ok,
                 "a Worker script name (lower-case letters, digits and dashes, at most 63)",
             )?;
@@ -216,6 +258,7 @@ pub fn plan(
                 "EPHEMERAL_STACK",
                 NAME,
                 &names,
+                STACK,
                 stack_ok,
                 "a stack name (letters, digits and dashes, starting with a letter)",
             )?;
@@ -317,6 +360,21 @@ fn address(
     })
 }
 
+/// Refuses a bundle with a cluster-scoped document, before anything is created: an instance's documents are applied into its
+/// own namespace, and a cluster-scoped one would be shared with the cluster and survive the namespace's teardown.
+fn refuse_cluster_scoped(docs: &[Value]) -> Result<(), String> {
+    for doc in docs {
+        let kind = doc["kind"].as_str().unwrap_or("");
+        if kubernetes::is_cluster_scoped(kind) || CLUSTER_KINDS.contains(&kind) {
+            return Err(format!(
+                "{kind} {} is cluster-scoped: an ephemeral instance applies only namespaced documents",
+                doc["metadata"]["name"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// A Kubernetes instance: its namespace is created, the environment's variables and secrets are applied into it, the
 /// release's (or the lane's) manifests are applied with their namespace and image set, and every Deployment is waited on
 /// until its rollout completes. Returns the Ingress host the manifests declare, as a URL, when they declare one.
@@ -330,6 +388,10 @@ fn kube_deploy(
     built: &BTreeMap<String, String>,
 ) -> Result<Option<String>, String> {
     let client = ports.kubernetes()?;
+    let bytes = artifact_bytes(ports, project, subject, &kube.artifact, built)?;
+    let tools = ports.tools();
+    let mut manifests = kubernetes::manifests_of(&bytes, &tools)?;
+    refuse_cluster_scoped(&manifests)?;
     client.create_namespace(namespace)?;
     let mut docs: Vec<Value> = Vec::new();
     if !env.variables.is_empty() {
@@ -351,9 +413,6 @@ fn kube_deploy(
             "stringData": data,
         }));
     }
-    let bytes = artifact_bytes(ports, project, subject, &kube.artifact, built)?;
-    let tools = ports.tools();
-    let mut manifests = kubernetes::manifests_of(&bytes, &tools)?;
     let image = match ports.release(project, subject)? {
         Some(release) => Some(kube.image_for(&release)?),
         None => None,

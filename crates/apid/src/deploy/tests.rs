@@ -4,9 +4,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
-use super::cloudflare::{Client, Target as CfTarget};
+use super::cloudflare::{Client, Target as CfTarget, asset_hash};
 use super::health::{self, Health, Monitor};
 use super::{
     Api, Artifacts, Checks, Incidents, Ports, Rolled, Settings, Target, breach, check_gate,
@@ -664,25 +666,7 @@ fn the_client_sends_versions_and_percentages_and_the_token_only_in_its_header() 
 
 #[test]
 fn a_pages_deploy_and_a_rollback_use_the_deployment_endpoints() {
-    let (fake, client) = fake_cloudflare(|method, url, _| match (method, url) {
-        ("GET", u) if u.ends_with("/pages/projects/docs/deployments") => (
-            200,
-            json!({"success": true, "result": [
-                {"id": "d0", "environment": "production"},
-                {"id": "dprev", "environment": "preview"}
-            ]}),
-        ),
-        ("POST", u) if u.ends_with("/pages/projects/docs/deployments") => {
-            (200, json!({"success": true, "result": {"id": "d1"}}))
-        }
-        ("POST", u) if u.ends_with("/pages/projects/docs/deployments/d0/rollback") => {
-            (200, json!({"success": true, "result": {}}))
-        }
-        _ => (
-            404,
-            json!({"success": false, "errors": [{"message": "no such route"}]}),
-        ),
-    });
+    let (fake, client) = pages_fake();
     let target = CfTarget::Pages("docs".into());
     assert_eq!(client.live(&target).unwrap().as_deref(), Some("d0"));
     assert_eq!(client.upload(&target, b"<h1>docs</h1>").unwrap(), "d1");
@@ -699,6 +683,209 @@ fn a_pages_deploy_and_a_rollback_use_the_deployment_endpoints() {
             .split(&target, &[("d1".into(), 50), ("d0".into(), 50)])
             .is_err()
     );
+}
+
+/// A Pages project's fake, answered as Cloudflare's Direct Upload calls. The asset store keeps the content an upload puts
+/// in it: an upsert names only hashes it holds, and a deployment is refused when its manifest names a hash the store
+/// lacks, or when it carries a file part (the content comes through the store alone).
+fn pages_fake() -> (Arc<Fake>, Client) {
+    let store: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    fake_cloudflare(move |method, url, body| {
+        let mut held = store.lock().unwrap();
+        match (method, url) {
+            ("GET", u) if u.ends_with("/pages/projects/docs/deployments") => (
+                200,
+                json!({"success": true, "result": [
+                    {"id": "d0", "environment": "production"},
+                    {"id": "dprev", "environment": "preview"}
+                ]}),
+            ),
+            ("GET", u) if u.ends_with("/pages/projects/docs/upload-token") => {
+                (200, json!({"success": true, "result": {"jwt": "jwt-docs"}}))
+            }
+            ("POST", u) if u.ends_with("/pages/assets/check-missing") => {
+                let missing: Vec<String> = hashes_in(body)
+                    .into_iter()
+                    .filter(|h| !held.contains(h))
+                    .collect();
+                (200, json!({"success": true, "result": missing}))
+            }
+            ("POST", u) if u.ends_with("/pages/assets/upload") => {
+                held.extend(keys_in(body));
+                (200, json!({"success": true, "result": {}}))
+            }
+            ("POST", u) if u.ends_with("/pages/assets/upsert-hashes") => {
+                if hashes_in(body).iter().all(|h| held.contains(h)) {
+                    (200, json!({"success": true, "result": {}}))
+                } else {
+                    (
+                        400,
+                        json!({"success": false, "errors": [{"message": "an unknown hash"}]}),
+                    )
+                }
+            }
+            ("POST", u) if u.ends_with("/pages/projects/docs/deployments") => {
+                let manifest = manifest_in(body);
+                let named: Vec<String> = manifest
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|m| m.values())
+                    .filter_map(|h| h.as_str().map(str::to_string))
+                    .collect();
+                let file_part = matches!(
+                    body,
+                    Some(Body::Bytes(_, raw)) if String::from_utf8_lossy(raw).contains("filename=")
+                );
+                if named.is_empty() || file_part || !named.iter().all(|h| held.contains(h)) {
+                    (
+                        400,
+                        json!({"success": false, "errors": [{"message": "unknown content"}]}),
+                    )
+                } else {
+                    (200, json!({"success": true, "result": {"id": "d1"}}))
+                }
+            }
+            ("POST", u) if u.ends_with("/pages/projects/docs/deployments/d0/rollback") => {
+                (200, json!({"success": true, "result": {}}))
+            }
+            _ => (
+                404,
+                json!({"success": false, "errors": [{"message": "no such route"}]}),
+            ),
+        }
+    })
+}
+
+/// The `hashes` a JSON body names: a check's or an upsert's.
+fn hashes_in(body: Option<&Body>) -> Vec<String> {
+    let Some(Body::Json(v)) = body else {
+        return Vec::new();
+    };
+    v["hashes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h.as_str().map(str::to_string))
+        .collect()
+}
+
+/// The `key`s of an upload: the hash each entry's content is stored under.
+fn keys_in(body: Option<&Body>) -> Vec<String> {
+    let Some(Body::Json(v)) = body else {
+        return Vec::new();
+    };
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e["key"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// The `manifest` part of a deployment's multipart body, read as JSON (null when the body has none).
+fn manifest_in(body: Option<&Body>) -> Value {
+    let Some(Body::Bytes(_, raw)) = body else {
+        return Value::Null;
+    };
+    let text = String::from_utf8_lossy(raw).into_owned();
+    text.find("name=\"manifest\"")
+        .and_then(|at| {
+            let start = at + text[at..].find("\r\n\r\n")? + 4;
+            let end = start + text[start..].find("\r\n--")?;
+            serde_json::from_str::<Value>(&text[start..end]).ok()
+        })
+        .unwrap_or(Value::Null)
+}
+
+#[test]
+fn a_pages_upload_stores_its_content_before_the_deployment_names_it() {
+    let (fake, client) = pages_fake();
+    let target = CfTarget::Pages("docs".into());
+    assert_eq!(client.upload(&target, b"<h1>docs</h1>").unwrap(), "d1");
+
+    let base = "http://cf.test/client/v4";
+    assert_eq!(
+        fake.urls(),
+        [
+            format!("GET {base}/accounts/acct1/pages/projects/docs/upload-token"),
+            format!("POST {base}/pages/assets/check-missing"),
+            format!("POST {base}/pages/assets/upload"),
+            format!("POST {base}/pages/assets/upsert-hashes"),
+            format!("POST {base}/accounts/acct1/pages/projects/docs/deployments"),
+        ]
+    );
+    let seen = fake.seen();
+    // The token call and the deployment carry the account's token; the asset calls carry the upload token.
+    assert_eq!(seen[0].2.as_deref(), Some("Bearer cf-test-token"));
+    for (_, _, auth, _) in &seen[1..4] {
+        assert_eq!(auth.as_deref(), Some("Bearer jwt-docs"));
+    }
+    assert_eq!(seen[4].2.as_deref(), Some("Bearer cf-test-token"));
+
+    // The content goes up under the hash the manifest names, and the upsert marks that same hash.
+    let Some(Body::Json(upload)) = seen[2].3.clone() else {
+        panic!("the upload is a JSON array of entries");
+    };
+    let hash = upload[0]["key"].as_str().expect("the hash").to_string();
+    assert_eq!(
+        hash,
+        asset_hash(b"<h1>docs</h1>", "html"),
+        "the key is the content's asset hash"
+    );
+    assert_eq!(upload[0]["value"], json!(STANDARD.encode(b"<h1>docs</h1>")));
+    assert_eq!(upload[0]["metadata"]["contentType"], json!("text/html"));
+    assert_eq!(upload[0]["base64"], json!(true));
+    assert_eq!(
+        seen[3].3,
+        Some(Body::Json(json!({ "hashes": [hash.as_str()] })))
+    );
+
+    // The deployment is the manifest alone: no file part, and the hash it names is the one uploaded.
+    let deployment = seen[4].3.clone();
+    assert_eq!(
+        manifest_in(deployment.as_ref()),
+        json!({ "/index.html": hash.as_str() })
+    );
+    let Some(Body::Bytes(_, raw)) = deployment else {
+        panic!("the deployment is a multipart body");
+    };
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    assert!(!text.contains("filename="), "{text}");
+    assert!(!text.contains("<h1>docs</h1>"), "{text}");
+}
+
+#[test]
+fn content_the_store_holds_is_not_uploaded_again_and_a_preview_is_staged_the_same_way() {
+    let (fake, client) = pages_fake();
+    let target = CfTarget::Pages("docs".into());
+    client.upload(&target, b"<h1>docs</h1>").unwrap();
+    let (id, url) = client
+        .pages_preview("docs", "feature", b"<h1>docs</h1>")
+        .unwrap();
+    assert_eq!(id, "d1");
+    assert!(url.is_none());
+
+    let base = "http://cf.test/client/v4";
+    let urls = fake.urls();
+    assert_eq!(
+        urls[5..].to_vec(),
+        [
+            format!("GET {base}/accounts/acct1/pages/projects/docs/upload-token"),
+            format!("POST {base}/pages/assets/check-missing"),
+            format!("POST {base}/pages/assets/upsert-hashes"),
+            format!("POST {base}/accounts/acct1/pages/projects/docs/deployments"),
+        ]
+    );
+    let uploads = urls
+        .iter()
+        .filter(|u| u.ends_with("/pages/assets/upload"))
+        .count();
+    assert_eq!(uploads, 1, "{urls:?}");
+    let Some(Body::Bytes(_, raw)) = fake.seen()[8].3.clone() else {
+        panic!("the preview is a multipart body");
+    };
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    assert!(text.contains("\r\n\r\nfeature\r\n"), "{text}");
+    assert!(!text.contains("filename="), "{text}");
 }
 
 #[test]

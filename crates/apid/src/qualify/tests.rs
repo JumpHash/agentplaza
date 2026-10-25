@@ -13,6 +13,7 @@ use apz_topology::node_loss::NodeStop;
 use apz_topology::spec::{self, Scenario, Topology};
 use serde_json::json;
 
+use crate::recipes::runs::RunState;
 use crate::releases::entity::ReleaseState;
 use crate::releases::flow::{self, Cut, Deps};
 use crate::releases::tests::{FakeBuilder, World, cut, lab};
@@ -47,6 +48,8 @@ struct FakeLab {
     /// The node stop's state: the probe server answers 503 while `down` is set; `answered` is the stops and resumes.
     down: Arc<AtomicBool>,
     answered: RefCell<Vec<String>>,
+    /// Why the lab refuses to queue a run, when set (no run is made then).
+    refuse: RefCell<Option<String>>,
 }
 
 impl FakeLab {
@@ -114,6 +117,9 @@ impl Lab for FakeLab {
         _release: &crate::releases::entity::Release,
         topology: &str,
     ) -> Result<String, String> {
+        if let Some(why) = self.refuse.borrow().clone() {
+            return Err(why);
+        }
         *self.next.borrow_mut() += 1;
         let run = format!("lab-{}", self.next.borrow());
         self.run_topology
@@ -919,4 +925,36 @@ fn a_failed_test_whose_re_run_no_lab_runner_can_take_is_not_run_and_keeps_its_fa
         .find(|m| m.name == "tests.failed")
         .unwrap();
     assert_eq!(failed.value, 1.0, "the test still counts as failed");
+}
+
+/// A lab that refuses to queue a run fails the topologies stage with its reason, and the recipe run settles as failed.
+#[test]
+fn a_lab_that_refuses_a_run_fails_the_topologies_stage_with_the_reason_and_settles_the_recipe_run()
+{
+    let (client, _handle, _dir, _change, _agent) = lab("qualify-enqueue-refused");
+    let world = World::new(client, "qualify-enqueue-refused");
+    let d = world.deps();
+    let store = Store::default();
+    let fake = FakeLab::with(&["web"]);
+    let why = "no lab runner dispatches test-lab runs yet: the web run cannot start";
+    *fake.refuse.borrow_mut() = Some(why.into());
+    let release = candidate(&d, "v0.1.0", "stable");
+    let lab_cx = cx(&d, &fake, &store, &release, 1);
+    let q = engine::start(&lab_cx, None, &setup()).unwrap();
+    let q = store.run(&q.id).unwrap();
+    assert!(q.lab_runs.is_empty(), "no run was queued: {q:?}");
+    let topologies = q
+        .result(Stage::Topologies)
+        .expect("the topologies stage was judged");
+    assert_eq!(topologies.state, State::Failed, "{topologies:?}");
+    assert_eq!(topologies.reason, why);
+    assert_ne!(
+        q.verdict, "passed",
+        "a refused run never passes the release"
+    );
+    assert_eq!(
+        d.runs.view(&q.recipe_run).unwrap().run.state,
+        RunState::Failed,
+        "the recipe run settled as failed"
+    );
 }

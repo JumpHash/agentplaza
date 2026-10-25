@@ -14,8 +14,8 @@
 //! Its run is per project and ecosystem (the subject). The batches are kept in plaza.db (`project_upgrade`).
 //!
 //! Ports: the hub's Weft ([`Lanes`]), the registries and changelog hosts ([`Fetch`]) and the tools ([`Exec`]). Production
-//! uses Weft through the hub and the real network and processes; the tests use an in-memory repository and a local
-//! registry, with the real `cargo`.
+//! uses Weft through the hub and the real network, and runs no project command: its tools are refused ([`Refuse`]). The
+//! tests use an in-memory repository and a local registry, with the real `cargo` run by [`Local`].
 
 pub mod cargo;
 pub mod ecosystem;
@@ -74,7 +74,7 @@ pub struct Output {
     pub stderr: String,
 }
 
-/// Runs a tool in a directory. Production runs the process; a test may run the real one with its environment.
+/// Runs a tool in a directory. Production runs no project command (its tool is [`Refuse`]); a test runs the real one.
 pub trait Exec: Send + Sync {
     fn run(
         &self,
@@ -85,9 +85,11 @@ pub trait Exec: Send + Sync {
     ) -> Result<Output, String>;
 }
 
-/// The processes of the hub.
+/// The processes of the hub, for the tests: production runs no project command here (see [`Refuse`]).
+#[cfg(test)]
 pub struct Local;
 
+#[cfg(test)]
 impl Exec for Local {
     fn run(
         &self,
@@ -96,13 +98,20 @@ impl Exec for Local {
         args: &[&str],
         env: &[(String, String)],
     ) -> Result<Output, String> {
+        // Only an allow-list reaches the tool (its PATH and locale, a HOME of its own, and the caller's variables), so none
+        // of the hub user's environment or credentials does. A project builds in its own `target/`.
+        let home = std::env::temp_dir().join(format!("apid-upgrade-home-{}", std::process::id()));
+        std::fs::create_dir_all(&home).map_err(|e| format!("{program}: {e}"))?;
         let out = std::process::Command::new(program)
             .args(args)
             .current_dir(dir)
-            // A project builds in its own `target/`, as it does on any machine: a CARGO_TARGET_DIR the hub's environment
-            // names (one build directory shared by everything the hub builds) would mix this project's build with every
-            // other project's, so it is not passed on.
-            .env_remove("CARGO_TARGET_DIR")
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env(
+                "LANG",
+                std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()),
+            )
+            .env("HOME", &home)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .output()
             .map_err(|e| format!("{program}: {e}"))?;
@@ -111,6 +120,26 @@ impl Exec for Local {
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
+    }
+}
+
+/// The executor of the scheduled and advisory runs, until a project's confined runner takes them. A project's commands
+/// (its installs, builds and tests, and the build scripts they run) would run as the hub user with its files and
+/// credentials, so none runs here: each is refused, and the batch that asked for it records the reason.
+pub struct Refuse;
+
+impl Exec for Refuse {
+    fn run(
+        &self,
+        _dir: &Path,
+        program: &str,
+        _args: &[&str],
+        _env: &[(String, String)],
+    ) -> Result<Output, String> {
+        Err(format!(
+            "`{program}` is not run on the hub: a project's commands run only in its isolated runner, \
+             which upgrades do not reach yet"
+        ))
     }
 }
 
@@ -766,8 +795,9 @@ fn materialize(tree: &Tree, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The files of `dir` that differ from `tree` (`None` for one `tree` has and `dir` lost). The build output is not a file
-/// of the project: `target/` and `.git/` are skipped.
+/// The files of `dir` that differ from `tree` (`None` for one `tree` has and `dir` lost). The build output and the
+/// installed dependencies are not files of the project: `target/`, `.git/` and the dependency directories (see
+/// [`installed`]) are skipped, but a tracked file is compared wherever it is.
 pub fn changed_files(dir: &Path, tree: &Tree) -> Result<Vec<(String, Option<Vec<u8>>)>, String> {
     let mut found: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut stack = vec![(dir.to_path_buf(), String::new())];
@@ -783,10 +813,14 @@ pub fn changed_files(dir: &Path, tree: &Tree) -> Result<Vec<(String, Option<Vec<
             if (prefix.is_empty() && name == "target") || name == ".git" {
                 continue;
             }
+            // An installed dependency is its package manager's output: its directory is walked only when the project tracks
+            // something under it, and then only a tracked file is compared.
             let path = entry.path();
             if path.is_dir() {
-                stack.push((path, rel));
-            } else {
+                if !installed(&rel) || tracked_under(tree, &rel) {
+                    stack.push((path, rel));
+                }
+            } else if !installed(&rel) || tree.contains_key(&rel) {
                 found.insert(rel, std::fs::read(&path).map_err(|e| e.to_string())?);
             }
         }
@@ -803,6 +837,23 @@ pub fn changed_files(dir: &Path, tree: &Tree) -> Result<Vec<(String, Option<Vec<
         }
     }
     Ok(out)
+}
+
+/// Whether a project path (`/`-separated) lies in a directory a package manager installs dependencies into: `node_modules`
+/// at any depth (a workspace's too), a Python `.venv`, and Go's `vendor` at the root.
+fn installed(rel: &str) -> bool {
+    rel.split('/').next() == Some("vendor")
+        || rel
+            .split('/')
+            .any(|part| part == "node_modules" || part == ".venv")
+}
+
+/// Whether the tree has a file under the directory `rel`.
+fn tracked_under(tree: &Tree, rel: &str) -> bool {
+    let under = format!("{rel}/");
+    tree.range(under.clone()..)
+        .next()
+        .is_some_and(|(path, _)| path.starts_with(&under))
 }
 
 fn scratch(now: u64) -> PathBuf {
@@ -1207,7 +1258,7 @@ pub fn run(app: &App, project: &str, eco: Ecosystem, request: &Request) -> Repor
     let lanes = WeftLanes { app };
     let ports = Ports {
         lanes: &lanes,
-        exec: &Local,
+        exec: &Refuse,
         fetch: &Net,
         path_var: std::env::var("PATH").unwrap_or_default(),
         env: Vec::new(),
@@ -1247,7 +1298,10 @@ fn settle(app: &App, project: &str, eco: Ecosystem, report: &Report, now: u64) {
         .iter()
         .any(|b| b.state == "review_failed" || b.state == "task_failed");
     let landed = report.batches.iter().any(|b| b.state == "task");
-    if report.batches.is_empty() || report.batches.iter().all(|b| b.state == "current") {
+    // A plan that failed is a failed plan step, not a run with nothing to do.
+    if report.plan.is_ok()
+        && (report.batches.is_empty() || report.batches.iter().all(|b| b.state == "current"))
+    {
         app.recipe_runs
             .close_external(&run, Vec::new(), true, "current", now);
     } else {

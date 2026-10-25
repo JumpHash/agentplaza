@@ -402,9 +402,21 @@ pub(crate) fn kube_up_trail(ns: &str) -> Vec<String> {
 
 // ---- The fake Cloudflare and AWS ------------------------------------------------------------------------------------
 
-/// The Cloudflare calls of a Pages and a Worker instance, answered as Cloudflare answers them.
+/// The Cloudflare calls of a Pages and a Worker instance, answered as Cloudflare answers them. The asset store holds
+/// nothing yet, so every hash a check names is missing and the content is uploaded before the deployment names it.
 fn cloudflare_fake() -> Arc<Fake> {
-    Arc::new(Fake::new(|method, url, _body| {
+    Arc::new(Fake::new(|method, url, body| {
+        if method == "GET" && url.ends_with("/pages/projects/shop-site/upload-token") {
+            return (200, json!({"success": true, "result": {"jwt": "jwt-shop"}}));
+        }
+        if method == "POST" && url.ends_with("/pages/assets/check-missing") {
+            let hashes = match body {
+                Some(Body::Json(v)) => v["hashes"].clone(),
+                _ => json!([]),
+            };
+            return (200, json!({"success": true, "result": hashes}));
+        }
+        // The upload and the upsert answer success, as the fallback below answers every call it does not name.
         if method == "POST" && url.ends_with("/pages/projects/shop-site/deployments") {
             return (
                 200,
@@ -525,7 +537,8 @@ fn a_lane_comes_up_in_its_own_namespace_and_is_torn_down_last() {
         },
     )
     .expect("the instance comes up");
-    let ns = "apz-shop-lane-ch-1";
+    let ns = format!("apz-shop-pr-lane-ch-1-{}", &up.id[4..12]);
+    let ns = ns.as_str();
     assert_eq!(up.state, State::Ready);
     assert_eq!(up.url.as_deref(), Some("http://shop.test"));
     assert_eq!(
@@ -653,13 +666,13 @@ fn a_rollout_that_fails_removes_its_namespace_and_the_instance_says_why() {
     )
     .expect_err("the rollout fails");
     assert!(err.contains("image pull back-off"), "{err}");
-    let ns = "apz-shop-lane-ch-2";
+    let listed = store.list("shop");
+    assert_eq!(listed.len(), 1);
+    let ns = format!("apz-shop-pr-lane-ch-2-{}", &listed[0].id[4..12]);
     assert_eq!(
         cluster.trail().last().map(String::as_str),
         Some(format!("DELETE /api/v1/namespaces/{ns}").as_str())
     );
-    let listed = store.list("shop");
-    assert_eq!(listed.len(), 1);
     assert!(matches!(&listed[0].state, State::Failed(why) if why.contains("image pull back-off")));
 }
 
@@ -795,7 +808,7 @@ fn a_cloudformation_stack_instance_is_applied_reads_its_url_and_is_deleted() {
     assert_eq!(
         up.target,
         Target::AwsStack {
-            stack: "apz-shop-lane-ch-5".into(),
+            stack: format!("apz-shop-pr-lane-ch-5-{}", &up.id[4..12]),
             region: None
         }
     );
@@ -873,16 +886,16 @@ fn the_ticker_tears_down_an_instance_whose_time_is_up_and_leaves_the_others() {
     );
     assert_eq!(store.get(&short.id).unwrap().state, State::TornDown);
     assert_eq!(store.get(&long.id).unwrap().state, State::Ready);
-    assert!(
-        cluster
-            .trail()
-            .contains(&"DELETE /api/v1/namespaces/apz-shop-lane-short".to_string())
-    );
+    assert!(cluster.trail().contains(&format!(
+        "DELETE /api/v1/namespaces/apz-shop-pr-lane-short-{}",
+        &short.id[4..12]
+    )));
+    let long_ns = format!("apz-shop-pr-lane-long-{}", &long.id[4..12]);
     assert!(
         !cluster
             .trail()
             .iter()
-            .any(|t| t.contains("apz-shop-lane-long") && t.starts_with("DELETE"))
+            .any(|t| t.contains(&long_ns) && t.starts_with("DELETE"))
     );
 }
 
@@ -992,6 +1005,64 @@ fn the_name_patterns_expand_and_a_name_the_platform_would_refuse_says_which_patt
 }
 
 #[test]
+fn two_instances_of_one_change_get_names_of_their_own_that_each_platform_takes() {
+    fn instance_name(target: &Target) -> &str {
+        match target {
+            Target::Kubernetes { namespace, .. } => namespace.as_str(),
+            Target::CloudflareWorker { script } => script.as_str(),
+            Target::AwsStack { stack, .. } => stack.as_str(),
+            other => panic!("a named target: {other:?}"),
+        }
+    }
+    // A namespace and a Worker script are DNS labels; a stack name starts with a letter and is letters, digits and dashes.
+    fn dns_label(name: &str) -> bool {
+        name.len() <= 63
+            && !name.starts_with('-')
+            && !name.ends_with('-')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    }
+    fn stack_name(name: &str) -> bool {
+        name.len() <= 128
+            && name.starts_with(|c: char| c.is_ascii_alphabetic())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    }
+    let kube = kube_env(&[]);
+    let worker = environment(
+        "pr",
+        &[("EPHEMERAL", "true"), ("CLOUDFLARE_WORKER", "shop-api")],
+    );
+    let stack = environment(
+        "pr",
+        &[("EPHEMERAL", "true"), ("AWS_CLOUDFORMATION_STACK", "shop")],
+    );
+    let cases: [(&Environment, fn(&str) -> bool); 3] = [
+        (&kube, dns_label),
+        (&worker, dns_label),
+        (&stack, stack_name),
+    ];
+    let long = "a-very-long-project-name-that-runs-well-past-the-sixty-three-character-label-limit";
+    let (first, second) = ("eph-0123456789abcdef", "eph-fedcba9876543210");
+    for project in ["shop", long] {
+        for &(env, valid) in cases.iter() {
+            let a = platform::plan(env, project, &lane("ch-1"), first).expect("a plan");
+            let b = platform::plan(env, project, &lane("ch-1"), second).expect("a plan");
+            let (name_a, name_b) = (instance_name(&a), instance_name(&b));
+            assert_ne!(name_a, name_b, "two instances of one change share {name_a}");
+            assert!(
+                valid(name_a) && valid(name_b),
+                "{name_a} and {name_b} are not names the platform takes"
+            );
+            if project == "shop" {
+                assert_eq!(name_a, "apz-shop-pr-lane-ch-1-01234567");
+                assert_eq!(name_b, "apz-shop-pr-lane-ch-1-fedcba98");
+            }
+        }
+    }
+}
+
+#[test]
 fn an_against_stage_runs_a_test_command_and_a_web_check_then_tears_the_instance_down() {
     let site = Site::start();
     let cluster = FakeKube::start(healthy);
@@ -1059,13 +1130,10 @@ fn an_against_stage_runs_a_test_command_and_a_web_check_then_tears_the_instance_
     );
     let torn = verdict.instance.expect("the instance");
     assert_eq!(torn.state, State::TornDown);
-    assert!(
-        cluster
-            .trail()
-            .last()
-            .unwrap()
-            .starts_with("DELETE /api/v1/namespaces/apz-shop-lane-ch-9")
-    );
+    assert!(cluster.trail().last().unwrap().starts_with(&format!(
+        "DELETE /api/v1/namespaces/apz-shop-pr-lane-ch-9-{}",
+        &torn.id[4..12]
+    )));
 }
 
 #[test]
@@ -1266,4 +1334,54 @@ fn a_failed_teardown_is_retried_on_a_backoff_and_the_ticker_gives_up_at_the_cap(
     down_with(&store, &fakes, &stuck.id).expect("the owner's teardown works");
     assert_eq!(store.get(&stuck.id).unwrap().state, State::TornDown);
     assert!(store.retry_of(&stuck.id).is_none());
+}
+
+#[test]
+fn a_cluster_scoped_document_is_refused_before_anything_is_applied_and_a_namespaced_one_is_redirected()
+ {
+    let cluster = FakeKube::start(healthy);
+    let mut fakes = Fakes::new(kube_env(&[]));
+    fakes.kube = Some(cluster.base.clone());
+    fakes.artifact = format!(
+        "{}---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: reader\nrules: []\n",
+        MANIFESTS
+    )
+    .into_bytes();
+    let store = Store::default();
+    let request = |subject: &str| UpRequest {
+        project: "shop".into(),
+        environment: "pr".into(),
+        subject: lane(subject),
+        ttl_minutes: None,
+        run: None,
+        keep: false,
+        built: BTreeMap::new(),
+    };
+
+    let err = up_with(&store, &fakes, request("ch-14")).expect_err("a ClusterRole is refused");
+    assert!(err.contains("ClusterRole reader"), "{err}");
+    let sent: Vec<String> = cluster
+        .trail()
+        .into_iter()
+        .filter(|t| !t.starts_with("DELETE "))
+        .collect();
+    assert!(sent.is_empty(), "nothing is created or applied: {sent:?}");
+
+    // The same bundle without the ClusterRole comes up, and its Deployment is applied into the instance's namespace.
+    fakes.artifact = MANIFESTS.as_bytes().to_vec();
+    let up = up_with(&store, &fakes, request("ch-15")).expect("the namespaced bundle comes up");
+    let Target::Kubernetes { namespace, .. } = &up.target else {
+        panic!("a Kubernetes target: {:?}", up.target);
+    };
+    assert!(
+        namespace.starts_with("apz-shop-pr-lane-ch-15-"),
+        "{namespace}"
+    );
+    assert!(
+        cluster.trail().contains(&format!(
+            "PATCH /apis/apps/v1/namespaces/{namespace}/deployments/web"
+        )),
+        "{:?}",
+        cluster.trail()
+    );
 }

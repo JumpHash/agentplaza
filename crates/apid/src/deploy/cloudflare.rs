@@ -1,6 +1,6 @@
-//! The Cloudflare calls of a deploy (PLAN 23): Workers' versions and percentage deployments, and Pages' deployments and
-//! rollbacks. The calls go through the platforms' one HTTP path (`platforms::http`), so a test replaces it with a fake
-//! that records each request.
+//! The Cloudflare calls of a deploy (PLAN 23): Workers' versions and percentage deployments, and Pages' asset uploads,
+//! deployments and rollbacks. The calls go through the platforms' one HTTP path (`platforms::http`), so a test replaces
+//! it with a fake that records each request.
 //!
 //! The token is the Cloudflare connector's key, read on the hub (`connectors::hub_values`) and attached to each request
 //! here, as the hub's own credential. It is never in a prompt, a fork, an error or a log: an error text is redacted of it.
@@ -9,8 +9,9 @@
 
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::platforms::http::{Body, Http};
 
@@ -81,28 +82,43 @@ impl Client {
             .unwrap_or_else(|| DEFAULT_BASE.to_string())
     }
 
-    /// One call: `path` under the account. The token goes in the header only.
+    /// One call: `path` under the account, with the connector's token. The token goes in the header only.
     fn send(&self, method: &str, path: &str, body: Option<Body>) -> Result<Value, String> {
         let url = format!("{}/accounts/{}{path}", self.base, self.account);
-        let headers = [("Authorization", format!("Bearer {}", self.token))];
+        self.request(method, &url, &self.token, body)
+    }
+
+    /// One call to `url`, with `bearer` as its credential: the connector's token, or a Pages project's upload token.
+    fn request(
+        &self,
+        method: &str,
+        url: &str,
+        bearer: &str,
+        body: Option<Body>,
+    ) -> Result<Value, String> {
+        let headers = [("Authorization", format!("Bearer {bearer}"))];
         let reply = self
             .http
-            .call(method, &url, &headers, body)
-            .map_err(|e| self.redact(&e))?;
+            .call(method, url, &headers, body)
+            .map_err(|e| self.redact(&e, bearer))?;
         let refused =
             reply.status < 200 || reply.status >= 300 || reply.body["success"] == json!(false);
         if refused {
             let message = reply.body["errors"][0]["message"]
                 .as_str()
                 .unwrap_or("the API refused the call");
-            return Err(self.redact(&format!("cloudflare answered {}: {message}", reply.status)));
+            return Err(self.redact(
+                &format!("cloudflare answered {}: {message}", reply.status),
+                bearer,
+            ));
         }
         Ok(reply.body)
     }
 
-    /// Text with the token taken out, for any error that might carry it.
-    fn redact(&self, text: &str) -> String {
+    /// Text with the token and the bearer taken out, for any error that might carry either.
+    fn redact(&self, text: &str, bearer: &str) -> String {
         text.replace(&self.token, "[redacted]")
+            .replace(bearer, "[redacted]")
     }
 }
 
@@ -148,26 +164,21 @@ impl Client {
     }
 
     pub fn upload(&self, target: &Target, bytes: &[u8]) -> Result<String, String> {
-        let (path, content_type, body) = match target {
+        let v = match target {
             Target::Workers(script) => {
                 let metadata = json!({ "main_module": WORKER_MODULE }).to_string();
                 let (ct, body) = multipart(&[
                     Part::text("metadata", &metadata),
                     Part::file(WORKER_MODULE, "application/javascript+module", bytes),
                 ]);
-                (format!("/workers/scripts/{script}/versions"), ct, body)
+                self.send(
+                    "POST",
+                    &format!("/workers/scripts/{script}/versions"),
+                    Some(Body::Bytes(ct, body)),
+                )?
             }
-            Target::Pages(project) => {
-                let manifest = json!({ PAGES_FILE: sha256_hex(bytes) }).to_string();
-                let (ct, body) = multipart(&[
-                    Part::text("manifest", &manifest),
-                    Part::text("branch", PAGES_BRANCH),
-                    Part::file(PAGES_FILE, "text/html", bytes),
-                ]);
-                (format!("/pages/projects/{project}/deployments"), ct, body)
-            }
+            Target::Pages(project) => self.pages_deploy(project, PAGES_BRANCH, bytes)?,
         };
-        let v = self.send("POST", &path, Some(Body::Bytes(content_type, body)))?;
         v["result"]["id"]
             .as_str()
             .map(str::to_string)
@@ -217,6 +228,59 @@ impl Client {
     }
 }
 
+/// The Pages calls a Pages deployment makes, production and preview alike: the content is stored in the project's asset
+/// store under its hash before a deployment names that hash.
+impl Client {
+    /// Deploys `bytes` as a Pages deployment on `branch`, and returns the answer. The project's upload token is asked
+    /// for; the hash is checked against the asset store, and the content uploaded when the store lacks it; the hash is
+    /// then marked present. Only after that is the deployment made, with its manifest and no file part.
+    fn pages_deploy(&self, project: &str, branch: &str, bytes: &[u8]) -> Result<Value, String> {
+        let hash = asset_hash(bytes, "html");
+        let token = self.send(
+            "GET",
+            &format!("/pages/projects/{project}/upload-token"),
+            None,
+        )?;
+        let jwt = token["result"]["jwt"]
+            .as_str()
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| format!("pages:{project}: the upload token answered no token"))?;
+        let check = self.assets("check-missing", jwt, json!({ "hashes": [hash.as_str()] }))?;
+        let missing = check["result"]
+            .as_array()
+            .ok_or_else(|| format!("pages:{project}: the asset check answered no list"))?;
+        if missing.iter().any(|h| h.as_str() == Some(hash.as_str())) {
+            self.assets(
+                "upload",
+                jwt,
+                json!([{
+                    "key": hash.as_str(),
+                    "value": STANDARD.encode(bytes),
+                    "metadata": { "contentType": "text/html" },
+                    "base64": true
+                }]),
+            )?;
+        }
+        self.assets("upsert-hashes", jwt, json!({ "hashes": [hash.as_str()] }))?;
+        let manifest = json!({ PAGES_FILE: hash.as_str() }).to_string();
+        let (ct, body) = multipart(&[
+            Part::text("manifest", &manifest),
+            Part::text("branch", branch),
+        ]);
+        self.send(
+            "POST",
+            &format!("/pages/projects/{project}/deployments"),
+            Some(Body::Bytes(ct, body)),
+        )
+    }
+
+    /// One call to the Pages asset store. It takes the project's upload token, not the account's token.
+    fn assets(&self, action: &str, jwt: &str, body: Value) -> Result<Value, String> {
+        let url = format!("{}/pages/assets/{action}", self.base);
+        self.request("POST", &url, jwt, Some(Body::Json(body)))
+    }
+}
+
 /// The ephemeral environments' calls (`ephemeral`): a Pages deployment on a branch of its own (a preview URL), a
 /// Worker script of its own, and their removal.
 impl Client {
@@ -228,17 +292,7 @@ impl Client {
         branch: &str,
         bytes: &[u8],
     ) -> Result<(String, Option<String>), String> {
-        let manifest = json!({ PAGES_FILE: sha256_hex(bytes) }).to_string();
-        let (ct, body) = multipart(&[
-            Part::text("manifest", &manifest),
-            Part::text("branch", branch),
-            Part::file(PAGES_FILE, "text/html", bytes),
-        ]);
-        let v = self.send(
-            "POST",
-            &format!("/pages/projects/{project}/deployments"),
-            Some(Body::Bytes(ct, body)),
-        )?;
+        let v = self.pages_deploy(project, branch, bytes)?;
         let id = v["result"]["id"]
             .as_str()
             .map(str::to_string)
@@ -333,9 +387,11 @@ pub fn multipart(parts: &[Part]) -> (String, Vec<u8>) {
     (format!("multipart/form-data; boundary={BOUNDARY}"), body)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+/// The key a file's content is stored under in Pages' asset store: the first 32 hex characters of blake3 over the
+/// content's base64 followed by its extension without the dot (`html` for `/index.html`), as wrangler computes it.
+pub(super) fn asset_hash(bytes: &[u8], extension: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(STANDARD.encode(bytes).as_bytes());
+    hasher.update(extension.as_bytes());
+    hasher.finalize().to_hex()[..32].to_string()
 }

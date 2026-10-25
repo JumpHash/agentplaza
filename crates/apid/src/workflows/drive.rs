@@ -74,6 +74,9 @@ pub trait Plant: Sync {
     fn deploy(&self, environment: &str, version: Option<&str>) -> Result<String, String>;
     /// The value of a vault secret, for an env value (`${{ secrets.NAME }}`).
     fn secret(&self, name: &str) -> Result<String, String>;
+    /// The entity id of the project's release at `version`: what a release subject names. A version no release has is an
+    /// error.
+    fn release_id(&self, project: &str, version: &str) -> Result<String, String>;
     /// Asks the owner about an `approval` step: a decision comes back through Approvals.
     fn approval(&self, run: &str, step: &str, message: &str) -> Result<(), String>;
     /// The ephemeral environments.
@@ -245,7 +248,8 @@ fn perform(plant: &dyn Plant, runs: &Runs, run: &str, work: &Work) -> Result<Sho
             let (argv, secrets) = argv_for(plant, run, work, env, &text).map_err(|e| fail(&e))?;
             let command = command_of("run", argv, work.step.timeout_s());
             let answer = plant.exec(work, &command).map_err(|e| fail(&e))?;
-            let log = redact(&tail(&answer.output), &secrets);
+            // Masked before the cut, so a secret the cut would split is still masked whole.
+            let log = tail(&redact(&answer.output, &secrets));
             let summary = if answer.ok {
                 log
             } else {
@@ -284,7 +288,12 @@ fn perform(plant: &dyn Plant, runs: &Runs, run: &str, work: &Work) -> Result<Sho
             if *ephemeral {
                 let info = plant.info();
                 let subject = match (info.release, info.change) {
-                    (Some(release), _) => Subject::Release(release),
+                    (Some(version), _) => {
+                        let id = plant
+                            .release_id(&info.project, &version)
+                            .map_err(|e| fail(&e))?;
+                        Subject::Release(id)
+                    }
                     (None, Some(change)) => Subject::Lane(change),
                     (None, None) => {
                         return Err(fail("an ephemeral deploy needs a change or a release"));
@@ -340,22 +349,21 @@ fn perform(plant: &dyn Plant, runs: &Runs, run: &str, work: &Work) -> Result<Sho
             let instance = live_instance(envs, run)
                 .ok_or_else(|| fail("no ephemeral instance is up to test against"))?;
             let text = expand(plant, run, work, line, false).map_err(|e| fail(&e))?;
-            let mut vars = BTreeMap::new();
-            for (name, value) in env {
-                let value = expand(plant, run, work, value, true).map_err(|e| fail(&e))?;
-                vars.insert(name.clone(), value);
-            }
-            // The tests run in the job's fork, with the instance's address in APZ_TARGET_URL.
-            let mut tests = |url: &str| {
+            let (vars, secrets) = resolved_env(plant, run, work, env).map_err(|e| fail(&e))?;
+            // The tests run in the job's fork, with the instance's address in APZ_TARGET_URL. Their output is shown on
+            // the run, so the secrets they were given are masked before the output's tail is taken.
+            let mut tests = |url: &str| -> Result<String, String> {
                 let mut vars = vars.clone();
                 vars.insert(TARGET_ENV.to_string(), url.to_string());
                 let argv = shell_argv(&vars, &text);
-                let answer =
-                    plant.exec(work, &command_of("against", argv, work.step.timeout_s()))?;
+                let answer = plant
+                    .exec(work, &command_of("against", argv, work.step.timeout_s()))
+                    .map_err(|e| redact(&e, &secrets))?;
+                let log = tail(&redact(&answer.output, &secrets));
                 if answer.ok {
-                    Ok(tail(&answer.output))
+                    Ok(log)
                 } else {
-                    Err(format!("{}: {}", exit_of(&answer), tail(&answer.output)))
+                    Err(format!("{}: {log}", exit_of(&answer)))
                 }
             };
             let verdict = envs.against(&instance, &mut tests);
@@ -543,6 +551,17 @@ fn argv_for(
     env: &BTreeMap<String, String>,
     line: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
+    let (vars, secrets) = resolved_env(plant, run, work, env)?;
+    Ok((shell_argv(&vars, line), secrets))
+}
+
+/// A step's env with its values expanded, and the secret values the expansion resolved (which a log never shows).
+fn resolved_env(
+    plant: &dyn Plant,
+    run: &str,
+    work: &Work,
+    env: &BTreeMap<String, String>,
+) -> Result<(BTreeMap<String, String>, Vec<String>), String> {
     let mut vars = BTreeMap::new();
     let mut secrets = Vec::new();
     for (name, raw) in env {
@@ -552,7 +571,7 @@ fn argv_for(
         }
         vars.insert(name.clone(), value);
     }
-    Ok((shell_argv(&vars, line), secrets))
+    Ok((vars, secrets))
 }
 
 /// The text with each secret value replaced: a log never shows what the vault holds.

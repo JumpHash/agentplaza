@@ -158,11 +158,20 @@ const ephemeralEnv = (variables: Record<string, string>): Environment => ({
 eq(isEphemeral(ephemeralEnv({ EPHEMERAL: 'true' })), true, 'an environment whose EPHEMERAL variable is true is ephemeral');
 eq(isEphemeral(ephemeralEnv({ EPHEMERAL: ' TRUE ' })), true, 'the value is read whatever its case, and trimmed');
 eq([isEphemeral(ephemeralEnv({ EPHEMERAL: 'false' })), isEphemeral(ephemeralEnv({}))], [false, false], 'any other value, or none, is not');
-const laneInstance = { id: 'eph-1', project: 'shop', environment: 'pr', subject: { lane: 'ch-1' }, target: { platform: 'kubernetes' }, url: null, state: 'creating', created_ms: 0, expires_ms: 0 } as EphemeralInstance;
+const laneInstance = { id: 'eph-1', project: 'shop', environment: 'pr', subject: { lane: 'ch-1' }, target: { platform: 'kubernetes' }, url: null, state: { state: 'creating' }, created_ms: 0, expires_ms: 0 } as EphemeralInstance;
 eq(instanceSubject(laneInstance), 'Lane ch-1', 'a lane instance says its change');
 eq(instanceSubject({ ...laneInstance, subject: { release: 'rel-7' } }), 'Release rel-7', 'a release instance says its release');
 eq(instanceStateText('torn_down'), 'Torn down', 'a torn-down instance says so');
 eq([instanceTone('ready'), instanceTone('creating'), instanceTone('failed'), instanceTone('torn_down')], ['ok', 'warn', 'danger', 'muted'], 'the states have their tones');
 eq([canTearDown('ready'), canTearDown('creating'), canTearDown('failed'), canTearDown('torn_down')], [true, true, true, false], 'a torn-down instance is not torn down again');
+// The API nests the state (`{"state":"failed","reason":...}` inside the instance): the views read `state.state`.
+const served = (state: string): EphemeralInstance =>
+  JSON.parse(`{"id":"eph-2","project":"shop","environment":"pr","subject":{"lane":"ch-2"},"target":{"platform":"kubernetes"},"url":null,"state":${state},"created_ms":0,"expires_ms":0}`) as EphemeralInstance;
+const readyServed = served('{"state":"ready"}');
+const failedServed = served('{"state":"failed","reason":"image pull back-off"}');
+const tornServed = served('{"state":"torn_down"}');
+eq([instanceStateText(readyServed.state.state), instanceStateText(failedServed.state.state)], ['Ready', 'Failed'], 'a served instance reads its state name');
+eq(failedServed.state.state === 'failed' ? failedServed.state.reason : '', 'image pull back-off', 'a failed instance keeps its reason');
+eq([instanceTone(failedServed.state.state), canTearDown(readyServed.state.state), canTearDown(tornServed.state.state)], ['danger', true, false], 'a served torn-down instance is not torn down again');
 
 console.log(`environments tests: ok (${checks} checks)`);

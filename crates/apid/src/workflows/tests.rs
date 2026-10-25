@@ -12,15 +12,18 @@ use apz_store::rusqlite::Connection;
 use super::drive::{self, Artifact, Plant, RunInfo, artifacts_of};
 use super::envs::{Envs, Hub};
 use super::model::{Known, Work, Workflow};
+use super::{Listed, fire_is_current, schedule_id, sync_rows};
 use crate::base_recipe::{Command, WORKSPACE};
 use crate::base_vm::Answer;
 use crate::ephemeral::against::Verdict;
 use crate::ephemeral::tests::{
     FakeKube, Fakes, MANIFESTS, Site, healthy, kube_env, kube_up_trail, lane,
 };
-use crate::ephemeral::{Instance, State, Store, UpRequest};
+use crate::ephemeral::{Instance, State, Store, Subject, UpRequest};
 use crate::recipes::graph::Report;
 use crate::recipes::runs::{RunState, Runs};
+use crate::releases::entity::{Release, ReleaseState, ReleaseSync};
+use crate::triggers::Triggers;
 
 /// The digest of the build the fake plant makes for `manifests@linux-x86_64`.
 const BUILT_DIGEST: &str =
@@ -197,6 +200,15 @@ impl Plant for FakePlant {
         } else {
             Err(format!("secret {name}: not in the vault"))
         }
+    }
+
+    fn release_id(&self, project: &str, version: &str) -> Result<String, String> {
+        self.ports
+            .release
+            .iter()
+            .find(|r| r.project == project && r.version == version)
+            .map(|r| r.id.clone())
+            .ok_or_else(|| format!("no release {version} in {project}"))
     }
 
     fn approval(&self, _run: &str, step: &str, _message: &str) -> Result<(), String> {
@@ -496,10 +508,11 @@ fn a_failing_against_fails_the_run_and_still_takes_the_instance_down() {
     let held = plant.store.for_run(&run);
     assert_eq!(held[0].state, State::TornDown);
     assert!(
-        cluster
-            .trail()
-            .last()
-            .is_some_and(|t| t == &format!("DELETE /api/v1/namespaces/{}", "apz-web-lane-c8")),
+        cluster.trail().last().is_some_and(|t| t
+            == &format!(
+                "DELETE /api/v1/namespaces/{}",
+                namespace_of("c8", &held[0].id)
+            )),
         "{:?}",
         cluster.trail()
     );
@@ -537,8 +550,9 @@ fn a_land_builds_deploys_to_kubernetes_checks_the_instance_and_tears_it_down_in_
     );
 
     // The namespace is created, applied and rolled out; the check runs against the instance; the namespace is deleted.
-    let ns = "apz-web-lane-c20";
-    let mut expected = kube_up_trail(ns);
+    let held = plant.store.for_run(&run);
+    let ns = namespace_of("c20", &held[0].id);
+    let mut expected = kube_up_trail(&ns);
     expected.push(format!("against APZ_TARGET_URL={}", site.base));
     expected.push(format!("DELETE /api/v1/namespaces/{ns}"));
     let got = events.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -847,4 +861,251 @@ fn the_run_info_round_trips_through_its_subject() {
     let info = RunInfo::of("web", Some("release:2.0.1"));
     assert_eq!(info.release.as_deref(), Some("2.0.1"));
     assert!(RunInfo::of("web", None).subject().is_none());
+}
+
+/// The release of 1.2.3 in `shop`, whose entity id is `rel-7` (the ephemeral tests' release fixture, for the runs here).
+fn shop_release() -> Release {
+    Release {
+        id: "rel-7".into(),
+        project: "shop".into(),
+        repo: "shop".into(),
+        version: "1.2.3".into(),
+        channel: "stable".into(),
+        base: None,
+        lane: "main".into(),
+        from: "abc".into(),
+        state: ReleaseState::Published,
+        number: None,
+        notes: String::new(),
+        run: None,
+        changes: Vec::new(),
+        artifacts: Vec::new(),
+        not_run: Vec::new(),
+        verdicts: Vec::new(),
+        promotions: Vec::new(),
+        sync: vec![ReleaseSync {
+            platform: "oci-registry/image:.@any".into(),
+            state: "published".into(),
+            url: Some(format!(
+                "https://registry.test/shop/api:1.2.3@{BUILT_DIGEST}"
+            )),
+            at_ms: 1,
+        }],
+        store_steps: Vec::new(),
+        compatibility: Vec::new(),
+        created_ms: 0,
+        updated_ms: 0,
+    }
+}
+
+const RELEASE_PREVIEW: &str = r#"
+name = "release"
+triggers = ["release.candidate"]
+[[jobs]]
+id = "preview"
+[[jobs.steps]]
+kind = "deploy"
+environment = "pr"
+ephemeral = true
+ttl_minutes = 30
+"#;
+
+#[test]
+fn a_release_run_brings_up_the_release_its_version_names() {
+    let cluster = FakeKube::start(healthy);
+    let site = Site::start();
+    let mut plant = FakePlant::with_kube("c71", &cluster, &site);
+    plant.info = RunInfo {
+        project: "shop".into(),
+        change: None,
+        release: Some("1.2.3".into()),
+    };
+    plant.ports.release = Some(shop_release());
+    plant.ports.artifact = MANIFESTS.as_bytes().to_vec();
+    let (runs, run) = run_to_end(RELEASE_PREVIEW, &plant, "c71");
+    assert_eq!(
+        runs.view(&run).unwrap().run.state,
+        RunState::Passed,
+        "{:?}",
+        runs.view(&run).unwrap().run.checks
+    );
+    // The instance is the release's own: its subject names the release's entity id, not its version.
+    let held = plant.store.for_run(&run);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].subject, Subject::Release("rel-7".into()));
+}
+
+#[test]
+fn a_release_run_names_the_version_no_release_has_and_fails_the_deploy() {
+    let mut plant = FakePlant::for_change("c72");
+    plant.info = RunInfo {
+        project: "shop".into(),
+        change: None,
+        release: Some("9.9.9".into()),
+    };
+    plant.ports.release = Some(shop_release());
+    let (runs, run) = run_to_end(RELEASE_PREVIEW, &plant, "c72");
+    let view = runs.view(&run).unwrap();
+    assert_eq!(view.run.state, RunState::Failed);
+    let deploy = view.run.checks.iter().find(|c| c.step == "preview:1");
+    assert!(
+        deploy.is_some_and(|c| !c.passed && c.summary.contains("no release 9.9.9 in shop")),
+        "{:?}",
+        view.run.checks
+    );
+    assert!(plant.store.for_run(&run).is_empty());
+}
+
+const AGAINST_WITH_SECRET: &str = r#"
+name = "ship"
+triggers = ["land"]
+[[jobs]]
+id = "build"
+[[jobs.steps]]
+kind = "build"
+[[jobs]]
+id = "preview"
+needs = ["build"]
+[[jobs.steps]]
+kind = "deploy"
+environment = "pr"
+ephemeral = true
+ttl_minutes = 30
+[[jobs.steps]]
+kind = "against"
+run = "curl -fsS ${{ env.url }}/health"
+env = { NPM_TOKEN = "${{ secrets.NPM_TOKEN }}" }
+[[jobs.steps]]
+kind = "teardown"
+"#;
+
+#[test]
+fn an_against_step_shows_the_secrets_it_was_given_masked() {
+    let cluster = FakeKube::start(healthy);
+    let site = Site::start();
+    let plant = FakePlant::with_kube("c73", &cluster, &site);
+    let (runs, run) = run_to_end(AGAINST_WITH_SECRET, &plant, "c73");
+    assert_eq!(
+        runs.view(&run).unwrap().run.state,
+        RunState::Passed,
+        "{:?}",
+        runs.view(&run).unwrap().run.checks
+    );
+    // The tests ran with the secret in their environment, and the check that records their output shows it masked.
+    assert!(
+        plant
+            .ran()
+            .iter()
+            .any(|argv| argv.contains(&"NPM_TOKEN=s3cret-value".to_string()))
+    );
+    let record = format!("{:?}", runs.view(&run).unwrap().run.checks);
+    assert!(!record.contains("s3cret-value"), "{record}");
+    assert!(record.contains("NPM_TOKEN=[secret]"), "{record}");
+}
+
+#[test]
+fn a_failing_against_step_masks_the_secrets_in_its_output_too() {
+    let cluster = FakeKube::start(healthy);
+    let site = Site::start();
+    let mut plant = FakePlant::with_kube("c74", &cluster, &site);
+    plant.fail_on = Some("curl");
+    let (runs, run) = run_to_end(AGAINST_WITH_SECRET, &plant, "c74");
+    assert_eq!(runs.view(&run).unwrap().run.state, RunState::Failed);
+    let record = format!("{:?}", runs.view(&run).unwrap().run.checks);
+    assert!(!record.contains("s3cret-value"), "{record}");
+    assert!(record.contains("NPM_TOKEN=[secret]"), "{record}");
+}
+
+/// The clock of the schedule tests.
+const NOW: u64 = 1_800_000_000_000;
+
+/// A workflow `name` as main has it: its triggers (the list's text) and its cron line (empty when it has none).
+fn listed(name: &str, triggers: &str, cron: &str) -> Listed {
+    let text = format!(
+        "name = \"{name}\"\ntriggers = [{triggers}]\n{cron}\n[[jobs]]\nid = \"build\"\n[[jobs.steps]]\nkind = \"build\"\n"
+    );
+    Listed {
+        file: format!("{name}.toml"),
+        workflow: Workflow::parse(name, &text).expect("the workflow parses"),
+    }
+}
+
+#[test]
+fn a_workflow_switched_to_manual_only_loses_its_schedule_row_on_sync() {
+    let triggers = Triggers::default();
+    let runs = Runs::default();
+    let scheduled = listed("nightly", "\"schedule\"", "cron = \"0 3 * * *\"");
+    sync_rows(&triggers, &runs, "web", &[scheduled], NOW);
+    let id = schedule_id("web", "nightly");
+    assert_eq!(
+        triggers.get(&id).map(|row| row.cron),
+        Some("0 3 * * *".to_string())
+    );
+
+    // The file lists only the owner's hand now: the next sync takes its schedule row away.
+    let manual = listed("nightly", "\"manual\"", "");
+    sync_rows(&triggers, &runs, "web", &[manual], NOW + 60_000);
+    assert!(
+        triggers.get(&id).is_none(),
+        "a manual-only workflow has no schedule row"
+    );
+}
+
+#[test]
+fn a_deleted_workflow_that_ran_loses_its_schedule_row_on_sync() {
+    let triggers = Triggers::default();
+    let runs = Runs::default();
+    let scheduled = listed("nightly", "\"schedule\"", "cron = \"0 3 * * *\"");
+    let recipe = scheduled.workflow.compile().expect("the workflow compiles");
+    sync_rows(&triggers, &runs, "web", &[scheduled], NOW);
+    // It ran for the project on its schedule, and then its file was deleted from main.
+    runs.start(
+        &recipe,
+        "workflow",
+        "schedule",
+        None,
+        Some("web"),
+        None,
+        NOW,
+    );
+    sync_rows(&triggers, &runs, "web", &[], NOW + 60_000);
+    assert!(triggers.get(&schedule_id("web", "nightly")).is_none());
+}
+
+#[test]
+fn a_stale_schedule_row_that_fires_starts_nothing_and_is_dropped() {
+    let triggers = Triggers::default();
+    let runs = Runs::default();
+    let id = schedule_id("web", "nightly");
+    let scheduled = listed("nightly", "\"schedule\"", "cron = \"0 3 * * *\"");
+    sync_rows(
+        &triggers,
+        &runs,
+        "web",
+        std::slice::from_ref(&scheduled),
+        NOW,
+    );
+    // While main still declares the schedule, its fire is current.
+    assert!(fire_is_current(&triggers, &id, "nightly", &[scheduled]));
+    assert!(triggers.get(&id).is_some());
+    // Switched to manual-only on main: the row still fires, so it starts nothing and is dropped.
+    let manual = listed("nightly", "\"manual\"", "");
+    assert!(!fire_is_current(&triggers, &id, "nightly", &[manual]));
+    assert!(triggers.get(&id).is_none());
+    // Deleted from main: the same.
+    let scheduled = listed("nightly", "\"schedule\"", "cron = \"0 3 * * *\"");
+    sync_rows(&triggers, &runs, "web", &[scheduled], NOW);
+    assert!(!fire_is_current(&triggers, &id, "nightly", &[]));
+    assert!(triggers.get(&id).is_none());
+}
+
+/// The default namespace of the `web` project's `pr` lane instance for change `change` (ephemeral::platform's
+/// `apz-{project}-{environment}-{subject}-{instance}`, the instance being the 8 characters after `eph-`).
+fn namespace_of(change: &str, instance: &str) -> String {
+    let short: String = instance
+        .trim_start_matches("eph-")
+        .chars()
+        .take(8)
+        .collect();
+    format!("apz-web-pr-lane-{change}-{short}")
 }

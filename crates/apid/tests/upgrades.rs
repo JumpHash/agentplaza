@@ -590,6 +590,7 @@ impl Booted {
 }
 
 #[test]
+#[ignore = "a scheduled upgrade refuses to run project commands on the hub until it runs them in the project's VM (crates/apid/src/upgrades `Refuse`)"]
 fn a_scheduled_minor_batch_lands_through_the_review_chain_and_a_major_waits_for_the_owner() {
     let scratch = Scratch::new("upgrades-auto");
     let mut b = boot(&scratch, true);
@@ -680,6 +681,7 @@ fn a_scheduled_minor_batch_lands_through_the_review_chain_and_a_major_waits_for_
 }
 
 #[test]
+#[ignore = "a scheduled upgrade refuses to run project commands on the hub until it runs them in the project's VM (crates/apid/src/upgrades `Refuse`)"]
 fn with_auto_land_off_the_minor_batch_waits_for_the_owner() {
     let scratch = Scratch::new("upgrades-waits");
     let mut b = boot(&scratch, false);

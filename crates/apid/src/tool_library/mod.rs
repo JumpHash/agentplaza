@@ -572,7 +572,17 @@ pub fn visible(app: Option<&App>, seat: &str, entry: &Entry) -> Result<(), Strin
                 ))
             }
         }
-        Exec::Route { .. } | Exec::Text(_) => Ok(()),
+        Exec::Route { .. } => {
+            if laws::global().permits(seat, &entry.path) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "the laws do not let the {seat} seat use {}",
+                    entry.path
+                ))
+            }
+        }
+        Exec::Text(_) => Ok(()),
     }
 }
 
@@ -797,6 +807,7 @@ fn call(app: &App, agent: &Agent, work: u64, input: &Value) -> Result<String, St
                 .unwrap_or_else(|| format!("{connector}_{action}")),
             true,
         ),
+        Exec::Route { .. } => (path.to_string(), true),
         _ => (path.to_string(), false),
     };
     if held && let Some(why) = app.laws.refusal(cid, role, &tool, &args) {

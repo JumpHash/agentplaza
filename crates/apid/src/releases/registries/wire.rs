@@ -98,11 +98,13 @@ pub fn cargo(a: &Artifact) -> Result<Plan, String> {
         "package.version",
     )?;
     check_version(a, vers)?;
+    let deps = cargo_deps(&doc)?;
+    let features = cargo_features(&doc)?;
     let meta = json!({
         "name": name,
         "vers": vers,
-        "deps": [],
-        "features": {},
+        "deps": deps,
+        "features": features,
         "authors": [],
         "description": pkg.get("description").and_then(|d| d.as_str()),
         "license": pkg.get("license").and_then(|d| d.as_str()),
@@ -128,6 +130,126 @@ pub fn cargo(a: &Artifact) -> Result<Plan, String> {
     })
 }
 
+/// The dependencies of a crate's manifest as crates.io's publish takes them: the `[dependencies]`, `[dev-dependencies]`
+/// and `[build-dependencies]` tables, then the same tables under each `[target.<cfg>]`.
+fn cargo_deps(doc: &toml::Table) -> Result<Vec<Value>, String> {
+    let mut deps = Vec::new();
+    cargo_dep_tables(doc, None, &mut deps)?;
+    if let Some(targets) = doc.get("target") {
+        let targets = targets
+            .as_table()
+            .ok_or("the crate's [target] is not a table")?;
+        for (cfg, spec) in targets {
+            let spec = spec
+                .as_table()
+                .ok_or_else(|| format!("[target.{cfg}] is not a table"))?;
+            cargo_dep_tables(spec, Some(cfg.as_str()), &mut deps)?;
+        }
+    }
+    Ok(deps)
+}
+
+/// The entries of one manifest table's three dependency tables, each with its kind and the target it is under.
+fn cargo_dep_tables(
+    table: &toml::Table,
+    target: Option<&str>,
+    deps: &mut Vec<Value>,
+) -> Result<(), String> {
+    for (key, kind) in [
+        ("dependencies", "normal"),
+        ("dev-dependencies", "dev"),
+        ("build-dependencies", "build"),
+    ] {
+        let Some(entries) = table.get(key) else {
+            continue;
+        };
+        let entries = entries
+            .as_table()
+            .ok_or_else(|| format!("[{key}] is not a table"))?;
+        for (alias, spec) in entries {
+            deps.push(cargo_dep(alias, spec, target, kind)?);
+        }
+    }
+    Ok(())
+}
+
+/// One dependency as crates.io's publish takes it. `name = "1"` is the short form of `name = { version = "1" }`; a
+/// `package = "..."` renames the dependency, the key being the name the crate uses it by. A dependency on another
+/// registry is refused, since crates.io takes only its own.
+fn cargo_dep(
+    alias: &str,
+    spec: &toml::Value,
+    target: Option<&str>,
+    kind: &str,
+) -> Result<Value, String> {
+    let (version, table) = match spec {
+        toml::Value::String(req) => (Some(req.as_str()), None),
+        toml::Value::Table(table) => (
+            table.get("version").and_then(toml::Value::as_str),
+            Some(table),
+        ),
+        _ => {
+            return Err(format!(
+                "the dependency {alias} is neither a version nor a table"
+            ));
+        }
+    };
+    let field = |key: &str| table.and_then(|t| t.get(key));
+    if field("registry").is_some() {
+        return Err(format!(
+            "the dependency {alias} is on another registry, which crates.io does not take"
+        ));
+    }
+    let package = field("package").and_then(toml::Value::as_str);
+    let features = toml_strings(field("features"), &format!("the features of {alias}"))?;
+    Ok(json!({
+        "name": package.unwrap_or(alias),
+        "version_req": version.unwrap_or("*"),
+        "features": features,
+        "optional": field("optional").and_then(toml::Value::as_bool).unwrap_or(false),
+        "default_features": field("default-features")
+            .or_else(|| field("default_features"))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(true),
+        "target": target,
+        "kind": kind,
+        "registry": null,
+        "explicit_name_in_toml": package.map(|_| alias),
+    }))
+}
+
+/// The crate's `[features]` table: each feature with the features and dependencies it enables.
+fn cargo_features(doc: &toml::Table) -> Result<Map<String, Value>, String> {
+    let Some(features) = doc.get("features") else {
+        return Ok(Map::new());
+    };
+    features
+        .as_table()
+        .ok_or("the crate's [features] is not a table")?
+        .iter()
+        .map(|(feature, enables)| -> Result<(String, Value), String> {
+            let enables = toml_strings(Some(enables), &format!("the feature {feature}"))?;
+            Ok((feature.clone(), json!(enables)))
+        })
+        .collect()
+}
+
+/// The strings of a TOML list, none when there is no list. `what` names the list in the error.
+fn toml_strings(list: Option<&toml::Value>, what: &str) -> Result<Vec<String>, String> {
+    let Some(list) = list else {
+        return Ok(Vec::new());
+    };
+    list.as_array()
+        .ok_or_else(|| format!("{what} is not a list"))?
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{what} holds a value that is not a string"))
+        })
+        .collect()
+}
+
 /// npm's publish: `PUT /{name}` with the packument that names the version, its tarball attached as base64 (the way the
 /// npm CLI publishes). The scope's slash is `%2F` in the path.
 pub fn npm(a: &Artifact) -> Result<Plan, String> {
@@ -147,11 +269,20 @@ pub fn npm(a: &Artifact) -> Result<Plan, String> {
         "sha512-{}",
         base64::engine::general_purpose::STANDARD.encode(Sha512::digest(a.bytes))
     );
-    let mut versions = Map::new();
-    versions.insert(
-        version.to_string(),
-        json!({ "name": name, "version": version, "dist": { "tarball": tarball, "integrity": integrity } }),
+    // The version is the package.json as it is (its dependencies, peer dependencies, bin and the rest that installing
+    // reads), with the name, version and dist the registry sets for it.
+    let mut version_doc = pkg.clone();
+    let fields = version_doc
+        .as_object_mut()
+        .ok_or("package.json is not an object")?;
+    fields.insert("name".to_string(), json!(name));
+    fields.insert("version".to_string(), json!(version));
+    fields.insert(
+        "dist".to_string(),
+        json!({ "tarball": tarball, "integrity": integrity }),
     );
+    let mut versions = Map::new();
+    versions.insert(version.to_string(), version_doc);
     let mut attachments = Map::new();
     attachments.insert(
         file,
@@ -742,6 +873,61 @@ mod tests {
     }
 
     #[test]
+    fn a_crate_publishes_its_dependencies_and_features_as_its_manifest_declares_them() {
+        let krate = tgz(
+            "app-0.1.0/Cargo.toml",
+            r#"[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+json = { package = "serde_json", version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[features]
+extra = ["serde/derive"]
+"#,
+        );
+        let plan = cargo(&artifact("cargo:app", "0.1.0", &krate)).unwrap();
+        let req = &plan.requests[0];
+        let meta_len = u32::from_le_bytes(req.body[..4].try_into().unwrap()) as usize;
+        let meta: Value = serde_json::from_slice(&req.body[4..4 + meta_len]).unwrap();
+        let deps = meta["deps"].as_array().unwrap();
+        assert_eq!(deps.len(), 4, "{deps:?}");
+        for dep in [
+            json!({
+                "name": "serde", "version_req": "1", "features": [], "optional": false,
+                "default_features": true, "target": null, "kind": "normal",
+                "registry": null, "explicit_name_in_toml": null
+            }),
+            json!({
+                "name": "serde_json", "version_req": "1", "features": ["std"], "optional": false,
+                "default_features": false, "target": null, "kind": "normal",
+                "registry": null, "explicit_name_in_toml": "json"
+            }),
+            json!({
+                "name": "tempfile", "version_req": "3", "features": [], "optional": false,
+                "default_features": true, "target": null, "kind": "dev",
+                "registry": null, "explicit_name_in_toml": null
+            }),
+            json!({
+                "name": "libc", "version_req": "0.2", "features": [], "optional": false,
+                "default_features": true, "target": "cfg(unix)", "kind": "normal",
+                "registry": null, "explicit_name_in_toml": null
+            }),
+        ] {
+            assert!(deps.contains(&dep), "{dep} is not among {deps:?}");
+        }
+        assert_eq!(meta["features"], json!({ "extra": ["serde/derive"] }));
+    }
+
+    #[test]
     fn a_package_of_another_version_than_the_release_is_refused_before_anything_is_sent() {
         let krate = tgz(
             "app-0.2.0/Cargo.toml",
@@ -777,6 +963,27 @@ mod tests {
             )
             .unwrap();
         assert_eq!(data, tarball);
+    }
+
+    #[test]
+    fn an_npm_version_keeps_the_package_json_fields_installing_reads() {
+        let tarball = tgz(
+            "package/package.json",
+            r#"{"name":"@acme/cli","version":"0.1.0","description":"the cli","bin":{"acme":"bin/acme.js"},"dependencies":{"left-pad":"^1.3.0"},"peerDependencies":{"react":">=18"}}"#,
+        );
+        let plan = npm(&artifact("npm:@acme/cli", "0.1.0", &tarball)).unwrap();
+        let doc: Value = serde_json::from_slice(&plan.requests[0].body).unwrap();
+        let version = &doc["versions"]["0.1.0"];
+        assert_eq!(version["name"], "@acme/cli");
+        assert_eq!(version["version"], "0.1.0");
+        assert_eq!(version["description"], "the cli");
+        assert_eq!(version["bin"], json!({ "acme": "bin/acme.js" }));
+        assert_eq!(version["dependencies"], json!({ "left-pad": "^1.3.0" }));
+        assert_eq!(version["peerDependencies"], json!({ "react": ">=18" }));
+        assert_eq!(
+            version["dist"]["tarball"],
+            "https://registry.npmjs.org/@acme/cli/-/acme-cli-0.1.0.tgz"
+        );
     }
 
     #[test]

@@ -851,18 +851,31 @@ fn control_path(spec: &VmSpec) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
+/// Whether `path` is absolute in any host's spelling: a Linux or macOS `/` path, a Windows drive
+/// path (`C:\` or `C:/`), a UNC path (`\\server\share` or `//server/share`) or a verbatim `\\?\`
+/// path. A drive-relative `C:x` is not absolute. Std's [`Path::is_absolute`] answers for the host
+/// alone, so this reads the path's string form and gives the same answer on any host that builds
+/// this.
+fn is_absolute_anywhere(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    let drive = matches!(
+        text.as_bytes(),
+        [letter, b':', b'\\' | b'/', ..] if letter.is_ascii_alphabetic()
+    );
+    text.starts_with('/') || text.starts_with(r"\\") || drive
+}
+
 /// The directory a process-mode VM's snapshots are written under: the daemon's snapshot root
 /// ([`super::set_snapshot_root`]) when it named one, else the VM's socket directory, which the jail
 /// binds read-write already. A relative path has no absolute directory to bind, so such a VM takes
-/// no snapshots.
+/// no snapshots. "Absolute" is read in every host's spelling ([`is_absolute_anywhere`]), so a
+/// Windows drive or UNC root is accepted as it is written.
 fn snapshot_root(spec: &VmSpec) -> Option<PathBuf> {
-    // A Linux or macOS host's path: its leading `/` is absolute on any host that builds this.
-    let absolute = |path: &Path| path.to_string_lossy().starts_with('/');
-    if let Some(root) = super::snapshot_root().filter(|root| absolute(root)) {
+    if let Some(root) = super::snapshot_root().filter(|root| is_absolute_anywhere(root)) {
         return Some(root);
     }
     let dir = spec.vsock.as_ref()?.uds_path.parent()?;
-    absolute(dir).then(|| dir.to_path_buf())
+    is_absolute_anywhere(dir).then(|| dir.to_path_buf())
 }
 
 /// The word a snapshot request and reply name a [`SnapshotKind`] by.
@@ -1462,6 +1475,25 @@ mod tests {
     use crate::spawner::{DataVolume, GicVersion, VsockConfig};
     use std::io::BufRead;
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn an_absolute_path_is_recognised_in_every_hosts_spelling() {
+        for path in [
+            "/tmp/x",
+            r"C:\AgentPlaza\snapshots",
+            "D:/x",
+            r"\\server\share\x",
+            r"\\?\C:\x",
+        ] {
+            assert!(is_absolute_anywhere(Path::new(path)), "{path} is absolute");
+        }
+        for path in [r"relative\x", "x/y", "C:x"] {
+            assert!(
+                !is_absolute_anywhere(Path::new(path)),
+                "{path} is not absolute"
+            );
+        }
+    }
 
     /// A socket path for one test, with nothing left at it.
     fn test_socket(name: &str) -> PathBuf {

@@ -11,9 +11,21 @@ use sha2::{Digest, Sha256};
 use super::cargo::index_path;
 use super::*;
 
-/// The environment that keeps cargo on the local registry.
+/// The environment that keeps cargo on the local registry. The toolchain's homes are named as well: a run's HOME is its own
+/// (see `Local`), and rustup and cargo would otherwise look for the toolchain and the registry cache under it.
 fn offline() -> Vec<(String, String)> {
-    vec![("CARGO_NET_OFFLINE".into(), "true".into())]
+    let home = std::env::var("HOME").unwrap_or_default();
+    vec![
+        ("CARGO_NET_OFFLINE".into(), "true".into()),
+        (
+            "RUSTUP_HOME".into(),
+            std::env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{home}/.rustup")),
+        ),
+        (
+            "CARGO_HOME".into(),
+            std::env::var("CARGO_HOME").unwrap_or_else(|_| format!("{home}/.cargo")),
+        ),
+    ]
 }
 
 /// A fetch that reaches nothing: a changelog is not reachable, and the record says so.
@@ -170,7 +182,7 @@ impl Drop for Scratch {
 
 fn ports<'a>(
     lanes: &'a FakeLanes,
-    exec: &'a Local,
+    exec: &'a dyn Exec,
     fetch: &'a NoNet,
     auto_land: bool,
 ) -> Ports<'a> {
@@ -506,6 +518,94 @@ fn a_changed_tree_names_what_a_batch_wrote_and_skips_the_build_output() {
             ("Cargo.lock".to_string(), Some(b"new".to_vec())),
             ("gone.txt".to_string(), None),
         ]
+    );
+}
+
+#[test]
+fn installed_dependencies_are_not_source_changes_but_a_tracked_file_under_them_is() {
+    let scratch = Scratch::new("installed");
+    let mut tree = Tree::new();
+    tree.insert("Cargo.lock".into(), b"old".to_vec());
+    tree.insert("node_modules/tracked/index.js".into(), b"tracked".to_vec());
+    materialize(&tree, &scratch.0).unwrap();
+    std::fs::write(scratch.0.join("Cargo.lock"), b"new").unwrap();
+    // What `npm update` writes: a package it installs, one under a workspace, and a tracked file it rewrites.
+    std::fs::create_dir_all(scratch.0.join("node_modules/x")).unwrap();
+    std::fs::write(
+        scratch.0.join("node_modules/x/index.js"),
+        b"module.exports = 1;",
+    )
+    .unwrap();
+    std::fs::create_dir_all(scratch.0.join("packages/a/node_modules/y")).unwrap();
+    std::fs::write(scratch.0.join("packages/a/node_modules/y/index.js"), b"y").unwrap();
+    std::fs::write(
+        scratch.0.join("node_modules/tracked/index.js"),
+        b"rewritten",
+    )
+    .unwrap();
+    let changed = changed_files(&scratch.0, &tree).unwrap();
+    assert_eq!(
+        changed,
+        vec![
+            ("Cargo.lock".to_string(), Some(b"new".to_vec())),
+            (
+                "node_modules/tracked/index.js".to_string(),
+                Some(b"rewritten".to_vec())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_local_run_sees_only_the_allow_listed_environment() {
+    let scratch = Scratch::new("env");
+    let out = Local
+        .run(
+            &scratch.0,
+            "env",
+            &[],
+            &[("KEPT".to_string(), "yes".to_string())],
+        )
+        .unwrap();
+    assert!(out.ok, "{}", out.stderr);
+    assert!(
+        out.stdout.lines().any(|line| line == "KEPT=yes"),
+        "{}",
+        out.stdout
+    );
+    for line in out.stdout.lines() {
+        let name = line.split('=').next().unwrap_or_default();
+        assert!(
+            ["PATH", "LANG", "HOME", "KEPT"].contains(&name),
+            "{line} is not allow-listed"
+        );
+    }
+}
+
+#[test]
+fn the_scheduled_run_refuses_the_project_commands_on_the_hub() {
+    let scratch = Scratch::new("refused");
+    let lanes = FakeLanes {
+        tree: scenario(&scratch),
+        ..FakeLanes::default()
+    };
+    let report = process(
+        &ports(&lanes, &Refuse, &NoNet, true),
+        "p1",
+        Ecosystem::Cargo,
+        &Request::Schedule,
+    );
+    assert!(report.plan.is_ok(), "{report:?}");
+    let minor = report
+        .batches
+        .iter()
+        .find(|b| b.kind == "minor")
+        .expect("a minor batch");
+    assert_eq!(minor.state, "apply_failed", "{minor:?}");
+    assert!(minor.reason.contains("isolated runner"), "{}", minor.reason);
+    assert!(
+        lanes.tasks.lock().unwrap().is_empty(),
+        "a refused batch makes no task"
     );
 }
 

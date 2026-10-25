@@ -344,14 +344,14 @@ export function environmentsTab(p: Project): HTMLElement {
     h(
       'div.env-inst',
       null,
-      h('div.env-inst-head', null, h('strong', null, `${i.environment} · ${instanceSubject(i)}`), badge(instanceStateText(i.state), instanceTone(i.state))),
-      i.reason ? h('p.pj-faint', null, i.reason) : null,
+      h('div.env-inst-head', null, h('strong', null, `${i.environment} · ${instanceSubject(i)}`), badge(instanceStateText(i.state.state), instanceTone(i.state.state))),
+      i.state.state === 'failed' ? h('p.pj-faint', null, i.state.reason) : null,
       i.url && webUrl(i.url) ? h('div.env-url', null, h('a', { href: i.url, target: '_blank', rel: 'noopener' }, h('span', null, i.url), lu('external-link', 12))) : null,
       h(
         'div.env-inst-foot',
         null,
         h('span.pj-faint', null, `Until ${new Date(i.expires_ms).toLocaleTimeString()}`),
-        writable && canTearDown(i.state) ? lbtn('Tear down', () => void tearDown(i), { size: 'sm', kind: 'ghost', icon: 'trash' }) : null,
+        writable && canTearDown(i.state.state) ? lbtn('Tear down', () => void tearDown(i), { size: 'sm', kind: 'ghost', icon: 'trash' }) : null,
       ),
     );
 

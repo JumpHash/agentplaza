@@ -5,7 +5,8 @@
 //   principal.role     the agent's role ("builder", "reviewer", "qa", ...)
 //   principal.tier     "orchestrator" | "worker" (settings::tier_of)
 //   resource.name      the tool's name, e.g. "plaza_post_task"
-//   resource.kind      "connector" | "mcp" | "library" | "host" | "guest" (laws.rs tool_kind)
+//   resource.kind      "connector" | "mcp" | "library" | "route" | "host" | "guest" (laws.rs tool_kind)
+//   resource.access    a route's declared access, "any" | "operator" (tool_library CAPABILITIES); "" otherwise
 
 law "T-001" "Every agent may use its own workspace tools" {
   tier statute
@@ -41,6 +42,30 @@ law "T-002b" "Every agent may browse the tool library" {
   principal is Agent
   resource is Tool
   when resource.name in ["tools_list", "tools_describe", "tools_search", "tools_call", "environments.ephemeral.list", "environments.ephemeral.get", "workflows.list", "workflows.describe", "workflows.runs", "workflows.changes.runs"]
+}
+
+law "T-002c" "The orchestrator runs the operator routes it is given" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "The orchestrator may roll an environment back, start, tear down and test in an ephemeral environment, and run a workflow."
+  rationale "These calls change what runs in a project's environments and what it spends, so they are the orchestrator's to make. A budget change or a pause (projects.budget.set, projects.pause) is not granted here: an owner law must permit it."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when (resource.name in ["deploy.rollback", "environments.ephemeral.up", "environments.ephemeral.down", "environments.ephemeral.against", "workflows.run"]) and principal.tier == "orchestrator"
+}
+
+law "T-002d" "Every agent may call the routes the library opens to every seat" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "Any agent may call a hub route the tool library offers to every seat: reading a project, its environments, releases, incidents and runs, or a change the route's own checks decide, such as drafting a workflow import for the owner to land. An owner law can still forbid one."
+  rationale "These routes were open to every seat before the laws read route calls; the laws decide them now, so this law keeps them open by default and an owner can close one. Routes for the orchestrator alone are granted one by one (T-002c)."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.kind == "route" and resource.access == "any"
 }
 
 law "T-003" "Only the orchestrator plans and delegates" {

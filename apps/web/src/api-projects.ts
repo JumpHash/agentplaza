@@ -127,7 +127,14 @@ export interface Attachment { id: string; name: string; size: number; type: stri
 const enc = encodeURIComponent;
 
 /** An ephemeral instance (`ephemeral`): a lane or a release in its own short-lived copy of an environment. */
-export type InstanceState = 'creating' | 'ready' | 'failed' | 'torn_down';
+export type InstanceStateName = 'creating' | 'ready' | 'failed' | 'torn_down';
+/**
+ * An instance's state as the API nests it: the Rust `State` is tagged `state` with its failure reason beside the tag,
+ * and the instance holds it in its own `state` field. So `{ state: 'ready' }`, or `{ state: 'failed', reason }`.
+ */
+export type InstanceState =
+  | { state: Exclude<InstanceStateName, 'failed'> }
+  | { state: 'failed'; reason: string };
 export interface EphemeralInstance {
   id: string;
   project: string;
@@ -138,8 +145,6 @@ export interface EphemeralInstance {
   target: { platform: string; [name: string]: unknown };
   url: string | null;
   state: InstanceState;
-  /** Why it failed, when it did. */
-  reason?: string;
   created_ms: number;
   expires_ms: number;
 }

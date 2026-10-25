@@ -106,7 +106,7 @@ fn an_instance_whose_platform_is_not_connected_fails_in_the_background_with_its_
     assert_eq!(started["target"]["platform"], json!("kubernetes"));
     assert_eq!(
         started["target"]["namespace"],
-        json!(format!("apz-{pid}-lane-ch-1"))
+        json!(format!("apz-{pid}-pr-lane-ch-1-{}", &id[4..12]))
     );
     assert_eq!(
         started["expires_ms"].as_u64().unwrap() - started["created_ms"].as_u64().unwrap(),

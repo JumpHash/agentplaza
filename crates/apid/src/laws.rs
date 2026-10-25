@@ -332,6 +332,10 @@ impl Laws {
             BTreeMap::from([
                 ("name".to_string(), Value::str(tool)),
                 ("kind".to_string(), Value::str(tool_kind(tool))),
+                (
+                    "access".to_string(),
+                    Value::str(route_access(tool).unwrap_or("")),
+                ),
                 ("risk_class".to_string(), Value::str(risk_class(tool))),
             ]),
         );
@@ -1422,7 +1426,8 @@ fn task_resource(store: &mut EntityStore, id: String) -> Entity {
 }
 
 /// Where a tool comes from, as the tool laws (`tools.jhrl`) read it: a connector's action, a
-/// library tool another agent built, a host tool apid runs, or a guest tool in the agent's VM.
+/// library tool another agent built, a hub route the tool library offers, a host tool apid runs, or
+/// a guest tool in the agent's VM.
 fn tool_kind(tool: &str) -> &'static str {
     if crate::connectors::by_tool(tool).is_some() {
         "connector"
@@ -1430,11 +1435,30 @@ fn tool_kind(tool: &str) -> &'static str {
         "mcp"
     } else if tool.starts_with(crate::library::PREFIX) {
         "library"
+    } else if route_access(tool).is_some() {
+        "route"
     } else if runs(tool) == Some(Runs::Host) {
         "host"
     } else {
         "guest"
     }
+}
+
+/// The access a hub route offered as a library tool declares (`tool_library::sources::CAPABILITIES`): `any` or
+/// `operator`; `None` for a tool that is not such a route. The tool laws read it as `resource.access`.
+fn route_access(tool: &str) -> Option<&'static str> {
+    use crate::tool_library::Access;
+    static ROUTES: OnceLock<HashMap<&'static str, Access>> = OnceLock::new();
+    let routes = ROUTES.get_or_init(|| {
+        crate::tool_library::sources::CAPABILITIES
+            .iter()
+            .map(|cap| (cap.path, cap.access))
+            .collect()
+    });
+    routes.get(tool).map(|access| match access {
+        Access::Any => "any",
+        Access::Operator => "operator",
+    })
 }
 
 /// The catalog's risk class for a tool; the constitution's irreversible-action law (C-004a) reads

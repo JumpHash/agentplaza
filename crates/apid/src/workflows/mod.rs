@@ -18,6 +18,7 @@ pub mod routes;
 #[cfg(test)]
 mod tests;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use apz_blobs::Hash;
@@ -26,9 +27,9 @@ use serde_json::{Value, json};
 use crate::approvals::Approval;
 use crate::github_modes::{self, RunPhase};
 use crate::recipes::graph::{Move, Report};
-use crate::recipes::runs::{CheckRow, RunState};
+use crate::recipes::runs::{CheckRow, RunState, Runs};
 use crate::state::App;
-use crate::triggers::{Action, TriggerRow};
+use crate::triggers::{Action, TriggerRow, Triggers};
 
 use drive::RunInfo;
 use model::{DIR, Known, Workflow};
@@ -339,16 +340,50 @@ pub fn on_weft(app: &App, kind: &str, body: &Value) {
     });
 }
 
-/// Keeps the schedule rows of the workflows that run on a cron: one row per workflow, with the cron its file says.
+/// The id of a workflow's schedule row: one row per workflow, named for its project.
+fn schedule_id(project: &str, name: &str) -> String {
+    format!("workflow-schedule:{project}:{name}")
+}
+
+/// Whether workflow `name` is on main and declares a schedule: its schedule row, and the fire of it, are current.
+fn scheduled_in(listed: &[Listed], name: &str) -> bool {
+    listed
+        .iter()
+        .any(|l| l.workflow.name == name && l.workflow.runs_on_trigger("schedule"))
+}
+
+/// Keeps the schedule rows of the workflows that run on a cron: one row per workflow, with the cron its file says. The
+/// rows of the project's workflows that no longer declare a schedule, or no longer exist, are removed.
 pub fn sync_schedules(app: &App, project: &str, listed: &[Listed]) {
-    let now = apz_plaza::now_ms();
+    sync_rows(
+        &app.triggers,
+        &app.recipe_runs,
+        project,
+        listed,
+        apz_plaza::now_ms(),
+    );
+}
+
+/// [`sync_schedules`] over the given stores. The workflows named are those on main and those the project has run: a
+/// deleted workflow that ran still has its row, and one that never ran is dropped when its row would fire.
+fn sync_rows(triggers: &Triggers, runs: &Runs, project: &str, listed: &[Listed], now: u64) {
+    let mut names: BTreeSet<String> = listed.iter().map(|l| l.workflow.name.clone()).collect();
+    names.extend(
+        runs.list(None, Some(project))
+            .iter()
+            .filter_map(|v| v.run.recipe.strip_prefix(PREFIX).map(str::to_string)),
+    );
+    for name in &names {
+        if !scheduled_in(listed, name) {
+            triggers.remove(&schedule_id(project, name));
+        }
+    }
     for item in listed
         .iter()
-        .filter(|l| l.workflow.triggers.iter().any(|t| t == "schedule"))
+        .filter(|l| l.workflow.runs_on_trigger("schedule"))
     {
-        let id = format!("workflow-schedule:{project}:{}", item.workflow.name);
-        if app
-            .triggers
+        let id = schedule_id(project, &item.workflow.name);
+        if triggers
             .get(&id)
             .is_some_and(|existing| existing.cron == item.workflow.cron)
         {
@@ -371,17 +406,38 @@ pub fn sync_schedules(app: &App, project: &str, listed: &[Listed]) {
             created_ms: now,
         };
         row.next_ms = row.next_after(now);
-        app.triggers.remove(&id);
-        app.triggers.ensure(row);
+        triggers.remove(&id);
+        triggers.ensure(row);
     }
 }
 
-/// A scheduled run of a workflow: the scheduler's fire of its trigger row.
+/// Whether a schedule row's fire starts its run: its workflow is on main and still declares the schedule. A row that
+/// outlived either is removed, and its fire starts nothing.
+fn fire_is_current(triggers: &Triggers, row: &str, name: &str, listed: &[Listed]) -> bool {
+    if scheduled_in(listed, name) {
+        return true;
+    }
+    triggers.remove(row);
+    false
+}
+
+/// A scheduled run of a workflow: the scheduler's fire of its trigger row. The row is current only while main still
+/// declares its schedule; a fire that is not current starts nothing.
 pub fn fire_schedule(app: &Arc<App>, row: &TriggerRow) {
     let (Some(name), Some(project)) = (row.recipe.strip_prefix(PREFIX), row.project.as_deref())
     else {
         return;
     };
+    let listed = match list(app, project) {
+        Ok((listed, _)) => listed,
+        Err(why) => {
+            eprintln!("apid: scheduled workflow {name} of {project} starts no run: {why}");
+            return;
+        }
+    };
+    if !fire_is_current(&app.triggers, &row.id, name, &listed) {
+        return;
+    }
     let info = RunInfo::of(project, None);
     if let Err(why) = start(app, project, name, "schedule", &info) {
         eprintln!("apid: scheduled workflow {name} of {project}: {why}");

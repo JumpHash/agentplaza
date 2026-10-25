@@ -639,17 +639,11 @@ impl Lab for AppLab<'_> {
     }
 
     fn enqueue(&self, project: &str, release: &Release, topology: &str) -> Result<String, String> {
-        let (run, _token) = crate::test_lab::enqueue(
-            self.app,
-            project,
-            &release.channel,
-            2,
-            2048,
-            Vec::new(),
-            ("", topology),
-            &release.id,
-        )?;
-        Ok(run.id)
+        // `test_lab::enqueue` only queues the run and reserves its capacity. Nothing takes an admitted run to a node
+        // or starts its collector, so the run would stay `running` and the stage would wait forever. Until a lab runner
+        // dispatches admitted runs and is given their ingest tokens, the stage fails here: no run is queued and no
+        // token is made.
+        Err(no_lab_runner(project, &release.id, topology))
     }
 
     fn state(&self, run: &str) -> Option<LabState> {
@@ -896,6 +890,14 @@ impl AppLab<'_> {
     }
 }
 
+/// Why a lab run cannot start: no lab runner dispatches the admitted runs of the test lab yet, so a run queued now
+/// would never execute or report its results.
+fn no_lab_runner(project: &str, release: &str, topology: &str) -> String {
+    format!(
+        "no lab runner dispatches test-lab runs yet: the {topology} run of {release} in {project} cannot start"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -905,5 +907,18 @@ mod tests {
         assert!(Stage::Verify.kinds().is_empty());
         assert_eq!(Stage::Performance.kinds(), &["performance"]);
         assert!(Stage::Ux.kinds().contains(&"visual"));
+    }
+
+    #[test]
+    fn a_lab_run_no_runner_dispatches_fails_its_stage_with_the_reason() {
+        let why = no_lab_runner("agentplaza", "rel-1", "lab-vm");
+        assert!(
+            why.starts_with("no lab runner dispatches test-lab runs yet"),
+            "{why}"
+        );
+        assert!(
+            why.contains("the lab-vm run of rel-1 in agentplaza"),
+            "{why}"
+        );
     }
 }

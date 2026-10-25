@@ -3,9 +3,10 @@
 
 use std::collections::BTreeSet;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::{Access, Catalog, Exec, GROUPS, describe, prompt_map, search, sources, visible};
+use crate::laws::Laws;
 
 fn catalog() -> Catalog {
     Catalog::build(None)
@@ -406,4 +407,80 @@ fn ephemeral_deploys_and_workflow_runs_are_the_orchestrator_s_and_reads_are_open
         assert_eq!(entry.access, Access::Any, "{path}");
         assert!(visible(None, "builder", entry).is_ok(), "{path}");
     }
+}
+
+/// A rule an owner might add: no agent may change a project's budget.
+const NO_BUDGET: &str = "law \"O-001\" \"No budget changes\" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement \"Test rule: no agent may change a project's budget.\"
+  forbid tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == \"projects.budget.set\"
+}
+";
+
+/// A rule an owner might add: the orchestrator may change a project's budget.
+const BUDGET_PERMIT: &str = "law \"O-002\" \"The orchestrator sets budgets\" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement \"Test rule: the orchestrator may change a project's budget.\"
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == \"projects.budget.set\" and principal.role == \"orchestrator\"
+}
+";
+
+/// A route is checked by the laws under its path, as a host tool is under its name: a seat does not see a route no law
+/// permits, and a call of one is refused unless a permit covers it and no forbid does.
+#[test]
+fn a_route_is_checked_by_the_laws_under_its_path() {
+    let orchestrator = crate::settings::ORCHESTRATOR_ROLE;
+    let catalog = catalog();
+    let budget = catalog
+        .entry("projects.budget.set")
+        .expect("the entry exists");
+    let why = visible(None, orchestrator, budget).expect_err("no built-in law permits the route");
+    assert!(why.contains("the laws do not let"), "{why}");
+    let read = catalog
+        .entry("environments.ephemeral.list")
+        .expect("the entry exists");
+    assert!(
+        visible(None, "builder", read).is_ok(),
+        "a built-in statute permits the read for any agent"
+    );
+
+    let input = json!({});
+    let builtin = Laws::builtin();
+    assert!(
+        builtin
+            .refusal(7, orchestrator, "projects.budget.set", &input)
+            .is_some(),
+        "no law permits the route, so a call of it is refused"
+    );
+    let forbidden = Laws::builtin();
+    forbidden
+        .add_rule("No budget changes", NO_BUDGET, true, apz_plaza::now_ms())
+        .expect("compiles");
+    let reason = forbidden
+        .refusal(7, orchestrator, "projects.budget.set", &input)
+        .expect("the owner's forbid refuses the call");
+    assert!(reason.contains("O-001"), "{reason}");
+    let permitted = Laws::builtin();
+    permitted
+        .add_rule(
+            "The orchestrator sets budgets",
+            BUDGET_PERMIT,
+            true,
+            apz_plaza::now_ms(),
+        )
+        .expect("compiles");
+    assert_eq!(
+        permitted.refusal(7, orchestrator, "projects.budget.set", &input),
+        None
+    );
 }
