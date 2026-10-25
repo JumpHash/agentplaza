@@ -2,15 +2,49 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'linux'",
-    "python_full_version == '3.13.*' and sys_platform == 'linux'",
-    "python_full_version == '3.12.*' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform == 'linux'",
-    "python_full_version >= '3.14' and sys_platform != 'linux'",
-    "python_full_version == '3.13.*' and sys_platform != 'linux'",
-    "python_full_version == '3.12.*' and sys_platform != 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
 ]
+conflicts = [[
+    { package = "apz-train", extra = "cpu" },
+    { package = "apz-train", extra = "cuda" },
+    { package = "apz-train", extra = "rocm" },
+    { package = "apz-train", extra = "xpu" },
+]]
 
 [[package]]
 name = "alembic"
@@ -31,17 +65,33 @@ name = "apz-train"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
     { name = "onnx" },
     { name = "onnxruntime" },
-    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
 ]
 
 [package.optional-dependencies]
+cpu = [
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+]
+cuda = [
+    { name = "torch", version = "2.6.0+cu124", source = { registry = "https://download.pytorch.org/whl/cu124" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+]
+rocm = [
+    { name = "pytorch-triton-rocm", marker = "sys_platform == 'linux'" },
+    { name = "torch", version = "2.5.1+rocm6.2", source = { registry = "https://download.pytorch.org/whl/rocm6.2" }, marker = "(sys_platform == 'linux' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+]
 search = [
     { name = "optuna" },
+]
+xpu = [
+    { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "torch", version = "2.14.1+xpu", source = { registry = "https://download.pytorch.org/whl/xpu" }, marker = "(sys_platform != 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "triton-xpu", marker = "sys_platform != 'darwin'" },
 ]
 
 [package.dev-dependencies]
@@ -55,10 +105,18 @@ requires-dist = [
     { name = "onnx", specifier = ">=1.16" },
     { name = "onnxruntime", specifier = ">=1.18" },
     { name = "optuna", marker = "extra == 'search'", specifier = ">=3.6" },
-    { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.5" },
-    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.5", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "pytorch-triton-rocm", marker = "sys_platform == 'linux' and extra == 'rocm'", index = "https://download.pytorch.org/whl/rocm6.2", conflict = { package = "apz-train", extra = "rocm" } },
+    { name = "torch", marker = "sys_platform == 'darwin' and extra == 'cpu'", specifier = ">=2.5" },
+    { name = "torch", marker = "sys_platform == 'darwin' and extra == 'cuda'", specifier = ">=2.5" },
+    { name = "torch", marker = "sys_platform == 'darwin' and extra == 'xpu'", specifier = ">=2.10" },
+    { name = "torch", marker = "sys_platform != 'darwin' and extra == 'cpu'", specifier = ">=2.5", index = "https://download.pytorch.org/whl/cpu", conflict = { package = "apz-train", extra = "cpu" } },
+    { name = "torch", marker = "sys_platform != 'darwin' and extra == 'cuda'", specifier = ">=2.5", index = "https://download.pytorch.org/whl/cu124", conflict = { package = "apz-train", extra = "cuda" } },
+    { name = "torch", marker = "sys_platform != 'darwin' and extra == 'xpu'", specifier = ">=2.10", index = "https://download.pytorch.org/whl/xpu", conflict = { package = "apz-train", extra = "xpu" } },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'rocm'", specifier = ">=2.5", index = "https://download.pytorch.org/whl/rocm6.2", conflict = { package = "apz-train", extra = "rocm" } },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'rocm'", specifier = ">=2.5" },
+    { name = "triton-xpu", marker = "sys_platform != 'darwin' and extra == 'xpu'", index = "https://download.pytorch.org/whl/xpu", conflict = { package = "apz-train", extra = "xpu" } },
 ]
-provides-extras = ["search"]
+provides-extras = ["cpu", "cuda", "rocm", "xpu", "search"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
@@ -77,11 +135,25 @@ name = "colorlog"
 version = "6.12.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8c/55/ba79756cb90c8d69d599d57785398ac87bba7b19c80e87f4e8a562197c93/colorlog-6.12.0.tar.gz", hash = "sha256:2a7924c1dadf18b22a0eb8b06d1c7b01d5341707ec1641eb6fcc4fde0c3e8e5f", size = 18151, upload-time = "2026-07-23T13:40:40.71Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/19/0b6647bf5e331521e55d2b63bfbdc210bd9cd605189273f03614a05f702d/colorlog-6.12.0-py3-none-any.whl", hash = "sha256:30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e", size = 12239, upload-time = "2026-07-23T13:40:39.562Z" },
+]
+
+[[package]]
+name = "dpcpp-cpp-rt"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-openmp", marker = "sys_platform != 'darwin'" },
+    { name = "intel-sycl-rt", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/98/20fffd109174139f7dc5a3413ffca0d71e0ea0837b5d7b62b634aa44ad3d/dpcpp_cpp_rt-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:9e7058dedf18c9cc8e5baff596dc6cf0c532807f3a5934b60e95be2f69ee4014", size = 28712, upload-time = "2026-07-01T15:15:11.919Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/30/0cabcb462472ec50bdb4f3feaa312640a7831d97df73bf789d9eff507eca/dpcpp_cpp_rt-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:77f8b791cb400f0da6d59cd1e56b25b12ea643edf059d5d1f0cb25bc39489b16", size = 58378, upload-time = "2026-07-01T15:10:03.804Z" },
 ]
 
 [[package]]
@@ -111,12 +183,99 @@ wheels = [
 ]
 
 [[package]]
+name = "impi-rt"
+version = "2021.18.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/88/a4f4392dcf96a33e53348584f0935f800292e96d093da298fcb8088ae9dd/impi_rt-2021.18.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:51ca89c1e64e60d86a7d40a7d6124312ba63aafc03fb6aacc140b3c66371d814", size = 128802670, upload-time = "2026-07-14T12:41:23.632Z" },
+    { url = "https://files.pythonhosted.org/packages/01/35/6ef32a71394233a996ca56c15c1e4218040367a0758bf2fd0868fe34347f/impi_rt-2021.18.1-py2.py3-none-win_amd64.whl", hash = "sha256:a4ec3c4b6bda016db573b2505a4d7c59ddfb0c94553eead301da917891c7b6ab", size = 21855822, upload-time = "2026-07-14T12:41:35.392Z" },
+]
+
+[[package]]
 name = "iniconfig"
 version = "2.3.1"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/01/e1/2069291243c926a2ff1cd706c7f3eeb9b62144bf60f77c9fb9ff2fb26bd3/iniconfig-2.3.1.tar.gz", hash = "sha256:67f4b9c50da0dedf52af349e7749a80a9057a5031199791b906c3bb3ae878960", size = 21209, upload-time = "2026-10-06T22:48:38.076Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/43/4ca9e49d27a1fcf6bece6f6aec0ea46bb9112489b93d4b688fb415457bdb/iniconfig-2.3.1-py3-none-any.whl", hash = "sha256:9121e2c1fdb355232495be3194c8dfe87ccc2d5dee45947b78e68f499790d7a7", size = 7552, upload-time = "2026-10-06T22:48:36.959Z" },
+]
+
+[[package]]
+name = "intel-cmplr-lib-rt"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/f4/c59236000ce3a470bfcae4053ad96e97c3c9febf2b38e5487046b7f4505f/intel_cmplr_lib_rt-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:8e002aaf89741de3b424bdad51ce60ead21cc8f4dee970fccba88ee3c845692d", size = 40190806, upload-time = "2026-07-01T15:14:46.979Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/a5/f5a2b1bcf943067ee1e073b5f478d719f662b78d19ec436b357cc82a7116/intel_cmplr_lib_rt-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:04c05fc09a32b11e15f1ca6ee0910ac9811e221de33170feb58d45542a8da533", size = 12965113, upload-time = "2026-07-01T15:10:28.188Z" },
+]
+
+[[package]]
+name = "intel-cmplr-lib-ur"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "umf", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/06/da0fcd62ee4672489ede80f322eec61b48a38695b0a5072d6d1075b37197/intel_cmplr_lib_ur-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:74b64ace8277b031aa36328dc8f87f7f959a6ca4da5b68c69923d37283e01664", size = 31555105, upload-time = "2026-07-01T15:14:58.416Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/74/6f8bed53ec47a1159f3cd92de0ee4cbeb1eabb6d29accf97c5dc3983a9bb/intel_cmplr_lib_ur-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:538e1135ee1801fb19fa1a580838a1f666f05534d35350d82736d959373d3b15", size = 1308879, upload-time = "2026-07-01T15:10:19.657Z" },
+]
+
+[[package]]
+name = "intel-cmplr-lic-rt"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/9c/cfdfb3429b32fbd2bed7a9bcce2989efa329ca1b87b70e03bc9170650512/intel_cmplr_lic_rt-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:ec9f7c495bda8f5d260442056808ee75cf4c1a145910ce999e0e8964d78ce1ba", size = 18914, upload-time = "2026-07-01T15:15:01.218Z" },
+    { url = "https://files.pythonhosted.org/packages/49/b2/02def0f52f055cb449631c43fc13761f8e11549dbb732dfe0586c7cf9bc5/intel_cmplr_lic_rt-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:19e568a1b37e5080140c2694f990505948b7c0cf08d4090beab70702b76c6a50", size = 49550, upload-time = "2026-07-01T15:10:25.868Z" },
+]
+
+[[package]]
+name = "intel-opencl-rt"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "intel-cmplr-lic-rt", marker = "sys_platform != 'darwin'" },
+    { name = "tbb", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/24/ac/08bb51b090cc1dc3ab24567901610b33d5495c76194e6714e26a2c66390a/intel_opencl_rt-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:b2891b6a6f347f21d2a9f0e872fb97e1aef407b4c34714516994dd884ea5e19e", size = 204358325, upload-time = "2026-07-01T15:15:07.515Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/8f/574738fd8f384c635f50a3f78e5f47763020486960ac83564a954b82bec7/intel_opencl_rt-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:0967dc144f9cdf3aaa0fc722b92a54119cff9867f0b07e8dee8b8c0a88f05e44", size = 109494809, upload-time = "2026-07-01T15:10:08.519Z" },
+]
+
+[[package]]
+name = "intel-openmp"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "intel-cmplr-lib-ur", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/23/60aeb428e6b1fb34fb81d4970d91ff8b5deeeeb446e1628bd78f9e3d1f8b/intel_openmp-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:e6887f701b7d2323ed147008893b9af22e511aaa97e0fc9c37eb8be24a5366b0", size = 52547733, upload-time = "2026-07-01T15:14:42.64Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/cc/b4cb4ed4a1cca9dcc63cec93f7813ef3840f37d8bd30c06b8013948edc00/intel_openmp-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:8f9f86d93da9d549eec7bae26d65d6188ed748792ce655b5cdbc2e1a15cb7206", size = 26355044, upload-time = "2026-07-01T15:10:22.582Z" },
+]
+
+[[package]]
+name = "intel-pti"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/d4/48737239235707852fef380005f53405740b08dc5f3700c72e5b43946452/intel_pti-1.0.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:4e7ad9e955d2dad8e41cd95d22e8ab1e476bae2e6e351f0e8b4653fe77ab2e0c", size = 1372720, upload-time = "2026-07-23T11:03:37.221Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/29/9c8bcb52a74c7eece746770b74dd978e3f3dec70748185ad35572065f85e/intel_pti-1.0.1-py2.py3-none-win_amd64.whl", hash = "sha256:db45adc0a555cd22864f4cfd418ef81cf07a02c78627e6a3cb6387920b352278", size = 786793, upload-time = "2026-07-23T11:03:39.398Z" },
+]
+
+[[package]]
+name = "intel-sycl-rt"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "intel-cmplr-lib-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-cmplr-lib-ur", marker = "sys_platform != 'darwin'" },
+    { name = "intel-cmplr-lic-rt", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/9d/b183c4bdc59921b0e15006fb301b278d998abd5dc803051478de32da3476/intel_sycl_rt-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:c8f4ae787c334d6a48b66514b2ac29c7bb4aedde2939c8ba61e7370ca748fce6", size = 134083467, upload-time = "2026-07-01T15:14:53.354Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/0a/e39270bde66bedc4aa68fb0f9cd23f7e251d007cf1a6552441475b4cc890/intel_sycl_rt-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:307d7022583d929e3091eadcea15fd3440fb68c35cd20094f2bf8597f936bfd9", size = 58022055, upload-time = "2026-07-01T15:10:16.218Z" },
 ]
 
 [[package]]
@@ -272,12 +431,26 @@ wheels = [
 ]
 
 [[package]]
+name = "mkl"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "intel-openmp", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-license", marker = "sys_platform != 'darwin'" },
+    { name = "tbb", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/da/4921e17b1f455f7fed30d5cc0964f3289eee6a6cb03cdf7d5e20c14bd025/mkl-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:4d5a26449818a8aebd4b2aaf6b291831e691f9cf74b152df49b99cf48bbd5360", size = 224034262, upload-time = "2026-07-01T15:11:10.038Z" },
+    { url = "https://files.pythonhosted.org/packages/d6/bd/e35bd5477278c91b0f5d4733b13009d183c284d636d68c649204858c207a/mkl-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:8194a8270d70622eff00eec84c793efc382b14848b98c3ace6bacdda42170a80", size = 180806880, upload-time = "2026-07-01T15:14:02.845Z" },
+]
+
+[[package]]
 name = "ml-dtypes"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/72/307d7c4bd0600601c7133fba5cb78af7db968152951c1cd473abb1cda782/ml_dtypes-0.6.0.tar.gz", hash = "sha256:5e60251d32ced5598972e4d5e06a2f044341f9291402551a3f6f0ec44f9299b0", size = 3032327, upload-time = "2026-08-13T14:14:40.215Z" }
 wheels = [
@@ -332,8 +505,14 @@ name = "networkx"
 version = "3.6.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.12' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be9d2e4f1158eb633317598cfa6e1fc14af5383f17512/networkx-3.6.1.tar.gz", hash = "sha256:26b7c357accc0c8cde558ad486283728b65b6a95d85ee1cd66bafab4c8168509", size = 2517025, upload-time = "2025-12-08T17:02:39.908Z" }
 wheels = [
@@ -345,12 +524,30 @@ name = "networkx"
 version = "3.7"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'linux'",
-    "python_full_version == '3.13.*' and sys_platform == 'linux'",
-    "python_full_version == '3.12.*' and sys_platform == 'linux'",
-    "python_full_version >= '3.14' and sys_platform != 'linux'",
-    "python_full_version == '3.13.*' and sys_platform != 'linux'",
-    "python_full_version == '3.12.*' and sys_platform != 'linux'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/dc/76/3af777226b63a5e64a6b36b1ec5855c14e2b94a37096d4760e595fc43511/networkx-3.7.tar.gz", hash = "sha256:fd77a511bd90f39f3d016351345b52cf5319b813bdca01de3f755d3cca62e96a", size = 1866482, upload-time = "2026-09-21T16:45:16.974Z" }
 wheels = [
@@ -362,8 +559,15 @@ name = "numpy"
 version = "2.4.6"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.12' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d0/ad/fed0499ce6a338d2a03ebae59cd15093910c8875328855781952abf6c2fe/numpy-2.4.6.tar.gz", hash = "sha256:f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda", size = 20735807, upload-time = "2026-05-18T23:37:14.07Z" }
 wheels = [
@@ -445,12 +649,33 @@ name = "numpy"
 version = "2.5.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'linux'",
-    "python_full_version == '3.13.*' and sys_platform == 'linux'",
-    "python_full_version == '3.12.*' and sys_platform == 'linux'",
-    "python_full_version >= '3.14' and sys_platform != 'linux'",
-    "python_full_version == '3.13.*' and sys_platform != 'linux'",
-    "python_full_version == '3.12.*' and sys_platform != 'linux'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/95/b0/c7453d0b6e2073c3264468b106ee1563750cecc910965e67357e3698c83e/numpy-2.5.4.tar.gz", hash = "sha256:9a94cf751c9ad8ebaa835bcd3d40dacf8534ad086b88c38029b65123c7999d2a", size = 20866315, upload-time = "2026-10-10T20:05:31.422Z" }
 wheels = [
@@ -522,13 +747,258 @@ wheels = [
 ]
 
 [[package]]
+name = "nvidia-cublas-cu12"
+version = "12.4.5.8"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7f/7f/7fbae15a3982dc9595e49ce0f19332423b260045d0a6afe93cdbe2f1f624/nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0f8aa1706812e00b9f19dfe0cdb3999b092ccb8ca168c0db5b8ea712456fd9b3", size = 363333771, upload-time = "2024-06-18T19:28:09.881Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/71/1c91302526c45ab494c23f61c7a84aa568b8c1f9d196efa5993957faf906/nvidia_cublas_cu12-12.4.5.8-py3-none-manylinux2014_x86_64.whl", hash = "sha256:2fc8da60df463fdefa81e323eef2e36489e1c94335b5358bcb38360adf75ac9b", size = 363438805, upload-time = "2024-04-03T20:57:06.025Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/2a/4f27ca96232e8b5269074a72e03b4e0d43aa68c9b965058b1684d07c6ff8/nvidia_cublas_cu12-12.4.5.8-py3-none-win_amd64.whl", hash = "sha256:5a796786da89203a0657eda402bcdcec6180254a8ac22d72213abc42069522dc", size = 396895858, upload-time = "2024-04-03T21:03:31.996Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-cupti-cu12"
+version = "12.4.127"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/b5/9fb3d00386d3361b03874246190dfec7b206fd74e6e287b26a8fcb359d95/nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:79279b35cf6f91da114182a5ce1864997fd52294a87a16179ce275773799458a", size = 12354556, upload-time = "2024-06-18T19:30:40.546Z" },
+    { url = "https://files.pythonhosted.org/packages/67/42/f4f60238e8194a3106d06a058d494b18e006c10bb2b915655bd9f6ea4cb1/nvidia_cuda_cupti_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:9dec60f5ac126f7bb551c055072b69d85392b13311fcc1bcda2202d172df30fb", size = 13813957, upload-time = "2024-04-03T20:55:01.564Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/79/8cf313ec17c58ccebc965568e5bcb265cdab0a1df99c4e674bb7a3b99bfe/nvidia_cuda_cupti_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:5688d203301ab051449a2b1cb6690fbe90d2b372f411521c86018b950f3d7922", size = 9938035, upload-time = "2024-04-03T21:01:01.109Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-nvrtc-cu12"
+version = "12.4.127"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/aa/083b01c427e963ad0b314040565ea396f914349914c298556484f799e61b/nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0eedf14185e04b76aa05b1fea04133e59f465b6f960c0cbf4e37c3cb6b0ea198", size = 24133372, upload-time = "2024-06-18T19:32:00.576Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/14/91ae57cd4db3f9ef7aa99f4019cfa8d54cb4caa7e00975df6467e9725a9f/nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:a178759ebb095827bd30ef56598ec182b85547f1508941a3d560eb7ea1fbf338", size = 24640306, upload-time = "2024-04-03T20:56:01.463Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/30/8c844bfb770f045bcd8b2c83455c5afb45983e1a8abf0c4e5297b481b6a5/nvidia_cuda_nvrtc_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:a961b2f1d5f17b14867c619ceb99ef6fcec12e46612711bcec78eb05068a60ec", size = 19751955, upload-time = "2024-04-03T21:01:51.133Z" },
+]
+
+[[package]]
+name = "nvidia-cuda-runtime-cu12"
+version = "12.4.127"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a1/aa/b656d755f474e2084971e9a297def515938d56b466ab39624012070cb773/nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:961fe0e2e716a2a1d967aab7caee97512f71767f852f67432d572e36cb3a11f3", size = 894177, upload-time = "2024-06-18T19:32:52.877Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/27/1795d86fe88ef397885f2e580ac37628ed058a92ed2c39dc8eac3adf0619/nvidia_cuda_runtime_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:64403288fa2136ee8e467cdc9c9427e0434110899d07c779f25b5c068934faa5", size = 883737, upload-time = "2024-04-03T20:54:51.355Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/8b/450e93fab75d85a69b50ea2d5fdd4ff44541e0138db16f9cd90123ef4de4/nvidia_cuda_runtime_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:09c2e35f48359752dfa822c09918211844a3d93c100a715d79b59591130c5e1e", size = 878808, upload-time = "2024-04-03T21:00:49.77Z" },
+]
+
+[[package]]
+name = "nvidia-cudnn-cu12"
+version = "9.1.0.70"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/fd/713452cd72343f682b1c7b9321e23829f00b842ceaedcda96e742ea0b0b3/nvidia_cudnn_cu12-9.1.0.70-py3-none-manylinux2014_x86_64.whl", hash = "sha256:165764f44ef8c61fcdfdfdbe769d687e06374059fbb388b6c89ecb0e28793a6f", size = 664752741, upload-time = "2024-04-22T15:24:15.253Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/d0/f90ee6956a628f9f04bf467932c0a25e5a7e706a684b896593c06c82f460/nvidia_cudnn_cu12-9.1.0.70-py3-none-win_amd64.whl", hash = "sha256:6278562929433d68365a07a4a1546c237ba2849852c0d4b2262a486e805b977a", size = 679925892, upload-time = "2024-04-22T15:24:53.333Z" },
+]
+
+[[package]]
+name = "nvidia-cufft-cu12"
+version = "11.2.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7a/8a/0e728f749baca3fbeffad762738276e5df60851958be7783af121a7221e7/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:5dad8008fc7f92f5ddfa2101430917ce2ffacd86824914c82e28990ad7f00399", size = 211422548, upload-time = "2024-06-18T19:33:39.396Z" },
+    { url = "https://files.pythonhosted.org/packages/27/94/3266821f65b92b3138631e9c8e7fe1fb513804ac934485a8d05776e1dd43/nvidia_cufft_cu12-11.2.1.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:f083fc24912aa410be21fa16d157fed2055dab1cc4b6934a0e03cba69eb242b9", size = 211459117, upload-time = "2024-04-03T20:57:40.402Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/ee/3f3f8e9874f0be5bbba8fb4b62b3de050156d159f8b6edc42d6f1074113b/nvidia_cufft_cu12-11.2.1.3-py3-none-win_amd64.whl", hash = "sha256:d802f4954291101186078ccbe22fc285a902136f974d369540fd4a5333d1440b", size = 210576476, upload-time = "2024-04-03T21:04:06.422Z" },
+]
+
+[[package]]
+name = "nvidia-curand-cu12"
+version = "10.3.5.147"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/9c/a79180e4d70995fdf030c6946991d0171555c6edf95c265c6b2bf7011112/nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_aarch64.whl", hash = "sha256:1f173f09e3e3c76ab084aba0de819c49e56614feae5c12f69883f4ae9bb5fad9", size = 56314811, upload-time = "2024-06-18T19:34:48.575Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/6d/44ad094874c6f1b9c654f8ed939590bdc408349f137f9b98a3a23ccec411/nvidia_curand_cu12-10.3.5.147-py3-none-manylinux2014_x86_64.whl", hash = "sha256:a88f583d4e0bb643c49743469964103aa59f7f708d862c3ddb0fc07f851e3b8b", size = 56305206, upload-time = "2024-04-03T20:58:08.722Z" },
+    { url = "https://files.pythonhosted.org/packages/1c/22/2573503d0d4e45673c263a313f79410e110eb562636b0617856fdb2ff5f6/nvidia_curand_cu12-10.3.5.147-py3-none-win_amd64.whl", hash = "sha256:f307cc191f96efe9e8f05a87096abc20d08845a841889ef78cb06924437f6771", size = 55799918, upload-time = "2024-04-03T21:04:34.45Z" },
+]
+
+[[package]]
+name = "nvidia-cusolver-cu12"
+version = "11.6.1.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cusparse-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/6b/a5c33cf16af09166845345275c34ad2190944bcc6026797a39f8e0a282e0/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_aarch64.whl", hash = "sha256:d338f155f174f90724bbde3758b7ac375a70ce8e706d70b018dd3375545fc84e", size = 127634111, upload-time = "2024-06-18T19:35:01.793Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/e1/5b9089a4b2a4790dfdea8b3a006052cfecff58139d5a4e34cb1a51df8d6f/nvidia_cusolver_cu12-11.6.1.9-py3-none-manylinux2014_x86_64.whl", hash = "sha256:19e33fa442bcfd085b3086c4ebf7e8debc07cfe01e11513cc6d332fd918ac260", size = 127936057, upload-time = "2024-04-03T20:58:28.735Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/be/d435b7b020e854d5d5a682eb5de4328fd62f6182507406f2818280e206e2/nvidia_cusolver_cu12-11.6.1.9-py3-none-win_amd64.whl", hash = "sha256:e77314c9d7b694fcebc84f58989f3aa4fb4cb442f12ca1a9bde50f5e8f6d1b9c", size = 125224015, upload-time = "2024-04-03T21:04:53.339Z" },
+]
+
+[[package]]
+name = "nvidia-cusparse-cu12"
+version = "12.3.1.170"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/a9/c0d2f83a53d40a4a41be14cea6a0bf9e668ffcf8b004bd65633f433050c0/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_aarch64.whl", hash = "sha256:9d32f62896231ebe0480efd8a7f702e143c98cfaa0e8a76df3386c1ba2b54df3", size = 207381987, upload-time = "2024-06-18T19:35:32.989Z" },
+    { url = "https://files.pythonhosted.org/packages/db/f7/97a9ea26ed4bbbfc2d470994b8b4f338ef663be97b8f677519ac195e113d/nvidia_cusparse_cu12-12.3.1.170-py3-none-manylinux2014_x86_64.whl", hash = "sha256:ea4f11a2904e2a8dc4b1833cc1b5181cde564edd0d5cd33e3c168eff2d1863f1", size = 207454763, upload-time = "2024-04-03T20:58:59.995Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/e0/3155ca539760a8118ec94cc279b34293309bcd14011fc724f87f31988843/nvidia_cusparse_cu12-12.3.1.170-py3-none-win_amd64.whl", hash = "sha256:9bc90fb087bc7b4c15641521f31c0371e9a612fc2ba12c338d3ae032e6b6797f", size = 204684315, upload-time = "2024-04-03T21:05:26.031Z" },
+]
+
+[[package]]
+name = "nvidia-cusparselt-cu12"
+version = "0.6.2"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/8e/675498726c605c9441cf46653bd29cb1b8666da1fb1469ffa25f67f20c58/nvidia_cusparselt_cu12-0.6.2-py3-none-manylinux2014_aarch64.whl", hash = "sha256:067a7f6d03ea0d4841c85f0c6f1991c5dda98211f6302cb83a4ab234ee95bef8", size = 149422781, upload-time = "2024-07-23T17:35:27.203Z" },
+    { url = "https://files.pythonhosted.org/packages/78/a8/bcbb63b53a4b1234feeafb65544ee55495e1bb37ec31b999b963cbccfd1d/nvidia_cusparselt_cu12-0.6.2-py3-none-manylinux2014_x86_64.whl", hash = "sha256:df2c24502fd76ebafe7457dbc4716b2fec071aabaed4fb7691a201cde03704d9", size = 150057751, upload-time = "2024-07-23T02:35:53.074Z" },
+    { url = "https://files.pythonhosted.org/packages/56/8f/2c33082238b6c5e783a877dc8786ab62619e3e6171c083bd3bba6e3fe75e/nvidia_cusparselt_cu12-0.6.2-py3-none-win_amd64.whl", hash = "sha256:0057c91d230703924c0422feabe4ce768841f9b4b44d28586b6f6d2eb86fbe70", size = 148755794, upload-time = "2024-07-23T02:35:00.261Z" },
+]
+
+[[package]]
+name = "nvidia-nccl-cu12"
+version = "2.21.5"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/df/99/12cd266d6233f47d00daf3a72739872bdc10267d0383508b0b9c84a18bb6/nvidia_nccl_cu12-2.21.5-py3-none-manylinux2014_x86_64.whl", hash = "sha256:8579076d30a8c24988834445f8d633c697d42397e92ffc3f63fa26766d25e0a0", size = 188654414, upload-time = "2024-04-03T15:32:57.427Z" },
+]
+
+[[package]]
+name = "nvidia-nvjitlink-cu12"
+version = "12.4.127"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/45/239d52c05074898a80a900f49b1615d81c07fceadd5ad6c4f86a987c0bc4/nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:4abe7fef64914ccfa909bc2ba39739670ecc9e820c83ccc7a6ed414122599b83", size = 20552510, upload-time = "2024-06-18T20:20:13.871Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/ff/847841bacfbefc97a00036e0fce5a0f086b640756dc38caea5e1bb002655/nvidia_nvjitlink_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:06b3b9b25bf3f8af351d664978ca26a16d2c5127dbd53c0497e28d1fb9611d57", size = 21066810, upload-time = "2024-04-03T20:59:46.957Z" },
+    { url = "https://files.pythonhosted.org/packages/81/19/0babc919031bee42620257b9a911c528f05fb2688520dcd9ca59159ffea8/nvidia_nvjitlink_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:fd9020c501d27d135f983c6d3e244b197a7ccad769e34df53a42e276b0e25fa1", size = 95336325, upload-time = "2024-04-03T21:06:25.073Z" },
+]
+
+[[package]]
+name = "nvidia-nvtx-cu12"
+version = "12.4.127"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/39/471f581edbb7804b39e8063d92fc8305bdc7a80ae5c07dbe6ea5c50d14a5/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_aarch64.whl", hash = "sha256:7959ad635db13edf4fc65c06a6e9f9e55fc2f92596db928d169c0bb031e88ef3", size = 100417, upload-time = "2024-06-18T20:16:22.484Z" },
+    { url = "https://files.pythonhosted.org/packages/87/20/199b8713428322a2f22b722c62b8cc278cc53dffa9705d744484b5035ee9/nvidia_nvtx_cu12-12.4.127-py3-none-manylinux2014_x86_64.whl", hash = "sha256:781e950d9b9f60d8241ccea575b32f5105a5baf4c2351cab5256a24869f12a1a", size = 99144, upload-time = "2024-04-03T20:56:12.406Z" },
+    { url = "https://files.pythonhosted.org/packages/54/1b/f77674fbb73af98843be25803bbd3b9a4f0a96c75b8d33a2854a5c7d2d77/nvidia_nvtx_cu12-12.4.127-py3-none-win_amd64.whl", hash = "sha256:641dccaaa1139f3ffb0d3164b4b84f9d253397e38246a4f2f36728b48566d485", size = 66307, upload-time = "2024-04-03T21:02:01.959Z" },
+]
+
+[[package]]
+name = "oneccl"
+version = "2022.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "impi-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-sycl-rt", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/c0/54bf02d28010584627de21af467ee34026e231528e5141069080805076d4/oneccl-2022.1.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:e877ad3720e8d6dd45d71cf05dd9d65e66f5a38c0900089f1542569e43512e78", size = 84632372, upload-time = "2026-07-15T16:11:12.108Z" },
+]
+
+[[package]]
+name = "oneccl-devel"
+version = "2022.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "oneccl", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d5/c1/a62b38dec8add789fae282fcdaaebbb1bf55db32922fcd2fb42f8523cdc1/oneccl_devel-2022.1.1-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:a088ba67a3610bdb621b82335953ceb4bda65b81146a306a1bb3c64e47d47735", size = 29018971, upload-time = "2026-07-15T16:11:17.091Z" },
+]
+
+[[package]]
+name = "onemkl-license"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/ef/8437c187319e779a76f4dbb468a1863d729297d79a1b5f44b10a58c96ec2/onemkl_license-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:39fd829648af92c9e03c22ba228f07174d829aaa2fe3c5f6cd7073b8eb8a9805", size = 56161, upload-time = "2026-07-01T15:11:45.836Z" },
+    { url = "https://files.pythonhosted.org/packages/66/0d/82581d2048b5a01f3145fa48cc9c461f34443499420dcdaa6ecbb444ce4d/onemkl_license-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:425b599af279e6bc03e27319d75aa156ca7dd8645dbcd0c324ef894d3fae6be3", size = 56185, upload-time = "2026-07-01T15:13:49.098Z" },
+]
+
+[[package]]
+name = "onemkl-sycl-blas"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dpcpp-cpp-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "mkl", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/c5/94ce322721013c42578398846e57da4273d1f8e48ab1e49ad311a418d36e/onemkl_sycl_blas-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:229dd19462b4a588c156ea73bce29feaf0e96434d797a9bae38a89694fc46493", size = 20658169, upload-time = "2026-07-01T15:11:48.683Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/f9/c39f81e686db4be90cb79e14ca5298772c8584de8afb5518aa2dd75abb6d/onemkl_sycl_blas-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:c4478971431ac022a1b8268655bdb8cc49c877c93e8700e68e18c8271be42993", size = 15924024, upload-time = "2026-07-01T15:14:38.589Z" },
+]
+
+[[package]]
+name = "onemkl-sycl-dft"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dpcpp-cpp-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "mkl", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/60/80d4fa8e4e100f290572cf99856e067195fb9d22a7f462b8e0993833c526/onemkl_sycl_dft-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:71bd34f8c25b6869a440a01eadd2743151601bf2d011b01c11206ec81f6de80b", size = 6691008, upload-time = "2026-07-01T15:11:38.183Z" },
+    { url = "https://files.pythonhosted.org/packages/01/af/ea8b355642e61c0176d033f873917c707ff8fb7d8a66c51ef0c4ecd94cf9/onemkl_sycl_dft-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:f57ec87c2af23dbae00f94fd3941c2443beb5330c82eec8475d8c219b13e35bc", size = 5966913, upload-time = "2026-07-01T15:14:35.847Z" },
+]
+
+[[package]]
+name = "onemkl-sycl-lapack"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dpcpp-cpp-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "mkl", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-blas", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/ee/9058fe036b82bc742adb6280574502da2a8c70364a945829579fd3dd8084/onemkl_sycl_lapack-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:97ff3626f99463e50734a85034ed2ca765601b5c5d3b0560695da7aec0b4f629", size = 8436464, upload-time = "2026-07-01T15:11:43.165Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/d1/46baabeb2e855d840dfb10e92a86f8a47299ee64f9325f7635bc8265d7a9/onemkl_sycl_lapack-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:e25599ff5a23439d52021ed2f29bf0450a5bfd77495084694032d0bd8c4188ba", size = 6463381, upload-time = "2026-07-01T15:14:33.205Z" },
+]
+
+[[package]]
+name = "onemkl-sycl-rng"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dpcpp-cpp-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "mkl", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/3c/4ee5d31e04539d1acd0a1acd3ddf722db570ac8c381d5bc2a9a197e31ca7/onemkl_sycl_rng-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:6d24ee79da2d7fe38b99dfdf3c36e39f2dc796be0ab5c477a3e6d1c244ed5ccd", size = 23548890, upload-time = "2026-07-01T15:11:16.953Z" },
+    { url = "https://files.pythonhosted.org/packages/26/b5/bbbb459df6cfba8d4f9f034ec21478eef820c7377e3de46e4ac954ca21f8/onemkl_sycl_rng-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:fb5f168c5032777fa65022272d77e2c67ada06c4d89459a2d08cd0b2ad56c041", size = 15554363, upload-time = "2026-07-01T15:14:22.132Z" },
+]
+
+[[package]]
+name = "onemkl-sycl-sparse"
+version = "2026.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dpcpp-cpp-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "mkl", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-blas", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/83/af/416bc19b3488129975a9bd1dbdb8bbe9340a49a802c1e24db6728e233359/onemkl_sycl_sparse-2026.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:50e6fe2cd901090d473fc572001cfa5c0d000719036745e3a4c95ea74b32f9cc", size = 21606748, upload-time = "2026-07-01T15:11:26.372Z" },
+    { url = "https://files.pythonhosted.org/packages/10/f3/71110f3ab8566fd1e7e7fdf85ca01d0c75fcd18e0b1d705fcc7f470df752/onemkl_sycl_sparse-2026.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:b8ded2ac3a693089fa42e600b22ccd8a84c67017d2e32faf5a17272b564a1eed", size = 16432391, upload-time = "2026-07-01T15:14:25.575Z" },
+]
+
+[[package]]
 name = "onnx"
 version = "1.23.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ml-dtypes" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
     { name = "protobuf" },
     { name = "typing-extensions" },
 ]
@@ -560,8 +1030,8 @@ version = "1.31.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "flatbuffers" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
     { name = "packaging" },
     { name = "protobuf" },
 ]
@@ -599,8 +1069,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alembic" },
     { name = "colorlog" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
     { name = "packaging" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
@@ -645,6 +1115,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyelftools"
+version = "0.33"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/11/767522582afab1b884d277de0e6e011640cb9d7292a38694b4b1a1df1ae8/pyelftools-0.33.tar.gz", hash = "sha256:660d82dcbeb8e83d1702bd97f223f761625da06111c0cc988eac6b8ab0c1b61f", size = 15068655, upload-time = "2026-05-29T12:56:22.553Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/2a/f9697576603dae937727827505a6126a066affb227034e77e6f9068910da/pyelftools-0.33-py3-none-any.whl", hash = "sha256:f215ad5f47d3f1373a21496a6c9e0707c622840d0622f23ff7ce08678b020036", size = 201178, upload-time = "2026-05-29T12:56:20.587Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.21.0"
 source = { registry = "https://pypi.org/simple" }
@@ -658,7 +1137,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -667,6 +1146,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
+name = "pytorch-triton-rocm"
+version = "3.1.0"
+source = { registry = "https://download.pytorch.org/whl/rocm6.2" }
+dependencies = [
+    { name = "filelock", marker = "sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/pytorch_triton_rocm-3.1.0-cp311-cp311-linux_x86_64.whl", hash = "sha256:4b0a563986aa591ecbbfd69d53f171447f64ba453cecaafd80d853b3f1047eca", upload-time = "2024-10-17T22:54:41Z" },
+    { url = "https://download-r2.pytorch.org/whl/pytorch_triton_rocm-3.1.0-cp312-cp312-linux_x86_64.whl", hash = "sha256:3b56b87886d03dcf3aeb8f78f372f5da60b29ffdffcba5cd767b4bfdec47175b", upload-time = "2024-10-17T22:54:50Z" },
 ]
 
 [[package]]
@@ -722,6 +1213,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/92/1446574745d74df0c92e6aa4a7b0b3130706a4142b2d1a5869f2eaa423c6/pyyaml-6.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:16249ee61e95f858e83976573de0f5b2893b3677ba71c9dd36b9cf8be9ac6d65", size = 829923, upload-time = "2025-09-25T21:32:54.537Z" },
     { url = "https://files.pythonhosted.org/packages/f0/7a/1c7270340330e575b92f397352af856a8c06f230aa3e76f86b39d01b416a/pyyaml-6.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4ad1906908f2f5ae4e5a8ddfce73c320c2a1429ec52eafd27138b7f1cbe341c9", size = 174062, upload-time = "2025-09-25T21:32:55.767Z" },
     { url = "https://files.pythonhosted.org/packages/f1/12/de94a39c2ef588c7e6455cfbe7343d3b2dc9d6b6b2f40c4c6565744c873d/pyyaml-6.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:ebc55a14a21cb14062aa4162f906cd962b28e2e9ea38f9b4391244cd8de4ae0b", size = 149341, upload-time = "2025-09-25T21:32:56.828Z" },
+]
+
+[[package]]
+name = "pyzes"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/da/c40076150353b25d4b23ecf99486781feb54d55059f272d4ea1efe4cc8a7/pyzes-0.1.2.tar.gz", hash = "sha256:21667f0a23b15fcf81c1267dbc86f5a9b0d5118297cae645e4ab31c50e9e7d6b", size = 32567, upload-time = "2026-06-12T08:48:20.076Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/74/46/90e1741b3926e3b8590dfaa819439891865568fc5c90a0f5596b76ee6bff/pyzes-0.1.2-py3-none-any.whl", hash = "sha256:5638684399049940414071afafff91ee87f18807457b3cb0d31cd5d5a0b7db23", size = 30809, upload-time = "2026-06-12T08:48:19.126Z" },
 ]
 
 [[package]]
@@ -817,10 +1317,58 @@ wheels = [
 
 [[package]]
 name = "sympy"
+version = "1.13.1"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+]
+dependencies = [
+    { name = "mpmath", marker = "(sys_platform != 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'linux' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'linux' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ca/99/5a5b6f19ff9f083671ddf7b9632028436167cd3d33e11015754e41b249a4/sympy-1.13.1.tar.gz", hash = "sha256:9cebf7e04ff162015ce31c9c6c9144daa34a93bd082f54fd8f12deca4f47515f", size = 7533040, upload-time = "2024-07-19T09:26:51.238Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b2/fe/81695a1aa331a842b582453b605175f419fe8540355886031328089d840a/sympy-1.13.1-py3-none-any.whl", hash = "sha256:db36cdc64bf61b9b24578b6f7bab1ecdd2452cf008f34faa33776680c26d66f8", size = 6189177, upload-time = "2024-07-19T09:26:48.863Z" },
+]
+
+[[package]]
+name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+]
 dependencies = [
-    { name = "mpmath" },
+    { name = "mpmath", marker = "(sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'linux' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'linux' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or extra == 'extra-9-apz-train-cpu'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
@@ -828,35 +1376,148 @@ wheels = [
 ]
 
 [[package]]
+name = "tbb"
+version = "2023.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tcmlib", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/25/0c/0266c71e3fa50a71db5ce8a1d0807863df3215c5f7b5fe7c98b257561138/tbb-2023.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:64ad35241c736a595498f5343abec8eaaa203e9fe0dbdbf4b86d37c5a3ab1d9c", size = 6840282, upload-time = "2026-07-01T15:10:33.348Z" },
+    { url = "https://files.pythonhosted.org/packages/ac/ff/168d3498762069b0cd2dff20ab34d53fa48a0a35ffd1965cf456c603f292/tbb-2023.1.0-py3-none-win_amd64.whl", hash = "sha256:27df1315202defc67a73800c667ba4fbd03cf8924f73949373d4a34d1443fca2", size = 428501, upload-time = "2026-07-01T15:12:55.771Z" },
+]
+
+[[package]]
+name = "tcmlib"
+version = "1.5.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/24/aa409bb20703acc70cf4d3bc620a55c789639c2995b2667fb44ae7236ec9/tcmlib-1.5.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:9d7c01cff35aae9bf5390b620680ebdf10a7d211c22d6488a27a029502e7d0aa", size = 2812669, upload-time = "2026-04-24T14:14:18.557Z" },
+    { url = "https://files.pythonhosted.org/packages/67/6d/9095c93326d0f8a5469ab22480d02795f24c08f1e7f383c73316ff106347/tcmlib-1.5.0-py2.py3-none-win_amd64.whl", hash = "sha256:f7b62787214083d490b39d7650f1e477eeacc875e7f86799feb9aa1fd34460d4", size = 366719, upload-time = "2026-04-24T14:09:45.977Z" },
+]
+
+[[package]]
+name = "torch"
+version = "2.5.1+rocm6.2"
+source = { registry = "https://download.pytorch.org/whl/rocm6.2" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform == 'linux'",
+    "python_full_version == '3.13.*' and sys_platform == 'linux'",
+    "python_full_version == '3.12.*' and sys_platform == 'linux'",
+    "python_full_version < '3.12' and sys_platform == 'linux'",
+]
+dependencies = [
+    { name = "filelock", marker = "sys_platform == 'linux'" },
+    { name = "fsspec", marker = "sys_platform == 'linux'" },
+    { name = "jinja2", marker = "sys_platform == 'linux'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform == 'linux' and extra == 'extra-9-apz-train-rocm') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform == 'linux' and extra == 'extra-9-apz-train-rocm') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "pytorch-triton-rocm", marker = "python_full_version < '3.13' and platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "python_full_version >= '3.12' and sys_platform == 'linux'" },
+    { name = "sympy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/rocm6.2/torch-2.5.1%2Brocm6.2-cp311-cp311-linux_x86_64.whl", hash = "sha256:9c4c4d985923d0e31aab4108c56a1586ca599ab26abc919833b890f7f40dcc01", upload-time = "2024-10-29T23:59:56Z" },
+    { url = "https://download-r2.pytorch.org/whl/rocm6.2/torch-2.5.1%2Brocm6.2-cp312-cp312-linux_x86_64.whl", hash = "sha256:80c7af931acb3941530a717aaa1d142985ae7f29b7660a72e47f1a890fc191fb", upload-time = "2024-10-30T00:03:16Z" },
+]
+
+[[package]]
+name = "torch"
+version = "2.6.0+cu124"
+source = { registry = "https://download.pytorch.org/whl/cu124" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform != 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin'",
+    "python_full_version < '3.12' and sys_platform != 'darwin'",
+]
+dependencies = [
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cuda') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cuda') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "nvidia-cublas-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-cupti-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-nvrtc-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cudnn-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cufft-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-curand-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusolver-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusparse-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-cusparselt-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nccl-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nvjitlink-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "nvidia-nvtx-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "python_full_version >= '3.12' and sys_platform != 'darwin'" },
+    { name = "sympy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "triton", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-linux_x86_64.whl", hash = "sha256:d4c3e9a8d31a7c0fcbb9da17c31a1917e1fac26c566a4cfbd8c9568ad7cade79", upload-time = "2025-01-30T00:55:01Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp311-cp311-win_amd64.whl", hash = "sha256:6a1fb2714e9323f11edb6e8abf7aad5f79e45ad25c081cde87681a18d99c29eb", upload-time = "2025-01-30T00:55:31Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp312-cp312-linux_x86_64.whl", hash = "sha256:a393b506844035c0dac2f30ea8478c343b8e95a429f06f3b3cadfc7f53adb597", upload-time = "2025-01-30T00:57:08Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp312-cp312-win_amd64.whl", hash = "sha256:3313061c1fec4c7310cf47944e84513dcd27b6173b72a349bb7ca68d0ee6e9c0", upload-time = "2025-01-30T00:57:40Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313-linux_x86_64.whl", hash = "sha256:0f3bc53c988ce9568cd876a2a5316761e84a8704135ec8068f5f81b4417979cb", upload-time = "2025-01-30T00:59:14Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313-win_amd64.whl", hash = "sha256:519330eef09534acad8110b6f423d2fe58c1d8e9ada999ed077a637a0021f908", upload-time = "2025-01-30T00:59:45Z" },
+    { url = "https://download-r2.pytorch.org/whl/cu124/torch-2.6.0%2Bcu124-cp313-cp313t-linux_x86_64.whl", hash = "sha256:35cba404c0d742406cdcba1609085874bc60facdfbc50e910c47a92405fef44c", upload-time = "2025-01-30T01:01:25Z" },
+]
+
+[[package]]
 name = "torch"
 version = "2.14.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform != 'linux'",
-    "python_full_version == '3.13.*' and sys_platform != 'linux'",
-    "python_full_version == '3.12.*' and sys_platform != 'linux'",
-    "python_full_version < '3.12' and sys_platform != 'linux'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform != 'linux' and extra != 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version >= '3.14' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.13.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version == '3.12.*' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra != 'extra-9-apz-train-cuda' and extra != 'extra-9-apz-train-rocm' and extra != 'extra-9-apz-train-xpu'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "fsspec", marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "jinja2", marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'linux' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'linux' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "setuptools", marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "typing-extensions", marker = "(sys_platform != 'linux' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/9b/fd1cd143a7bda5abc1fc352ed7b431f6f52aa3c454293211a33656db2cb5/torch-2.14.1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:b6074b130fd26bc50f5d171f07dfed70db22dd0c354ab34767729249f9e0f042", size = 127281154, upload-time = "2026-09-30T17:43:58.328Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/0e/21281ff4015779255229f487f4481c5bfba53b8c83e01eaa4a8a8f1180c9/torch-2.14.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:ef1276fd07adb8d463ac402a24ea7482e45c9a42df8ebdac211aa757779200ba", size = 453982557, upload-time = "2026-09-30T17:44:52.656Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/4f/7af6fbada912b3023cc79b6ab30f89234b258a9a373880ea52ed914a2ae9/torch-2.14.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:305a61f61f35f128579f299c5bd33d475f6a01c6307336139632e30856c4854d", size = 554581699, upload-time = "2026-09-30T17:49:10.777Z" },
     { url = "https://files.pythonhosted.org/packages/fe/54/4e0a71376b2fb15aaf65ed9e6a4c8043d36f554338c6daabc63059a5e157/torch-2.14.1-cp311-cp311-win_amd64.whl", hash = "sha256:0bd2fb0c4098856bc5af59fe5988bf38bdbcdb6550b44273c12ae425cb8ec17e", size = 124096268, upload-time = "2026-09-30T17:44:04.362Z" },
     { url = "https://files.pythonhosted.org/packages/4b/3c/379349820e9a6e713826de3d0b88f07728541bdcabe2a3afd128871cdc4b/torch-2.14.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:420dbf314c180ee4b86e9bc00aee5746a7d6e5bacdd7df925af671ed393f0b2e", size = 127307099, upload-time = "2026-09-30T17:44:10.421Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/3e/474930ab971e306957ec763b7df695d659179e15ccab9e7073d47ae14ce8/torch-2.14.1-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:0b13acde294b401509830d85a8906cbf2fc97425a12a66cce1d9fa13c5106a2a", size = 453998918, upload-time = "2026-09-30T17:52:45.134Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/fd/c470857d0dfc5d4c94430658b3eed60fd5292b0bf596a8aae7b9fd66d674/torch-2.14.1-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:23011fe29a99b591eabb3a31a25080c62e2c2f0690a3c798744e5489dae50451", size = 554618695, upload-time = "2026-09-30T17:53:06.8Z" },
     { url = "https://files.pythonhosted.org/packages/ad/1a/b9648b0d228e513f69f8453ec3f90a8d436d78ff6d85a2773e539f0c07cf/torch-2.14.1-cp312-cp312-win_amd64.whl", hash = "sha256:38bee9f2a2ccfc6898172a5075e4ba52522fbe143eeb099674fc67ab390e858d", size = 124113906, upload-time = "2026-09-30T17:52:21.377Z" },
     { url = "https://files.pythonhosted.org/packages/7d/11/faaca4f8541c45127b7e0d6bb141221fe944c8466d89986b8466c6c195f9/torch-2.14.1-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:dbe359d705f4d67236743794c296c6dee93a922fd8117eff8c3e880d7d0fb2b9", size = 127315286, upload-time = "2026-09-30T17:52:27.43Z" },
+    { url = "https://files.pythonhosted.org/packages/60/1f/0330275c705b846882531c64e80d32b13fb572eeb9b995e87e84154b0712/torch-2.14.1-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:6d530bd11479fb574567af3a1f384af9a77bf5bb9550cde8080b356ca7220d5a", size = 453999200, upload-time = "2026-09-30T17:53:21.716Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/cc/bb579ac0c80e077c58204e43b37a254b74dea5873635100bea25789a55d4/torch-2.14.1-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:c8f71aabc67bcbfc9373dc131537a5968d04edce73e88add21354a7cd0a76985", size = 554618164, upload-time = "2026-09-30T17:53:42.73Z" },
     { url = "https://files.pythonhosted.org/packages/7b/4b/32c00cacbe682a4c08d9c6c3e7a7116c912184cc7155f06c64f545db97d1/torch-2.14.1-cp313-cp313-win_amd64.whl", hash = "sha256:711713391d26a1ce5e9fbc6c996d954a8c12e8825374cc77b809a6af29539b8c", size = 124113754, upload-time = "2026-09-30T17:52:33.474Z" },
     { url = "https://files.pythonhosted.org/packages/43/19/23a1aed488423a5055727256b25406e4b93bd2bcf1352bef582b9951c10c/torch-2.14.1-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:cee091caf2a6229e248daf41d18ceebf590ba02d9179205610062c64ee5fef03", size = 127325330, upload-time = "2026-09-30T17:52:54.752Z" },
+    { url = "https://files.pythonhosted.org/packages/93/f4/94219ada13edd62fda1f976163292b7b8595f1fd2f4ef74af24b3baad375/torch-2.14.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:f68f5476e2bc0e8f60b74f7ca21acda885c4477af6392f8977e4f0d1ea1aa162", size = 454016297, upload-time = "2026-09-30T17:54:03.078Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/df/23c69e9b9fd19fe6563422f1bc59f89601bda47234a89a1cf432cfde3aee/torch-2.14.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:1d4df07be7338bbcc4d54085adee21363c91314702b9bd4d78ef72ffac9465ba", size = 554621744, upload-time = "2026-09-30T17:54:22.951Z" },
     { url = "https://files.pythonhosted.org/packages/d9/dc/a36a4431ab5e3ad168a75f341e24677a4bbbf0c5dda59c97a7079262bb94/torch-2.14.1-cp314-cp314-win_amd64.whl", hash = "sha256:d02a4c48a2ca5fb7654e36e71f710f74494d83f1f10aaff8e059dd554adca956", size = 124110781, upload-time = "2026-09-30T17:53:31.141Z" },
     { url = "https://files.pythonhosted.org/packages/2d/bc/1afbd1a22f6023eafcdb9295ac1d97137a7816f54091d693701072da2218/torch-2.14.1-cp314-cp314t-macosx_14_0_arm64.whl", hash = "sha256:06c3ec25f3b497f9a73dc0c36f293f295cfe8d5584fd446238d9a501b30a66d5", size = 127657364, upload-time = "2026-09-30T17:53:53.837Z" },
+    { url = "https://files.pythonhosted.org/packages/e4/94/b97e863c9ceef2bc6e082e967cbfb9065b5e232f2a60c5af0f5115a1bc31/torch-2.14.1-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:9113f94f70429f9f302bf55b090b5411269083e8a72a5d015ffcc5a7f83f2c69", size = 453998592, upload-time = "2026-09-30T17:54:38.268Z" },
+    { url = "https://files.pythonhosted.org/packages/03/d8/8272157c438cc26a199a8fa0caf87985477b8a1ed8a09084eb2ae40609d8/torch-2.14.1-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:e65d5fe136e533b23c2d134377f7f126721c7c78dd75b3dbb735af082a8aeb85", size = 554578730, upload-time = "2026-09-30T17:54:54.838Z" },
     { url = "https://files.pythonhosted.org/packages/45/05/451a69a4287033d8f106f5c65f92c2c0c37229d81ea101d4b047caf758cc/torch-2.14.1-cp314-cp314t-win_amd64.whl", hash = "sha256:e07306caa1de2a4ac1467e11ecfc92fc44f523dd6a521145039aef46d913963c", size = 124400129, upload-time = "2026-09-30T17:54:12.306Z" },
 ]
 
@@ -865,41 +1526,111 @@ name = "torch"
 version = "2.14.1+cpu"
 source = { registry = "https://download.pytorch.org/whl/cpu" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform == 'linux'",
-    "python_full_version == '3.13.*' and sys_platform == 'linux'",
-    "python_full_version == '3.12.*' and sys_platform == 'linux'",
-    "python_full_version < '3.12' and sys_platform == 'linux'",
+    "python_full_version >= '3.14' and sys_platform != 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin'",
+    "python_full_version < '3.12' and sys_platform != 'darwin'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-cpu') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra != 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-linux_s390x.whl", hash = "sha256:cccd0a609fe3f83ab2ff651b627d5bd68c7fb33ee77a994b31c18b7c9a6f9a52", upload-time = "2026-09-30T19:47:01Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:36a03a3f87ec875ca39c8e29eccbaf0fc704605f78a3f7f179f157048c3c395e", upload-time = "2026-09-30T19:47:07Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:5e38154c8896d426a5df58bf2276b603e82184dfae4f54d77dbb212f36e34f37", upload-time = "2026-09-30T19:47:14Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-win_amd64.whl", hash = "sha256:d14b0c8a66345b7ba43adfa86fc20d89087a0a92e440004755d49d2468ddc6e0", upload-time = "2026-09-30T19:47:21Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp311-cp311-win_arm64.whl", hash = "sha256:100df7e44af5c973606cfef571a14b36b0acfd165d6bbc7aabe3edac95c9ccbd", upload-time = "2026-09-30T19:47:25Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-linux_s390x.whl", hash = "sha256:6b06a7f6275c5fdecaf1dbf5546f0820b024a97785575bb99e3d9930d83cd86b", upload-time = "2026-09-30T19:47:30Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-manylinux_2_28_aarch64.whl", hash = "sha256:2af649994b36dffc627175c3f306d9e513a309b58d4619ac7107577613336454", upload-time = "2026-09-30T19:47:36Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:5a6363570c753812540a05eb82380e329469cbe668643e88111414c12627711f", upload-time = "2026-09-30T19:47:44Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-win_amd64.whl", hash = "sha256:c52adc3bd526ff7fc5bdcc58fc4a76e6214d09951b646ffe5256ebd7ba60cef1", upload-time = "2026-09-30T19:47:50Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp312-cp312-win_arm64.whl", hash = "sha256:2f8162c6b265eaf2b0bdd6bef20e96cece430f308e1477a32d0aef51e472124c", upload-time = "2026-09-30T19:47:55Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-linux_s390x.whl", hash = "sha256:4b323c71a5ac184485c87d694842157b1eb217c425ad69761dafd379d1590521", upload-time = "2026-09-30T19:47:59Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:783a3dec10d272e40ed3f1a05ec228400300d3229b8f7521a9327645fae88646", upload-time = "2026-09-30T19:48:06Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:331fa474e26e428e2e6af1143b2fdab19cee492d7d21897b8899ce1c14755662", upload-time = "2026-09-30T19:48:15Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-win_amd64.whl", hash = "sha256:4eec5a4fadd7a18f9c75b97fdb374fbb579ce4b1604bf66eeb14dc2201d54def", upload-time = "2026-09-30T19:48:22Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp313-cp313-win_arm64.whl", hash = "sha256:a46884e8b38cbdf5af8d4fdd39223a5fa97491419c3417c93f9b3e28749fa356", upload-time = "2026-09-30T19:48:27Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-linux_s390x.whl", hash = "sha256:a7a580e3d92467516c9247a22bc805ae4f79c7b1b9a2052f92849f34e89720f5", upload-time = "2026-09-30T19:48:32Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:f56cd23a3bf003bfbed3da0645ba09b3ccc66c0a2f2ac726a9b98f34e0e4926f", upload-time = "2026-09-30T19:48:39Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:35103e180214793207f95d7e12e100ecba3ace6f5fb37e1fcefbb07e096ed180", upload-time = "2026-09-30T19:48:48Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314-win_amd64.whl", hash = "sha256:a93db7947d53caab62c2436205a60ddf9c3150c2e09eb9b24610c1c3f4cbaf99", upload-time = "2026-09-30T19:48:56Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-linux_s390x.whl", hash = "sha256:f67ee1fe9c9f7c6ad3785d150bc3cecda442a5880a6d40816e13fee475d97dd8", upload-time = "2026-09-30T19:49:02Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:2547c9f32f8fd9c8fced83119269d85519b123d4e8c87eba71660fe3a6996336", upload-time = "2026-09-30T19:49:10Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:7d2c35e915793f3ae82e8ee4041a960140bcd0bd35f3ec6eb06e1f1f37a89dba", upload-time = "2026-09-30T19:49:18Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp314-cp314t-win_amd64.whl", hash = "sha256:5c0d1ef51127c9c65ec6394226b82ef1a5f3cd0ab8ffb10f48cc5c08aa72a5cf", upload-time = "2026-09-30T19:49:27Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315-manylinux_2_28_aarch64.whl", hash = "sha256:88634fad89f7b953acd011bad0d5c131d269aa71a7de6e0ef2344e3a2c95fabc", upload-time = "2026-09-30T19:49:34Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:94edee897fbd15a73f91aa38e22e2d2b7b60ac3acf6e8afc6b8dad89229c810c", upload-time = "2026-09-30T19:49:42Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315-win_amd64.whl", hash = "sha256:e799161f94d97485857ec82424e40a83d7648ab02c03e3d6e71c7838a4d7b89e", upload-time = "2026-09-30T19:49:50Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315t-manylinux_2_28_aarch64.whl", hash = "sha256:930d724490955b822c0b005499128279e54876a318b51fdb9b9da35e0230cc0f", upload-time = "2026-09-30T19:49:57Z" },
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:2948f065d848178a0402791baf87493b7ebf067dae48a8e04c498d6668e94895", upload-time = "2026-09-30T19:50:06Z" },
+    { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.14.1%2Bcpu-cp315-cp315t-win_amd64.whl", hash = "sha256:192745b92c9ac392298e73de950cd02d8a7886117923073d890625622d343ede", upload-time = "2026-09-30T19:50:14Z" },
+]
+
+[[package]]
+name = "torch"
+version = "2.14.1+xpu"
+source = { registry = "https://download.pytorch.org/whl/xpu" }
+resolution-markers = [
+    "python_full_version >= '3.14' and sys_platform != 'darwin'",
+    "python_full_version == '3.13.*' and sys_platform != 'darwin'",
+    "python_full_version == '3.12.*' and sys_platform != 'darwin'",
+    "python_full_version < '3.12' and sys_platform != 'darwin'",
+]
+dependencies = [
+    { name = "dpcpp-cpp-rt", marker = "sys_platform != 'darwin'" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "impi-rt", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "intel-cmplr-lib-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-cmplr-lib-ur", marker = "sys_platform != 'darwin'" },
+    { name = "intel-cmplr-lic-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-opencl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "intel-openmp", marker = "sys_platform != 'darwin'" },
+    { name = "intel-pti", marker = "sys_platform != 'darwin'" },
+    { name = "intel-sycl-rt", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "mkl", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-xpu') or (python_full_version >= '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and sys_platform != 'darwin' and extra == 'extra-9-apz-train-xpu') or (python_full_version < '3.12' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (sys_platform == 'darwin' and extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu')" },
+    { name = "oneccl", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "oneccl-devel", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "onemkl-license", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-blas", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-dft", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-lapack", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-rng", marker = "sys_platform != 'darwin'" },
+    { name = "onemkl-sycl-sparse", marker = "sys_platform != 'darwin'" },
+    { name = "pyzes", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "sympy", version = "1.14.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'darwin'" },
+    { name = "tbb", marker = "sys_platform != 'darwin'" },
+    { name = "tcmlib", marker = "sys_platform != 'darwin'" },
+    { name = "triton-xpu", marker = "python_full_version < '3.15' and sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+    { name = "umf", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:8b1d4b6273fae817dcc8abd68351aa51e82f3ab3685272e6b6c7695e1c3c5caa", upload-time = "2026-09-30T22:00:13Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp311-cp311-win_amd64.whl", hash = "sha256:3d086d377ba74ffdf464c8e17991307203d9664029b1e7ee545260f35cc3ccd7", upload-time = "2026-09-30T22:00:50Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp312-cp312-manylinux_2_28_x86_64.whl", hash = "sha256:a9fe5a5bffca6d6430028c532c010b9eae045489c069f77e6db3dc9f7d0cc59b", upload-time = "2026-09-30T22:01:29Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp312-cp312-win_amd64.whl", hash = "sha256:5023ab23acb1fee3f14559196a8db8e8014193c124ad0804d046a3bad82b1c63", upload-time = "2026-09-30T22:02:10Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:295895837be1b34a0f513e18e0bca00beb28a85daee73ec27734a866dd96ca31", upload-time = "2026-09-30T22:02:54Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp313-cp313-win_amd64.whl", hash = "sha256:1427880161b8065892e757dbd86c6df71b12e1f90ce3cb44c2b746fa584a00d3", upload-time = "2026-09-30T22:03:38Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:4e0814459b341bca05bf688832a23c8f89d14b2f91a0e037f6f52207e29bcb8b", upload-time = "2026-09-30T22:04:22Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp314-cp314-win_amd64.whl", hash = "sha256:740a95ff335b8cdffb16b542096a2f8e2f21ce058f4fe23179a02557c5132ed4", upload-time = "2026-09-30T22:05:07Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:edb132ae8b61bb115d508e7fcb92f3cc0b41754fc72b7922762d271b56ceb78b", upload-time = "2026-09-30T22:05:50Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp314-cp314t-win_amd64.whl", hash = "sha256:20cc4e1be82ee90edfb819cea84154e3de7ce28e0a7aee2761da41a11b920f23", upload-time = "2026-09-30T22:06:34Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp315-cp315-manylinux_2_28_x86_64.whl", hash = "sha256:7b26ab7f549c8737726040c08b6477ef129281304d49a0a8e413f4bc3d94a287", upload-time = "2026-09-30T22:07:16Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp315-cp315-win_amd64.whl", hash = "sha256:c64014886a89464f85053b673c77729e336a098fd786a115828a4ec513f37bcd", upload-time = "2026-09-30T22:08:02Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp315-cp315t-manylinux_2_28_x86_64.whl", hash = "sha256:2f7a1fd8bf1910cbd639f5121a2822c38a5cff580f831e6cd495bdc78297edfb", upload-time = "2026-09-30T22:08:45Z" },
+    { url = "https://download-r2.pytorch.org/whl/xpu/torch-2.14.1%2Bxpu-cp315-cp315t-win_amd64.whl", hash = "sha256:32dd809fe8feaa6c1cba0584f22d75c1ddfa8891b855df991de35a64b6ecc76d", upload-time = "2026-09-30T22:14:53Z" },
 ]
 
 [[package]]
@@ -907,11 +1638,45 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-cuda') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cpu' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-rocm') or (extra == 'extra-9-apz-train-cuda' and extra == 'extra-9-apz-train-xpu') or (extra == 'extra-9-apz-train-rocm' and extra == 'extra-9-apz-train-xpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/03/921a3d3c75785aca9ebfbfcabfbc3a1be12e2ab5265deb026d55a5a3f83e/tqdm-4.70.1-py3-none-any.whl", hash = "sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73", size = 80199, upload-time = "2026-09-11T07:25:14.599Z" },
+]
+
+[[package]]
+name = "triton"
+version = "3.2.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/2e/757d2280d4fefe7d33af7615124e7e298ae7b8e3bc4446cdb8e88b0f9bab/triton-3.2.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8009a1fb093ee8546495e96731336a33fb8856a38e45bb4ab6affd6dbc3ba220", size = 253157636, upload-time = "2025-01-22T19:12:51.322Z" },
+    { url = "https://files.pythonhosted.org/packages/06/00/59500052cb1cf8cf5316be93598946bc451f14072c6ff256904428eaf03c/triton-3.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8d9b215efc1c26fa7eefb9a157915c92d52e000d2bf83e5f69704047e63f125c", size = 253159365, upload-time = "2025-01-22T19:13:24.648Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/30/37a3384d1e2e9320331baca41e835e90a3767303642c7a80d4510152cbcf/triton-3.2.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:e5dfa23ba84541d7c0a531dfce76d8bcd19159d50a4a8b14ad01e91734a5c1b0", size = 253154278, upload-time = "2025-01-22T19:13:54.221Z" },
+]
+
+[[package]]
+name = "triton-xpu"
+version = "3.8.0"
+source = { registry = "https://download.pytorch.org/whl/xpu" }
+dependencies = [
+    { name = "pyelftools", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d63f0326675de71a00ef3c67873e952954b2ed4f0e97dfd98aba4562edf03da2", upload-time = "2026-09-02T01:10:20Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp311-cp311-win_amd64.whl", hash = "sha256:815b94eaa48c56577217023898c39f746a52ab905e2cb7f27ec862e59d727995", upload-time = "2026-09-02T01:10:31Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b19f47726756b472ec744610e30ced1008f4911306a94b5ca5224b71a11c2149", upload-time = "2026-09-02T01:10:42Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:cbcceb5cd1baf7b296428477f5ff27113c1507245f10bd8c870645ab353619dc", upload-time = "2026-09-02T01:10:54Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:879b027304e617911a9d8728a4cc0e31512f3ccbafdcd07dba573bdd60cfb085", upload-time = "2026-09-02T01:11:03Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:474fe1befdfdd0733cd5415899d9e3891996860c0d86efb459bb4c7bf3d122df", upload-time = "2026-09-02T01:11:14Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:afc5bbd137abffe8810f8b8b7dc654ff37497bb28bb293d3fea6a0e4f1fbab09", upload-time = "2026-09-02T01:11:25Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp314-cp314-win_amd64.whl", hash = "sha256:75a1d076576610661f5eb5701f5e7ab82d74c5ddb75975efa78d7cf6db81d6d1", upload-time = "2026-09-02T01:11:36Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp314-cp314t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ef124d8a4bca148a4386e054bf1185e37184bc67c8b6bd4aa7af52049500c7e2", upload-time = "2026-09-02T01:11:47Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp314-cp314t-win_amd64.whl", hash = "sha256:5d76e2d29ec4a5535664af7cd0ecf1758f19ee8b87b7424e0c41312355cfb337", upload-time = "2026-09-02T01:11:58Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ae62d2425ad36aea135f9d9a9a331e3a5ada6ac2ca65f60e53fb450c5a883219", upload-time = "2026-09-02T01:12:09Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp315-cp315-win_amd64.whl", hash = "sha256:cd15dffba8e3b434c2637794beb03323e8d4ed417eac3ded1605519a2afe7a08", upload-time = "2026-09-02T01:12:20Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp315-cp315t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:138970b2e5b4723b990b8aac9d5228650f9066b1547cad1204b79fc063409797", upload-time = "2026-09-02T01:12:32Z" },
+    { url = "https://download-r2.pytorch.org/whl/triton_xpu-3.8.0-cp315-cp315t-win_amd64.whl", hash = "sha256:83d16b713b3cf9583f82a3f3491a82cb2bc9a33b515ad89e186090f8711c507a", upload-time = "2026-09-02T01:12:44Z" },
 ]
 
 [[package]]
@@ -921,4 +1686,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5", size = 113555, upload-time = "2026-07-02T08:40:05.92Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8", size = 45571, upload-time = "2026-07-02T08:40:04.659Z" },
+]
+
+[[package]]
+name = "umf"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "tcmlib", marker = "sys_platform != 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/72/2e0182f4e6a727a15d0a8a99a82182a4f5bdec1a4f5767acfd2abdc72070/umf-1.1.0-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:567152c5ee6b8e16cc56b29a8a9a6b918de1febf89877f71ea2e8247ef39fc32", size = 424455, upload-time = "2026-04-24T14:13:51.436Z" },
+    { url = "https://files.pythonhosted.org/packages/2d/43/d89fee46bed22a461714a8786b833a89bff2f0a5e058b02eed3be842752e/umf-1.1.0-py2.py3-none-win_amd64.whl", hash = "sha256:a8c5ff84901fe6348715b6c1c85de4d195a6c69185d99ce4ebf7449b5d04011c", size = 289901, upload-time = "2026-04-24T14:08:31.647Z" },
 ]

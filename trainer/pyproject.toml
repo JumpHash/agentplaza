@@ -15,8 +15,10 @@ dependencies = [
 [project.optional-dependencies]
 cpu = ["torch>=2.5"]
 cuda = ["torch>=2.5"]
-rocm = ["torch>=2.5"]
-xpu = ["torch>=2.5"]
+rocm = ["torch>=2.5", "pytorch-triton-rocm; sys_platform == 'linux'"]
+# AMD's and Intel's torch builds take their Triton from the same index as torch, which uv reads only for what is
+# named here, so each is named with its build.
+xpu = ["torch>=2.10", "triton-xpu; sys_platform != 'darwin'"]
 search = ["optuna>=3.6"]
 
 [dependency-groups]
@@ -61,6 +63,8 @@ torch = [
   { index = "pytorch-rocm", extra = "rocm", marker = "sys_platform == 'linux'" },
   { index = "pytorch-xpu", extra = "xpu", marker = "sys_platform != 'darwin'" },
 ]
+triton-xpu = [{ index = "pytorch-xpu", extra = "xpu", marker = "sys_platform != 'darwin'" }]
+pytorch-triton-rocm = [{ index = "pytorch-rocm", extra = "rocm", marker = "sys_platform == 'linux'" }]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
