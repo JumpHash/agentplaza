@@ -141,7 +141,7 @@ impl Registry {
             &mut inner.per_kind,
             &mut inner.folded,
             self.cap,
-            key,
+            &key,
         )
     }
 
@@ -153,7 +153,7 @@ impl Registry {
             &mut inner.per_kind,
             &mut inner.folded,
             self.cap,
-            key,
+            &key,
         )
     }
 
@@ -165,7 +165,7 @@ impl Registry {
             &mut inner.per_kind,
             &mut inner.folded,
             self.cap,
-            key,
+            &key,
         )
     }
 
@@ -257,23 +257,24 @@ fn counts_toward_cap(key: &SeriesKey) -> bool {
 
 /// The handle for `key` in one of the registry's maps: the existing one, a new one while the kind is under the
 /// cap, or else the overflow series of the metric (counted in `folded`).
+/// The key is borrowed, so a hit neither moves it nor drops it under the lock.
 fn series<T: Default + Clone>(
     map: &mut HashMap<SeriesKey, T>,
     per_kind: &mut HashMap<EntityKind, usize>,
     folded: &mut u64,
     cap: usize,
-    key: SeriesKey,
+    key: &SeriesKey,
 ) -> T {
-    if let Some(existing) = map.get(&key) {
+    if let Some(existing) = map.get(key) {
         return existing.clone();
     }
-    if !counts_toward_cap(&key) {
-        return map.entry(key).or_default().clone();
+    if !counts_toward_cap(key) {
+        return map.entry(key.clone()).or_default().clone();
     }
     let used = per_kind.entry(key.kind).or_insert(0);
     if *used < cap {
         *used += 1;
-        return map.entry(key).or_default().clone();
+        return map.entry(key.clone()).or_default().clone();
     }
     *folded += 1;
     let overflow = SeriesKey::new(&key.metric, key.kind, OTHER);

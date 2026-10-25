@@ -14,7 +14,12 @@ apz-store = { path = "../apz-store" }
 
 [dev-dependencies]
 base64.workspace = true
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 flate2 = "1.1"
+
+[[bench]]
+name = "metrics"
+harness = false
 
 [lints]
 workspace = true

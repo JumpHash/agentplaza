@@ -1,6 +1,6 @@
 //! The threaded server.
 
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -47,6 +47,13 @@ const BODY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The slowest body transfer the deadline allows for: bytes per second.
 const BODY_MIN_RATE: u64 = 256 << 10;
+
+/// The most of a response's body that is copied in front of the write of its head, so that a body up
+/// to this size goes out in one write, with its head; a larger body is written after the head.
+const COALESCE: usize = 8 << 10;
+
+/// The room a response's head has beside its body in that copy.
+const HEAD_ROOM: usize = 1 << 10;
 
 /// Decides, from a request's line and headers alone, whether its body is read at all: `Err` is the
 /// answer sent without reading it, `Ok` the most body bytes this caller may send (never more than the
@@ -249,8 +256,20 @@ fn serve_connection<S, H>(
     // A client reading to the close (no length) needs the server to close first.
     let wait = pooled && matches!(response.body, Body::Bytes(_));
     let mut connection = Buffered(reader);
+    // A body of bytes goes out with its head in one write, one flush; a stream or an upgrade is
+    // written straight through, as it is produced.
+    let written = if let Body::Bytes(bytes) = &response.body {
+        let capacity = bytes.len().min(COALESCE) + HEAD_ROOM;
+        let mut out = BufWriter::with_capacity(capacity, &mut connection);
+        let result = response.write_to(&mut out);
+        // A write that failed is not sent again by the buffer's drop: the client has gone or stalled.
+        let _ = out.into_parts();
+        result
+    } else {
+        response.write_to(&mut connection)
+    };
     // A client that hung up has nobody left to tell.
-    match response.write_to(&mut connection) {
+    match written {
         Ok(Some(run)) => run(Box::new(connection)),
         Ok(None) if wait => await_close(&mut connection),
         _ => {}

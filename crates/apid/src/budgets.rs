@@ -1234,7 +1234,9 @@ mod tests {
     }
 
     /// The `budget` frames published since the subscription, as (owner, the frame's data).
-    fn budget_frames(rx: &std::sync::mpsc::Receiver<crate::events::Frame>) -> Vec<(String, Value)> {
+    fn budget_frames(
+        rx: &std::sync::mpsc::Receiver<Arc<crate::events::Frame>>,
+    ) -> Vec<(String, Value)> {
         rx.try_iter()
             .filter(|f| f.kind == "budget")
             .map(|f| {

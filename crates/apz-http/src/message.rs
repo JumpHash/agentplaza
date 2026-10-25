@@ -1,6 +1,7 @@
 //! Requests, responses, and the SSE writer.
 
-use std::fmt;
+use std::collections::BTreeMap;
+use std::fmt::{self, Write as _};
 use std::io::{self, BufRead, Read, Write};
 use std::net::IpAddr;
 
@@ -85,7 +86,8 @@ impl Request {
         reader: &mut impl BufRead,
         limits: Limits,
     ) -> Result<(Self, Option<usize>), &'static str> {
-        let mut line = Vec::new();
+        // One buffer for every line of the head; most lines fit in it.
+        let mut line = Vec::with_capacity(256);
         read_line(reader, limits.max_head, &mut line)?;
         let request_line =
             std::str::from_utf8(&line).map_err(|_| "the request line is not ASCII")?;
@@ -111,6 +113,7 @@ impl Request {
             method: method.to_string(),
             path: path.to_string(),
             query: query.to_string(),
+            headers: Vec::with_capacity(8),
             ..Request::default()
         };
 
@@ -129,7 +132,9 @@ impl Request {
             let Some((name, value)) = header.split_once(':') else {
                 return Err("a request header has no `:`");
             };
-            let name = name.to_ascii_lowercase();
+            // Lower-cased once, in the String that is kept.
+            let mut name = name.to_owned();
+            name.make_ascii_lowercase();
             let value = value.trim_matches([' ', '\t']);
             match name.as_str() {
                 "content-length" => {
@@ -220,16 +225,19 @@ pub fn host_is_loopback(host: &str) -> bool {
     } else {
         host.split(':').next().unwrap_or_default()
     };
-    let name = name.to_ascii_lowercase();
+    // No lower-cased copy: an address parses in either case, and the names below compare ignoring ASCII case.
     // A loopback address literal: all of 127/8 is loopback (Linux routes it; a node's mesh listens on 127.0.0.2 there), not
     // only 127.0.0.1. An address literal is no domain a page can rebind, so it is trusted as 127.0.0.1 is.
     if name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback()) {
         return true;
     }
-    matches!(name.as_str(), "localhost")
-        || name
-            .strip_suffix(".localhost")
-            .is_some_and(|label| !label.is_empty())
+    // The suffix is compared on its own bytes; `get` refuses a cut inside a character, so no label can panic here.
+    const SUFFIX: &str = ".localhost";
+    name.eq_ignore_ascii_case("localhost")
+        || (name.len() > SUFFIX.len()
+            && name
+                .get(name.len() - SUFFIX.len()..)
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(SUFFIX)))
 }
 
 /// Writes a streamed body to the connection.
@@ -267,9 +275,12 @@ pub struct Response {
 
 impl Response {
     pub fn new(status: u16, content_type: &str, body: impl Into<Vec<u8>>) -> Self {
+        // Room for the type and for the ETag `revalidated` adds, so the list does not regrow on a GET.
+        let mut headers = Vec::with_capacity(4);
+        headers.push(("Content-Type".to_string(), content_type.to_string()));
         Self {
             status,
-            headers: vec![("Content-Type".to_string(), content_type.to_string())],
+            headers,
             body: Body::Bytes(body.into()),
         }
     }
@@ -284,11 +295,9 @@ impl Response {
 
     /// `{"error": message}`.
     pub fn error(status: u16, message: &str) -> Self {
-        Self::new(
-            status,
-            JSON,
-            serde_json::json!({ "error": message }).to_string(),
-        )
+        // The object is written from the borrowed message: no JSON tree and no copies of it.
+        let body = serde_json::to_vec(&BTreeMap::from([("error", message)])).unwrap_or_default();
+        Self::new(status, JSON, body)
     }
 
     pub fn text(status: u16, text: &str) -> Self {
@@ -301,7 +310,12 @@ impl Response {
         Self {
             status: 200,
             headers: vec![("Content-Type".to_string(), "text/event-stream".to_string())],
-            body: Body::Stream(Box::new(move |out| stream(&mut Sse { out }))),
+            body: Body::Stream(Box::new(move |out| {
+                stream(&mut Sse {
+                    out,
+                    frame: Vec::new(),
+                })
+            })),
         }
     }
 
@@ -320,31 +334,31 @@ impl Response {
         let Body::Bytes(bytes) = &self.body else {
             return self;
         };
-        let tag = match self
+        // A tag the handler set stays; otherwise the tag of this body is added.
+        if !self
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("etag"))
+        {
+            self.headers
+                .push(("ETag".to_string(), apz_cache::etag(bytes)));
+        }
+        let tag = self
             .headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("etag"))
-        {
-            Some((_, tag)) => tag.clone(),
-            None => {
-                let tag = apz_cache::etag(bytes);
-                self.headers.push(("ETag".to_string(), tag.clone()));
-                tag
-            }
-        };
-        if apz_cache::not_modified(request.header("if-none-match"), &tag) {
-            let headers = self
-                .headers
-                .into_iter()
-                .filter(|(name, _)| !name.eq_ignore_ascii_case("content-type"))
-                .collect();
-            return Response {
-                status: 304,
-                headers,
-                body: Body::Bytes(Vec::new()),
-            };
+            .map_or("", |(_, tag)| tag.as_str());
+        if !apz_cache::not_modified(request.header("if-none-match"), tag) {
+            return self;
         }
-        self
+        // The 304 keeps the other headers, minus the type, and drops them in place.
+        self.headers
+            .retain(|(name, _)| !name.eq_ignore_ascii_case("content-type"));
+        Response {
+            status: 304,
+            headers: self.headers,
+            body: Body::Bytes(Vec::new()),
+        }
     }
 
     /// The body's bytes; empty for a stream.
@@ -359,15 +373,26 @@ impl Response {
     /// headers say `Connection: Upgrade`) and returns its closure, which the caller runs on the
     /// connection; every other body returns `None`.
     pub fn write_to(self, out: &mut impl Write) -> io::Result<Option<UpgradeFn>> {
-        let mut head = format!("HTTP/1.1 {} {}\r\n", self.status, reason(self.status));
+        // The head is built in one buffer, sized from its headers, with no temporary string per line.
+        let size: usize = self
+            .headers
+            .iter()
+            .map(|(name, value)| name.len() + value.len() + 4)
+            .sum();
+        let mut head = String::with_capacity(128 + size);
+        // Writing into a String cannot fail.
+        let _ = write!(head, "HTTP/1.1 {} {}\r\n", self.status, reason(self.status));
         for (name, value) in &self.headers {
-            head.push_str(&format!("{name}: {value}\r\n"));
+            head.push_str(name);
+            head.push_str(": ");
+            head.push_str(value);
+            head.push_str("\r\n");
         }
         // A 304 has no body and says nothing of its length.
         if let Body::Bytes(bytes) = &self.body
             && self.status != 304
         {
-            head.push_str(&format!("Content-Length: {}\r\n", bytes.len()));
+            let _ = write!(head, "Content-Length: {}\r\n", bytes.len());
         }
         if !self
             .headers
@@ -436,6 +461,8 @@ fn reason(status: u16) -> &'static str {
 /// next write.
 pub struct Sse<'a> {
     out: &'a mut dyn Write,
+    /// The frame being written, kept from one event to the next so each reuses its space.
+    frame: Vec<u8>,
 }
 
 impl Sse<'_> {
@@ -447,9 +474,14 @@ impl Sse<'_> {
                 "an SSE field spans lines",
             ));
         }
+        self.frame.clear();
+        self.frame.extend_from_slice(b"event: ");
+        self.frame.extend_from_slice(event.as_bytes());
+        self.frame.extend_from_slice(b"\ndata: ");
+        self.frame.extend_from_slice(data.as_bytes());
+        self.frame.extend_from_slice(b"\n\n");
         // One write per frame: a reader never sees half of one.
-        self.out
-            .write_all(format!("event: {event}\ndata: {data}\n\n").as_bytes())?;
+        self.out.write_all(&self.frame)?;
         self.out.flush()
     }
 

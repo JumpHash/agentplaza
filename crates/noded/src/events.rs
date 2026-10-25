@@ -133,7 +133,7 @@ fn quote(value: &str) -> String {
 /// raises when it cut the subscriber off for a full queue.
 #[derive(Debug)]
 pub struct Subscription {
-    events: Receiver<Event>,
+    events: Receiver<Arc<Event>>,
     overflowed: Arc<AtomicBool>,
 }
 
@@ -147,7 +147,7 @@ impl Subscription {
 /// The bus's side of one subscriber.
 #[derive(Debug)]
 struct Subscriber {
-    sender: SyncSender<Event>,
+    sender: SyncSender<Arc<Event>>,
     overflowed: Arc<AtomicBool>,
 }
 
@@ -185,11 +185,14 @@ impl EventBus {
     /// Publishes one event to every subscriber, dropping the ones that went
     /// away and the ones whose queue is full.
     pub fn publish(&self, event: Event) {
+        // One allocation shared by every subscriber: each send clones the
+        // `Arc`, so the serial text is never copied per subscriber.
+        let event = Arc::new(event);
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(
-                |subscriber| match subscriber.sender.try_send(event.clone()) {
+                |subscriber| match subscriber.sender.try_send(Arc::clone(&event)) {
                     Ok(()) => true,
                     // The flag is raised before the sender is dropped (the drop
                     // is what ends the subscription's queue).
@@ -304,10 +307,10 @@ mod tests {
         });
         assert_eq!(
             live.events.recv_timeout(Duration::from_secs(1)),
-            Ok(Event::Run {
+            Ok(Arc::new(Event::Run {
                 id: "r1".to_string(),
                 state: "starting"
-            })
+            }))
         );
         // The dead subscriber was dropped on publish: the bus holds one sender.
         assert_eq!(

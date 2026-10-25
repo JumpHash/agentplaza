@@ -66,7 +66,7 @@ impl Frame {
 /// socket then closes as too slow, after the events it already holds.
 #[derive(Default)]
 pub struct Bus {
-    subscribers: Mutex<Vec<SyncSender<Frame>>>,
+    subscribers: Mutex<Vec<SyncSender<Arc<Frame>>>>,
     instruments: OnceLock<Instruments>,
     /// The last sequence number given out.
     seq: AtomicU64,
@@ -113,26 +113,27 @@ impl Bus {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         // Numbered under the subscribers' lock, so every subscriber receives events in their seq order.
-        let frame = Frame {
+        // One allocation for all subscribers: each gets a pointer to it, not a copy.
+        let frame = Arc::new(Frame {
             kind: kind.to_string(),
             data,
             queued: Instant::now(),
             seq: self.seq.fetch_add(1, Ordering::AcqRel) + 1,
-        };
-        subscribers.retain(|s| s.try_send(frame.clone()).is_ok());
+        });
+        subscribers.retain(|s| s.try_send(Arc::clone(&frame)).is_ok());
         if let Some(instruments) = self.instruments.get() {
             instruments.clients.set(subscribers.len() as f64);
         }
     }
 
     /// A subscription with a queue of [`QUEUE`] events.
-    pub fn subscribe(&self) -> Receiver<Frame> {
+    pub fn subscribe(&self) -> Receiver<Arc<Frame>> {
         self.subscribe_from().0
     }
 
     /// A subscription, and the sequence number of the last event published before it: the first event it receives
     /// is the next one.
-    pub fn subscribe_from(&self) -> (Receiver<Frame>, u64) {
+    pub fn subscribe_from(&self) -> (Receiver<Arc<Frame>>, u64) {
         let (tx, rx) = std::sync::mpsc::sync_channel(QUEUE);
         let mut subscribers = self
             .subscribers
@@ -288,7 +289,7 @@ pub fn routes(router: Router<App>) -> Router<App> {
 /// Forwards the bus's events to `socket` until it ends: a client message closes it (read-only,
 /// 1008), a queue that overflowed closes it (too slow, 1013), and a dead connection just ends. Each
 /// event's wait since it was published goes into `lag` when one is given.
-fn serve(mut socket: Socket, events: Receiver<Frame>, lag: Option<Hist>) {
+fn serve(mut socket: Socket, events: Receiver<Arc<Frame>>, lag: Option<Hist>) {
     loop {
         loop {
             match events.try_recv() {

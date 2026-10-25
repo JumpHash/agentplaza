@@ -1174,7 +1174,7 @@ More.
             .map(|f| {
                 let data: Value = serde_json::from_str(&f.data).expect("JSON data");
                 (
-                    f.kind,
+                    f.kind.clone(),
                     data["id"].as_str().unwrap_or_default().to_string(),
                     data["action"].as_str().unwrap_or_default().to_string(),
                 )

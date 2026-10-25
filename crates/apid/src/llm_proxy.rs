@@ -742,11 +742,23 @@ impl InFlight {
 
     /// Ends the open call on the frame that ends it.
     fn frame(&mut self, frame: &str) {
-        let Ok(event) = serde_json::from_str::<Value>(frame) else {
+        // Every frame is read only for its type. The whole frame is built into a `Value` only when it
+        // completes the call, since its usage is read from there.
+        #[derive(serde::Deserialize)]
+        struct Kind<'a> {
+            #[serde(borrow, rename = "type")]
+            kind: Option<std::borrow::Cow<'a, str>>,
+        }
+        let Ok(Kind { kind }) = serde_json::from_str::<Kind>(frame) else {
             return;
         };
-        let usage = match event.get("type").and_then(Value::as_str) {
-            Some("response.completed") => tokens_in(&event),
+        let usage = match kind.as_deref() {
+            Some("response.completed") => {
+                let Ok(event) = serde_json::from_str::<Value>(frame) else {
+                    return;
+                };
+                tokens_in(&event)
+            }
             Some("response.failed" | "response.incomplete" | "error") => None,
             _ => return,
         };
@@ -1198,15 +1210,28 @@ fn relay_gemini(
 /// `on_event`. Returns the stream's tail, for metering. `first_data` is set to the time the first
 /// data line arrived, and left alone once it is set.
 fn read_sse(
-    reader: impl BufRead,
+    mut reader: impl BufRead,
     first_data: &mut Option<Instant>,
     mut on_event: impl FnMut(&str, &str) -> io::Result<()>,
 ) -> io::Result<String> {
     let mut event = String::new();
     let mut data = String::new();
     let mut tail = String::new();
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    // One line buffer for the whole stream: `clear` keeps its capacity, where `lines` allocates per line.
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        // The line ending is stripped as `lines` strips it: a `\n`, then a `\r` before it.
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
         if line.is_empty() {
             if !data.is_empty() {
                 let kind = if event.is_empty() {
@@ -1219,7 +1244,8 @@ fn read_sse(
             event.clear();
             data.clear();
         } else if let Some(name) = line.strip_prefix("event:") {
-            event = name.trim().to_string();
+            event.clear();
+            event.push_str(name.trim());
         } else if let Some(text) = line.strip_prefix("data:") {
             first_data.get_or_insert_with(Instant::now);
             if !data.is_empty() {
