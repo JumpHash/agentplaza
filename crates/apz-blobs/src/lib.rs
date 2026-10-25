@@ -64,6 +64,14 @@ struct Loc {
     raw: u64,
 }
 
+/// What a [`Blobs::fetch_missing`] did: the chunks it fetched, the chunks it already held, and the bytes fetched.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Fetched {
+    pub fetched: usize,
+    pub reused: usize,
+    pub bytes: u64,
+}
+
 /// What a sweep did.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SweepReport {
@@ -428,6 +436,44 @@ impl Blobs {
             return Err(format!("the chunks do not add up to {}", hash.short()));
         }
         self.write_entry_raw(*hash, &manifest, FLAG_MANIFEST, total)
+    }
+
+    /// Records a chunked blob another store published (`root`, listed as `chunks`), fetching only the chunks this
+    /// store lacks: `fetch` gives the bytes of a missing chunk (the publisher's copy), which must have the listed
+    /// length and hash. A blob this store already holds is not fetched at all.
+    pub fn fetch_missing(
+        &self,
+        root: &Hash,
+        chunks: &[(Hash, u64)],
+        mut fetch: impl FnMut(&Hash) -> Result<Vec<u8>, String>,
+    ) -> Result<Fetched, String> {
+        if self.has(root) {
+            return Ok(Fetched {
+                fetched: 0,
+                reused: chunks.len(),
+                bytes: 0,
+            });
+        }
+        let mut out = Fetched::default();
+        for (h, len) in chunks {
+            if self.has(h) {
+                out.reused += 1;
+                continue;
+            }
+            let bytes = fetch(h)?;
+            if bytes.len() as u64 != *len {
+                return Err(format!(
+                    "chunk {} is {} bytes, not {len}",
+                    h.short(),
+                    bytes.len()
+                ));
+            }
+            self.put_checked(h, &bytes)?;
+            out.fetched += 1;
+            out.bytes += len;
+        }
+        self.put_manifest(root, chunks)?;
+        Ok(out)
     }
 
     /// The size of a blob's content.

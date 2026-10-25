@@ -1,0 +1,15 @@
+# The review recipe (PLAN 21.1): today's review graphs (code, docs and research: review_graph/recipe.rs) run as one
+# step. The review graph decides its own steps and rounds; the run records its outcome here: a pass passes the gate,
+# a rework or a failure does not, and an owner's ruling leaves the run open until the owner answers.
+id = "review"
+name = "Review"
+version = 1
+inputs = ["task", "revision"]
+outputs = ["review"]
+triggers = ["task.sealed"]
+
+[[steps]]
+id = "graph"
+engine = "review_graph"
+gate = ["passed"]
+output = "review"

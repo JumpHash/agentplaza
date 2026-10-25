@@ -178,8 +178,8 @@ export function sidebar(opts: SidebarOpts): Sidebar {
     ? h('div.ide-proj', null,
         projectName,
         h('span.ide-proj-l', null,
-          ...(['tasks', 'board', 'work', 'settings'] as const).map((k) =>
-            h('a', { href: k === 'settings' ? hrefIn(inProject, 'projects', inProject, 'settings') : k === 'work' ? hrefIn(inProject, 'work', inProject) : hrefIn(inProject, k) }, k.charAt(0).toUpperCase() + k.slice(1)))))
+          ...(['tasks', 'board', 'work', 'previews', 'settings'] as const).map((k) =>
+            h('a', { href: k === 'settings' || k === 'previews' ? hrefIn(inProject, 'projects', inProject, k) : k === 'work' ? hrefIn(inProject, 'work', inProject) : hrefIn(inProject, k) }, k.charAt(0).toUpperCase() + k.slice(1)))))
     : null;
   const listHeadText = h('span', null, '');
   const listHead = h('div.inav-lh', null, listHeadText);

@@ -1,0 +1,22 @@
+meta {
+  name: Refuse a node's link query without its signature
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/v1/nodes/n1/link
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the link, with the mesh bearer, is never answered to a stranger", function () {
+    expect(res.getBody()).to.not.have.property("mesh_token");
+  });
+}

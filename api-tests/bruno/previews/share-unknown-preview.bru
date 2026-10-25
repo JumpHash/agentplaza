@@ -1,0 +1,38 @@
+meta {
+  name: Answer 404 when sharing a preview the hub does not know
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/previews/{{id}}/links
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "scope": "view",
+    "label": "review",
+    "expires_in_s": 86400
+  }
+}
+
+vars:pre-request {
+  id: pv999
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: eq "no preview pv999"
+}
+
+docs {
+  A link is made on a preview that has not ended: the answer is the link, its token once (in its url) and the path
+  of its QR code. Here the preview is unknown, so the hub answers 404 before it reads the body.
+}

@@ -21,6 +21,11 @@ pub const USAGE_WORK_ADD: &str = include_str!("../../sql/queries/usage_work_add.
 pub const USAGE_WORK_TOTALS: &str = include_str!("../../sql/queries/usage_work_totals.sql");
 pub const USAGE_WORKS_PRUNE: &str = include_str!("../../sql/queries/usage_works_prune.sql");
 
+// The eval records (evals.rs): a page of runs, the scores, and the landed flag of a task's runs.
+pub const EVAL_RUNS_PAGE: &str = include_str!("../../sql/queries/eval_runs_page.sql");
+pub const EVAL_SCORES: &str = include_str!("../../sql/queries/eval_scores.sql");
+pub const EVAL_RUNS_LANDED: &str = include_str!("../../sql/queries/eval_runs_landed.sql");
+
 // A page of the vault's audit log (vault/audit.rs).
 pub const VAULT_AUDIT_PAGE: &str = include_str!("../../sql/queries/vault_audit_page.sql");
 
@@ -169,6 +174,20 @@ pub const SKILL_EVENTS: &str = include_str!("../../sql/queries/skill_events.sql"
 pub const SKILL_EVENT_LAST_SEQ: &str = include_str!("../../sql/queries/skill_event_last_seq.sql");
 pub const SKILL_BOUND: &str = include_str!("../../sql/queries/skill_bound.sql");
 
+// The previews (`preview`, `preview_link` and `preview_opening`: previews/mod.rs).
+pub const PREVIEW_POS: &str = include_str!("../../sql/queries/preview_pos.sql");
+pub const PREVIEW_GET: &str = include_str!("../../sql/queries/preview_get.sql");
+pub const PREVIEW_LIST: &str = include_str!("../../sql/queries/preview_list.sql");
+pub const PREVIEW_LIST_PROJECT: &str = include_str!("../../sql/queries/preview_list_project.sql");
+pub const PREVIEW_LIST_LANE: &str = include_str!("../../sql/queries/preview_list_lane.sql");
+pub const PREVIEW_OPEN: &str = include_str!("../../sql/queries/preview_open.sql");
+pub const LINK_POS: &str = include_str!("../../sql/queries/preview_link_pos.sql");
+pub const LINK_GET: &str = include_str!("../../sql/queries/preview_link_get.sql");
+pub const LINK_LIST_PREVIEW: &str = include_str!("../../sql/queries/preview_link_list.sql");
+pub const PREVIEW_OPENING_LAST_SEQ: &str =
+    include_str!("../../sql/queries/preview_opening_last_seq.sql");
+pub const PREVIEW_OPENING_PAGE: &str = include_str!("../../sql/queries/preview_opening_page.sql");
+
 // The share links (`share` and `share_event`: shares/mod.rs).
 pub const SHARE_GET: &str = include_str!("../../sql/queries/share_get.sql");
 pub const SHARE_LIST: &str = include_str!("../../sql/queries/share_list.sql");
@@ -207,9 +226,33 @@ pub const ARTIFACT_BLOB_USERS: &str = include_str!("../../sql/queries/artifact_b
 pub const ARTIFACT_REFERS: &str = include_str!("../../sql/queries/artifact_refers.sql");
 pub const ARTIFACT_BLOB_DELETE: &str = include_str!("../../sql/queries/artifact_blob_delete.sql");
 
+// The full-text indexes of the journal's notes and the project memory's entries (store/search.rs): rebuilt by the
+// saver, and searched.
+pub const JOURNAL_SEARCH_CLEAR: &str = include_str!("../../sql/queries/journal_search_clear.sql");
+pub const JOURNAL_SEARCH_FILL: &str = include_str!("../../sql/queries/journal_search_fill.sql");
+pub const JOURNAL_SEARCH_HITS: &str = include_str!("../../sql/queries/journal_search_hits.sql");
+pub const MEMORY_SEARCH_CLEAR: &str = include_str!("../../sql/queries/memory_search_clear.sql");
+pub const MEMORY_SEARCH_FILL: &str = include_str!("../../sql/queries/memory_search_fill.sql");
+pub const MEMORY_SEARCH_HITS: &str = include_str!("../../sql/queries/memory_search_hits.sql");
+
 /// Every query: (file, name, text), for the test that prepares each against its file.
 #[cfg(test)]
 pub const QUERIES: &[(&str, &str, &str)] = &[
+    ("plaza", "preview_pos", PREVIEW_POS),
+    ("plaza", "preview_get", PREVIEW_GET),
+    ("plaza", "preview_list", PREVIEW_LIST),
+    ("plaza", "preview_list_project", PREVIEW_LIST_PROJECT),
+    ("plaza", "preview_list_lane", PREVIEW_LIST_LANE),
+    ("plaza", "preview_open", PREVIEW_OPEN),
+    ("plaza", "preview_link_pos", LINK_POS),
+    ("plaza", "preview_link_get", LINK_GET),
+    ("plaza", "preview_link_list", LINK_LIST_PREVIEW),
+    (
+        "plaza",
+        "preview_opening_last_seq",
+        PREVIEW_OPENING_LAST_SEQ,
+    ),
+    ("plaza", "preview_opening_page", PREVIEW_OPENING_PAGE),
     ("plaza", "budget_ledger", BUDGET_LEDGER),
     ("plaza", "usage_calls_clear", USAGE_CALLS_CLEAR),
     ("plaza", "usage_calls_count", USAGE_CALLS_COUNT),
@@ -224,6 +267,9 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "usage_work_add", USAGE_WORK_ADD),
     ("plaza", "usage_work_totals", USAGE_WORK_TOTALS),
     ("plaza", "usage_works_prune", USAGE_WORKS_PRUNE),
+    ("plaza", "eval_runs_page", EVAL_RUNS_PAGE),
+    ("plaza", "eval_scores", EVAL_SCORES),
+    ("plaza", "eval_runs_landed", EVAL_RUNS_LANDED),
     ("plaza", "vault_audit_page", VAULT_AUDIT_PAGE),
     ("plaza", "hub_mcp_call_last_seq", HUB_MCP_CALL_LAST_SEQ),
     ("plaza", "hub_mcp_call_page", HUB_MCP_CALL_PAGE),
@@ -440,4 +486,10 @@ pub const QUERIES: &[(&str, &str, &str)] = &[
     ("plaza", "artifact_blob_users", ARTIFACT_BLOB_USERS),
     ("plaza", "artifact_refers", ARTIFACT_REFERS),
     ("plaza", "artifact_blob_delete", ARTIFACT_BLOB_DELETE),
+    ("plaza", "journal_search_clear", JOURNAL_SEARCH_CLEAR),
+    ("plaza", "journal_search_fill", JOURNAL_SEARCH_FILL),
+    ("plaza", "journal_search_hits", JOURNAL_SEARCH_HITS),
+    ("plaza", "memory_search_clear", MEMORY_SEARCH_CLEAR),
+    ("plaza", "memory_search_fill", MEMORY_SEARCH_FILL),
+    ("plaza", "memory_search_hits", MEMORY_SEARCH_HITS),
 ];

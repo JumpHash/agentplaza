@@ -102,6 +102,12 @@ function detailOf(input: unknown): string {
   if (typeof input === 'string') return clip(input);
   if (!input || typeof input !== 'object') return '';
   const rec = input as Record<string, unknown>;
+  // The v2 file tools name their files in a list: the first file's path stands for the call.
+  for (const list of ['files', 'edits', 'create']) {
+    const first = Array.isArray(rec[list]) ? (rec[list] as unknown[])[0] : undefined;
+    const path = first && typeof first === 'object' ? str((first as Record<string, unknown>).path) : undefined;
+    if (path) return clip(path);
+  }
   for (const key of ['path', 'file_path', 'file', 'command', 'query', 'pattern', 'url', 'title', 'name']) {
     const v = str(rec[key]);
     if (v) return clip(v);
@@ -115,7 +121,7 @@ export function stepLabel(step: Step): string {
   const verb = (word: string, bare: string): string => (d ? `${word} ${d}` : bare);
   if (n.includes('board') && n.includes('read')) return 'Read board message';
   if (n.includes('board') && (n.includes('post') || n.includes('write'))) return 'Posted to board';
-  if (n === 'bash' || n === 'shell' || n.includes('command') || n.includes('exec') || n.includes('run')) return 'Ran command';
+  if (n === 'run' || n === 'shell' || n.includes('command') || n.includes('exec') || n.includes('run')) return 'Ran command';
   if (/^(read|view|open)/.test(n)) return verb('Read', 'Read file');
   if (/(edit|patch|replace)/.test(n)) return verb('Edited', 'Edited file');
   if (/(write|create)/.test(n)) return verb('Wrote', 'Wrote file');

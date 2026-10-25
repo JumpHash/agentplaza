@@ -109,6 +109,19 @@ pub struct ToolSpec {
     pub description: String,
     /// A JSON Schema object for the tool's input.
     pub input_schema: Value,
+    /// Offered by name and one line only: the model fetches the schema through `tool_search` before it calls the
+    /// tool. The harness sends such a tool with an empty schema until then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
+}
+
+/// One part of the system prompt. The parts are sent most stable first; `cache` puts a cache breakpoint after the
+/// part, so every call that starts with the same parts reads them from the cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SystemPart {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cache: bool,
 }
 
 /// One model call. `model` is `"<provider-id>/<model-id>"`; the guest leaves
@@ -119,9 +132,15 @@ pub struct ChatRequest {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    /// The system prompt in parts, most stable first. When non-empty it replaces `system`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_parts: Vec<SystemPart>,
     pub messages: Vec<Message>,
     #[serde(default)]
     pub tools: Vec<ToolSpec>,
+    /// A cache breakpoint at the end of the conversation's last message, so the next call reads the whole prefix.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cache_last_message: bool,
     /// 0 means "the configured default".
     #[serde(default)]
     pub max_tokens: u32,
@@ -130,6 +149,23 @@ pub struct ChatRequest {
     /// Reasoning effort (`low`..`max`) where the provider supports one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+}
+
+impl ChatRequest {
+    /// The system prompt as one text: the parts joined by a blank line, or `system`. `None` when it is empty.
+    pub fn system_text(&self) -> Option<String> {
+        if self.system_parts.is_empty() {
+            return self.system.clone().filter(|text| !text.is_empty());
+        }
+        let text = self
+            .system_parts
+            .iter()
+            .map(|part| part.text.as_str())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        (!text.is_empty()).then_some(text)
+    }
 }
 
 /// Why the model stopped.
@@ -190,14 +226,35 @@ impl ChatResponse {
     }
 }
 
-/// A streamed fragment, for live display only (the final [`ChatResponse`] is
-/// authoritative).
+/// A streamed fragment: text for live display, and a tool call as the provider
+/// writes it. A call opens with its [`Delta::ToolUse`], takes its input JSON in
+/// [`Delta::ToolInput`] chunks and is whole at its [`Delta::BlockEnd`]. `index`
+/// names the call's block within the answer. The final [`ChatResponse`] is
+/// authoritative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Delta {
-    Text { text: String },
-    Thinking { text: String },
-    ToolUse { name: String },
+    Text {
+        text: String,
+    },
+    Thinking {
+        text: String,
+    },
+    /// A tool call opens at block `index`: its tool `name` and the call's `id`.
+    ToolUse {
+        name: String,
+        index: usize,
+        id: String,
+    },
+    /// The next chunk of block `index`'s input JSON.
+    ToolInput {
+        index: usize,
+        json: String,
+    },
+    /// Block `index` is complete: its input JSON has been sent whole.
+    BlockEnd {
+        index: usize,
+    },
 }
 
 #[cfg(test)]
@@ -228,6 +285,80 @@ mod tests {
         let line = serde_json::to_string(&blocks).unwrap();
         assert!(line.contains(r#""type":"tool_use""#));
         assert_eq!(serde_json::from_str::<Vec<Block>>(&line).unwrap(), blocks);
+    }
+
+    #[test]
+    fn a_tool_call_streams_as_open_input_and_end() {
+        let stream = vec![
+            Delta::ToolUse {
+                name: "bash".into(),
+                index: 1,
+                id: "t1".into(),
+            },
+            Delta::ToolInput {
+                index: 1,
+                json: "{\"command\"".into(),
+            },
+            Delta::BlockEnd { index: 1 },
+        ];
+        let line = serde_json::to_string(&stream).unwrap();
+        assert_eq!(
+            line,
+            r#"[{"type":"tool_use","name":"bash","index":1,"id":"t1"},{"type":"tool_input","index":1,"json":"{\"command\""},{"type":"block_end","index":1}]"#
+        );
+        assert_eq!(serde_json::from_str::<Vec<Delta>>(&line).unwrap(), stream);
+    }
+
+    #[test]
+    fn a_request_with_parts_round_trips_and_reads_as_one_system_text() {
+        let req = ChatRequest {
+            model: String::new(),
+            system: Some("ignored once parts are set".into()),
+            system_parts: vec![
+                SystemPart {
+                    text: "plaza".into(),
+                    cache: true,
+                },
+                SystemPart {
+                    text: String::new(),
+                    cache: false,
+                },
+                SystemPart {
+                    text: "seat".into(),
+                    cache: false,
+                },
+            ],
+            messages: vec![Message::user_text("hi")],
+            tools: vec![ToolSpec {
+                name: "later".into(),
+                description: "a deferred tool".into(),
+                input_schema: json!({"type": "object"}),
+                deferred: true,
+            }],
+            cache_last_message: true,
+            max_tokens: 0,
+            temperature: None,
+            effort: None,
+        };
+        assert_eq!(req.system_text().as_deref(), Some("plaza\n\nseat"));
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""cache":true"#) && line.contains(r#""deferred":true"#));
+        assert_eq!(serde_json::from_str::<ChatRequest>(&line).unwrap(), req);
+    }
+
+    #[test]
+    fn a_plain_system_or_none_reads_as_its_text() {
+        let mut req: ChatRequest = serde_json::from_value(json!({"messages": []})).unwrap();
+        assert_eq!(req.system_text(), None);
+        req.system = Some("be brief".into());
+        assert_eq!(req.system_text().as_deref(), Some("be brief"));
+        // A tool's flags are off by default and left off the wire.
+        let tool: ToolSpec = serde_json::from_value(
+            json!({"name": "bash", "description": "run", "input_schema": {}}),
+        )
+        .unwrap();
+        assert!(!tool.deferred);
+        assert!(!serde_json::to_string(&tool).unwrap().contains("deferred"));
     }
 
     #[test]

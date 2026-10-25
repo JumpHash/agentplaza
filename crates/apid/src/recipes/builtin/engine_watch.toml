@@ -1,0 +1,26 @@
+# The engine-watch recipe (PLAN 21.1, 12.6). Run once a day by `engine_watch.rs`, which settles its steps through
+# the recipe engine: `watch` reads the ACP registry and each pinned engine's newest release; `propose` opens a card
+# with the adapter tests' result for each newer version. The engines a project uses are watched through the hub's list.
+id = "engine-watch"
+name = "Engine watch"
+description = "Reads the ACP registry and the pinned engines' newest releases once a day; a newer version is proposed as a card with its adapter-test result (PLAN 12.6)."
+version = 1
+inputs = ["engines"]
+outputs = ["proposal"]
+triggers = ["schedule"]
+
+[[steps]]
+id = "watch"
+engine = "engine-watch"
+gate = ["passed"]
+
+[[steps]]
+id = "propose"
+engine = "engine-watch"
+gate = ["passed"]
+output = "proposal"
+
+[[edges]]
+from = "watch"
+to = "propose"
+when = "findings>0"

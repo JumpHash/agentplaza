@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a source the plaza does not have
+  type: http
+  seq: 2
+}
+
+put {
+  url: {{baseUrl}}/v1/intake/connections/jira
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "enabled": true
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("a source the plaza does not know is not found", function () {
+    expect(res.getBody().error).to.contain("jira");
+  });
+}

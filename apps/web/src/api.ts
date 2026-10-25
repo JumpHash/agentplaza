@@ -360,6 +360,10 @@ export interface LawRules { rules: LawRule[]; overrides: LawOverride[]; strict_p
 export interface Diagnostic { file: string; line: number; column: number; message: string }
 export interface WouldRefuse { cid: number; role: string; tool: string; at_ms: number; laws: string[] }
 export interface LawCheck { ok: boolean; diagnostics: Diagnostic[]; laws: string[]; would_refuse: WouldRefuse[] }
+/** One saved version of the owner's standing rules (9.8). */
+export interface StandingVersion { version: number; author: string; at_ms: number }
+/** The owner's standing rules: the text in force (the newest version's), its version and its history, oldest first. */
+export interface StandingRules { text: string; version: number | null; author: string | null; updated_ms: number | null; versions: StandingVersion[]; saved?: boolean }
 export interface RoleDef {
   id: string; title: string; purpose: string; responsibilities: string[]; deliverables: string[]; collaboration: string;
   boundaries: string[]; tools: string[]; budget: number; model: string; prompt: string; created_by: string; created_ms: number;
@@ -694,6 +698,9 @@ export const api = {
   setLawRuleEnabled: (id: string, enabled: boolean) => post<LawRule>(`/v1/laws/rules/${id}/${enabled ? 'enable' : 'disable'}`),
   deleteLawRule: (id: string) => del<{ deleted: string }>(`/v1/laws/rules/${id}`),
   checkLaw: (source: string, id?: string) => post<LawCheck>('/v1/laws/check', id ? { source, id } : { source }),
+  /** The standing rules every session's prompt and every engine's instruction file carries (`/v1/rules/standing`). */
+  standingRules: () => get<StandingRules>('/v1/rules/standing'),
+  saveStandingRules: (text: string) => put<StandingRules>('/v1/rules/standing', { text }),
   /** Switching a constitutional law off needs `confirm` set to its exact id (the API answers 409 without it). */
   setLawOverride: (law: string, disabled: boolean, reason: string, confirm?: string) => put<{ law: string; override: LawOverride | null }>(`/v1/laws/overrides/${law}`, { disabled, reason, confirm }),
   plazaState: () => get<PlazaState>('/v1/plaza/state'),
@@ -763,6 +770,8 @@ export const api = {
   joinCodes: readable<JoinCode[]>('/v1/nodes/codes'),
   revokeJoinCode: (id: string) => del<unknown>(`/v1/nodes/codes/${id}`),
   revokeNode: (id: string) => post<NodeView>(`/v1/nodes/${id}/revoke`),
+  /** Sets how the hub reaches a node: its tunnel, or the mesh at `mesh_address` (host:port). Its forks keep running. */
+  setNodePath: (id: string, path: 'tunnel' | 'mesh', mesh_address: string) => post<NodeView>(`/v1/nodes/${id}/path`, { path, mesh_address }),
   /** Takes a node out of service (n0 too): its agents move to the other machines. `now` interrupts their turns, which resume where they go. */
   stopNode: (id: string, now: boolean) => post<NodeView>(`/v1/nodes/${id}/stop`, { now }),
   /** Puts a stopped node back in service; with `rebalance` (the default) agents move onto it once it reports. */
@@ -902,7 +911,14 @@ export interface NodeView {
   state: NodeServiceState; left: number;
   /** The agents that cannot leave a stopping node yet, and why. */
   waiting: { cid: number; reason: string }[];
+  /** How the hub reaches the node: `tunnel` (the node dials the hub), `mesh` (the hub dials `mesh_address`), `local` (this hub). */
+  path: NodePath; mesh_address: string;
+  /** The hub's view of the node's link: up now, its last ping's latency, its errors. */
+  link?: NodeLinkHealth;
 }
+export type NodePath = 'tunnel' | 'mesh' | 'local';
+/** A node's link as the hub holds it (`GET /v1/nodes`, `link`). `latency_ms` is null until the first ping. */
+export interface NodeLinkHealth { connected: boolean; latency_ms: number | null; errors: number; last_error: string | null; last_error_ms: number | null }
 export type NodeServiceState = 'active' | 'stopping' | 'stopped';
 /** A rebalance: the moves it makes (or would, on a dry run), and whether they started. */
 export interface Rebalance { moves: { cid: number; from: string; to: string }[]; started: boolean }

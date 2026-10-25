@@ -1,0 +1,11 @@
+id = "unsplash"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["api.unsplash.com"]
+secrets = ["UNSPLASH_ACCESS_KEY", "UNSPLASH_SECRET_KEY"]
+events = []
+actions = ["search"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Client-ID ${SECRET}"

@@ -156,6 +156,26 @@ pub struct Divergence {
     pub symbols: Vec<String>,
 }
 
+/// A definition of a name, in a file of a revision's tree.
+#[derive(Clone, Debug, Serialize)]
+pub struct NameDef {
+    pub path: String,
+    pub kind: String,
+    pub name: String,
+    pub qualified: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// A reference to a name, in a file of a revision's tree.
+#[derive(Clone, Debug, Serialize)]
+pub struct NameRef {
+    pub path: String,
+    pub kind: String,
+    pub name: String,
+    pub line: usize,
+}
+
 const MAX_TOUCHES: usize = 6;
 
 impl Derived {
@@ -290,6 +310,41 @@ impl Derived {
             .unwrap_or_else(|p| p.into_inner())
             .insert(th, index.clone());
         Ok(index)
+    }
+
+    /// The definitions and the references whose names `want` accepts, in every file of a revision's tree, with their
+    /// lines: what the code-intelligence tools answer from when no language server is running.
+    pub fn find_names(
+        &self,
+        store: &Store,
+        rev: &str,
+        want: impl Fn(&str) -> bool,
+    ) -> Result<(Vec<NameDef>, Vec<NameRef>), String> {
+        let tree = store.tree(rev)?;
+        let mut defs = Vec::new();
+        let mut refs = Vec::new();
+        for (path, entry) in tree.iter() {
+            let parsed = self.parse(store, path, &entry.hash);
+            for s in parsed.symbols.iter().filter(|s| want(&s.name)) {
+                defs.push(NameDef {
+                    path: path.clone(),
+                    kind: s.kind.clone(),
+                    name: s.name.clone(),
+                    qualified: s.qualified.clone(),
+                    start_line: s.start_line,
+                    end_line: s.end_line,
+                });
+            }
+            for r in parsed.references.iter().filter(|r| want(&r.name)) {
+                refs.push(NameRef {
+                    path: path.clone(),
+                    kind: r.kind.clone(),
+                    name: r.name.clone(),
+                    line: r.line,
+                });
+            }
+        }
+        Ok((defs, refs))
     }
 
     /// A definition's lineage id.

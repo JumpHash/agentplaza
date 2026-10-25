@@ -1,0 +1,21 @@
+meta {
+  name: Refuse a manifest that is not TOML
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/v1/connectors/firecrawl/manifest
+  body: text
+  auth: none
+}
+
+body:text {
+  id =
+}
+
+assert {
+  res.status: eq 400
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "not a connector manifest"
+}

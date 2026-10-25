@@ -28,6 +28,6 @@ assert {
 tests {
   test("the hello answers the agent's profile", function () {
     expect(res.getBody().profile).to.be.an("object");
-    expect(res.getBody().profile.system).to.include("(CID 41002)");
+    expect(res.getBody().profile.system_parts.map((part) => part.text).join("\n")).to.include("(CID 41002)");
   });
 }

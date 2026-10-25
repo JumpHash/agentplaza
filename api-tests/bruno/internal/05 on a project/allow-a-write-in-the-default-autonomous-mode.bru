@@ -1,5 +1,5 @@
 meta {
-  name: Allow a write in the default autonomous mode
+  name: Allow an edit in the default autonomous mode
   type: http
   seq: 6
 }
@@ -19,10 +19,9 @@ body:json {
     "type": "tool_request",
     "work": 1,
     "call": "p2",
-    "name": "write_file",
+    "name": "edit",
     "input": {
-      "path": "/workspace/a.txt",
-      "content": "a"
+      "create": [{"path": "/workspace/a.txt", "content": "a"}]
     }
   }
 }

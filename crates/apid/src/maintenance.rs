@@ -682,6 +682,7 @@ pub fn add_signal(app: &App, project: &str, input: SignalIn, from: &str) -> Resu
         "maintenance",
         &json!({"project": project, "what": "signal", "signal": signal}),
     );
+    crate::triggers::maintenance_signal(app, project, &signal.id, &signal.kind);
     Ok(signal)
 }
 

@@ -15,7 +15,7 @@
 //! 2. **pick** an `open` task whose `role` matches a CONNECTED agent, and
 //!    **claim** it for that agent (`POST /api/v0/tasks/{id}/claim`);
 //! 3. **drive** the agent through the workflow its role family scripts
-//!    ([`workflow`]) — real tool calls (`write_file`, `read_file`, `list`, …)
+//!    ([`workflow`]) — real tool calls (`edit`, `read`, `find`, …)
 //!    sent into the agent's own session through the hub's `POST /tell`, each
 //!    one answered by the agent's own `tool_result`;
 //! 4. **finish** the task (`POST /api/v0/tasks/{id}/finish`) with the note

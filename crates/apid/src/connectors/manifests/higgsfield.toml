@@ -1,0 +1,11 @@
+id = "higgsfield"
+kind = ["tool"]
+version = "1.0.0"
+scopes = []
+egress = []
+secrets = ["HIGGSFIELD_API_KEY", "HIGGSFIELD_API_SECRET"]
+events = []
+actions = []
+webhook = false
+auth_header = ""
+auth_format = ""

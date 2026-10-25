@@ -82,7 +82,7 @@ a full read and write of the memory file.
 |---|---|---|
 | `zswap` | enabled | a dozing guest's pages compress in RAM |
 | `swap` | present, and every device zram or dm-crypt | doze has somewhere to put written pages; guest memory holds secrets |
-| `reflink` | the snapshot directory takes `FICLONE` (XFS, Btrfs, bcachefs) | without it sleeps, forks and workspaces copy whole files |
+| `reflink` | the snapshot directory shares blocks: `FICLONE` (XFS, Btrfs, bcachefs), APFS on macOS, ReFS or a Dev Drive on Windows | without it sleeps, forks and workspaces copy whole files |
 | `cgroups` | the cpu, memory and pids controllers are delegated | per-VM limits |
 | `ksm` | off | merging pages across VMs is a timing side channel between agents, which must never reach each other |
 

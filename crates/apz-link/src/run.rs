@@ -8,6 +8,7 @@
 //! - A refused signature (403) stops the loop with an error: the node was revoked.
 
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
@@ -22,6 +23,7 @@ use flate2::write::DeflateEncoder;
 use serde_json::{Value, json};
 
 use crate::identity::{self, Identity};
+use crate::tunnel::{self, Connect, Who};
 use crate::{forward, join};
 
 /// How often the node reports itself.
@@ -39,6 +41,10 @@ pub struct Local {
     /// The node's internal token, sent on every call to noded and vsockd (`run` sets it to
     /// `node/internal-token`, the file they are started with).
     pub token: InternalToken,
+    /// vsockd's inbound listener, on loopback: the port streams from the hub are handed to it (`inbound.rs`).
+    pub inbound: u16,
+    /// noded's transfer port (node-to-node transfers, default 7447): a `transfer` stream is piped to it.
+    pub transfer: u16,
 }
 
 impl Default for Local {
@@ -48,6 +54,12 @@ impl Default for Local {
             vsockd: 9180,
             forward: 7701,
             token: InternalToken::none(),
+            inbound: 19095,
+            // The port noded serves transfers on (`APZ_TRANSFER_PORT`, as noded reads it).
+            transfer: std::env::var("APZ_TRANSFER_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(7447),
         }
     }
 }
@@ -119,9 +131,11 @@ fn reply_body(bytes: &[u8]) -> Value {
 }
 
 /// Runs the node until revoked or a fatal error: starts the forwarder, the heartbeat thread and
-/// the command loop. Transient hub errors are retried with backoff (1 s doubling to 30 s).
-pub fn run(dir: &Path, local: Local) -> Result<(), String> {
+/// the link. `mesh` is the node's address on a mesh (`run --mesh`), else the one it joined with. Transient
+/// hub errors are retried with backoff (1 s doubling to 30 s).
+pub fn run(dir: &Path, local: Local, mesh: Option<String>) -> Result<(), String> {
     let (identity, key) = identity::load(dir)?;
+    let mesh = mesh.or_else(|| identity.mesh.clone());
     let token = identity::internal_token(dir)?;
     // The file noded and vsockd are started with: each call to them re-reads it.
     let local = Local {
@@ -149,6 +163,29 @@ pub fn run(dir: &Path, local: Local) -> Result<(), String> {
         let (identity, key, local) = (identity.clone(), key.clone(), local.clone());
         thread::spawn(move || live_forever(identity, key, local))
     };
+    link(identity, key, local, mesh.as_deref())
+}
+
+/// The node's link to its hub until revoked: the mesh listener when the node has a mesh address (the hub dials it
+/// when it holds the node on the mesh), and the tunnel the node dials otherwise.
+pub fn link(
+    identity: Arc<Identity>,
+    key: Arc<NodeKey>,
+    local: Local,
+    mesh: Option<&str>,
+) -> Result<(), String> {
+    let _listener = match mesh {
+        Some(address) => {
+            let addr: SocketAddr = address
+                .parse()
+                .map_err(|_| format!("--mesh {address}: not an address (host:port)"))?;
+            let who = Who::new(&identity, &key);
+            let listener = tunnel::listen(addr, who, local.clone())
+                .map_err(|err| format!("the mesh listener did not start on {addr}: {err}"))?;
+            Some(listener)
+        }
+        None => None,
+    };
     command_loop(&identity, &key, &local)
 }
 
@@ -170,7 +207,7 @@ fn hub_request(
     let target = identity
         .signed(key, method, path, body.unwrap_or_default())
         .map_err(Failure::Retry)?;
-    let reply = client::request(&target, method, path, body, timeout)
+    let reply = tunnel::request(&target, method, path, body, timeout)
         .map_err(|err| Failure::Retry(err.to_string()))?;
     match reply.status {
         200..=299 => Ok(reply.body),
@@ -190,7 +227,9 @@ fn local_json(local: &Local, port: u16, path: &str) -> Value {
 }
 
 /// The fields noded reports about the machine that a heartbeat carries to the hub.
-const NODED_MACHINE_FIELDS: [&str; 14] = [
+const NODED_MACHINE_FIELDS: [&str; 20] = [
+    "transfer_port",
+    "transfer_pin",
     "kind",
     "vendor",
     "model",
@@ -205,6 +244,10 @@ const NODED_MACHINE_FIELDS: [&str; 14] = [
     "fabric",
     "memory_mib",
     "storage_gib",
+    "storage_free_gib",
+    "clones",
+    "cpu_baseline",
+    "bases",
 ];
 
 /// The live load a heartbeat carries, from noded's `/v1/machine/stats`: `{cpu_pct, mem_used_mib}`;
@@ -265,6 +308,24 @@ mod machine_tests {
     #[test]
     fn the_foundry_machine_facts_ride_the_heartbeat() {
         for field in ["accelerators", "trainer", "fabric", "gpus"] {
+            assert!(
+                NODED_MACHINE_FIELDS.contains(&field),
+                "{field} is in the heartbeat"
+            );
+        }
+    }
+
+    #[test]
+    fn the_pool_and_placement_facts_ride_the_heartbeat() {
+        for field in [
+            "arch",
+            "backend",
+            "os",
+            "cpu_baseline",
+            "clones",
+            "storage_free_gib",
+            "bases",
+        ] {
             assert!(
                 NODED_MACHINE_FIELDS.contains(&field),
                 "{field} is in the heartbeat"
@@ -387,32 +448,63 @@ fn deliver(identity: &Identity, key: &NodeKey, path: &str, result: &Value) -> Re
     }
 }
 
-fn command_loop(identity: &Identity, key: &NodeKey, local: &Local) -> Result<(), String> {
-    let poll_path = format!("/v1/nodes/{}/commands?wait=25", identity.node_id);
-    let results_path = format!("/v1/nodes/{}/results", identity.node_id);
+/// The node's link to the hub. The tunnel is opened and served until it ends; a hub that predates it gets one long
+/// poll for commands (results posted as before) between tries at the tunnel. A refused upgrade is a revoked node.
+fn command_loop(identity: &Identity, key: &Arc<NodeKey>, local: &Local) -> Result<(), String> {
     let mut backoff = BACKOFF_MIN;
-    let mut connected: Option<bool> = None;
+    let mut failing = false;
     loop {
-        match poll_commands(identity, key, &poll_path) {
-            Ok(commands) => {
-                if connected != Some(true) {
-                    eprintln!("connected to the hub");
-                    connected = Some(true);
-                }
+        // A mesh session is up: the hub's dial serves this node, and no tunnel is dialled meanwhile.
+        if tunnel::mesh_up() {
+            thread::sleep(BACKOFF_MIN);
+            continue;
+        }
+        match tunnel::connect(identity, key) {
+            Ok(mux) => {
+                eprintln!("connected to the hub");
+                failing = false;
                 backoff = BACKOFF_MIN;
-                for command in &commands {
-                    deliver(identity, key, &results_path, &execute(local, command))?;
-                }
+                tunnel::serve(mux, local.clone(), Who::new(identity, key), false);
+                eprintln!("the tunnel to the hub ended; reconnecting");
+                thread::sleep(BACKOFF_MIN);
             }
-            Err(Failure::Revoked) => return Err(revoked()),
-            Err(Failure::Retry(message)) => {
-                if connected != Some(false) {
-                    eprintln!("retrying the hub: {message}");
-                    connected = Some(false);
+            Err(Connect::Revoked) => return Err(revoked()),
+            Err(Connect::Legacy) => poll_once(identity, key, local)?,
+            Err(Connect::Moved) => {
+                match tunnel::fetch_link(identity, key) {
+                    Ok(path) => eprintln!("the hub holds this node on its {path} path"),
+                    Err(message) => eprintln!("cannot read this node's path at the hub: {message}"),
                 }
+                thread::sleep(BACKOFF_MIN);
+            }
+            Err(Connect::Failed(message)) => {
+                if !failing {
+                    eprintln!("retrying the hub: {message}");
+                }
+                failing = true;
                 thread::sleep(backoff);
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
+        }
+    }
+}
+
+/// One long poll of the hub's command queue (a hub that predates the tunnel), with each command's result posted back.
+fn poll_once(identity: &Identity, key: &NodeKey, local: &Local) -> Result<(), String> {
+    let poll_path = format!("/v1/nodes/{}/commands?wait=25", identity.node_id);
+    let results_path = format!("/v1/nodes/{}/results", identity.node_id);
+    match poll_commands(identity, key, &poll_path) {
+        Ok(commands) => {
+            for command in &commands {
+                deliver(identity, key, &results_path, &execute(local, command))?;
+            }
+            Ok(())
+        }
+        Err(Failure::Revoked) => Err(revoked()),
+        Err(Failure::Retry(message)) => {
+            eprintln!("retrying the hub: {message}");
+            thread::sleep(BACKOFF_MIN);
+            Ok(())
         }
     }
 }

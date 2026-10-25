@@ -53,9 +53,16 @@ pub trait EngineLink: Send + Sync {
         Vec::new()
     }
 
+    /// The prompt parts the engine is told, as text, in order: rendered into its instruction file
+    /// before it starts (see [`super::adapter`]). Empty where the link has none.
+    fn instructions(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Calls the plaza's tool `name` with `input` through the hub's gate, as the agent's own calls
-    /// are gated. `Ok` is the tool's output, `Err` its error or the reason it did not run. Blocks
-    /// until the hub's final answer, the `deadline` or a cancel, as [`EngineLink::decide`] does.
+    /// are gated. A tool the hub lets run in the VM runs here. `Ok` is the tool's output, `Err` its
+    /// error or the reason it did not run. Blocks until the hub's final answer, the `deadline` or a
+    /// cancel, as [`EngineLink::decide`] does.
     fn call(&self, name: &str, input: &Value, deadline: Instant) -> Result<String, String> {
         let _ = (name, input, deadline);
         Err("plaza tools are not available here".into())

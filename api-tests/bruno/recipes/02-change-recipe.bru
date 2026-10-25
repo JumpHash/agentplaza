@@ -1,0 +1,26 @@
+meta {
+  name: Show the change recipe as its TOML
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes/change
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("the change recipe answers with its steps, its loop and its TOML", function () {
+    const body = res.getBody();
+    expect(body.engine).to.equal(true);
+    expect(body.recipe.id).to.equal("change");
+    expect(body.recipe.steps.map((s) => s.id)).to.deep.equal(["build", "review", "verify"]);
+    expect(body.recipe.edges.find((e) => e.to === "build").max).to.equal(2);
+    expect(body.toml).to.include("[[steps]]");
+  });
+}

@@ -76,10 +76,29 @@ pub fn noded(
     path: &str,
     body: Option<&Value>,
 ) -> Result<(u16, Value), String> {
-    if node == LOCAL {
-        return app.noded.call(method, path, body);
+    let answer = if node == LOCAL {
+        app.noded.call(method, path, body)
+    } else {
+        remote(app, node, "noded", method, path, body)
+    };
+    // Chunk data through the hub: a relayed file read or write is payload (the transfers of plan 17.5 send none).
+    if is_file_data(method, path) {
+        let sent = body.map_or(0, |b| b.to_string().len());
+        let got = answer
+            .as_ref()
+            .map_or(0, |(_, reply)| reply.to_string().len());
+        crate::transfer::note_payload(sent + got);
     }
-    remote(app, node, "noded", method, path, body)
+    answer
+}
+
+/// Whether a noded call moves file bytes: an export's chunk read, or an import's chunk write.
+fn is_file_data(method: &str, path: &str) -> bool {
+    (method == "GET" && path.starts_with("/v1/exports/"))
+        || (method == "POST"
+            && path.starts_with("/v1/imports/")
+            && !path.ends_with("/finish")
+            && path != "/v1/imports/from-transfer")
 }
 
 /// A call to the noded that runs agent `cid`'s VM.
@@ -502,6 +521,9 @@ mod tests {
             draining,
             revoked,
             address: String::new(),
+            path: crate::nodes::TUNNEL.to_string(),
+            mesh_address: String::new(),
+            mesh_token: String::new(),
         }
     }
 

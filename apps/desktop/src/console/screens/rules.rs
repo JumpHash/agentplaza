@@ -34,15 +34,15 @@ const OWNER_DESC: &str = "Laws you write in JHRL. A rule takes effect once its s
 const BUILTIN_DESC: &str = "The laws the plaza ships with. Disabling one asks for a reason, and the reason stays with the override until the statute is enabled again.";
 const STRICT_HELP: &str = "Strict permits: when on, an operation that has permit laws is refused unless one of those permits allows it. Off (the default): only forbids refuse, and a permit only allows.";
 const JHRL_SHAPE: &str = "law \"ID\" \"Title\" {\n  tier statute | operations | constitution\n  enforcement preventive | detective\n  severity info | minor | major | critical\n  statement \"What the law says.\"\n  permit OP | forbid OP\n  principal is Agent\n  resource is Tool\n  when CONDITION\n}";
-const JHRL_EXAMPLE: &str = r#"law "R-100" "No reading files with read_file" {
+const JHRL_EXAMPLE: &str = r#"law "R-100" "No reading files with read" {
   tier statute
   enforcement preventive
   severity major
-  statement "Agents do not read files with the read_file tool."
+  statement "Agents do not read files with the read tool."
   forbid tool.call
   principal is Agent
   resource is Tool
-  when resource.name == "read_file"
+  when resource.name == "read"
 }"#;
 
 /// The tiers in the order the web groups them: key, label, description.

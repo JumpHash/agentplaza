@@ -33,7 +33,7 @@ pub(crate) mod link;
 mod ops;
 pub mod recordings;
 mod registry;
-mod screen;
+pub(crate) mod screen;
 pub mod sync;
 mod takeover;
 pub mod tools;

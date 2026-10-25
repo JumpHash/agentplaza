@@ -9,10 +9,15 @@ license.workspace = true
 [dependencies]
 apz-acp = { path = "../apz-acp" }
 apz-ide = { path = "../apz-ide" }
+apz-lsp = { path = "../apz-lsp" }
 apz-ops = { path = "../apz-ops" }
 apz-proto.workspace = true
 base64.workspace = true
 globset = "0.4"
+grep-matcher = "0.1.9"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
+ignore = "0.4.33"
 libc.workspace = true
 regex = "1"
 rustix = { version = "=1.1.5", features = ["fs", "process"] }

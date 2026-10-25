@@ -35,6 +35,8 @@ pub struct Weft {
     lanes: Mutex<HashMap<String, String>>,
     /// cid → (key, the project its certificate names).
     agents: Mutex<HashMap<u64, (Arc<KeyPair>, Option<String>)>>,
+    /// change → (the commit its GitHub gate was read on, the gate), so a `ci` gate is recorded once per verdict.
+    pub gates: Mutex<HashMap<String, (String, String)>>,
 }
 
 struct Live {
@@ -148,8 +150,13 @@ pub fn owner_key_path(_app: &App) -> PathBuf {
     apz_os::dirs::config().join("owner.key")
 }
 
+/// Serialises the making of keys: two callers that both find a key missing must not each make one (Weft's boot and the
+/// first policy the hub issues can ask for the hub's key at the same moment).
+static KEY_MAKING: Mutex<()> = Mutex::new(());
+
 /// A key the vault keeps (made on first use); a file in the state folder while the vault is sealed or absent.
 fn key(app: &App, name: &str, label: &str) -> Result<KeyPair, String> {
+    let _making = KEY_MAKING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(hex) = app
         .vault
         .value_for(name, BINDING, &crate::vault::OnBehalf::Hub)
@@ -178,6 +185,12 @@ fn key(app: &App, name: &str, label: &str) -> Result<KeyPair, String> {
             Ok(k)
         }
     }
+}
+
+/// The hub's own Weft key (`WEFT_HUB_KEY`, the key Weft's boot uses): the hub signs what it issues as itself, such as an
+/// agent's policy snapshot. Made on first use, as boot makes it.
+pub fn hub_key(app: &App) -> Result<KeyPair, String> {
+    key(app, "WEFT_HUB_KEY", "Weft's hub key")
 }
 
 /// Starts Weft on a thread: a new store on first run (its genesis signed by the owner's key), then `weft serve`,
@@ -385,6 +398,10 @@ fn relay_events(app: &Arc<App>) {
                     _ => "weft_op",
                 };
                 app.bus.publish(topic, &json!({ "seq": v["seq"], "kind": kind, "summary": v["summary"], "change": v["body"]["change"], "repo": v["body"]["repo"] }));
+                // The triggers take the landings, the lanes and the proposed releases (14.6), each once by its sequence.
+                if let Some(seq) = v["seq"].as_u64() {
+                    crate::triggers::weft_event(app, seq, kind, &v["body"]);
+                }
                 after_event(app, kind, &v["body"]);
             }
         }
@@ -448,7 +465,28 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
                     .owner_verdict(&app, task, true, &format!("{change} landed"));
             }
             crate::review_graph::post_land(&app, &repo, &change, task);
+            // A project that releases continuously starts its release recipe on each landing (a stub until phase 22).
+            if let Some(project) = app
+                .plaza
+                .tasks
+                .find(task)
+                .and_then(|t| t.project().map(str::to_string))
+                && app.project_settings.get(&project).release_continuous
+            {
+                let _ = app.recipe_runs.start_engine(
+                    "release",
+                    "landed",
+                    None,
+                    Some(&project),
+                    Some(&change),
+                    apz_plaza::now_ms(),
+                );
+            }
         }
+        // The landing changed main: the projects on the repo read their memory again.
+        crate::project_memory::landed(&app, &repo, &change);
+        // And each project's base on the repo is rebuilt from the new main (16.4).
+        crate::base_builds::landed(&app, &repo);
         export_all(&app, &repo);
         // And the landing goes to the environments that run main.
         crate::environments::tracked(&app, &repo, "main", &change);
@@ -457,6 +495,10 @@ fn after_event(app: &Arc<App>, kind: &str, body: &Value) {
 
 /// Exports a repo to each of its connections, with each one's credential from the vault.
 pub fn export_all(app: &App, repo: &str) {
+    // In `ci` mode GitHub is the truth: landings reach it as pull requests (github_modes), never as pushes to its main.
+    if crate::github_modes::mode_of(app, repo) == crate::github_modes::CI {
+        return;
+    }
     let Ok(detail) = app.weft.get(&format!("/repos/{repo}")) else {
         return;
     };
@@ -881,7 +923,9 @@ pub fn abandon(app: &App, task: &str, reason: &str) {
     }
 }
 
-/// Lands what the review graph queued, one step at a time per queue.
+/// Lands what the merge queue holds, one step at a time per queue (4.6). The queue tests its lanes in batches on top of
+/// its head (the project's size); a batch that fails is bisected to the lane that breaks it, which leaves with the
+/// failure; a project that asks for it holds each landing until the owner approves it (a `land` approval).
 pub fn land_queues(app: &App) {
     if !app.weft.running() || app.control.paused() {
         return;
@@ -892,16 +936,39 @@ pub fn land_queues(app: &App) {
     for r in repos["repos"].as_array().into_iter().flatten() {
         let name = r["name"].as_str().unwrap_or("");
         for (reference, queue) in r["queues"].as_object().into_iter().flatten() {
-            if queue.as_array().is_none_or(|q| q.is_empty()) {
+            let Some(head) = queue
+                .as_array()
+                .and_then(|q| q.first())
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            // In `ci` mode the head lane goes through GitHub (its pull request and checks) before Weft lands it.
+            if crate::github_modes::mode_of(app, name) == crate::github_modes::CI {
+                crate::github_modes::ci_step(app, name, reference);
                 continue;
             }
+            let (batch, hold) = queue_policy(app, head);
+            // Set when the owner approved the lane a held step named: the next step lands it.
+            let mut approved = false;
             for _ in 0..8 {
-                match app.weft.post(
-                    &format!("/repos/{name}/queue/step"),
-                    &json!({ "ref": reference }),
-                ) {
+                let body = json!({ "ref": reference, "recheck": true, "batch": batch, "hold": hold, "approved": approved });
+                approved = false;
+                match app.weft.post(&format!("/repos/{name}/queue/step"), &body) {
                     Ok(v) if v["outcome"] == "landed" => {
                         app.bus.publish("weft_land", &json!({ "repo": name, "change": v["change"], "revision": v["revision"] }));
+                        continue;
+                    }
+                    Ok(v) if v["outcome"] == "held" => {
+                        if landing_answer(app, name, reference, v["change"].as_str().unwrap_or(""))
+                        {
+                            approved = true;
+                            continue;
+                        }
+                        break;
+                    }
+                    Ok(v) if v["outcome"] == "failed" => {
+                        ejected(app, name, &v);
                         continue;
                     }
                     Ok(v) if v["outcome"] == "conflict" => {
@@ -927,11 +994,157 @@ pub fn land_queues(app: &App) {
     }
 }
 
-/// A clash on landing: the lane's agent gets a resolve item (its lane now starts from main, with the clash marked).
-fn conflict_task(app: &App, repo: &str, step: &Value) {
+/// The batch size of the queue whose head is `change`, and whether its project's owner approves its landings. The
+/// project is the change's task's.
+fn queue_policy(app: &App, change: &str) -> (usize, bool) {
+    let project = app
+        .weft
+        .get(&format!("/changes/{change}"))
+        .ok()
+        .and_then(|d| d["task"].as_str().map(str::to_string))
+        .and_then(|task| app.plaza.tasks.find(&task))
+        .and_then(|t| t.project().map(str::to_string));
+    match project {
+        Some(pid) => {
+            let settings = app.project_settings.get(&pid);
+            (
+                settings
+                    .queue_batch
+                    .unwrap_or(crate::project_settings::DEFAULT_QUEUE_BATCH)
+                    as usize,
+                settings.land_approval,
+            )
+        }
+        None => (crate::project_settings::DEFAULT_QUEUE_BATCH as usize, false),
+    }
+}
+
+/// The owner's answer on `change`'s `land` approval for its current round: true when it is approved. A landing with no
+/// approval yet asks for one (a `land` approval in the owner's queue); a pending one waits.
+fn landing_answer(app: &App, repo: &str, reference: &str, change: &str) -> bool {
+    if change.is_empty() {
+        return false;
+    }
+    let Ok(detail) = app.weft.get(&format!("/changes/{change}")) else {
+        return false;
+    };
+    let round = detail["rounds"].as_array().map_or(0, Vec::len) as u64;
+    let latest = app.approvals.list().into_iter().rfind(|a| {
+        a.kind == "land"
+            && a.detail["change"].as_str() == Some(change)
+            && a.detail["round"].as_u64() == Some(round)
+    });
+    match latest {
+        Some(a) => a.state == crate::approvals::State::Approved,
+        None => {
+            let task = detail["task"].as_str().unwrap_or("").to_string();
+            let cid = detail["author"]
+                .as_str()
+                .and_then(|a| a.strip_prefix("agent:"))
+                .and_then(|c| c.parse::<u64>().ok())
+                .unwrap_or(0);
+            let title = app
+                .plaza
+                .tasks
+                .find(&task)
+                .map(|t| t.goal().to_string())
+                .unwrap_or_default();
+            crate::approvals::submit(
+                app,
+                "land",
+                &format!("landing of {change}"),
+                json!({
+                    "cid": cid,
+                    "change": change,
+                    "repo": repo,
+                    "ref": reference,
+                    "round": round,
+                    "task": task,
+                    "goal": title,
+                    "summary": format!("{change} passed review and its checks: it lands on {reference} when you approve it."),
+                    "choices": ["approve", "deny"],
+                }),
+            );
+            false
+        }
+    }
+}
+
+/// The owner answered a `land` approval. Approved, the lane lands at the queue's next step. Denied, it leaves the queue
+/// and its builder goes again with the owner's word.
+pub fn landing_decided(
+    app: &App,
+    item: &crate::approvals::Approval,
+    approve: bool,
+) -> Result<(), String> {
+    if approve {
+        return Ok(());
+    }
+    let change = item.detail["change"]
+        .as_str()
+        .ok_or("no change on the card")?;
+    let repo = item.detail["repo"].as_str().ok_or("no repo on the card")?;
+    let _ = app.weft.hub(
+        "queue.remove",
+        json!({ "repo": repo, "ref": item.detail["ref"], "change": change, "n": item.detail["round"], "reason": "the owner did not approve the landing" }),
+    );
+    let note = "the owner did not approve the landing".to_string();
+    return_lane(
+        app,
+        repo,
+        change,
+        &note,
+        format!(
+            "Your change {change} was not approved to land: the owner says no. Check it out again (weft checkout {change}) and rework it as the owner needs, then finish: it is reviewed and re-checked like any change."
+        ),
+    );
+    Ok(())
+}
+
+/// A lane that left the queue with a failure (4.6: a batch's breaker): its builder goes again with the failure.
+fn ejected(app: &App, repo: &str, step: &Value) {
     let Some(change) = step["change"].as_str() else {
         return;
     };
+    let why = step["reason"]
+        .as_str()
+        .unwrap_or("it breaks the queue")
+        .to_string();
+    let prompt = format!(
+        "Your change {change} left the landing queue: {why}. Check it out again (weft checkout {change}), fix what breaks, and finish: the fix is reviewed and re-checked like any change."
+    );
+    return_lane(app, repo, change, &why, prompt);
+}
+
+/// A clash on landing: the lane's agent gets a resolve item (its lane now starts from main, with the clash marked).
+pub fn conflict_task(app: &App, repo: &str, step: &Value) {
+    let Some(change) = step["change"].as_str() else {
+        return;
+    };
+    let files: Vec<String> = step["files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f.as_str().map(str::to_string))
+        .collect();
+    let prompt = format!(
+        "Your change {change} clashed with main on landing ({}). Your lane now starts from main's head and its latest draft marks the clash \
+         (<<<<<<< this change … ======= … >>>>>>> main). Check it out again (weft checkout {change}), resolve every marked place keeping both intents where \
+         they can live together, and finish: the resolution is reviewed and re-checked like any change.",
+        files.join(", ")
+    );
+    return_lane(
+        app,
+        repo,
+        change,
+        &format!("{change} clashed with main on {}", files.join(", ")),
+        prompt,
+    );
+}
+
+/// Sends a lane's builder back with `prompt`: a seat of the task goes again with it, else the task is reworked (with
+/// `note`) and its worker gets the work on the lane.
+fn return_lane(app: &App, repo: &str, change: &str, note: &str, prompt: String) {
     let Ok(detail) = app.weft.get(&format!("/changes/{change}")) else {
         return;
     };
@@ -944,19 +1157,7 @@ fn conflict_task(app: &App, repo: &str, step: &Value) {
     ) else {
         return;
     };
-    let files: Vec<String> = step["files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|f| f.as_str().map(str::to_string))
-        .collect();
-    let prompt = format!(
-        "Your change {change} for task {task} clashed with main on landing ({}). Your lane now starts from main's head and its latest draft marks the clash \
-         (<<<<<<< this change … ======= … >>>>>>> main). Check it out again (weft checkout {change}), resolve every marked place keeping both intents where \
-         they can live together, and finish: the resolution is reviewed and re-checked like any change.",
-        files.join(", ")
-    );
-    // A task that runs in seats: its builder seat goes again with the clash (the session that wrote it has ended).
+    // A task that runs in seats: its builder seat goes again with the prompt (the session that wrote it has ended).
     if crate::work_loop::owns(app, task) {
         crate::work_loop::clashed(app, task, &prompt);
         return;
@@ -967,10 +1168,7 @@ fn conflict_task(app: &App, repo: &str, step: &Value) {
     });
     // The task goes back to its worker: its resolution is a new round, reviewed like any other.
     if let Some(t) = app.plaza.tasks.find(task) {
-        let _ = t.rework(Some(format!(
-            "{change} clashed with main on {}",
-            files.join(", ")
-        )));
+        let _ = t.rework(Some(note.to_string()));
     }
     let origin = crate::scheduler::Origin {
         task: Some(task.to_string()),
@@ -1050,9 +1248,22 @@ fn owner_door(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if let Some(with_token) = with_credential(app, req, rest) {
         let mut req = req.clone();
         req.body = with_token;
-        return forward(app, &req, "owner", rest);
+        return after_import(app, rest, forward(app, &req, "owner", rest));
     }
-    forward(app, req, "owner", rest)
+    after_import(app, rest, forward(app, req, "owner", rest))
+}
+
+/// A repository imported or adopted through the console: the reviews its history carries become the book's runs.
+fn after_import(app: &App, rest: &str, resp: Response) -> Response {
+    if (200..300).contains(&resp.status)
+        && let Some(repo) = rest.strip_prefix("repos/").and_then(|r| {
+            r.strip_suffix("/import")
+                .or_else(|| r.strip_suffix("/adopt"))
+        })
+    {
+        crate::review_graph::restore_carried(app, repo);
+    }
+    resp
 }
 
 /// The body of an owner's export, release export or adopt with its connection's token added, when it has none.

@@ -15,6 +15,8 @@ flate2 = "1.1"
 serde.workspace = true
 serde_json.workspace = true
 weft = { path = "../weft", default-features = false }
+# The node-to-node transfers a hub brokers (apz-transfer broker.rs): a stream of kind `transfer` is piped to noded.
+apz-transfer = { path = "../apz-transfer" }
 
 [dev-dependencies]
 rcgen = "0.13"

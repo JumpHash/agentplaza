@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 when recording tests of an unknown tool version
+  type: http
+  seq: 60
+}
+
+post {
+  url: {{baseUrl}}/v1/library/no-such-tool/1/tests
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "passed": true
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

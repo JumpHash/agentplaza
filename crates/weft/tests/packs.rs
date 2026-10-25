@@ -123,6 +123,18 @@ const SAMPLES: &[(&str, &str, &str, &[&str])] = &[
         "# Weft\n\n## Install\n\n- Download the binary.\n",
         &["section Weft › section Install"],
     ),
+    (
+        "kotlin",
+        "Plaza.kt",
+        "class Plaza {\n    fun open() {}\n}\n",
+        &["type Plaza", "type Plaza › fn open"],
+    ),
+    (
+        "powershell",
+        "Plaza.ps1",
+        "class Plaza {\n    [void] Open() {}\n}\n",
+        &["type Plaza", "type Plaza › fn Open"],
+    ),
 ];
 
 #[test]

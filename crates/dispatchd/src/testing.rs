@@ -37,8 +37,8 @@ pub struct FakeAgent {
     /// When set, the next call fails with this instead of answering: a whole
     /// class of agent failure, injected at one point.
     failure: Option<DriveError>,
-    /// When set, `read_file` answers with this content whatever was written —
-    /// the agent whose workspace did not take the write.
+    /// When set, `read` answers with this content whatever was written — the
+    /// agent whose workspace did not take the write.
     corrupt_read: Option<String>,
     /// When set, every tool answers this text instead of doing its work — the
     /// agent whose answer is not the shape the workflow needs.
@@ -54,7 +54,7 @@ impl FakeAgent {
         }
     }
 
-    /// An agent whose `read_file` never returns what was written.
+    /// An agent whose `read` never returns what was written.
     pub fn corrupting(content: &str) -> Self {
         Self {
             corrupt_read: Some(content.to_string()),
@@ -79,6 +79,11 @@ impl FakeAgent {
     /// The names of the tools the agent was asked to run, in order.
     pub fn sequence(&self) -> Vec<&str> {
         self.calls.iter().map(|(name, _)| name.as_str()).collect()
+    }
+
+    /// The arguments of the `call`-th call, which the test asserts is there.
+    pub fn args(&self, call: usize) -> &serde_json::Value {
+        &self.calls.get(call).expect("the call was made").1
     }
 
     /// The argument `key` of the `call`-th call, which the test asserts is
@@ -115,67 +120,76 @@ impl Driver for FakeAgent {
         if let Some(answer) = self.answer.clone() {
             return Ok(answer);
         }
-        let path = args
-            .get("path")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
         match name {
-            "write_file" => {
-                let content = args
-                    .get("content")
+            "edit" => {
+                // The harness's own shape: one result per file the call
+                // created, each with its own `ok`.
+                let mut files = Vec::new();
+                for entry in args
+                    .get("create")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    let path = entry
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let content = entry
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let created = self
+                        .files
+                        .insert(path.to_string(), content.to_string())
+                        .is_none();
+                    files.push(json!({ "path": path, "ok": true, "created": created }));
+                }
+                Ok(json!({ "files": files }).to_string())
+            }
+            "read" => {
+                let path = args
+                    .get("files")
+                    .and_then(serde_json::Value::as_array)
+                    .and_then(|files| files.first())
+                    .and_then(|file| file.get("path"))
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
-                let created = self
-                    .files
-                    .insert(path.to_string(), content.to_string())
-                    .is_none();
-                Ok(json!({
-                    "path": path,
-                    "bytes": content.len(),
-                    "created": created,
-                })
-                .to_string())
-            }
-            "read_file" => {
                 let content = self
                     .corrupt_read
                     .clone()
                     .or_else(|| self.files.get(path).cloned());
                 match content {
-                    Some(content) => Ok(json!({
-                        "path": path,
-                        "size": content.len(),
-                        "bytes": content.len(),
-                        "truncated": false,
-                        "content": content,
-                    })
-                    .to_string()),
+                    // The harness's own shape: the lines numbered as `cat -n`
+                    // numbers them.
+                    Some(content) => {
+                        let numbered: Vec<String> = content
+                            .lines()
+                            .enumerate()
+                            .map(|(index, line)| format!("{:>6}\t{line}", index + 1))
+                            .collect();
+                        Ok(json!({
+                            "files": [{
+                                "path": path,
+                                "lines": content.lines().count(),
+                                "content": numbered.join("\n"),
+                            }],
+                        })
+                        .to_string())
+                    }
                     None => Err(DriveError::Refused {
-                        name: "read_file".to_string(),
+                        name: "read".to_string(),
                         output: format!("not found: {path}"),
                     }),
                 }
             }
-            "list" => {
-                let entries: Vec<serde_json::Value> = self
-                    .files
-                    .iter()
-                    .map(|(name, content)| {
-                        json!({ "name": name, "kind": "file", "size": content.len() })
-                    })
-                    .collect();
-                Ok(json!({
-                    "path": ".",
-                    "entries": entries,
-                    "truncated": false,
-                    "skipped": 0,
-                })
-                .to_string())
+            "find" => {
+                let files: Vec<&str> = self.files.keys().map(String::as_str).collect();
+                Ok(json!({ "files": files, "truncated": false }).to_string())
             }
             "search" => {
-                // The harness's own shape: the pattern, the files it scanned
-                // and one entry per matching line, sorted by file name (the
-                // workspace is a BTreeMap, so the walk already is).
+                // The harness's own shape: one entry per matching line, sorted by
+                // path (the workspace is a BTreeMap, so the walk already is).
                 let pattern = args
                     .get("pattern")
                     .and_then(serde_json::Value::as_str)
@@ -187,29 +201,20 @@ impl Driver for FakeAgent {
                     });
                 }
                 let mut matches = Vec::new();
-                let mut bytes = 0;
                 for (name, content) in &self.files {
-                    bytes += content.len();
                     for (index, line) in content.lines().enumerate() {
                         if line.contains(pattern) {
                             matches.push(json!({
-                                "file": name,
+                                "path": name,
                                 "line": index + 1,
                                 "text": line,
+                                "before": [],
+                                "after": [],
                             }));
                         }
                     }
                 }
-                Ok(json!({
-                    "pattern": pattern,
-                    "path": ".",
-                    "matches": matches,
-                    "files_scanned": self.files.len(),
-                    "bytes_scanned": bytes,
-                    "skipped": 0,
-                    "truncated": false,
-                })
-                .to_string())
+                Ok(json!({ "matches": matches, "truncated": false }).to_string())
             }
             other => Err(DriveError::Refused {
                 name: other.to_string(),

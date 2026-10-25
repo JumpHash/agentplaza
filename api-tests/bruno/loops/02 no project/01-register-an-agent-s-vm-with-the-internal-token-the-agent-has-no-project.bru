@@ -30,6 +30,6 @@ assert {
 tests {
   test("the agent is registered: its profile names its CID", function () {
     expect(res.getBody().profile).to.be.an("object");
-    expect(res.getBody().profile.system).to.include("CID 9101");
+    expect(res.getBody().profile.system_parts.map((part) => part.text).join("\n")).to.include("CID 9101");
   });
 }

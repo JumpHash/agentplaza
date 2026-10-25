@@ -1,0 +1,4 @@
+{
+  "goal": "README.md has a misspelling: fix the typo in it, and change nothing else.",
+  "check": "grep -q 'receive' README.md && ! grep -q 'recieve' README.md"
+}

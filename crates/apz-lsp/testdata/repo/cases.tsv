@@ -1,0 +1,17 @@
+# path	symbol	definition_line	call_line	call_column	call_text
+src/lib.rs	greet	1	6	5	greet("plaza")
+go/greet.go	greet	3	8	9	return greet(
+python/greet.py	greet	1	6	12	return greet(
+typescript/greet.ts	greet	1	6	10	return greet(
+javascript/greet.js	greet	1	6	10	return greet(
+swift/Sources/Greet/Greet.swift	greet	1	6	12	return greet(
+kotlin/Greet.kt	greet	1	6	12	return greet(
+java/Greet.java	greet	2	7	16	return greet(
+csharp/Greet.cs	greet	3	10	16	return greet(
+html/index.html	greet	4	-	-	-
+css/greet.css	greet	1	-	-	-
+bash/greet.sh	greet	2	6	1	greet plaza
+powershell/Greet.ps1	greet	1	6	1	greet "plaza"
+yaml/greet.yaml	greet	1	-	-	-
+toml/greet.toml	greet	1	-	-	-
+json/greet.json	greet	2	-	-	-

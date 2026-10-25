@@ -192,6 +192,10 @@ pub struct CreateRun {
     /// `/data/<name>`, by name. A VM with volumes boots cold: warm templates carry none.
     #[serde(default)]
     pub volumes: Vec<String>,
+    /// The session kind the run's guests open (`plaza.kind=`): `base` for a base build's VM (PLAN 16.4), which says
+    /// hello as a session with no model and takes the hub's exec items. None for an agent.
+    #[serde(default)]
+    pub kind: Option<String>,
 }
 
 /// The longest role name a run may carry.
@@ -244,6 +248,14 @@ impl CreateRun {
                 "balloon_usable_mib must be between 1 and memory_mib ({})",
                 self.memory_mib
             ));
+        }
+        if let Some(kind) = &self.kind {
+            if kind != "base" {
+                return Err(format!("kind must be base, not {kind:?}"));
+            }
+            if self.role.is_some() || self.sandbox {
+                return Err("a base is a session with no role and no sandbox".to_string());
+            }
         }
         if self.sandbox {
             if self.role.is_some() {
@@ -304,7 +316,11 @@ impl CreateRun {
             Some(role) => format!("{CONSOLE}{beats} loglevel=4 {}", agent_flags(role, index)),
             None => {
                 let keepalive = if keepalive { " plaza.keepalive=1" } else { "" };
-                format!("{CONSOLE}{beats} plaza.harness=1{keepalive} plaza.vm={index}")
+                let kind = self
+                    .kind
+                    .as_deref()
+                    .map_or(String::new(), |kind| format!(" plaza.kind={kind}"));
+                format!("{CONSOLE}{beats} plaza.harness=1{keepalive}{kind} plaza.vm={index}")
             }
         }
     }
@@ -743,6 +759,8 @@ pub struct RunView<'a> {
     pub beats: Option<u32>,
     /// The role every VM of the run runs as, or `null`.
     pub role: Option<&'a str>,
+    /// The names of the shared data volumes every VM of the run carries.
+    pub volumes: Vec<&'a str>,
     /// Whether the run's guests are sandboxes (see [`CreateRun::sandbox`]).
     pub sandbox: bool,
     /// When the run was created, in milliseconds since the Unix epoch.
@@ -996,6 +1014,8 @@ pub struct ImportedVm {
     /// The staged `workspace.img`, moved to the VM's workspace image on this node. `None` for a VM
     /// with no workspace volume: its export carries no workspace image.
     pub workspace: Option<PathBuf>,
+    /// The shared data volumes the VM carries, by name: each must be in this node's store.
+    pub volumes: Vec<String>,
 }
 
 /// An asleep VM, as an export reads it (see [`Registry::asleep_vm`]).
@@ -1420,10 +1440,12 @@ impl Registry {
         if names.is_empty() {
             return Ok(Vec::new());
         }
-        let store = self
-            .volumes
-            .as_deref()
-            .ok_or_else(|| "this node keeps no volumes".to_string())?;
+        let store = self.volumes.as_deref().ok_or_else(|| {
+            format!(
+                "this node keeps no volumes, so it holds none of {}",
+                names.join(", ")
+            )
+        })?;
         let volumes = names
             .iter()
             .map(|name| {
@@ -2426,6 +2448,22 @@ impl Registry {
         Ok(view)
     }
 
+    /// The directory of a checkpoint of a VM (its files), when the checkpoint exists.
+    pub fn checkpoint_dir(
+        &self,
+        run: &str,
+        vm: u32,
+        name: &str,
+    ) -> Result<std::path::PathBuf, VmOpError> {
+        let store = self.snapshot_store()?;
+        let run = self.find(run).ok_or(VmOpError::UnknownRun)?;
+        let cid = run.vm_cid(vm)?;
+        store
+            .view(cid, name)
+            .ok_or(VmOpError::UnknownRun)
+            .map(|_| store.dir(cid, name))
+    }
+
     /// The checkpoints of VM `vm` of run `run`, newest first.
     pub fn checkpoints(&self, run: &str, vm: u32) -> Result<Vec<SnapshotView>, VmOpError> {
         let store = self.snapshot_store()?;
@@ -2680,6 +2718,10 @@ impl Registry {
         let vcpus = spawner_vcpus(vm.vcpus).map_err(VmOpError::Invalid)?;
         let memory_mib = spawner_memory_mib(vm.memory_mib).map_err(VmOpError::Invalid)?;
         let store = self.snapshot_store()?;
+        // The VM's data volumes: its snapshot names their devices, so the node must hold each one.
+        let volumes = self
+            .resolve_volumes(&vm.volumes)
+            .map_err(VmOpError::Invalid)?;
         let id = self.reserve_run_id();
         // A sandbox travels with its command line: its import is a sandbox, never a keepalive agent.
         let sandbox = is_sandbox_cmdline(&vm.cmdline);
@@ -2709,7 +2751,7 @@ impl Registry {
             workspace,
             balloon: vm.balloon_usable_mib,
             restore: None,
-            volumes: Vec::new(),
+            volumes: volumes.clone(),
         };
         let run = self.insert(
             id,
@@ -2721,7 +2763,7 @@ impl Registry {
                 keepalive: !sandbox,
                 balloon_usable_mib: vm.balloon_usable_mib,
                 sandbox,
-                volumes: Vec::new(),
+                volumes,
             },
         );
         {
@@ -2965,6 +3007,7 @@ impl Registry {
             // the fork boots the same daemon.
             sandbox: meta.sandbox,
             volumes: meta.volumes.iter().map(|v| v.name.clone()).collect(),
+            kind: None,
         };
         let spec = VmSpec {
             kernel: self.images.kernel.clone(),
@@ -3141,6 +3184,33 @@ impl Registry {
         self.lock().runs.iter().find(|run| run.id == id).cloned()
     }
 
+    /// Registers a port a fork of run `id` serves on guest `cid` (see [`Run::register_port`]).
+    pub fn register_port(&self, id: &str, cid: u64, port: u16) -> Result<(), String> {
+        self.find(id)
+            .ok_or_else(|| format!("no run with id {id}"))?
+            .register_port(cid, port)
+    }
+
+    /// Registers `port` on guest `cid` with the live run that has that guest (the guest's own announcement, 6.4). Idempotent.
+    pub fn register_port_by_cid(&self, cid: u64, port: u16) -> Result<(), String> {
+        let runs = self.list();
+        for run in &runs {
+            if run.register_port(cid, port).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(format!("no live run has guest CID {cid}"))
+    }
+
+    /// Whether some live run of this node serves `port` on guest `cid`: the check vsockd makes before it dials a
+    /// guest for an inbound stream.
+    pub fn port_served(&self, cid: u64, port: u16) -> bool {
+        self.lock()
+            .runs
+            .iter()
+            .any(|run| run.serves_port(cid, port))
+    }
+
     /// Every run, oldest first.
     pub fn list(&self) -> Vec<Arc<Run>> {
         self.lock().runs.clone()
@@ -3180,6 +3250,7 @@ impl Registry {
             cids: Arc::clone(&self.cids),
             snapshots: self.snapshots.clone(),
             recoveries: Mutex::new(Vec::new()),
+            ports: Mutex::new(BTreeSet::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Starting,
                 ended_at: None,
@@ -3335,6 +3406,9 @@ pub struct Run {
     /// The recoveries this run's VMs have started, as `(VM index, when)`, kept
     /// for the last [`RECOVERY_WINDOW_MS`] (the crash-loop limit counts them).
     recoveries: Mutex<Vec<(u32, u64)>>,
+    /// The ports this run's forks serve, as `(guest CID, port)`: an inbound stream to one is allowed (vsockd asks
+    /// [`Registry::port_served`]). Kept per run, so a run that ends takes its ports with it.
+    ports: Mutex<BTreeSet<(u64, u16)>>,
     inner: Mutex<RunInner>,
 }
 
@@ -3467,6 +3541,11 @@ impl Run {
             memory_mib: self.memory_mib,
             beats: self.beats,
             role: self.role.as_deref(),
+            volumes: self
+                .volumes
+                .iter()
+                .map(|volume| volume.name.as_str())
+                .collect(),
             sandbox: self.sandbox,
             created_at: self.created_at,
             ended_at: inner.ended_at,
@@ -3943,6 +4022,44 @@ impl Run {
         }
     }
 
+    /// Registers a port a fork of this run serves on its guest `cid`, which must be one of the run's guests.
+    pub fn register_port(&self, cid: u64, port: u16) -> Result<(), String> {
+        if port == 0 {
+            return Err("port 0 is not a port a fork serves".to_string());
+        }
+        if !self
+            .lock()
+            .vms
+            .iter()
+            .any(|slot| slot.guest_cid == Some(cid))
+        {
+            return Err(format!("CID {cid} is not a guest of run {}", self.id));
+        }
+        self.ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((cid, port));
+        Ok(())
+    }
+
+    /// Stops serving a port; `false` when it was not registered.
+    pub fn unregister_port(&self, cid: u64, port: u16) -> bool {
+        self.ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(cid, port))
+    }
+
+    /// Whether this run serves `port` on guest `cid`, while the run is live.
+    pub fn serves_port(&self, cid: u64, port: u16) -> bool {
+        let live = self.lock().ended_at.is_none();
+        live && self
+            .ports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&(cid, port))
+    }
+
     fn lock(&self) -> MutexGuard<'_, RunInner> {
         self.inner
             .lock()
@@ -4311,6 +4428,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             })
             .expect("the run exists even when its VMs cannot boot");
 
@@ -4448,6 +4566,7 @@ mod tests {
             cids,
             snapshots: None,
             recoveries: Mutex::new(Vec::new()),
+            ports: Mutex::new(BTreeSet::new()),
             inner: Mutex::new(RunInner {
                 state: run_state,
                 ended_at: None,
@@ -4690,6 +4809,7 @@ mod tests {
             sandbox: false,
             balloon_usable_mib: None,
             volumes: Vec::new(),
+            kind: None,
         };
         assert_eq!(
             request(None, None).vm_cmdline(0, false),
@@ -4705,6 +4825,40 @@ mod tests {
             "{roled}"
         );
         assert!(request(None, Some("Bad Role")).checked().is_err());
+    }
+
+    /// A base build's VM says its kind on the command line, as a keepalive session with no role; any other kind, and a
+    /// base with a role or a sandbox, is refused before a run exists.
+    #[test]
+    fn a_base_build_vm_names_its_kind_and_no_other_kind_is_accepted() {
+        let base = CreateRun {
+            n: 1,
+            vcpus: 2,
+            memory_mib: 4096,
+            beats: None,
+            vsock_cid: None,
+            role: None,
+            keepalive: Some(true),
+            sandbox: false,
+            balloon_usable_mib: None,
+            volumes: vec!["git-objects".into()],
+            kind: Some("base".into()),
+        };
+        assert_eq!(
+            base.vm_cmdline(0, true),
+            "console=ttyS0 plaza.harness=1 plaza.keepalive=1 plaza.kind=base plaza.vm=0"
+        );
+        assert!(base.checked().is_ok());
+        let engine = CreateRun {
+            kind: Some("engine".into()),
+            ..base.clone()
+        };
+        assert!(engine.checked().is_err());
+        let roled = CreateRun {
+            role: Some("builder".into()),
+            ..base
+        };
+        assert!(roled.checked().is_err());
     }
 
     /// The run range must hold one full-size run: a request of [`MAX_VMS`] VMs
@@ -4741,6 +4895,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             };
 
             let (vms, named) = request(2, 2, 512)
@@ -4781,6 +4936,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             };
 
             // A CID inside the valid range is accepted, base + n - 1 included.
@@ -4925,6 +5081,7 @@ mod tests {
                     sandbox: false,
                     balloon_usable_mib: None,
                     volumes: Vec::new(),
+                    kind: None,
                 })
                 .err()
                 .expect("the workspace copies cannot be prepared");
@@ -4962,6 +5119,7 @@ mod tests {
                         sandbox: false,
                         balloon_usable_mib: None,
                         volumes: Vec::new(),
+                        kind: None,
                     })
                     .expect("the run exists even when its VMs cannot boot");
                 assert_eq!(run.view(Detail::Summary).state, "failed");
@@ -5007,6 +5165,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             })
             .err()
             .expect("the run range is full");
@@ -5044,6 +5203,7 @@ mod tests {
                 sandbox: false,
                 balloon_usable_mib: None,
                 volumes: Vec::new(),
+                kind: None,
             })
             .expect("a pinned run does not need the run range");
 
@@ -5215,6 +5375,69 @@ mod tests {
     }
 
     #[test]
+    fn a_guests_own_announcement_registers_its_port_by_cid_and_nobody_else_can() {
+        let (registry, run) = registry_with_run(VmState::Running, None);
+        // The VM at RUN_CID_BASE announces 8080 (the guest's own registration, 6.4): the live run with that guest serves it.
+        registry
+            .register_port_by_cid(RUN_CID_BASE, 8080)
+            .expect("the run's guest announces its port");
+        assert!(registry.port_served(RUN_CID_BASE, 8080));
+        // Idempotent: the hub's fallback registration of the same port changes nothing.
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 8080)
+            .expect("registers again");
+        assert!(registry.port_served(RUN_CID_BASE, 8080));
+        // A CID no live run has is refused.
+        assert!(
+            registry
+                .register_port_by_cid(RUN_CID_BASE + 9, 8080)
+                .is_err()
+        );
+        assert!(!registry.port_served(RUN_CID_BASE + 9, 8080));
+    }
+
+    #[test]
+    fn a_registered_port_is_served_only_on_its_guest_and_while_the_run_lives() {
+        let (registry, run) = registry_with_run(VmState::Running, None);
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7681),
+            "nothing is registered yet"
+        );
+        // A port on a CID the run does not hold is refused, and so is port 0.
+        assert!(
+            registry
+                .register_port(&run.id, RUN_CID_BASE + 9, 7681)
+                .is_err()
+        );
+        assert!(registry.register_port(&run.id, RUN_CID_BASE, 0).is_err());
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 7681)
+            .expect("the run's guest registers its port");
+        assert!(registry.port_served(RUN_CID_BASE, 7681));
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7682),
+            "only the registered port"
+        );
+        assert!(
+            !registry.port_served(RUN_CID_BASE + 1, 7681),
+            "only the run's guest"
+        );
+        assert!(run.unregister_port(RUN_CID_BASE, 7681));
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7681),
+            "unregistered ports are refused"
+        );
+        registry
+            .register_port(&run.id, RUN_CID_BASE, 7681)
+            .expect("registers again");
+        run.lock().ended_at = Some(1);
+        assert!(
+            !registry.port_served(RUN_CID_BASE, 7681),
+            "an ended run serves nothing"
+        );
+    }
+
+    #[test]
     fn the_snapshot_states_and_refusals_have_their_api_names() {
         assert_eq!(VmState::Paused.as_str(), "paused");
         assert_eq!(VmState::Asleep.as_str(), "asleep");
@@ -5380,6 +5603,7 @@ mod sandbox_tests {
             balloon_usable_mib: None,
             sandbox: true,
             volumes: Vec::new(),
+            kind: None,
         }
     }
 
@@ -5464,6 +5688,7 @@ mod sandbox_tests {
             cids: Arc::new(CidBook::default()),
             snapshots: None,
             recoveries: Mutex::new(Vec::new()),
+            ports: Mutex::new(BTreeSet::new()),
             inner: Mutex::new(RunInner {
                 state: RunState::Running,
                 ended_at: None,

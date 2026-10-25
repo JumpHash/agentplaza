@@ -23,6 +23,9 @@ pub struct Config {
     pub bind: std::net::IpAddr,
     /// How nodes reach this hub; join tokens carry it.
     pub public_url: String,
+    /// The domain whose subdomains are previews (`--preview-domain`): `<lane>--<project>.<domain>` reaches the lane's
+    /// preview. Empty when the hub serves no preview subdomains.
+    pub preview_domain: String,
     /// Serve HTTPS with the hub's certificate (implied off loopback).
     pub tls: bool,
     /// The MCP egress proxy's port on 127.0.0.1 (and the bridge gateway where the engine has one).
@@ -47,6 +50,7 @@ impl Config {
             dev_models: false,
             bind: std::net::Ipv4Addr::LOCALHOST.into(),
             public_url: String::new(),
+            preview_domain: String::new(),
             tls: false,
             mcp_proxy_port: crate::mcp::egress::DEFAULT_PORT,
             vault_key: apz_os::dirs::config().join("vault.key"),
@@ -87,6 +91,9 @@ impl Config {
                 "--console" => config.console = PathBuf::from(value()?),
                 "--bind" => config.bind = value()?.parse().map_err(|e| format!("{flag}: {e}"))?,
                 "--public-url" => public_url = Some(value()?),
+                "--preview-domain" => {
+                    config.preview_domain = value()?.trim_matches('.').to_ascii_lowercase()
+                }
                 "--tls" => tls = true,
                 "--env-file" => config.env_file = Some(PathBuf::from(value()?)),
                 "--vault-key" => config.vault_key = PathBuf::from(value()?),
@@ -156,12 +163,18 @@ pub struct App {
     /// waiting for the owner (cards.rs), the chats (chats.rs) and the seats' threads (threads.rs).
     pub sessions: crate::sessions::Sessions,
     pub seats: crate::seats::Seats,
+    /// The recipe engine's runs and the owner's recipe versions (recipes/runs.rs).
+    pub recipe_runs: crate::recipes::runs::Runs,
+    /// The triggers of the recipes (14.6): the schedules and the event records, and the deliveries in their windows.
+    pub triggers: crate::triggers::Triggers,
     pub budgets: crate::budgets::Budgets,
     pub cards: crate::cards::Cards,
     /// The VMs' workspace reports and the disk quotas' check (disk.rs).
     pub disk: crate::disk::Disk,
     pub chats: crate::chats::Chats,
     pub threads: crate::threads::Threads,
+    /// The tasks' journals: notes and handovers (journal.rs, 9.2).
+    pub journal: crate::journal::Journals,
     /// The unfurl answers for the references clients show as chips, kept in `plaza.db` (unfurl/mod.rs).
     pub unfurl: crate::unfurl::Cache,
     /// STOP ALL / resume.
@@ -170,14 +183,26 @@ pub struct App {
     pub custom_roles: crate::roles_custom::Store,
     /// The orchestrator's proposals for new agents.
     pub agent_proposals: crate::agent_proposals::Store,
+    /// The project memory: the entries read from each project's main, and the proposals agents made.
+    pub project_memory: crate::project_memory::Store,
+    /// The projects' curations: the finished tasks whose journals wait for the curator, and its runs (curator.rs).
+    pub curator: crate::curator::Store,
+    /// The projects' verifiers: when each last started (verifier.rs).
+    pub verifier: crate::verifier::Store,
     /// The hub's nodes, join codes and command queues.
-    pub nodes: crate::nodes::Store,
+    pub nodes: Arc<crate::nodes::Store>,
+    /// The routes the server dispatches to (set at start). A node's requests over its tunnel go through them too.
+    pub routes: std::sync::OnceLock<Arc<apz_http::Router<App>>>,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
     pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
     pub prices: crate::prices::Catalog,
     /// Every model call's tokens, cache hits and cost.
     pub usage: crate::usage::Ledger,
+    /// The eval records of step sessions (`evals.rs`): written as sessions end, read by `/v1/evals`.
+    pub evals: crate::evals::Evals,
+    /// Test selection (PLAN 15.4): the coverage maps per project and commit, and the misses (`test_select.rs`).
+    pub test_select: crate::test_select::TestSelect,
     /// Metrics: what the hub records, what nodes send, the store, alerts and the `/v1/metrics` routes.
     pub metrics: crate::metrics::Metrics,
     /// The Foundry: recipes, datasets, training jobs and their series (`<state>/foundry`).
@@ -196,10 +221,18 @@ pub struct App {
     pub settings: settings::Store,
     /// The owner's appearance: theme, skin, background and mode, and saved themes (appearance.rs).
     pub appearance: crate::appearance::Store,
+    /// The owner's standing rules, with their versions: part 2 of every session's prompt (standing_rules.rs).
+    pub standing_rules: crate::standing_rules::StandingRules,
+    /// The intake records: GitHub, Linear and Notion items, their connections and write-backs (intake/mod.rs).
+    pub intake: crate::intake::Store,
+    /// The planning records: specs, and the recipes and areas of planned tasks (planning.rs).
+    pub planning: crate::planning::Store,
     /// Agents' artifacts (artifacts/), their versions and data blobs.
     pub artifacts: Arc<crate::artifacts::Store>,
     /// Share links (shares/).
     pub shares: Arc<crate::shares::Store>,
+    /// Previews of lanes and their share links (previews/).
+    pub previews: Arc<crate::previews::Store>,
     pub providers: providers::Store,
     /// The coding engines as instances (`engine_instances.rs`).
     pub engines: crate::engine_instances::Store,
@@ -295,21 +328,30 @@ impl App {
             saved: crate::store::saver::Ledger::default(),
             sessions: Default::default(),
             seats: Default::default(),
+            recipe_runs: Default::default(),
+            triggers: Default::default(),
             budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
             disk: Default::default(),
             chats: Default::default(),
             threads: Default::default(),
+            journal: Default::default(),
             unfurl: crate::unfurl::Cache::new(Arc::clone(store.db(crate::store::PLAZA))),
             vault: Arc::clone(&vault),
             control: crate::control::Control::default(),
             custom_roles: crate::roles_custom::Store::default()
                 .with_generations(Arc::clone(&generations)),
             agent_proposals: crate::agent_proposals::Store::default(),
-            nodes: crate::nodes::Store::default(),
+            project_memory: crate::project_memory::Store::default(),
+            curator: crate::curator::Store::default(),
+            verifier: crate::verifier::Store::default(),
+            nodes: Arc::default(),
+            routes: std::sync::OnceLock::new(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
+            evals: crate::evals::Evals::new(Arc::clone(store.db(crate::store::PLAZA))),
+            test_select: crate::test_select::TestSelect::default(),
             metrics: crate::metrics::Metrics::open(
                 Arc::clone(store.db(crate::store::METRICS)),
                 apz_plaza::now_ms(),
@@ -347,11 +389,18 @@ impl App {
             settings: settings::Store::new(config.dev_models)
                 .with_generations(Arc::clone(&generations)),
             appearance: crate::appearance::Store::new(),
+            standing_rules: Default::default(),
+            intake: Default::default(),
+            planning: Default::default(),
             artifacts: Arc::new(crate::artifacts::Store::new(
                 Arc::clone(store.db(crate::store::PLAZA)),
                 Arc::clone(&blobs),
             )),
             shares: Arc::new(crate::shares::Store::open(
+                Arc::clone(store.db(crate::store::PLAZA)),
+                &config.state_dir,
+            )),
+            previews: Arc::new(crate::previews::Store::open(
                 Arc::clone(store.db(crate::store::PLAZA)),
                 &config.state_dir,
             )),
@@ -377,9 +426,12 @@ impl App {
         events::spawn_relays(Arc::clone(&app));
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
+        crate::previews::life::spawn_sweeper(Arc::clone(&app));
         crate::e2b::start(&app);
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));
+        crate::tunnel::spawn_mesh(Arc::clone(&app));
+        crate::transfer::start_broker(Arc::clone(&app));
         crate::steps::spawn(Arc::clone(&app));
         crate::replan::spawn(Arc::clone(&app));
         crate::autoscale::spawn(Arc::clone(&app));
@@ -413,6 +465,15 @@ impl App {
         app.budgets
             .attach(Arc::clone(app.store.db(crate::store::PLAZA)));
         restore_transcripts(&app);
+        // The house rules (the prompt library's AGENTS.md for the plaza) become the first standing rules, once: the
+        // standing rules replace them in every prompt (standing_rules.rs).
+        let house = app
+            .prompts
+            .bound_body("plaza")
+            .is_some_and(|house| app.standing_rules.absorb(&house, apz_plaza::now_ms()));
+        if house {
+            crate::store::saver::save_now(&app, "standing_rules");
+        }
         // The built-in skills join the skill library (one the library already holds is left alone).
         if let Err(why) = crate::skills::seed_builtins(&app.skills, "owner", apz_plaza::now_ms()) {
             eprintln!("apid: cannot seed the built-in skills: {why}");
@@ -458,6 +519,7 @@ impl App {
             crate::weft_hub::stop(&app);
         });
         crate::provider_health::spawn(Arc::clone(&app));
+        crate::triggers::ensure_builtins(&app, apz_plaza::now_ms());
         crate::providers::spawn_refresher(Arc::clone(&app));
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
@@ -500,23 +562,28 @@ impl App {
             Ok(handle) => std::mem::forget(handle),
             Err(e) => eprintln!("apid: the content origin did not start: {e}"),
         }
-        let router = api::router();
+        let router = Arc::new(api::router());
+        let _ = app.routes.set(Arc::clone(&router));
         // Who may send a body, and how much, is decided from the request's headers before the body is
         // read: a caller the gate refuses gets its answer without one (`hub_auth::body_allowance`).
+        // A preview's subdomain is its lane's preview path, so the gate and the routes see that path (a link's token
+        // admits it there, and nothing else of the hub is reachable from a subdomain).
         let admitting = Arc::clone(&app);
-        let server =
-            server.admit(
-                move |request| match crate::hub_auth::gate(&admitting, request) {
-                    Some(refused) => Err(refused),
-                    None => Ok(crate::hub_auth::body_allowance(&admitting, request)),
-                },
-            );
+        let server = server.admit(move |request| {
+            let routed =
+                crate::previews::route::as_routed(request, &admitting.config.preview_domain);
+            match crate::hub_auth::gate(&admitting, &routed) {
+                Some(refused) => Err(refused),
+                None => Ok(crate::hub_auth::body_allowance(&admitting, &routed)),
+            }
+        });
         // The hub's front door first (owner token off loopback), then the routes.
         server.spawn(move |request| {
             let started = std::time::Instant::now();
-            let response = match crate::hub_auth::gate(&app, request) {
+            let routed = crate::previews::route::as_routed(request, &app.config.preview_domain);
+            let response = match crate::hub_auth::gate(&app, &routed) {
                 Some(refused) => refused,
-                None => router.handle(&app, request),
+                None => router.handle(&app, &routed),
             };
             crate::metrics::collect::request(
                 &app,

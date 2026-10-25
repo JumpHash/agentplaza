@@ -162,11 +162,39 @@ impl Hub {
         let deadline = Instant::now() + timeout.mul_f64(slack());
         loop {
             let (_, body) = self.call("GET", path, None);
-            if ready(&body) || Instant::now() >= deadline {
+            if ready(&body) {
+                return body;
+            }
+            if Instant::now() >= deadline {
+                // The caller judges the last answer; a wait that ran out is said here, so one that can never be met
+                // (a condition on the wrong shape) shows as the time it costs.
+                eprintln!("wait_for {path}: not ready after {timeout:?}; the last answer: {body}");
                 return body;
             }
             thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// A raw call with headers of its own (a connector's signed delivery): the reply's status and its JSON body.
+    #[allow(dead_code)] // not every test binary that includes `common` uses it
+    pub fn send_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        bytes: &[u8],
+    ) -> (u16, Value) {
+        let reply = apz_http::client::send_with(
+            self.port,
+            method,
+            path,
+            headers,
+            Some(bytes),
+            CALL_TIMEOUT,
+        )
+        .unwrap_or_else(|err| panic!("{method} {path}: {err}\n{}", self.log()));
+        let value = serde_json::from_slice(&reply.body).unwrap_or(Value::Null);
+        (reply.status, value)
     }
 
     /// The owner's call with a raw body (a file's bytes) of `content_type`.

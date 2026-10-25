@@ -273,6 +273,125 @@ pub struct LaneAuthor {
     pub reason: String,
 }
 
+/// `review.outcome`: a review run's outcome on a change, with the findings it confirmed or dropped (PLAN 8.4). The
+/// hub writes it when a review run ends, and writes it again, with `origin` set, when a repository is imported
+/// with the reviews its source carried in git notes (see `export.rs`, `import.rs`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewOutcome {
+    pub change: String,
+    /// The review run's id in the hub.
+    pub run: String,
+    /// The revision reviewed. An imported review keeps its source's id, which this repository does not hold.
+    pub revision: RevId,
+    pub round: u32,
+    pub recipe: String,
+    /// `pass`, `rework`, `owner` or `fail`.
+    pub decision: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    /// The model that filled each seat of the run.
+    #[serde(default)]
+    pub models: Vec<ReviewSeat>,
+    /// Confirmed and dropped findings only: a pending one is not yet a record.
+    #[serde(default)]
+    pub findings: Vec<ReviewFinding>,
+    #[serde(default)]
+    pub origin: Option<ReviewOrigin>,
+}
+
+impl ReviewOutcome {
+    /// What a record must hold: a decision, and every finding with its scenario and its proof or reason.
+    pub fn check(&self) -> Result<(), String> {
+        if !["pass", "rework", "owner", "fail"].contains(&self.decision.as_str()) {
+            return Err(format!(
+                "{}: {:?} is not a review decision",
+                self.run, self.decision
+            ));
+        }
+        for f in &self.findings {
+            if f.id.trim().is_empty() {
+                return Err(format!("{}: a finding has no id", self.run));
+            }
+            if f.scenario.trim().is_empty() {
+                return Err(format!("{}: finding {} has no scenario", self.run, f.id));
+            }
+            match f.verdict.as_str() {
+                "confirmed" if f.proof.trim().is_empty() => {
+                    return Err(format!(
+                        "{}: confirmed finding {} has no proof",
+                        self.run, f.id
+                    ));
+                }
+                "dropped" if f.reason.trim().is_empty() => {
+                    return Err(format!(
+                        "{}: dropped finding {} has no reason",
+                        self.run, f.id
+                    ));
+                }
+                "confirmed" | "dropped" => {}
+                other => {
+                    return Err(format!(
+                        "{}: finding {} is {other:?}, not confirmed or dropped",
+                        self.run, f.id
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A seat of a review run: the seat's name, its model and its session (`by`, `verified_by`, `models`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewSeat {
+    pub seat: String,
+    pub model: String,
+    #[serde(default)]
+    pub session: String,
+}
+
+/// One finding of a review: its failure, who raised it, and how the verifier ruled on it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewFinding {
+    /// `f<n>`, unique in its run.
+    pub id: String,
+    #[serde(default)]
+    pub symbol: String,
+    #[serde(default)]
+    pub lineage: Option<String>,
+    #[serde(default)]
+    pub severity: String,
+    #[serde(default)]
+    pub round: u32,
+    /// The failure: the inputs or state, and the wrong outcome they cause.
+    pub scenario: String,
+    #[serde(default)]
+    pub kind: String,
+    /// `confirmed` or `dropped`.
+    pub verdict: String,
+    /// For a confirmed finding: the test, the run or the lines that show it.
+    #[serde(default)]
+    pub proof: String,
+    /// For a dropped finding: why it is not a defect.
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub by: Option<ReviewSeat>,
+    #[serde(default)]
+    pub verified_by: Option<ReviewSeat>,
+}
+
+/// A review carried in from another repository's history: the statement its hub signed, the certificates that
+/// prove that hub's key (root first: the first is signed by `owner`, each later one by the key the one before
+/// certifies), and the owner's key. The importing hub checks all of it before it records the review.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReviewOrigin {
+    pub owner: PublicKey,
+    pub certs: Vec<Value>,
+    /// The source's `review.outcome` record in the form the wire carries (`Signed::to_json`).
+    pub signed: Value,
+}
+
 /// `undo`: undoes an earlier op, where that makes sense.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Undo {

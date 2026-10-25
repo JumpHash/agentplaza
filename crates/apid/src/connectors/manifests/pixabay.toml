@@ -1,0 +1,11 @@
+id = "pixabay"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["pixabay.com"]
+secrets = ["PIXABAY_API_KEY"]
+events = []
+actions = ["search"]
+webhook = false
+auth_header = ""
+auth_format = ""

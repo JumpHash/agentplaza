@@ -526,7 +526,7 @@ fn jitter_unit() -> f64 {
 
 /// The hub's relay key from `path`: 32 bytes. A missing or malformed file is replaced by 32 new random bytes, written
 /// with mode 0600 on Unix.
-fn load_key(path: &Path) -> std::io::Result<SigningKey> {
+pub(crate) fn load_key(path: &Path) -> std::io::Result<SigningKey> {
     if let Ok(bytes) = std::fs::read(path)
         && let Ok(secret) = <[u8; 32]>::try_from(bytes.as_slice())
     {

@@ -1,0 +1,11 @@
+id = "github"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["api.github.com"]
+secrets = ["GITHUB_TOKEN"]
+events = []
+actions = ["repos"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

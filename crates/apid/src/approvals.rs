@@ -778,6 +778,7 @@ pub(crate) fn decide_approval(
     let applied = match item.kind.as_str() {
         "review" => crate::review_graph::owner_ruled(app, &item, approve, action),
         "deploy" => crate::environments::decided(app, &item, approve),
+        "land" => crate::weft_hub::landing_decided(app, &item, approve),
         crate::mcp::loopback::KIND => crate::mcp::loopback::decided(app, &item, approve),
         "artifact.share" => crate::shares::request::on_decided(app, &item),
         _ => {
@@ -893,6 +894,8 @@ fn put_mode(app: &App, req: &Request, p: &Params<'_>) -> Response {
         return Response::error(404, "no such agent");
     }
     app.approvals.set_mode(cid, body.mode);
+    // The agent's policy follows its mode: only an autonomous agent's VM runs calls on its own.
+    crate::policy::push(app, cid);
     // The owner's change is written before the answer.
     let saved = crate::store::saver::save_now(app, "approvals");
     Response::json(200, &mode_change_body(&app.approvals, body.mode, saved))

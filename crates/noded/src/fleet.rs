@@ -582,7 +582,7 @@ mod tests {
         // Slot order. Each role keeps the slot its manifest entry gives it, so
         // no CID moves when a role is retired: the slots 4, 7 and 8, which the
         // retired roles held, stay empty.
-        let pinned: [(&str, u64); 14] = [
+        let pinned: [(&str, u64); 15] = [
             ("architect", 0),
             ("auditor", 1),
             ("builder", 2),
@@ -597,6 +597,7 @@ mod tests {
             ("reviewer", 14),
             ("security-reviewer", 15),
             ("breeder", 16),
+            ("curator", 17),
         ];
         let booted: Vec<(String, u64)> = fleet
             .vms()

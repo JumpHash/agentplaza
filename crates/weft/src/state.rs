@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::hash::Hash;
 use crate::keys::PublicKey;
 use crate::model::*;
-use crate::record::{Actor, LogRecord, Statement};
+use crate::record::{Actor, LogRecord, Signed, Statement};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct KeyInfo {
@@ -124,6 +124,8 @@ pub struct Change {
     pub opened_ms: u64,
     pub import: Option<ImportInfo>,
     pub exported: BTreeMap<String, Vec<ExportedCommit>>,
+    /// The reviews written about this change, in order (`review.outcome`).
+    pub reviews: Vec<ReviewRecord>,
 }
 
 impl Change {
@@ -135,6 +137,16 @@ impl Change {
     pub fn round(&self) -> u32 {
         self.rounds.len() as u32
     }
+}
+
+/// A `review.outcome` at its place in the log.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReviewRecord {
+    pub seq: u64,
+    pub at_ms: u64,
+    /// The key the hub signed it with.
+    pub key: String,
+    pub outcome: ReviewOutcome,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -241,6 +253,7 @@ const HUB_KINDS: &[&str] = &[
     "abandon",
     "lane.rebase",
     "lane.author",
+    "review.outcome",
 ];
 
 /// The digest of a revision: its base and its deltas.
@@ -317,6 +330,74 @@ impl State {
             .ok_or_else(|| format!("no repo {name}"))
     }
 
+    /// A carried review (`origin`) is accepted only when the source hub signed it, under this repository's owner:
+    /// the certificates lead from the owner's key to the key that signed the statement, and the statement is the
+    /// same review as the body the importing hub signs (apart from the change and revision names it has here).
+    fn check_origin(&self, r: &ReviewOutcome) -> Result<(), String> {
+        let Some(origin) = &r.origin else {
+            return Ok(());
+        };
+        let owner = self.owner.ok_or("the log has no genesis")?;
+        if origin.owner != owner {
+            return Err(format!(
+                "{}: the carried review was signed under another owner",
+                r.run
+            ));
+        }
+        let signed = Signed::from_json(&origin.signed)?;
+        let source_stmt = signed.statement()?;
+        if source_stmt.kind != "review.outcome" || source_stmt.actor != Actor::Hub {
+            return Err(format!(
+                "{}: a carried review is a review the hub signed",
+                r.run
+            ));
+        }
+        let mut source: ReviewOutcome = parse(&source_stmt.body, "review.outcome")?;
+        if source.origin.is_some() {
+            return Err(format!("{}: a carried review is not carried again", r.run));
+        }
+        let mut mine = r.clone();
+        for body in [&mut source, &mut mine] {
+            body.origin = None;
+            body.change.clear();
+            body.revision.clear();
+        }
+        if serde_json::to_value(&source).ok() != serde_json::to_value(&mine).ok() {
+            return Err(format!(
+                "{}: the carried review is not the review it names",
+                r.run
+            ));
+        }
+        // Down the certificates from the owner's key.
+        let mut key = owner;
+        let mut hub_certified = false;
+        for cert in &origin.certs {
+            let c = Signed::from_json(cert)?;
+            if c.key_id != key.id() {
+                return Err(format!(
+                    "{}: a certificate is not signed by the key above it",
+                    r.run
+                ));
+            }
+            key.verify(&c.stmt, &c.sig)?;
+            let cs = c.statement()?;
+            if cs.kind != "cert.issue" {
+                return Err(format!("{}: a certificate is not a cert.issue", r.run));
+            }
+            let body: CertIssue = parse(&cs.body, "cert.issue")?;
+            hub_certified = body.holder.actor == Actor::Hub;
+            key = body.key;
+        }
+        if !hub_certified || key.id() != signed.key_id {
+            return Err(format!(
+                "{}: the review is not signed by a certified hub key",
+                r.run
+            ));
+        }
+        key.verify(&signed.stmt, &signed.sig)
+            .map_err(|e| format!("{}: the carried review does not verify: {e}", r.run))
+    }
+
     /// Checks (`dry`) or applies one record. Returns a one-line summary for the op log.
     pub fn apply(
         &mut self,
@@ -380,6 +461,11 @@ impl State {
         }
         if HUB_KINDS.contains(&kind) && !matches!(stmt.actor, Actor::Hub | Actor::Owner) {
             return Err(format!("only the hub signs {kind}"));
+        }
+        // A review is the hub's own record: the owner's key (even through the console) does not sign one.
+        if kind == "review.outcome" && (stmt.actor != Actor::Hub || key.holder.actor != Actor::Hub)
+        {
+            return Err("only the hub's key signs review.outcome".into());
         }
         let summary = match kind {
             "cert.issue" => {
@@ -526,6 +612,7 @@ impl State {
                             opened_ms: stmt.at_ms,
                             import: None,
                             exported: BTreeMap::new(),
+                            reviews: vec![],
                         },
                     );
                 }
@@ -928,6 +1015,7 @@ impl State {
                                 ai_coauthors: i.ai_coauthors,
                             }),
                             exported: BTreeMap::new(),
+                            reviews: vec![],
                         },
                     );
                 }
@@ -949,6 +1037,41 @@ impl State {
                     if c.state == ChangeState::Conflict {
                         c.state = ChangeState::Open;
                     }
+                }
+                s
+            }
+            "review.outcome" => {
+                let r: ReviewOutcome = parse(&stmt.body, kind)?;
+                r.check()?;
+                let cid = self.change(&r.change)?.id;
+                // A carried review names the revision of its source; this repository does not hold it.
+                if r.origin.is_none() && !self.revisions.contains_key(&r.revision) {
+                    return Err(format!("no revision {}", r.revision));
+                }
+                self.check_origin(&r)?;
+                let confirmed = r
+                    .findings
+                    .iter()
+                    .filter(|f| f.verdict == "confirmed")
+                    .count();
+                let s = format!(
+                    "{} review {}: {} ({confirmed} confirmed, {} dropped)",
+                    r.change,
+                    r.run,
+                    r.decision,
+                    r.findings.len() - confirmed
+                );
+                if !dry {
+                    self.changes
+                        .get_mut(&cid)
+                        .unwrap()
+                        .reviews
+                        .push(ReviewRecord {
+                            seq,
+                            at_ms: stmt.at_ms,
+                            key: key.id.clone(),
+                            outcome: r,
+                        });
                 }
                 s
             }

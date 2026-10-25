@@ -9,7 +9,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use apz_http::{Params, Request, Response, RouteDoc, Router};
-use apz_proto::chat::Usage;
+use apz_proto::chat::{SystemPart, Usage};
 use apz_proto::wire::{AgentProfile, HostMessage, WorkKind};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -257,6 +257,8 @@ pub fn push_profiles(app: &App) {
 pub fn push_profile(app: &App, agent: &Agent) {
     let push = json!({"message": HostMessage::Profile { profile: profile(app, agent) }});
     let _ = crate::fleet::send(app, agent.cid, &push);
+    // What the profile grants, and the agent's mode and hold, decide its policy too.
+    crate::policy::push(app, agent.cid);
 }
 
 /// The human label of a role, or the raw name when it is not a known role.
@@ -366,31 +368,14 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
     // The agent's own limits, over the project's, over the plaza's defaults.
     let limits = app.harness.limits(agent.cid);
     let project = crate::project_settings::of_agent(app, agent.cid).unwrap_or_default();
-    let project_rules = crate::projects::project_of(app, agent.cid)
-        .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
-        .map(|rules| render_vars(&rules, agent));
-    // The tools and the skills section come from the session's cached section (tools.rs).
-    let section = crate::tools::section(app, agent);
+    let model = model_of(app, agent);
     AgentProfile {
         name: format!("{} #{}", agent.role, agent.cid),
         role: agent.role.clone(),
-        model: model_of(app, agent),
-        system: with_project(
-            with_skills(
-                with_project_rules(
-                    with_house_rules(
-                        render_vars(&system_prompt(agent, role_prompt), agent),
-                        app.prompts
-                            .bound_body("plaza")
-                            .map(|rules| render_vars(&rules, agent)),
-                    ),
-                    project_rules,
-                ),
-                section.skills.clone(),
-            ),
-            crate::projects::prompt_section(app, agent.cid, &agent.role),
-        ),
-        tools: crate::tools::with_library(app, agent, &section),
+        context_window: crate::providers::context_window(app, &model).unwrap_or(0),
+        model,
+        system_parts: system_parts(app, agent, role_prompt),
+        tools: crate::tools::offered_to(app, agent),
         max_turns: limits
             .max_turns
             .or(project.max_turns)
@@ -399,6 +384,7 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
             .compress_at
             .or(project.compress_at)
             .unwrap_or(crate::harness_control::DEFAULT_COMPRESS_AT),
+        compact_at_pct: crate::harness_control::DEFAULT_COMPACT_AT_PCT,
         keep_recent: limits
             .keep_recent
             .or(project.keep_recent)
@@ -411,6 +397,13 @@ pub fn profile(app: &App, agent: &Agent) -> AgentProfile {
             String::new()
         },
         egress_ca: crate::egress_inject::ca_for_role(app, &agent.role),
+        // The project's hooks, which the harness runs around the agent's edits and commands (apz-proto's hooks).
+        hooks: crate::project_settings::hooks_of_agent(app, agent.cid),
+        // A step session writes its handover before it ends (journal.rs).
+        handover: app
+            .sessions
+            .by_cid(agent.cid)
+            .is_some_and(|s| s.kind == crate::sessions::Kind::Step),
     }
 }
 
@@ -431,57 +424,71 @@ fn render_vars(text: &str, agent: &Agent) -> String {
     apz_prompt::render(text, &vars)
 }
 
-/// The plaza's AGENTS.md (the library prompt bound to `plaza`), appended to every agent's system prompt.
-fn with_house_rules(system: String, rules: Option<String>) -> String {
-    match rules {
-        Some(rules) if !rules.trim().is_empty() => {
-            format!("{system}\n\n## House rules (AGENTS.md)\n\n{}", rules.trim())
-        }
-        _ => system,
-    }
+/// The system prompt in four parts, most stable first (PLAN 13.3). Parts 1 to 3 say nothing about the seat itself, so
+/// the sessions of one project share them; the first three are cache breakpoints. Part 5, the work item's prompt, is
+/// the first message of the conversation.
+fn system_parts(app: &App, agent: &Agent, role_prompt: &str) -> Vec<SystemPart> {
+    let project = crate::projects::project_of(app, agent.cid);
+    // The harness's prompt, and the tools are offered beside it (the tool index).
+    let harness = render_vars(&harness_prompt(), agent);
+    // The owner's standing rules (standing_rules.rs: the same text for every session, so not rendered per agent),
+    // and the skills index.
+    let standing = join_sections([
+        section("Standing rules", Some(app.standing_rules.text())),
+        // The skills index comes from the session's cached tools section (tools.rs).
+        crate::tools::section(app, agent).skills.clone(),
+    ]);
+    // The project's rules, the index of its memory (PLAN 9.5), and the paragraph about its project.
+    let project_part = join_sections([
+        section(
+            "Project rules (AGENTS.md)",
+            project
+                .as_deref()
+                .and_then(|pid| app.prompts.bound_body(&format!("project:{pid}")))
+                .map(|rules| render_vars(&rules, agent)),
+        ),
+        section(
+            "Project memory",
+            project.as_deref().map(|pid| {
+                crate::project_memory::index_text(&crate::project_memory::entries(app, pid))
+            }),
+        ),
+        crate::projects::prompt_section(app, agent.cid, &agent.role)
+            .map(|paragraph| format!("## Your project\n\n{paragraph}")),
+    ]);
+    // The seat's role and its step's instructions.
+    let seat = render_vars(&seat_prompt(agent, role_prompt), agent);
+    [
+        (harness, true),
+        (standing, true),
+        (project_part, true),
+        (seat, false),
+    ]
+    .into_iter()
+    .map(|(text, cache)| SystemPart { text, cache })
+    .collect()
 }
 
-/// Appends the AGENTS.md bound to the agent's project (`project:<id>`), when there is one.
-fn with_project_rules(system: String, rules: Option<String>) -> String {
-    match rules {
-        Some(rules) if !rules.trim().is_empty() => {
-            format!(
-                "{system}\n\n## Project rules (AGENTS.md)\n\n{}",
-                rules.trim()
-            )
-        }
-        _ => system,
-    }
+/// A `## heading` section with the body's text, when there is any.
+fn section(heading: &str, body: Option<String>) -> Option<String> {
+    body.filter(|body| !body.trim().is_empty())
+        .map(|body| format!("## {heading}\n\n{}", body.trim()))
 }
 
-/// Appends the agent's `## Skills` section (`agent_tools::prompt_section`), when it has skills.
-fn with_skills(system: String, section: Option<String>) -> String {
-    match section {
-        Some(section) => format!("{system}\n\n{section}"),
-        None => system,
-    }
+/// The sections that are there, one after another with a blank line between.
+fn join_sections(sections: impl IntoIterator<Item = Option<String>>) -> String {
+    sections
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
-/// Appends the agent's `## Your project` section (`projects::prompt_section`): the project it works on, or that it has
-/// none yet. The orchestrator, which works on every project, has none.
-fn with_project(system: String, section: Option<String>) -> String {
-    match section {
-        Some(section) => format!("{system}\n\n## Your project\n\n{section}"),
-        None => system,
-    }
-}
-
-/// The system prompt: the plaza preamble, then the role's own prompt.
-fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
-    let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
-    let label = role_label(&agent.role);
-    let who = format!(
-        "You are the {label} agent of an AgentPlaza (CID {}).",
-        agent.cid
-    );
-    let mut text = format!(
-        "{who}\n\n\
-         You work in your own virtual machine, and inside it you may do anything: you are root, and you can \
+/// Part 1 of the system prompt (PLAN 13.3): the harness's prompt, the same for every agent: the plaza, how to work, how
+/// to write and how money works.
+fn harness_prompt() -> String {
+    let mut text = String::from(
+        "You work in your own virtual machine, and inside it you may do anything: you are root, and you can \
          install and run any software (system packages, language runtimes, CLIs, libraries) from the internet, \
          which you reach through the plaza's proxy. Guest tools (bash, file tools) act on that VM. Host tools \
          (names starting with plaza_, and the connectors to outside services) act on the shared plaza that \
@@ -499,6 +506,34 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
          Plaza laws: never seek, copy or reveal credentials, keys or tokens. Never impersonate another \
          agent or the operator. Never try to reach the host, the hub or another agent's machine except through \
          plaza tools. Report honestly; never claim work you did not do.",
+    );
+    text.push_str(
+        "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
+         sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
+         markdown for structure (short headings, lists, tables, code blocks) — the console renders it. Do not write \
+         in private shorthand: no strings of ids, hashes or byte counts in place of meaning; name \
+         people, files and tasks so a reader can follow (\"Marlow's render script\", not \"202 f14ff615e383d \
+         13431 B\"), and give an id or hash only where someone needs it to act. Do not repeat what was already \
+         said, re-verify what is settled, or file status notes that change nothing; if there is nothing new, say \
+         nothing. Keep board posts and messages short; put long material in a shared file and link it.",
+    );
+    text.push_str(
+        "\n\nHow money works: a task's budget is a cap in dollars or tokens, reserved from its project when the task \
+         starts. Each model call is held against the task's budget before it is sent, and settled with its real cost \
+         when it ends. A call that does not fit pauses the work until the owner raises the budget. You have no tools \
+         for money.",
+    );
+    text
+}
+
+/// Part 4 of the system prompt (PLAN 13.3): the seat's own: who it is, what its tier and role add to the plaza's
+/// prompt, and its role's prompt.
+fn seat_prompt(agent: &Agent, role_prompt: &str) -> String {
+    let orchestrator = tier_of(&agent.role) == Tier::Orchestrator;
+    let label = role_label(&agent.role);
+    let mut text = format!(
+        "You are the {label} agent of an AgentPlaza (CID {}).",
+        agent.cid
     );
     if orchestrator {
         text.push_str(
@@ -550,22 +585,6 @@ fn system_prompt(agent: &Agent, role_prompt: &str) -> String {
              task waiting on itself through others. Revise after critique and attach a revision.",
         );
     }
-    text.push_str(
-        "\n\nHow to write: people read what you write — the operator and other agents. Write plain, complete \
-         sentences, the way a capable colleague explains something: lead with what matters, then the detail. Use \
-         markdown for structure (short headings, lists, tables, code blocks) — the console renders it. Do not write \
-         in private shorthand: no strings of ids, hashes or byte counts in place of meaning; name \
-         people, files and tasks so a reader can follow (\"Marlow's render script\", not \"202 f14ff615e383d \
-         13431 B\"), and give an id or hash only where someone needs it to act. Do not repeat what was already \
-         said, re-verify what is settled, or file status notes that change nothing; if there is nothing new, say \
-         nothing. Keep board posts and messages short; put long material in a shared file and link it.",
-    );
-    text.push_str(
-        "\n\nHow money works: a task's budget is a cap in dollars or tokens, reserved from its project when the task \
-         starts. Each model call is held against the task's budget before it is sent, and settled with its real cost \
-         when it ends. A call that does not fit pauses the work until the owner raises the budget. You have no tools \
-         for money.",
-    );
     let role_prompt = role_prompt.trim();
     if !role_prompt.is_empty() {
         text.push_str("\n\n");
@@ -585,6 +604,7 @@ pub(crate) fn role_on_hello(spawned_role: Option<String>) -> String {
 /// harness's features from its hello; an older harness sends none.
 pub fn hello(app: &App, cid: u64, role: &str, vm: u32, caps: &[String]) -> Option<AgentProfile> {
     crate::sleep::woke(cid);
+    app.evals.hello(cid, caps);
     // contract
     let now = apz_plaza::now_ms();
     let previous = app.agents.get(cid);
@@ -671,10 +691,24 @@ struct Placed {
     vm: Option<u32>,
 }
 
+/// Whether a reconcile pass may call `agent` gone: its node's gateway, asked at `asked_ms`, does not list it, and it
+/// is not asleep, dozing or offline. An asleep agent has no session by design, and a dozing one's paused session
+/// may go unlisted while its VM is paused. An agent that said hello at or after `asked_ms` is not judged: the answer
+/// it is missing from was taken before its hello, and the next pass judges it on a newer one.
+fn vanished(agent: &Agent, listed: &BTreeSet<u64>, asked_ms: u64) -> bool {
+    !matches!(
+        agent.status,
+        Status::Offline | Status::Asleep | Status::Dozing
+    ) && !listed.contains(&agent.cid)
+        && agent.connected_at_ms < asked_ms
+}
+
 /// One reconcile pass over every node (`fleet::reports`). A node whose gateway or noded did not
 /// answer changes nothing: its agents are only marked gone when its own gateway says so.
 fn reconcile_once(app: &App) {
     let mut placements: BTreeMap<u64, (String, u32)> = BTreeMap::new();
+    // The gateways are asked now: their answers are no newer than this instant.
+    let asked_ms = apz_plaza::now_ms();
     for (node, status, runs) in crate::fleet::reports(app) {
         // Sessions: register unknown or offline sessions, then mark this node's vanished agents offline.
         if let Some(rows) = status["agents"].as_array() {
@@ -693,15 +727,9 @@ fn reconcile_once(app: &App) {
                     hello(app, cid, role, 0, &[]);
                 }
             }
-            // An asleep agent has no session by design: it is not gone. Nor is a dozing one, whose paused
-            // session the gateway keeps (quiet) and may not list while its VM is paused.
-            let missing = app.agents.select(|agent| {
-                (!matches!(
-                    agent.status,
-                    Status::Offline | Status::Asleep | Status::Dozing
-                ) && !live.contains(&agent.cid))
-                .then_some(agent.cid)
-            });
+            let missing = app
+                .agents
+                .select(|agent| vanished(agent, &live, asked_ms).then_some(agent.cid));
             for cid in missing {
                 if crate::fleet::node_of(app, cid) == node {
                     gone(app, cid, "session not on its node's gateway");
@@ -958,10 +986,16 @@ pub fn spawn_agents(
     node: Option<&str>,
     project: Option<&str>,
 ) -> Result<Value, String> {
+    // A fork for a project over its disk quota waits: the quota's card asks the owner first (10.5).
+    if let Some(project) = project {
+        crate::disk::admit_fork(app, project, apz_plaza::now_ms())?;
+    }
     let chosen = node.is_none();
     let node = match node {
         Some(node) => node.to_string(),
-        None => crate::placement::choose_node(app, role),
+        None => crate::placement::choose_node(app, role, project).ok_or_else(|| {
+            "no machine in the project's pools has room for a new agent".to_string()
+        })?,
     };
     let node = node.as_str();
     if node != crate::fleet::LOCAL {
@@ -1359,6 +1393,32 @@ mod route_tests {
         assert_eq!(roster.get(42).map(|a| a.status), Some(Status::Asleep));
     }
 
+    #[test]
+    fn reconcile_judges_an_agent_only_by_a_status_that_could_list_it() {
+        let listed = BTreeSet::from([7]);
+        let asked = 1_000;
+        // Idle, said hello before the status was asked for, and absent from it: gone.
+        let mut before = agent("builder");
+        before.connected_at_ms = asked - 1;
+        assert!(vanished(&before, &listed, asked));
+        // Listed by the status: not gone.
+        let mut seen = agent("builder");
+        seen.cid = 7;
+        seen.connected_at_ms = asked - 1;
+        assert!(!vanished(&seen, &listed, asked));
+        // Said hello after the status was asked for (a VM started and hello'd while the pass waited): not judged.
+        let mut fresh = agent("verifier");
+        fresh.connected_at_ms = asked;
+        assert!(!vanished(&fresh, &listed, asked));
+        // Asleep, dozing or offline: not gone by the status.
+        for status in [Status::Asleep, Status::Dozing, Status::Offline] {
+            let mut quiet = agent("builder");
+            quiet.connected_at_ms = asked - 1;
+            quiet.status = status;
+            assert!(!vanished(&quiet, &listed, asked), "{status:?}");
+        }
+    }
+
     fn agent(role: &str) -> Agent {
         Agent {
             cid: 42,
@@ -1446,8 +1506,8 @@ mod route_tests {
 
     #[test]
     fn orchestrator_prompt_delegates_and_worker_does_not() {
-        let orchestrator = system_prompt(&agent("orchestrator"), "");
-        let worker = system_prompt(&agent("builder"), "Write the code.");
+        let orchestrator = seat_prompt(&agent("orchestrator"), "");
+        let worker = seat_prompt(&agent("builder"), "Write the code.");
         assert!(orchestrator.contains("You plan and delegate"));
         assert!(orchestrator.contains("plaza_assign"));
         assert!(!worker.contains("delegate"));

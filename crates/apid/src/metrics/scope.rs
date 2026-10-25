@@ -840,13 +840,13 @@ mod tests {
     #[test]
     fn a_tool_scope_keeps_only_the_series_of_that_tool() {
         let facts = Facts::default();
-        let scope = parse_scope("tool:bash");
+        let scope = parse_scope("tool:run");
         let keeps = |kind: EntityKind, entity: &str| {
             let key = SeriesKey::new("tool.calls", kind, entity);
             covers(&facts, &scope, key.kind, &key.entity, &key.labels)
         };
-        assert!(keeps(EntityKind::Tool, "bash"));
-        assert!(!keeps(EntityKind::Tool, "edit_file"));
-        assert!(!keeps(EntityKind::Route, "bash"));
+        assert!(keeps(EntityKind::Tool, "run"));
+        assert!(!keeps(EntityKind::Tool, "edit"));
+        assert!(!keeps(EntityKind::Route, "run"));
     }
 }

@@ -96,6 +96,47 @@ impl VsockStream {
         Ok(stream)
     }
 
+    /// Connects to the Unix socket at `path`: the test transport a `plaza.connect=uds:` command line names. vsockd
+    /// serves each guest CID on such a socket, so the stream reads and writes as the vsock one does and takes the
+    /// same read timeout. Nothing else in the harness dials a socket.
+    pub fn connect_unix(path: &str) -> io::Result<Self> {
+        let bytes = path.as_bytes();
+        // SAFETY: `sockaddr_un` is plain data, so all zeroes is a valid value; the fields set below are the ones
+        // `connect` reads.
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        if bytes.len() >= addr.sun_path.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("the socket path {path} is too long"),
+            ));
+        }
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (slot, byte) in addr.sun_path.iter_mut().zip(bytes) {
+            *slot = *byte as libc::c_char;
+        }
+        // SAFETY: `socket` is called with valid constants and only creates a new file descriptor; the result is
+        // checked below.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let stream = Self { fd };
+        // SAFETY: `addr` is a fully initialised `sockaddr_un` and `fd` a live socket of the matching family; the
+        // length passed is exactly `size_of::<sockaddr_un>()`.
+        let rc = unsafe {
+            libc::connect(
+                fd,
+                std::ptr::from_ref(&addr).cast(),
+                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        stream.set_read_timeout(Some(READ_TIMEOUT))?;
+        Ok(stream)
+    }
+
     /// Another handle to this connection (`dup`), so one thread can read while
     /// another writes. The connection closes once every handle has.
     pub fn try_clone(&self) -> io::Result<Self> {
@@ -390,5 +431,27 @@ mod tests {
         assert_eq!(IOCTL_VM_SOCKETS_GET_LOCAL_CID, 0x7b9);
         assert_eq!(CID_ANY, 0xffff_ffff);
         assert_eq!(HOST_CID, 2);
+    }
+
+    /// The test transport: a `plaza.connect=uds:` stream reaches the socket it names and carries bytes both ways,
+    /// and a socket that is not there is refused.
+    #[test]
+    fn connect_unix_reaches_the_socket_a_test_names_and_carries_bytes_both_ways() {
+        use std::io::{Read, Write};
+        let path = std::env::temp_dir().join(format!("apz-connect-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let mut stream = VsockStream::connect_unix(path.to_str().unwrap()).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        stream.write_all(b"ping\n").unwrap();
+        let mut got = [0u8; 5];
+        peer.read_exact(&mut got).unwrap();
+        assert_eq!(&got, b"ping\n");
+        peer.write_all(b"pong\n").unwrap();
+        let mut back = [0u8; 5];
+        stream.read_exact(&mut back).unwrap();
+        assert_eq!(&back, b"pong\n");
+        let _ = std::fs::remove_file(&path);
+        assert!(VsockStream::connect_unix("/nonexistent/apz/vm1_5000").is_err());
     }
 }

@@ -1,0 +1,29 @@
+meta {
+  name: Refuse a path change for a node the hub does not know
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/path
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "path": "tunnel"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}
+
+tests {
+  test("the refusal names the node", function () {
+    expect(res.getBody().error).to.include("no node n999");
+  });
+}

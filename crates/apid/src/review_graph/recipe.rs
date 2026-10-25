@@ -99,7 +99,8 @@ pub struct NodeDef {
 }
 
 /// `when` → `then`. Conditions: `failed` (any node), `<node> failed`, `<axis> <= <level>` (any symbol's lowest
-/// score), `measured <axis> <= <level>` (measured scores only). Actions: `rework`, `owner`, `replan`, `fail`.
+/// score), `measured <axis> <= <level>` (measured scores only), `confirmed findings` (a finding the verifier confirmed,
+/// other than `info`). Actions: `rework`, `owner`, `replan`, `fail`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, apz_store::Table)]
 pub struct Rule {
     pub when: String,
@@ -187,6 +188,7 @@ pub enum Condition {
         at_most: i64,
         measured: bool,
     },
+    ConfirmedFindings,
 }
 
 pub fn parse_condition(when: &str) -> Result<Condition, String> {
@@ -196,6 +198,9 @@ pub fn parse_condition(when: &str) -> Result<Condition, String> {
     }
     if w == "constraint broken" {
         return Ok(Condition::NodeFailed("constraints".into()));
+    }
+    if w == "confirmed findings" {
+        return Ok(Condition::ConfirmedFindings);
     }
     if let Some(node) = w.strip_suffix(" failed") {
         return Ok(Condition::NodeFailed(node.trim().to_string()));
@@ -257,10 +262,10 @@ pub const READINGS: &[(&str, &[&str])] = &[
 
 const CODE: &str = r#"
 id = "code"
-version = 3
+version = 4
 title = "Code"
 axes = ["fea", "ux", "val", "con", "mem", "cpu", "prf", "sec", "cmp", "div", "leg", "tst", "cln", "dbt", "mnt"]
-rounds = 2
+rounds = 3
 post_land = ["cargo test --workspace --release"]
 
 [applies]
@@ -268,11 +273,11 @@ kinds = ["code"]
 
 [[first]]
 when = "comment-only"
-only = ["tree", "checks"]
+only = ["tree", "checks", "verify"]
 
 [[first]]
 when = "test-only"
-only = ["tree", "checks", "quality"]
+only = ["tree", "checks", "quality", "verify"]
 
 [[first]]
 when = "touches:crates/apid/src/vault/**,crates/apz-trust/**,crates/weft/src/keys.rs"
@@ -338,12 +343,22 @@ after = ["tree"]
 constraints = true
 
 [[node]]
+id = "verify"
+kind = "agent"
+role = "verifier"
+ask = "Prove each finding or drop it: a failing test, a reproduction, or the exact lines and the reasoning."
+
+[[node]]
 id = "gate"
 kind = "gate"
-after = ["checks", "function", "resources", "risk", "divergence", "quality", "constraints"]
+after = ["checks", "function", "resources", "risk", "divergence", "quality", "constraints", "verify"]
 
 [[rule]]
 when = "checks failed"
+then = "rework"
+
+[[rule]]
+when = "confirmed findings"
 then = "rework"
 
 [[rule]]

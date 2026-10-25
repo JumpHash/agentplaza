@@ -588,7 +588,7 @@ mod tests {
                 result_tokens: 10,
             },
             ContextTool {
-                tool: "bash".into(),
+                tool: "run".into(),
                 calls: 4,
                 errors: 1,
                 result_tokens: 900,
@@ -604,7 +604,7 @@ mod tests {
             .into_iter()
             .map(|t| t.tool)
             .collect();
-        assert_eq!(names, ["bash", "edit", "read"]);
+        assert_eq!(names, ["run", "edit", "read"]);
     }
 
     #[test]
@@ -661,10 +661,10 @@ mod tests {
     fn a_tool_call_and_its_result_are_mono_and_a_failed_one_alerts() {
         let call = transcript_line(
             "tool_request",
-            &json!({ "name": "bash", "input": { "cmd": "ls" } }),
+            &json!({ "name": "run", "input": { "cmd": "ls" } }),
         );
         assert_eq!(call.label, "Tool call");
-        assert_eq!(call.text, "bash {\"cmd\":\"ls\"}");
+        assert_eq!(call.text, "run {\"cmd\":\"ls\"}");
         assert!(call.mono && !call.alert);
         let ok = transcript_line("tool_result", &json!({ "ok": true, "output": "a\nb" }));
         assert_eq!((ok.label.as_str(), ok.alert), ("Tool result", false));

@@ -1,0 +1,11 @@
+id = "pexels"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["api.pexels.com"]
+secrets = ["PEXELS_API_KEY"]
+events = []
+actions = ["search"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "${SECRET}"

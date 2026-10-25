@@ -1,0 +1,11 @@
+id = "notion"
+kind = ["intake"]
+version = "1.0.0"
+scopes = ["read", "write"]
+egress = ["api.notion.com"]
+secrets = ["NOTION_TOKEN"]
+events = []
+actions = ["database_query", "page_read", "page_update", "comment_create"]
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

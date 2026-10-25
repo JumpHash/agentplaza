@@ -1,0 +1,25 @@
+meta {
+  name: List the recipe engine's recipes
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/recipes
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("the built-in engine recipes are listed beside the review recipes", function () {
+    const body = res.getBody();
+    const ids = body.engine.map((r) => r.id);
+    expect(ids).to.include.members(["change", "review", "ci", "base", "distill"]);
+    expect(body.recipes).to.be.an("array");
+  });
+}

@@ -60,7 +60,7 @@ fn body(req: &ChatRequest) -> Value {
         generation["temperature"] = json!((f64::from(t) * 1000.0).round() / 1000.0);
     }
     let mut body = json!({"contents": contents(&req.messages), "generationConfig": generation});
-    if let Some(system) = req.system.as_deref().filter(|s| !s.is_empty()) {
+    if let Some(system) = req.system_text() {
         body["systemInstruction"] = json!({"parts": [{"text": system}]});
     }
     if !req.tools.is_empty() {
@@ -264,15 +264,26 @@ fn read_stream(
                 }
             } else if let Some(call) = part.get("functionCall") {
                 let name = call["name"].as_str().unwrap_or("").to_string();
-                sink(Delta::ToolUse { name: name.clone() });
                 let input = if call["args"].is_object() {
                     call["args"].clone()
                 } else {
                     json!({})
                 };
+                let id = format!("call_{}", first_call + calls);
+                // A call comes whole in one part: its start, its input and its end go out together.
+                sink(Delta::ToolUse {
+                    name: name.clone(),
+                    index: calls,
+                    id: id.clone(),
+                });
+                sink(Delta::ToolInput {
+                    index: calls,
+                    json: input.to_string(),
+                });
+                sink(Delta::BlockEnd { index: calls });
                 let meta = signature.map(|sig| json!({"kind": TAG, "thoughtSignature": sig}));
                 content.push(Block::ToolUse {
-                    id: format!("call_{}", first_call + calls),
+                    id,
                     name,
                     input,
                     meta,
@@ -389,15 +400,19 @@ mod tests {
             "required": ["command"],
         });
         let mut req = ChatRequest {
+            system_parts: Vec::new(),
+            cache_last_message: false,
             model: "g/gemini-3-pro".into(),
             system: Some("sys".into()),
             tools: vec![
                 ToolSpec {
+                    deferred: false,
                     name: "bash".into(),
                     description: "run".into(),
                     input_schema: schema,
                 },
                 ToolSpec {
+                    deferred: false,
                     name: "list".into(),
                     description: "ls".into(),
                     input_schema: json!({"type": "object", "properties": {}}),
@@ -471,6 +486,37 @@ mod tests {
                 text: "considering".into()
             }
         );
+        // Each call comes whole: its start, its input and its end, in the answer's order.
+        let calls: Vec<Delta> = deltas
+            .iter()
+            .filter(|d| !matches!(d, Delta::Text { .. } | Delta::Thinking { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                Delta::ToolUse {
+                    name: "bash".into(),
+                    index: 0,
+                    id: "call_0".into(),
+                },
+                Delta::ToolInput {
+                    index: 0,
+                    json: "{\"command\":\"ls\"}".into(),
+                },
+                Delta::BlockEnd { index: 0 },
+                Delta::ToolUse {
+                    name: "list".into(),
+                    index: 1,
+                    id: "call_1".into(),
+                },
+                Delta::ToolInput {
+                    index: 1,
+                    json: "{}".into(),
+                },
+                Delta::BlockEnd { index: 1 },
+            ]
+        );
 
         // Next turn: the signature is echoed on its part; responses carry the tool's name.
         req.messages.push(Message::assistant(resp.content));
@@ -526,6 +572,8 @@ mod tests {
         let resp = gw
             .complete(
                 &ChatRequest {
+                    system_parts: Vec::new(),
+                    cache_last_message: false,
                     model: "vg/gemini-2.5-pro".into(),
                     ..request("hi")
                 },

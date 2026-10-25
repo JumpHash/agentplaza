@@ -7,10 +7,12 @@ use std::collections::HashMap;
 use serde::Serialize;
 use serde_json::json;
 
+use crate::export::REVIEW_NOTES;
 use crate::git::{self, Kind, Oid, Pack, Repo};
 use crate::gitwire::{self, Remote};
 use crate::hash::Hash;
 use crate::model::*;
+use crate::record::Signed;
 use crate::store::Store;
 
 /// Where the history comes from.
@@ -42,7 +44,9 @@ impl Source {
                 let want: Vec<Oid> = refs
                     .iter()
                     .filter(|(k, _)| {
-                        *k == &format!("refs/heads/{branch}") || k.starts_with("refs/tags/")
+                        *k == &format!("refs/heads/{branch}")
+                            || k.starts_with("refs/tags/")
+                            || *k == REVIEW_NOTES
                     })
                     .map(|(_, v)| *v)
                     .collect();
@@ -159,6 +163,10 @@ pub struct ImportReport {
     pub releases: Vec<String>,
     pub head: Option<String>,
     pub checked: usize,
+    /// Reviews the source carried (its review notes) and this repository recorded as `review.outcome`.
+    pub reviews: usize,
+    /// Carried reviews that did not check out (named by their run): not recorded, the import goes on.
+    pub refused: Vec<String>,
 }
 
 /// `Co-authored-by` trailers that name an AI assistant.
@@ -212,12 +220,20 @@ pub fn import(
         line.push((id, c));
     }
     line.reverse();
+    // The commits Weft already has: what it imported, and what a landed change exported (a `ci` landing's merge commit).
     let imported: HashMap<String, RevId> = {
         let st = store.state();
         st.changes
             .values()
             .filter(|c| c.repo == repo)
-            .filter_map(|c| Some((c.import.as_ref()?.git.clone(), c.landed.clone()?)))
+            .flat_map(|c| {
+                let imported = c.import.as_ref().map(|i| i.git.clone());
+                let exported = c.exported.values().flatten().map(|e| e.git.clone());
+                imported
+                    .into_iter()
+                    .chain(exported)
+                    .filter_map(|git| Some((git, c.landed.clone()?)))
+            })
             .collect()
     };
     let mut report = ImportReport {
@@ -307,8 +323,87 @@ pub fn import(
         store.hub_append("release.propose", json!({ "repo": repo, "version": tag, "from": rev, "notes": notes, "imported": git::hex(&id) }))?;
         report.releases.push(tag.to_string());
     }
+    let imported_as = |hex: &str| {
+        store
+            .state()
+            .changes
+            .values()
+            .find(|c| c.import.as_ref().is_some_and(|i| i.git == hex))
+            .map(|c| c.name.clone())
+    };
+    let (reviews, refused) = carry_notes(store, source, imported_as)?;
+    report.reviews = reviews;
+    report.refused = refused;
     report.head = Some(git::hex(&head));
     Ok(report)
+}
+
+/// Records the reviews the source carries in its review notes (`REVIEW_NOTES`) on the changes `target` names for
+/// their commits (an imported commit's change, or an adopting lane's). Each one is checked by the store (its
+/// signature, its certificates, its owner) before the hub writes it again under this repository's log. Returns how
+/// many were recorded and the ones that did not check out, named by their run. A source with no notes carries
+/// nothing, and a review already recorded is not recorded twice.
+fn carry_notes(
+    store: &Store,
+    source: &Source,
+    target: impl Fn(&str) -> Option<String>,
+) -> Result<(usize, Vec<String>), String> {
+    let mut recorded = 0;
+    let mut refused = Vec::new();
+    let Some(notes) = source.refs()?.get(REVIEW_NOTES).copied() else {
+        return Ok((recorded, refused));
+    };
+    let (_, commit) = source.read(&notes)?;
+    let tree = git::parse_commit(&commit)?.tree;
+    let (_, listing) = source.read(&tree)?;
+    for entry in git::parse_tree(&listing)? {
+        let commit_hex = entry.name.clone();
+        let Some(change) = target(&commit_hex) else {
+            continue;
+        };
+        let (_, bytes) = source.read(&entry.id)?;
+        let envelopes: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("review notes for {commit_hex}: {e}"))?;
+        for envelope in envelopes {
+            match carry_one(store, &change, &envelope) {
+                Ok(true) => recorded += 1,
+                Ok(false) => {}
+                Err(e) => refused.push(e),
+            }
+        }
+    }
+    Ok((recorded, refused))
+}
+
+/// Writes one carried review on `change`: `Ok(true)` when it was recorded, `Ok(false)` when it already was.
+fn carry_one(store: &Store, change: &str, envelope: &serde_json::Value) -> Result<bool, String> {
+    let signed = Signed::from_json(&envelope["signed"])?;
+    let statement = signed.statement()?;
+    if statement.kind != "review.outcome" {
+        return Err(format!(
+            "{change}: a carried record is a {}, not a review",
+            statement.kind
+        ));
+    }
+    let carried = {
+        let st = store.state();
+        st.change(change)?.reviews.iter().any(|r| {
+            r.outcome
+                .origin
+                .as_ref()
+                .is_some_and(|o| o.signed == envelope["signed"])
+        })
+    };
+    if carried {
+        return Ok(false);
+    }
+    let mut body = statement.body.clone();
+    body["change"] = json!(change);
+    body["origin"] = json!({ "owner": envelope["owner"], "certs": envelope["certs"], "signed": envelope["signed"] });
+    store
+        .hub_append("review.outcome", body)
+        .map(|_| true)
+        .map_err(|e| format!("{change}: {e}"))
 }
 
 /// A tag's commit and its message (a lightweight tag has none).
@@ -425,6 +520,9 @@ pub struct AdoptReport {
     pub remote_head: String,
     pub commits: Vec<String>,
     pub files: usize,
+    /// Carried reviews recorded on the adopting lane, and the ones that did not check out.
+    pub reviews: usize,
+    pub refused: Vec<String>,
 }
 
 /// Adopts the commits a remote received on its own: their difference from what Weft last exported becomes a lane
@@ -459,12 +557,14 @@ pub fn adopt(
     }
     // The remote's own commits, newest first, back to what Weft pushed.
     let mut commits = Vec::new();
+    let mut adopted = Vec::new();
     let mut at = Some(theirs);
     while let Some(id) = at {
         if id == ours {
             break;
         }
         let c = git::parse_commit(&source.read(&id)?.1)?;
+        adopted.push(git::hex(&id));
         commits.push(c.message.lines().next().unwrap_or("").to_string());
         at = c.parents.first().copied();
         if at.is_none() {
@@ -536,10 +636,16 @@ pub fn adopt(
         json!({ "change": change, "n": 1, "intents": intents }),
     )?;
     store.hub_append("connection.state", json!({ "repo": repo, "id": connection, "state": "adopting", "detail": format!("{change} adopts the remote's {} commits", commits.len()), "remote_head": git::hex(&theirs), "adopt_change": change }))?;
+    // The reviews the remote's own commits carry come with them, onto the lane that adopts them.
+    let (reviews, refused) = carry_notes(store, &source, |hex| {
+        adopted.iter().any(|a| a == hex).then(|| change.clone())
+    })?;
     Ok(AdoptReport {
         change,
         remote_head: git::hex(&theirs),
         commits,
         files: deltas.len(),
+        reviews,
+        refused,
     })
 }

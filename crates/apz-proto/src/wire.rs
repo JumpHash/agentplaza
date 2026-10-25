@@ -25,15 +25,27 @@
 //!     → host tool_decision{decision:allow|deny} otherwise, as in v3
 //!   guest engine_update{work,call,engine,session,seq,update} streams one ACP session update
 //!     (the payload as the engine sent it); the hub records some of them and publishes all
+//! v5  one decision per model turn, and the policy the VM decides by (inside a v3 session):
+//!   host policy{policy} after the profile, and again whenever what it allows changes: the tools the guest runs
+//!     without asking, signed by the hub; an empty allow list holds them all (STOP ALL)
+//!   guest tool_batch{work,calls:[{call,name,input}]} → host tool_batch_decision{work,decisions:[…]}, one answer for
+//!     the turn's calls the policy does not allow; the guest runs the allowed ones itself and reports each one with
+//!     tool_report{…,policy,name,input} (the hub records the call with the policy it was decided under)
+//! v6  streamed answers (inside a v3 session): while a model call runs, host model_delta{req,delta} carries each
+//!     fragment of its answer as the provider streams it, before the model_result; a tool call's fragments
+//!     (tool_use, tool_input, block_end) let the guest start a read-only call before the answer ends
+//! v7  a tool_report{…,duration_ms} says how long the guest ran the call (an older harness's report has none)
 //! ```
 //!
 //! The guest's identity is never taken from a line: the hub binds every
 //! session to the CID its socket path names.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::chat::{ChatRequest, ChatResponse, ToolSpec};
+use crate::chat::{ChatRequest, ChatResponse, Delta, SystemPart, ToolSpec};
 
 /// `welcome.echo`.
 pub const WELCOME_ECHO: &str = "plaza-orchestrator";
@@ -62,6 +74,9 @@ pub enum GuestMessage {
         /// v4: the features this harness has (see [`CAP_ACP`]). An older harness omits it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         caps: Vec<String>,
+        /// v8: the kind of session the hello opens: [`KIND_BASE`] for a base build's VM. None for an agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     /// v1: the guest asks the host to run a diagnostic tool.
     ToolCall {
@@ -84,11 +99,14 @@ pub enum GuestMessage {
     Bye {
         calls: u64,
     },
-    /// v3: one model call for work item `work`.
+    /// v3: one model call for work item `work`. v9: a helper's call carries the helper's id (`helper`); the hub holds
+    /// it on the budget of the session the VM runs and records it on a helper session. None for the agent's own call.
     ModelCall {
         req: u64,
         work: u64,
         request: ChatRequest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        helper: Option<u64>,
     },
     /// v3: the model asked for tool `name`; `call` is its tool_use id.
     ToolRequest {
@@ -97,12 +115,32 @@ pub enum GuestMessage {
         name: String,
         input: Value,
     },
-    /// v3: the result of a tool the host allowed and the guest ran.
+    /// v3: the result of a tool the host allowed and the guest ran. v5: a call the guest decided itself under a
+    /// policy snapshot (`policy`, its id) carries the call's `name` and `input` too, so the hub records the call.
     ToolReport {
         work: u64,
         call: String,
         ok: bool,
         output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        policy: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Value>,
+        /// v7: how long the guest ran the call, in milliseconds. A harness from before v7 sends none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        /// v8: the `run_script` call this call belongs to, when a script made it (its id is the script call's). None
+        /// for a call the model made.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script: Option<String>,
+    },
+    /// v5: the calls of one model turn the policy does not allow, decided by the hub in one answer
+    /// ([`HostMessage::ToolBatchDecision`]), in the calls' order.
+    ToolBatch {
+        work: u64,
+        calls: Vec<BatchCall>,
     },
     /// v4: one session update from an ACP engine for work item `work`, under call `call` (the
     /// `code_engine` call's id, or the nested id of a request the engine made). `update` is the
@@ -115,6 +153,19 @@ pub enum GuestMessage {
         seq: u64,
         update: Value,
     },
+    /// v8: the answer to a [`HostMessage::Exec`] `id`. `ok` is whether the command exited 0 (a background command:
+    /// whether it started). `exit_code` is None when it was killed, timed out or never started. `output` is capped.
+    ExecResult {
+        id: u64,
+        ok: bool,
+        exit_code: Option<i32>,
+        output: String,
+    },
+    /// v10: a background command the host asked to be announced listens on `port` of the guest (a preview's app). The
+    /// hub registers the port with noded for the VM, so an inbound stream to it is let through (6.1, 18.1).
+    Listening {
+        port: u16,
+    },
     /// v3: the work item is over.
     WorkDone {
         work: u64,
@@ -122,13 +173,16 @@ pub enum GuestMessage {
         summary: String,
     },
     /// v3: the harness compressed work item `work`'s conversation: its size in bytes before
-    /// and after, how many messages were folded into the summary, and why ("auto" or "asked").
+    /// and after, how many messages were folded into the summary, why ("auto" or "asked"), and the
+    /// summary itself (decisions, dead ends, open questions, where it stands).
     Compressed {
         work: u64,
         before: u64,
         after: u64,
         folded: u32,
         reason: String,
+        #[serde(default)]
+        summary: String,
     },
     /// The harness's stats, about once a minute while it runs: the size and use of `/workspace` in
     /// MiB, and the busiest processes since the last report as (name, CPU %, RSS MiB).
@@ -285,7 +339,14 @@ pub enum HostMessage {
         response: Option<ChatResponse>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// The context window, in tokens, of the model that answered (or was asked): the window of a chat's
+        /// own model when it overrides the agent's. None when the model's window is not known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<u64>,
     },
+    /// v6: one fragment of model call `req`'s answer, as the provider streams it. The hub sends them in order, all
+    /// before the call's [`HostMessage::ModelResult`].
+    ModelDelta { req: u64, delta: Delta },
     /// v3: the answer to a [`GuestMessage::ToolRequest`].
     ToolDecision {
         call: String,
@@ -317,6 +378,32 @@ pub enum HostMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// v5: the answer to a [`GuestMessage::ToolBatch`]: one decision per call, in the calls' order, each as the
+    /// call's [`HostMessage::ToolDecision`] would have been.
+    ToolBatchDecision {
+        work: u64,
+        decisions: Vec<BatchDecision>,
+    },
+    /// v5: the policy the guest decides its allowed calls by (see [`PolicySnapshot`]). Pushed after the profile at
+    /// hello and whenever what it allows changes; not an answer to a line.
+    Policy { policy: PolicySnapshot },
+    /// v8: a base build's command (base_recipe.rs), run as the session's user in `cwd` with `env` added to the VM's.
+    /// A foreground command runs to its end or `timeout_s` and is answered with [`GuestMessage::ExecResult`]. A
+    /// `background` one is started, answered at once, and left running (a language server, a build daemon).
+    Exec {
+        id: u64,
+        argv: Vec<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        env: BTreeMap<String, String>,
+        cwd: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
+        timeout_s: u64,
+        /// v10: for a background command, the port it listens on: the guest announces it with
+        /// [`GuestMessage::Listening`] once the port answers. Absent for every other command.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        listen: Option<u16>,
+    },
     /// v3: abort work item `work` after the current step.
     Cancel { work: u64, reason: String },
     /// v3: replace the agent's profile (model, tools, limits).
@@ -345,15 +432,24 @@ pub struct AgentProfile {
     /// The display name of the model (`provider/model`); informational, the
     /// host picks the model for every call.
     pub model: String,
-    pub system: String,
+    /// The system prompt in parts, most stable first.
+    #[serde(default)]
+    pub system_parts: Vec<SystemPart>,
     /// Every tool offered to the model (guest-run and host-run alike).
     pub tools: Vec<ToolSpec>,
     /// Model calls per work item before the agent stops as over budget.
     pub max_turns: u32,
-    /// Compress the conversation once it is larger than this many bytes (serialized);
-    /// 0 never compresses on its own.
+    /// Compress the conversation once it is larger than this many bytes (serialized), when the
+    /// window is not known (see `compact_at_pct`); 0 never compresses on its own.
     #[serde(default)]
     pub compress_at: u64,
+    /// Compress the conversation once its last model call used this share of the window (per cent);
+    /// 0 leaves it to `compress_at`. Applies only with `context_window` known.
+    #[serde(default)]
+    pub compact_at_pct: u32,
+    /// The model's context window in tokens; 0 when it is not known.
+    #[serde(default)]
+    pub context_window: u64,
     /// The most recent turns (an assistant message and the results after it) kept verbatim
     /// when compressing; older ones are folded into a summary.
     #[serde(default)]
@@ -368,6 +464,14 @@ pub struct AgentProfile {
     /// the harness adds it to the guest's trust store. Every other host stays an opaque tunnel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_ca: Option<String>,
+    /// A step session: it writes its handover (`handover_write`) before it ends, and the harness asks for one when it
+    /// ends its turn without it (unless its output says the task is done).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub handover: bool,
+    /// The project's hooks that run around the agent's tool calls (`hooks`): the harness runs the ones for edits and
+    /// commands, and the engines that have hooks of their own get them rendered from this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<crate::hooks::Hook>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,9 +505,49 @@ pub enum Decision {
     Pending,
 }
 
+/// One call of a [`GuestMessage::ToolBatch`]: the model's tool_use `call`, its tool `name` and its `input`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchCall {
+    pub call: String,
+    pub name: String,
+    pub input: Value,
+}
+
+/// The hub's decision for one call of a [`HostMessage::ToolBatchDecision`]: the fields of a
+/// [`HostMessage::ToolDecision`], for the call `call`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchDecision {
+    pub call: String,
+    pub decision: Decision,
+    #[serde(default)]
+    pub output: String,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<Program>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
+}
+
+/// The tools the guest may run without asking the hub, signed by the hub (see [`HostMessage::Policy`]). `id` is the
+/// SHA-256 hex of the canonical body (the agent's CID, `issued_ms` and the sorted `allow` list); `signature` is the
+/// hub's Ed25519 signature of `id`, base64url without padding. An empty `allow` holds every call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicySnapshot {
+    pub id: String,
+    pub issued_ms: u64,
+    pub allow: Vec<String>,
+    pub signature: String,
+}
+
 /// The `caps` entry a harness with ACP engine support sends in its hello. The hub answers an ACP
 /// engine's held call with `pending` only to a harness that sent it.
 pub const CAP_ACP: &str = "acp";
+/// The `kind` of a hello from a base build's VM (`plaza.kind=base`): a session with no model, which takes
+/// [`HostMessage::Exec`] items and answers each with a [`GuestMessage::ExecResult`].
+pub const KIND_BASE: &str = "base";
 /// What the host tells a guest in its welcome about the world outside the VM (see
 /// [`HostMessage::Welcome`]'s `host`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -507,6 +651,7 @@ mod tests {
             role: None,
             keepalive: None,
             caps: Vec::new(),
+            kind: None,
         };
         assert_eq!(
             hello.to_line().unwrap(),
@@ -534,6 +679,7 @@ mod tests {
             role: None,
             keepalive: Some(true),
             caps: Vec::new(),
+            kind: None,
         };
         assert_eq!(
             keepalive.to_line().unwrap(),
@@ -718,6 +864,7 @@ mod tests {
             role: Some("builder".into()),
             keepalive: Some(true),
             caps: vec![CAP_ACP.to_string()],
+            kind: None,
         };
         let line = acp.to_line().unwrap();
         assert_eq!(
@@ -764,6 +911,244 @@ mod tests {
             approval: None,
         };
         assert!(!deny.to_line().unwrap().contains("approval"));
+    }
+
+    #[test]
+    fn v5_batch_lines_round_trip_and_stay_stable() {
+        let batch = GuestMessage::ToolBatch {
+            work: 3,
+            calls: vec![
+                BatchCall {
+                    call: "toolu_1".into(),
+                    name: "bash".into(),
+                    input: json!({"command": "ls"}),
+                },
+                BatchCall {
+                    call: "toolu_2".into(),
+                    name: "glob".into(),
+                    input: json!({"pattern": "*.rs"}),
+                },
+            ],
+        };
+        let line = batch.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"tool_batch","work":3,"calls":[{"call":"toolu_1","name":"bash","input":{"command":"ls"}},{"call":"toolu_2","name":"glob","input":{"pattern":"*.rs"}}]}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), batch);
+
+        let decided = HostMessage::ToolBatchDecision {
+            work: 3,
+            decisions: vec![
+                BatchDecision {
+                    call: "toolu_1".into(),
+                    decision: Decision::Allow,
+                    output: String::new(),
+                    is_error: false,
+                    program: None,
+                    engine: None,
+                    approval: None,
+                },
+                BatchDecision {
+                    call: "toolu_2".into(),
+                    decision: Decision::Pending,
+                    output: "waiting for the owner's approval (a7)".into(),
+                    is_error: false,
+                    program: None,
+                    engine: None,
+                    approval: Some("a7".into()),
+                },
+            ],
+        };
+        let line = decided.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"tool_batch_decision","work":3,"decisions":[{"call":"toolu_1","decision":"allow","output":"","is_error":false},{"call":"toolu_2","decision":"pending","output":"waiting for the owner's approval (a7)","is_error":false,"approval":"a7"}]}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), decided);
+    }
+
+    #[test]
+    fn a_model_delta_line_carries_its_fragment_for_its_call() {
+        let delta = HostMessage::ModelDelta {
+            req: 3,
+            delta: Delta::ToolInput {
+                index: 0,
+                json: "{\"path\":".into(),
+            },
+        };
+        let line = delta.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"model_delta","req":3,"delta":{"type":"tool_input","index":0,"json":"{\"path\":"}}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), delta);
+    }
+
+    #[test]
+    fn a_policy_line_round_trips_and_an_empty_allow_list_holds_every_call() {
+        let policy = HostMessage::Policy {
+            policy: PolicySnapshot {
+                id: "ab12".into(),
+                issued_ms: 1_700_000_000_000,
+                allow: vec!["glob".into(), "read_file".into()],
+                signature: "c2ln".into(),
+            },
+        };
+        let line = policy.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"policy","policy":{"id":"ab12","issued_ms":1700000000000,"allow":["glob","read_file"],"signature":"c2ln"}}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), policy);
+        let held = HostMessage::Policy {
+            policy: PolicySnapshot {
+                id: "cd34".into(),
+                issued_ms: 5,
+                allow: Vec::new(),
+                signature: "c2ln".into(),
+            },
+        };
+        let line = held.to_line().unwrap();
+        assert!(line.contains(r#""allow":[]"#), "{line}");
+        assert_eq!(HostMessage::from_line(&line).unwrap(), held);
+    }
+
+    #[test]
+    fn a_tool_report_with_a_policy_carries_the_call_and_an_old_one_is_unchanged() {
+        let plain = GuestMessage::ToolReport {
+            work: 1,
+            call: "toolu_1".into(),
+            ok: true,
+            output: "x".into(),
+            policy: None,
+            name: None,
+            input: None,
+            duration_ms: None,
+            script: None,
+        };
+        assert_eq!(
+            plain.to_line().unwrap(),
+            r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#
+        );
+        let local = GuestMessage::ToolReport {
+            work: 1,
+            call: "toolu_2".into(),
+            ok: true,
+            output: "a.rs".into(),
+            policy: Some("ab12".into()),
+            name: Some("glob".into()),
+            input: Some(json!({"pattern": "*.rs"})),
+            duration_ms: Some(12),
+            script: None,
+        };
+        let line = local.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"tool_report","work":1,"call":"toolu_2","ok":true,"output":"a.rs","policy":"ab12","name":"glob","input":{"pattern":"*.rs"},"duration_ms":12}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), local);
+        // A harness from before v7 sends no duration: its report parses with none.
+        let timed = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x","duration_ms":5}"#;
+        assert!(matches!(
+            GuestMessage::from_line(timed).unwrap(),
+            GuestMessage::ToolReport {
+                duration_ms: Some(5),
+                ..
+            }
+        ));
+        // A harness from before v5 sends no policy: its report parses with none.
+        let old = r#"{"type":"tool_report","work":1,"call":"toolu_1","ok":true,"output":"x"}"#;
+        assert_eq!(GuestMessage::from_line(old).unwrap(), plain);
+        // A call a script made names the script call it belongs to; a report from before v8 names none.
+        let scripted = GuestMessage::ToolReport {
+            work: 1,
+            call: "toolu_3#2".into(),
+            ok: true,
+            output: "3".into(),
+            policy: Some("ab12".into()),
+            name: Some("read".into()),
+            input: Some(json!({"files": []})),
+            duration_ms: Some(1),
+            script: Some("toolu_9".into()),
+        };
+        let line = scripted.to_line().unwrap();
+        assert!(line.contains(r#""script":"toolu_9""#), "{line}");
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), scripted);
+        assert!(matches!(
+            GuestMessage::from_line(old).unwrap(),
+            GuestMessage::ToolReport { script: None, .. }
+        ));
+    }
+
+    #[test]
+    fn v8_exec_lines_round_trip_and_a_base_hello_says_its_kind() {
+        let exec = HostMessage::Exec {
+            id: 7,
+            argv: vec!["cargo".into(), "build".into()],
+            env: BTreeMap::from([("RUSTC_WRAPPER".to_string(), "sccache".to_string())]),
+            cwd: "/workspace".into(),
+            background: false,
+            timeout_s: 1800,
+            listen: None,
+        };
+        let line = exec.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"exec","id":7,"argv":["cargo","build"],"env":{"RUSTC_WRAPPER":"sccache"},"cwd":"/workspace","timeout_s":1800}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), exec);
+        // A background command with no environment says so, and its line carries no env key.
+        let daemon = HostMessage::Exec {
+            id: 8,
+            argv: vec!["rust-analyzer".into()],
+            env: BTreeMap::new(),
+            cwd: "/workspace".into(),
+            background: true,
+            timeout_s: 0,
+            listen: None,
+        };
+        let line = daemon.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"exec","id":8,"argv":["rust-analyzer"],"cwd":"/workspace","background":true,"timeout_s":0}"#
+        );
+        assert_eq!(HostMessage::from_line(&line).unwrap(), daemon);
+
+        let done = GuestMessage::ExecResult {
+            id: 7,
+            ok: false,
+            exit_code: Some(101),
+            output: "error[E0432]".into(),
+        };
+        let line = done.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"exec_result","id":7,"ok":false,"exit_code":101,"output":"error[E0432]"}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), done);
+        let killed = GuestMessage::ExecResult {
+            id: 9,
+            ok: false,
+            exit_code: None,
+            output: "[timed out]".into(),
+        };
+        assert!(killed.to_line().unwrap().contains(r#""exit_code":null"#));
+
+        let hello = GuestMessage::Hello {
+            vm: 0,
+            guest_cid: 500,
+            role: None,
+            keepalive: Some(true),
+            caps: vec![CAP_ACP.to_string()],
+            kind: Some(KIND_BASE.to_string()),
+        };
+        let line = hello.to_line().unwrap();
+        assert_eq!(
+            line,
+            r#"{"type":"hello","vm":0,"guest_cid":500,"keepalive":true,"caps":["acp"],"kind":"base"}"#
+        );
+        assert_eq!(GuestMessage::from_line(&line).unwrap(), hello);
     }
 
     #[test]

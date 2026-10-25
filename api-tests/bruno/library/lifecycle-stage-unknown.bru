@@ -1,0 +1,23 @@
+meta {
+  name: Refuse to stage an unknown replacement
+  type: http
+  seq: 62
+}
+
+post {
+  url: {{baseUrl}}/v1/library/no-such-tool/1/stage
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "stage": "shadow"
+  }
+}
+
+assert {
+  res.status: eq 409
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: contains "no such version"
+}
