@@ -13,8 +13,8 @@ fn line(e: &Emulator, y: usize) -> String {
     let row = screen.view_row(y).expect("a row on the view");
     row.cells
         .iter()
-        .filter(|c| c.width != 0)
-        .map(|c| c.ch)
+        .filter(|c| c.width() != 0)
+        .map(|c| c.ch())
         .collect::<String>()
         .trim_end()
         .to_string()
@@ -34,13 +34,13 @@ fn sgr_colours_and_attributes_are_read_and_reset() {
         let s = e.screen();
         assert_eq!(line(&e, 0), "dir  run.sh");
         assert_eq!(s.cursor(), (1, 0));
-        let d = s.line(0).unwrap().cells[0].style;
+        let d = s.line(0).unwrap().cells[0].style();
         assert_eq!(d.fg, Color::Indexed(4));
         assert!(d.bold);
-        let r = s.line(0).unwrap().cells[5].style;
+        let r = s.line(0).unwrap().cells[5].style();
         assert_eq!(r.fg, Color::Indexed(2));
         assert!(r.bold, "01 is bold too, as ls sends it");
-        let gap = s.line(0).unwrap().cells[3].style;
+        let gap = s.line(0).unwrap().cells[3].style();
         assert_eq!(gap.fg, Color::Default, "the reset clears the colour");
         assert!(!gap.bold);
     }
@@ -53,11 +53,11 @@ fn sgr_colours_and_attributes_are_read_and_reset() {
             "\x1b[38;5;196mA\x1b[48;2;1;2;3mB\x1b[38:2::10:20:30mC\x1b[38;2;9;8;7mD\x1b[0mE",
         );
         let cells = &e.screen().line(0).unwrap().cells;
-        assert_eq!(cells[0].style.fg, Color::Indexed(196));
-        assert_eq!(cells[1].style.bg, Color::Rgb(1, 2, 3));
-        assert_eq!(cells[2].style.fg, Color::Rgb(10, 20, 30));
-        assert_eq!(cells[3].style.fg, Color::Rgb(9, 8, 7));
-        assert_eq!(cells[4].style.fg, Color::Default);
+        assert_eq!(cells[0].style().fg, Color::Indexed(196));
+        assert_eq!(cells[1].style().bg, Color::Rgb(1, 2, 3));
+        assert_eq!(cells[2].style().fg, Color::Rgb(10, 20, 30));
+        assert_eq!(cells[3].style().fg, Color::Rgb(9, 8, 7));
+        assert_eq!(cells[4].style().fg, Color::Default);
     }
     // sixteen_colours_attributes_and_their_resets: the 16 colours, inverse, italic and underline
     // are set, and 22, 23, 24 and 27 clear them again.
@@ -68,12 +68,14 @@ fn sgr_colours_and_attributes_are_read_and_reset() {
             "\x1b[91;42mA\x1b[7;3;4mB\x1b[22;23;24;27mC\x1b[4:3mD",
         );
         let cells = &e.screen().line(0).unwrap().cells;
-        assert_eq!(cells[0].style.fg, Color::Indexed(9), "bright red");
-        assert_eq!(cells[0].style.bg, Color::Indexed(2), "green background");
-        assert!(cells[1].style.inverse && cells[1].style.italic && cells[1].style.underline);
-        assert!(!cells[2].style.inverse && !cells[2].style.italic && !cells[2].style.underline);
+        assert_eq!(cells[0].style().fg, Color::Indexed(9), "bright red");
+        assert_eq!(cells[0].style().bg, Color::Indexed(2), "green background");
+        assert!(cells[1].style().inverse && cells[1].style().italic && cells[1].style().underline);
         assert!(
-            cells[3].style.underline,
+            !cells[2].style().inverse && !cells[2].style().italic && !cells[2].style().underline
+        );
+        assert!(
+            cells[3].style().underline,
             "4:3 is a curly underline, which still underlines"
         );
     }
@@ -151,9 +153,9 @@ fn scrolling_stays_inside_the_scroll_region() {
 fn wide_characters_take_two_cells_and_wrap_whole() {
     let e = emu(6, 3, "漢字a");
     let s = e.screen();
-    assert_eq!(s.line(0).unwrap().cells[0].width, 2);
-    assert_eq!(s.line(0).unwrap().cells[1].width, 0);
-    assert_eq!(s.line(0).unwrap().cells[2].ch, '字');
+    assert_eq!(s.line(0).unwrap().cells[0].width(), 2);
+    assert_eq!(s.line(0).unwrap().cells[1].width(), 0);
+    assert_eq!(s.line(0).unwrap().cells[2].ch(), '字');
     assert_eq!(line(&e, 0), "漢字a");
     assert_eq!(s.cursor(), (0, 5));
 
@@ -289,7 +291,7 @@ fn erase_in_line_and_erase_with_a_background_colour() {
     assert_eq!(line(&e, 0), "abc");
     let e = emu(4, 2, "\x1b[41m\x1b[K");
     assert_eq!(
-        e.screen().line(0).unwrap().cells[2].style.bg,
+        e.screen().line(0).unwrap().cells[2].style().bg,
         Color::Indexed(1),
         "erased cells keep the background"
     );
@@ -334,8 +336,8 @@ fn window_titles_bells_and_tabs() {
     assert!(!e.screen_mut().take_bell());
     e.feed(b"\x1b[H\ta\tb");
     assert_eq!(e.screen().cursor(), (0, 17));
-    assert_eq!(e.screen().line(0).unwrap().cells[8].ch, 'a');
-    assert_eq!(e.screen().line(0).unwrap().cells[16].ch, 'b');
+    assert_eq!(e.screen().line(0).unwrap().cells[8].ch(), 'a');
+    assert_eq!(e.screen().line(0).unwrap().cells[16].ch(), 'b');
 }
 
 #[test]
@@ -359,6 +361,6 @@ fn sequences_split_across_reads_are_applied_once_complete() {
     e.feed(b"\x1b[3");
     e.feed(b"1mX");
     let cell = e.screen().line(0).unwrap().cells[0];
-    assert_eq!(cell.ch, 'X');
-    assert_eq!(cell.style.fg, Color::Indexed(1));
+    assert_eq!(cell.ch(), 'X');
+    assert_eq!(cell.style().fg, Color::Indexed(1));
 }

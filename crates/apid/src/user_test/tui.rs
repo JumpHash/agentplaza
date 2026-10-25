@@ -361,8 +361,8 @@ fn row_text(row: Option<&Row>) -> String {
     row.map(|r| {
         r.cells
             .iter()
-            .filter(|c| c.width > 0)
-            .map(|c| c.ch)
+            .filter(|c| c.width() > 0)
+            .map(|c| c.ch())
             .collect::<String>()
     })
     .unwrap_or_default()
@@ -380,12 +380,13 @@ pub fn render(screen: &Screen) -> Result<Vec<u8>, String> {
                 .and_then(|r| r.cells.get(x))
                 .copied()
                 .unwrap_or_default();
-            let mut fg = colour(cell.style.fg, FG);
-            let mut bg = colour(cell.style.bg, BG);
-            if cell.style.inverse {
+            let style = cell.style();
+            let mut fg = colour(style.fg, FG);
+            let mut bg = colour(style.bg, BG);
+            if style.inverse {
                 std::mem::swap(&mut fg, &mut bg);
             }
-            let inked = cell.ch != ' ' && cell.ch != '\0';
+            let inked = cell.ch() != ' ' && cell.ch() != '\0';
             for py in 0..CELL_H {
                 for px in 0..CELL_W {
                     let ink =
