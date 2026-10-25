@@ -209,7 +209,17 @@ fn run(args: Vec<String>) -> Result<(), String> {
         vmm::spawner::set_cgroup_root(root);
     }
     // The VMs' snapshots and the warm templates live under the snapshot dir: a per-VM process's jail
-    // binds it, so the process can write snapshots there and restore from them.
+    // binds it, so the process can write snapshots there and restore from them. A bind needs its source
+    // to exist, so the directory is made now rather than at the first snapshot, private like the socket
+    // directory (snapshots hold guest memory).
+    if let Some(dir) = &config.snapshot_dir {
+        vmm::spawner::create_uds_dir(dir).map_err(|err| {
+            format!(
+                "cannot create the snapshot directory {}: {err}",
+                dir.display()
+            )
+        })?;
+    }
     vmm::spawner::set_snapshot_root(config.snapshot_dir.clone());
     // F4: the per-VM muxer binds `{uds_dir}/vm{cid}` with a deterministic
     // name, and the default is under world-writable `/tmp`. Create the
