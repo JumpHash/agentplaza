@@ -1,0 +1,11 @@
+id = "prometheus"
+kind = ["tool"]
+version = "1.0.0"
+scopes = []
+egress = []
+secrets = ["PROMETHEUS_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

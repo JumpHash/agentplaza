@@ -190,6 +190,8 @@ pub fn is_public(method: &str, path: &str) -> bool {
     ) || (path.starts_with("/v1/platforms/flows/") && path.ends_with("/go") && method == "GET")
         // A project's ingest address: the token in the path names the project (`maintenance`).
         || (method == "POST" && path.starts_with("/v1/ingest/") && path.len() > "/v1/ingest/".len())
+        // A lab run's collector: the token it posts with is checked by the run (`lab_observe::ingest`).
+        || crate::lab_observe::is_otlp(method, path)
         // A connector's webhook: the token in the path names the connector (`triggers::hooks`).
         || (method == "POST"
             && path
@@ -237,6 +239,9 @@ fn allowance(req: &Request, internal_token: &str, owner: impl FnOnce() -> bool) 
     }
     if req.path.starts_with("/v1/nodes/n") {
         return NODE_BODY;
+    }
+    if crate::lab_observe::is_otlp(&req.method, &req.path) {
+        return crate::lab_observe::OTLP_BODY;
     }
     PUBLIC_BODY
 }

@@ -49,6 +49,14 @@ fn runs(hub: &Hub) -> Vec<Value> {
     body["runs"].as_array().cloned().unwrap_or_default()
 }
 
+/// The runs a Weft landing started: a CVE poll's `cve` recipe starts runs by the schedule, which these tests do not count.
+fn weft_runs(hub: &Hub) -> Vec<Value> {
+    runs(hub)
+        .into_iter()
+        .filter(|r| r["trigger"] == "weft")
+        .collect()
+}
+
 #[test]
 fn three_deliveries_of_a_labelled_issue_in_the_window_start_one_run() {
     let scratch = Scratch::new("triggers");
@@ -300,9 +308,17 @@ fn a_landing_on_the_hubs_weft_starts_one_run_of_the_recipe_whose_trigger_names_i
 
     let first = land_edit(&hub, &repo, "Land the readme", "README.md");
     let listed = hub.wait_for("/v1/recipe-runs", Duration::from_secs(30), |v| {
-        v["runs"].as_array().is_some_and(|r| !r.is_empty())
+        v["runs"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|r| r["trigger"] == "weft"))
     });
-    let started = listed["runs"].as_array().cloned().unwrap_or_default();
+    let started: Vec<Value> = listed["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["trigger"] == "weft")
+        .cloned()
+        .collect();
     assert_eq!(
         started.len(),
         1,
@@ -315,14 +331,22 @@ fn a_landing_on_the_hubs_weft_starts_one_run_of_the_recipe_whose_trigger_names_i
 
     // The same landing is taken once: after the window and the feed's next passes, still one run.
     std::thread::sleep(Duration::from_secs(5));
-    assert_eq!(runs(&hub).len(), 1, "{}", hub.log());
+    assert_eq!(weft_runs(&hub).len(), 1, "{}", hub.log());
 
     // A second landing is a second event: one more run, for its own change.
     let second = land_edit(&hub, &repo, "Land the licence", "LICENSE");
     let listed = hub.wait_for("/v1/recipe-runs", Duration::from_secs(30), |v| {
-        v["runs"].as_array().is_some_and(|r| r.len() >= 2)
+        v["runs"]
+            .as_array()
+            .is_some_and(|r| r.iter().filter(|r| r["trigger"] == "weft").count() >= 2)
     });
-    let started = listed["runs"].as_array().cloned().unwrap_or_default();
+    let started: Vec<Value> = listed["runs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["trigger"] == "weft")
+        .cloned()
+        .collect();
     assert_eq!(started.len(), 2, "{listed}\n{}", hub.log());
     assert!(
         started

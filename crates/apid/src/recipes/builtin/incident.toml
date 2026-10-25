@@ -1,9 +1,14 @@
-# The incident recipe (PLAN 21.1, 24). Stub: it needs the incident phase (24); none runs yet. An incident is triaged,
-# mitigated, and written up.
+# The incident recipe (PLAN 21.1, 24.1, 12.1). An alert from a source's webhook, or a deploy's health breach (23, 11.4),
+# opens an incident and the incident engine (crates/apid/src/incidents) runs its steps in order. Triage correlates the
+# alert with the deploys, releases and error signals before it started, and reads the logs the source's connector can
+# fetch. Act rolls a correlating deploy back through the deploy path (the previous release, with its stages and checks;
+# a protected environment waits for the owner), else opens a fix task with a spec drawn from the alert and its logs. Tell
+# posts the notice and the incident card in the project's chat and sends through the notify connector. After writes the
+# postmortem to the project's docs in Weft and proposes its lessons into memory as pitfalls and decisions.
 id = "incident"
 name = "Incident"
-description = "Stub until the incident phase (24): declares its steps, none runs yet."
-version = 1
+description = "Triages an alert or a deploy's health breach against the deploys and signals before it, rolls a correlating deploy back or opens a fix task, tells the project, and writes a postmortem whose lessons go to memory."
+version = 2
 inputs = ["alert"]
 outputs = ["postmortem"]
 triggers = ["alert.raised"]
@@ -14,22 +19,32 @@ engine = "incident"
 gate = ["passed"]
 
 [[steps]]
-id = "mitigate"
+id = "act"
 engine = "incident"
-gate = ["passed", "owner"]
+gate = ["passed"]
 
 [[steps]]
-id = "postmortem"
+id = "tell"
+engine = "incident"
+gate = ["passed"]
+
+[[steps]]
+id = "after"
 engine = "incident"
 gate = ["passed"]
 output = "postmortem"
 
 [[edges]]
 from = "triage"
-to = "mitigate"
+to = "act"
 when = "passed"
 
 [[edges]]
-from = "mitigate"
-to = "postmortem"
+from = "act"
+to = "tell"
+when = "passed"
+
+[[edges]]
+from = "tell"
+to = "after"
 when = "passed"

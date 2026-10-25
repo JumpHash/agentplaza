@@ -127,13 +127,16 @@ fn fire_route(app: &App, req: &Request, p: &Params<'_>) -> Response {
     if project.is_some_and(|id| app.projects.get(id).is_none()) {
         return Response::error(404, "no such project");
     }
+    // The change a user test is about (19), when the owner names one.
+    let change = body["change"].as_str();
     let now = apz_plaza::now_ms();
     let Some(run) = app
         .recipe_runs
-        .start_engine(recipe, "owner", None, project, None, now)
+        .start_engine(recipe, "owner", None, project, change, now)
     else {
         return Response::error(404, "no such recipe");
     };
+    crate::user_test::queue(&run);
     match app.recipe_runs.view(&run) {
         Some(v) => Response::json(202, &summary(&v)),
         None => Response::error(404, "no such recipe run"),

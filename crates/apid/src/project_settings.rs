@@ -90,6 +90,14 @@ pub struct ProjectSettings {
     /// Whether the project releases continuously: each landing starts the release recipe (22; a stub until then, 4.6).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub release_continuous: bool,
+    /// The minutes between the dependency upgrades of each ecosystem the project has (PLAN 24.2); 0 turns them off;
+    /// [`crate::upgrades::DEFAULT_MINUTES`] (a week) when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upgrade_minutes: Option<u32>,
+    /// Whether a passing patch or minor upgrade batch lands by itself (PLAN 24.2). Off by default: it waits for the
+    /// owner's approval, as a landing does under `land_approval`. A major upgrade always waits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upgrade_auto_land: bool,
     /// How many hours a project's previews outlive their lane's landing or closing (PLAN 18.1). A preview target's own
     /// `grace_hours` overrides it; 24 when neither is set.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -106,11 +114,38 @@ pub struct ProjectSettings {
     /// Whether the project's hooks start from the defaults (`apz_proto::hooks::default_hooks`), before its own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hook_defaults: bool,
+    /// Whether the project's subscription calls take the policy's API-key route (`allowances::route`): the owner's
+    /// "use an API key for this project" choice on an allowance card. Off: they wait on their allowance.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription_fallback: bool,
     /// The intake rules: which outside items (GitHub, Linear, Notion) become this project's tasks, by repository,
     /// label, team or database, and on which recipe. The JSON names them as a list under `intake`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[table(child)]
     pub intake: Vec<IntakeRule>,
+    /// The project's limits on its performance comparisons with the last qualified stable release (PLAN 22.8): a
+    /// metric's name (exact, or a prefix ending in `*`) and its largest change in tenths of a percent (150 is 15 percent;
+    /// for an error rate, tenths of a point). The defaults (`apz_topology::compare`) hold for the metrics no row names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[table(child)]
+    pub performance_limits: Vec<PerfLimit>,
+    /// The stages a channel's qualification runs, by channel (PLAN 22.10): a comma-separated list of stage keys or numbers
+    /// (`qualify::plan::parse_stages`); a channel with none keeps the channel's depth.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[table(map_value)]
+    pub qualify_depth: BTreeMap<String, String>,
+    /// Whether the project asks for a soak in its stable qualifications (stage 10, PLAN 22.10).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub qualify_soak: bool,
+}
+
+/// One limit on a performance comparison: the metric's name and the largest change it may make, in tenths of a
+/// percent (an integer, so the row keeps its equality).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+#[serde(default, deny_unknown_fields)]
+pub struct PerfLimit {
+    pub metric: String,
+    pub max_tenths: u32,
 }
 
 /// One intake rule: an outside item whose `field` is `value` becomes a task of the project on `recipe`. The field is
@@ -212,14 +247,22 @@ struct SettingsRow {
     spec_over_words: Option<u32>,
     land_approval: bool,
     release_continuous: bool,
+    upgrade_minutes: Option<u32>,
+    upgrade_auto_land: bool,
     preview_grace_hours: Option<u64>,
     hook_defaults: bool,
+    subscription_fallback: bool,
     #[table(map_value)]
     role_models: BTreeMap<String, String>,
     #[table(child)]
     hooks: Vec<HookRow>,
     #[table(child)]
     intake: Vec<IntakeRule>,
+    #[table(child)]
+    performance_limits: Vec<PerfLimit>,
+    #[table(map_value)]
+    qualify_depth: BTreeMap<String, String>,
+    qualify_soak: bool,
 }
 
 /// One hook of a project as its row: the action is a kind and, for a rule, the rule's id, and its paths and languages
@@ -286,11 +329,17 @@ impl SettingsRow {
             spec_over_words: settings.spec_over_words,
             land_approval: settings.land_approval,
             release_continuous: settings.release_continuous,
+            upgrade_minutes: settings.upgrade_minutes,
+            upgrade_auto_land: settings.upgrade_auto_land,
             preview_grace_hours: settings.preview_grace_hours,
             hook_defaults: settings.hook_defaults,
+            subscription_fallback: settings.subscription_fallback,
             role_models: settings.role_models.clone(),
             hooks: settings.hooks.clone(),
             intake: settings.intake.clone(),
+            performance_limits: settings.performance_limits.clone(),
+            qualify_depth: settings.qualify_depth.clone(),
+            qualify_soak: settings.qualify_soak,
         }
     }
 
@@ -313,10 +362,16 @@ impl SettingsRow {
             spec_over_words: self.spec_over_words,
             land_approval: self.land_approval,
             release_continuous: self.release_continuous,
+            upgrade_minutes: self.upgrade_minutes,
+            upgrade_auto_land: self.upgrade_auto_land,
             preview_grace_hours: self.preview_grace_hours,
             hooks: self.hooks,
             intake: self.intake,
+            performance_limits: self.performance_limits,
+            qualify_depth: self.qualify_depth,
+            qualify_soak: self.qualify_soak,
             hook_defaults: self.hook_defaults,
+            subscription_fallback: self.subscription_fallback,
         };
         (self.project, settings)
     }
@@ -336,6 +391,17 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         return Err("queue_batch: a batch holds from 1 to 16 lanes".into());
     }
     crate::intake::check_rules(&settings.intake)?;
+    for (channel, stages) in &settings.qualify_depth {
+        crate::qualify::plan::parse_stages(stages)
+            .map_err(|e| format!("qualify_depth.{channel}: {e}"))?;
+    }
+    for limit in &settings.performance_limits {
+        if limit.metric.trim().is_empty() || limit.max_tenths == 0 {
+            return Err(
+                "performance_limits: each names a metric and a largest change above zero (tenths of a percent)".into(),
+            );
+        }
+    }
     if settings
         .preview_grace_hours
         .is_some_and(|hours| hours > MAX_PREVIEW_GRACE_HOURS)
@@ -396,6 +462,11 @@ pub fn check(app: &App, settings: &ProjectSettings) -> Result<(), String> {
         && !(1..=10_080).contains(&minutes)
     {
         return Err("review_timeout_minutes must be 1 to 10080 (a week)".into());
+    }
+    if let Some(minutes) = settings.upgrade_minutes
+        && minutes > 10080
+    {
+        return Err("upgrade_minutes must be 0 (off) to 10080 (a week)".into());
     }
     if let Some(minutes) = settings.full_suite_minutes
         && minutes > 10_080
@@ -706,6 +777,8 @@ pub fn effective(app: &App, id: &str) -> Value {
             "permission_mode": pick(own.permission_mode.map(|m| json!(m)), json!(Mode::default())),
             "review_timeout_minutes": pick(own.review_timeout_minutes.map(Value::from), json!(plaza.review_timeout_minutes)),
             "full_suite_minutes": pick(own.full_suite_minutes.map(Value::from), json!(crate::full_run::DEFAULT_MINUTES)),
+            "upgrade_minutes": pick(own.upgrade_minutes.map(Value::from), json!(crate::upgrades::DEFAULT_MINUTES)),
+            "upgrade_auto_land": own.upgrade_auto_land,
             "team_max": pick(own.team_max.map(Value::from), json!(DEFAULT_TEAM_MAX)),
             "team_target": pick(own.team_target.map(Value::from), json!(DEFAULT_TEAM_TARGET)),
         },

@@ -1,0 +1,23 @@
+meta {
+  name: Answer 404 when setting the roles of an unknown node
+  type: http
+  seq: 42
+}
+
+post {
+  url: {{baseUrl}}/v1/nodes/n999/roles
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "test_share": 50
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

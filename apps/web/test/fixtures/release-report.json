@@ -1,0 +1,75 @@
+{
+  "release": { "id": "rel_0142", "version": "1.4.0", "channel": "stable", "state": "qualified" },
+  "qualification": {
+    "id": "qual_0142",
+    "state": "done",
+    "verdict": "passed",
+    "reasons": ["all stages in depth passed", "one stage accepted with a planner and a second model"],
+    "depth": {
+      "stages": ["build", "unit", "lint", "typecheck", "integration", "e2e", "security", "sbom", "review", "provenance", "sign"],
+      "short": ["sbom", "provenance"],
+      "reason": "stable release: full depth except the perf stage, which the change does not touch",
+      "excluded": [{ "stage": "perf", "why": "no hot path changed since 1.3.2" }]
+    },
+    "lab_runs": ["lab_9a1", "lab_9a2"],
+    "review_run": "review_77c",
+    "started_ms": 1792400000000,
+    "ended_ms": 1792403600000
+  },
+  "stages": [
+    { "number": 1, "key": "build", "title": "Build", "in_depth": true, "short": false, "state": "passed", "reason": "built for 3 targets",
+      "evidence": [{ "kind": "run", "label": "build run", "href": "/v1/runs/run_b1" }],
+      "findings": [], "metrics": [{ "name": "build_seconds", "value": 184 }], "parts": [{ "name": "linux-x86_64", "state": "passed", "reason": "" }, { "name": "macos-arm64", "state": "passed", "reason": "" }, { "name": "android-arm64", "state": "passed", "reason": "" }] },
+    { "number": 2, "key": "unit", "title": "Unit tests", "in_depth": true, "short": false, "state": "passed", "reason": "1204 tests, 0 failed",
+      "evidence": [{ "kind": "run", "label": "unit run", "href": "/v1/runs/run_u1" }], "findings": [], "metrics": [{ "name": "tests", "value": 1204 }], "parts": [] },
+    { "number": 3, "key": "lint", "title": "Lint", "in_depth": true, "short": false, "state": "passed", "reason": "clean",
+      "evidence": [], "findings": [], "metrics": [], "parts": [] },
+    { "number": 4, "key": "typecheck", "title": "Typecheck", "in_depth": true, "short": false, "state": "passed", "reason": "clean",
+      "evidence": [], "findings": [], "metrics": [], "parts": [] },
+    { "number": 5, "key": "integration", "title": "Integration", "in_depth": true, "short": false, "state": "passed", "reason": "all suites green",
+      "evidence": [{ "kind": "run", "label": "integration run", "href": "/v1/runs/run_i1" }], "findings": [], "metrics": [{ "name": "suite_seconds", "value": 412.5 }], "parts": [] },
+    { "number": 6, "key": "e2e", "title": "End to end", "in_depth": true, "short": false, "state": "accepted", "reason": "one flaky step accepted by the planner and the second model",
+      "evidence": [{ "kind": "run", "label": "e2e run", "href": "/v1/runs/run_e1" }], "findings": [{ "id": "f_31", "text": "login step retried twice", "href": "/v1/findings/f_31" }], "metrics": [], "parts": [] },
+    { "number": 7, "key": "security", "title": "Security scan", "in_depth": true, "short": false, "state": "passed", "reason": "no high findings",
+      "evidence": [{ "kind": "scan", "label": "scan", "href": "/v1/scans/scan_s1" }], "findings": [], "metrics": [{ "name": "findings_low", "value": 2 }], "parts": [] },
+    { "number": 8, "key": "sbom", "title": "SBOM", "in_depth": true, "short": true, "state": "passed", "reason": "sbom attached",
+      "evidence": [], "findings": [], "metrics": [], "parts": [] },
+    { "number": 9, "key": "perf", "title": "Performance", "in_depth": false, "short": false, "state": "not_in_depth", "reason": "",
+      "evidence": [], "findings": [], "metrics": [], "parts": [] },
+    { "number": 10, "key": "review", "title": "Review", "in_depth": true, "short": false, "state": "passed", "reason": "reviewed by the review run",
+      "evidence": [{ "kind": "review", "label": "review run", "href": "/v1/runs/review_77c" }], "findings": [], "metrics": [], "parts": [] },
+    { "number": 11, "key": "provenance", "title": "Provenance", "in_depth": true, "short": true, "state": "passed", "reason": "attested",
+      "evidence": [], "findings": [], "metrics": [], "parts": [] }
+  ],
+  "compared_with": { "release": "channel:stable", "version": "1.3.2", "id": "rel_0139" },
+  "deltas": [
+    { "name": "build_seconds", "previous": 176, "current": 184, "change_pct": 4.5 },
+    { "name": "suite_seconds", "previous": 430, "current": 412.5, "change_pct": -4.1 }
+  ],
+  "findings": { "new": ["login step retried twice under load"], "fixed": ["stale lockfile warning in build"] },
+  "acceptances": [
+    {
+      "id": "acc_07",
+      "release": "rel_0142",
+      "stage": 6,
+      "key": "e2e",
+      "reason": "login retry is a known timing issue in the staging proxy; tracked in fix task task_904",
+      "planner": "planner-model",
+      "planner_says": "accept: the retry passed on the same build twice",
+      "second": "second-model",
+      "second_says": "accept: no user-visible failure in the retried runs",
+      "tokens": 18420,
+      "at_ms": 1792402000000
+    }
+  ],
+  "quarantine": [
+    { "test": "sync::tests::retries_after_reset", "since_ms": 1792100000000, "flaked_runs": 4, "fix_task": "task_904" }
+  ],
+  "flaky": ["sync::tests::retries_after_reset"],
+  "matrices": [
+    { "name": "os", "state": "passed", "reason": "3 of 3 targets" },
+    { "name": "db", "state": "passed", "reason": "sqlite and postgres" }
+  ],
+  "cost": { "model_tokens": 412300, "lab_minutes": 37.5, "lab_runs": 2 },
+  "fix_tasks": [{ "stage": "e2e", "goal": "make the login step deterministic in staging", "task": "task_904" }]
+}

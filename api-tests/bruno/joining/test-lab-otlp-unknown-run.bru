@@ -1,0 +1,28 @@
+meta {
+  name: Refuse a collector's logs for an unknown test-lab run
+  type: http
+  seq: 42
+}
+
+post {
+  url: {{baseUrl}}/v1/test-lab/runs/q999/otlp/logs
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+  X-Apz-Lab-Token: not-a-token
+}
+
+body:json {
+  {
+    "resourceLogs": []
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

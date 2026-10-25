@@ -175,6 +175,21 @@ fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
     }
 }
 
+/// The first CID of the project parties: the CIDs an egress proxy asks apid for on behalf of a project, above every
+/// guest CID (a node's CIDs are small). See [`project_party`].
+pub const PROJECT_PARTY_BASE: u32 = 0xF000_0000;
+
+/// The party a project's egress proxy asks apid for: [`PROJECT_PARTY_BASE`] with the project id's FNV-1a hash in its
+/// low 28 bits. A Mac node's proxy for the project asks as this party, and apid knows the project by it, so the
+/// party is the same on every node. (Two projects can share a party if their hashes collide; apid answers for the
+/// first.)
+pub fn project_party(project: &str) -> u32 {
+    let hash = project.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    PROJECT_PARTY_BASE | (hash & 0x0fff_ffff)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +360,13 @@ mod tests {
             "a mapped address is IPv4, so no IPv6 block holds it"
         );
         assert!(in_cidr(ip("1.2.3.4"), block("0.0.0.0", 0)));
+    }
+
+    #[test]
+    fn project_parties_are_stable_and_above_the_guest_cids() {
+        let party = project_party("pr1");
+        assert_eq!(party, project_party("pr1"));
+        assert_ne!(party, project_party("pr2"));
+        assert_eq!(party & 0xf000_0000, PROJECT_PARTY_BASE);
     }
 }

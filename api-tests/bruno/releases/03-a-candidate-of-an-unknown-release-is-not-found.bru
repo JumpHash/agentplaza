@@ -1,0 +1,15 @@
+meta {
+  name: A candidate of an unknown release is not found
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/candidate
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

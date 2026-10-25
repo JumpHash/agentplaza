@@ -1,0 +1,16 @@
+meta {
+  name: Topologies of an unknown project
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/topologies
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

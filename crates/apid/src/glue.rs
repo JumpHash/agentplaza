@@ -33,7 +33,7 @@ const TICK: Duration = Duration::from_millis(10);
 /// The timeout of one request the hub sends.
 const TIMEOUT: Duration = Duration::from_secs(30);
 /// A request's body and a reply's body are cut at this size (as `connectors.rs` cuts a reply).
-const BODY_CAP: usize = 256 * 1024;
+pub const BODY_CAP: usize = 256 * 1024;
 /// The longest key and the largest value a component may store.
 const KEY_CAP: usize = 128;
 const VALUE_CAP: usize = 64 * 1024;
@@ -58,15 +58,21 @@ pub struct Outgoing {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
-    pub body: String,
+    pub body: Vec<u8>,
 }
 
-/// What an upstream answered: the status, and the body cut at 256 KiB.
+/// What an upstream answered: the status, and the body cut at 256 KiB. `bytes` is the body as it came, cut at
+/// [`ARTIFACT_CAP`] plus one byte (so a caller can tell that it was larger): an artifact is binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
     pub status: u16,
     pub body: String,
+    pub bytes: Vec<u8>,
 }
+
+/// The most of an upstream body the reply keeps as bytes: a device farm's artifact (a video or a log) is downloaded whole up
+/// to this size, and a larger one is refused by its caller.
+pub const ARTIFACT_CAP: usize = 16 << 20;
 
 /// The way the hub reaches the network. Production uses [`HttpsOutbound`]; tests put a fake server behind it.
 pub trait Outbound: Send + Sync {
@@ -154,7 +160,7 @@ impl Outbound for HttpsOutbound {
             builder = builder.header(name.as_str(), value.as_str());
         }
         let http = builder
-            .body(request.body.clone().into_bytes())
+            .body(request.body.clone())
             .map_err(|e| format!("bad request: {e}"))?;
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(TIMEOUT))
@@ -169,12 +175,14 @@ impl Outbound for HttpsOutbound {
         response
             .into_body()
             .into_reader()
-            .take(BODY_CAP as u64)
+            .take(ARTIFACT_CAP as u64 + 1)
             .read_to_end(&mut bytes)
             .map_err(|e| e.to_string())?;
+        let text = &bytes[..bytes.len().min(BODY_CAP)];
         Ok(Reply {
             status,
-            body: String::from_utf8_lossy(&bytes).into_owned(),
+            body: String::from_utf8_lossy(text).into_owned(),
+            bytes,
         })
     }
 }
@@ -330,6 +338,7 @@ fn send(state: &State, request: &str) -> Result<Reply, String> {
         secret: state.secret.as_ref(),
         outbound: &*state.outbound,
         loopback_http: false,
+        body_cap: BODY_CAP,
     }
     .send(&req.method, &req.url, &req.headers, &req.body)
 }
@@ -338,12 +347,14 @@ fn send(state: &State, request: &str) -> Result<Reply, String> {
 /// the send. The glue tier's `fetch` goes through it, and so do the intake connectors' calls (`intake`), whose
 /// secrets are the same kind: never handed to anything that runs code. `loopback_http` lets a request go to a
 /// service on this machine over plain http (a stand-in for a service in the tests, or a local one the owner runs);
-/// the glue tier never does.
+/// the glue tier never does. `body_cap` is the most a request body may be: the glue tier's 256 KiB, or a publish's
+/// (a package's own bytes, 9.5).
 pub struct Mediator<'a> {
     pub egress: &'a [String],
     pub secret: Option<&'a Secret>,
     pub outbound: &'a dyn Outbound,
     pub loopback_http: bool,
+    pub body_cap: usize,
 }
 
 impl Mediator<'_> {
@@ -354,6 +365,17 @@ impl Mediator<'_> {
         url: &str,
         headers: &BTreeMap<String, String>,
         body: &str,
+    ) -> Result<Reply, String> {
+        self.send_bytes(method, url, headers, body.as_bytes())
+    }
+
+    /// [`Mediator::send`] for a body that is bytes (a package's file, a registry's blob).
+    pub fn send_bytes(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        body: &[u8],
     ) -> Result<Reply, String> {
         let (https, rest) = match url.strip_prefix("https://") {
             Some(rest) => (true, rest),
@@ -413,17 +435,18 @@ impl Mediator<'_> {
         if let Some(secret) = self.secret {
             out_headers.push((secret.header.clone(), secret.value.clone()));
         }
-        if body.len() > BODY_CAP {
-            return Err("a request body is at most 256 KiB".into());
+        if body.len() > self.body_cap {
+            return Err(format!("a request body is at most {} bytes", self.body_cap));
         }
         let reply = self.outbound.send(&Outgoing {
             method,
             url: url.to_string(),
             headers: out_headers,
-            body: body.to_string(),
+            body: body.to_vec(),
         })?;
         Ok(Reply {
             status: reply.status,
+            bytes: reply.bytes,
             body: match self.secret {
                 Some(secret) if !secret.value.is_empty() => {
                     reply.body.replace(&secret.value, "[redacted]")

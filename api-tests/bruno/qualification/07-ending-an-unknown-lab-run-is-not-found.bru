@@ -1,0 +1,19 @@
+meta {
+  name: Ending an unknown lab run is not found
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/v1/test-lab/runs/q0/end
+  body: json
+  auth: none
+}
+
+body:json {
+  {"outcome": "passed"}
+}
+
+assert {
+  res.status: eq 404
+}

@@ -1,0 +1,19 @@
+meta {
+  name: A test fixed without a reason is refused
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/v1/projects/pr-0/tests/cart%3A%3Apay/fixed
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+}

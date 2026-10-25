@@ -1,0 +1,33 @@
+{
+  "results": [
+    {
+      "source": {
+        "path": "/repo/package-lock.json",
+        "type": "lockfile"
+      },
+      "packages": [
+        {
+          "package": {
+            "name": "lodash",
+            "version": "4.17.20",
+            "ecosystem": "npm"
+          },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-jf85-cpcp-j695",
+              "summary": "Prototype Pollution in lodash",
+              "aliases": ["CVE-2020-8203"],
+              "affected": []
+            }
+          ],
+          "groups": [
+            {
+              "ids": ["GHSA-jf85-cpcp-j695", "CVE-2020-8203"],
+              "max_severity": "7.4"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+meta {
+  name: Notes without text are refused
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/notes
+  body: json
+  auth: none
+}
+
+body:json {
+  {}
+}
+
+assert {
+  res.status: eq 400
+}

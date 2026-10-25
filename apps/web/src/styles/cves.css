@@ -1,0 +1,24 @@
+/* The CVE report tab: the totals and the feeds above a table of findings. The tab sits in the project page
+   (projects.css); the table is the console's own .tbl inside a .tbl-wrap, which scrolls sideways on a narrow screen. */
+.cve { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.cve-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 16px; }
+.cve-intro p { margin: 0; flex: 1 1 280px; min-width: 0; color: var(--ink-2); }
+.cve-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cve-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
+.cve-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.cve-polled { margin: 12px 0 0; font-size: var(--fs-sm); color: var(--ink-3); }
+.cve-feed { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--rule); font-size: 13px; }
+.cve-feed:first-child { border-top: 0; padding-top: 0; }
+.cve-feed > b { font-family: var(--font-mono); font-weight: 500; }
+.cve-warn { flex-basis: 100%; display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--warn); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.cve-warn svg { flex: none; margin-top: 2px; }
+.cve-filter { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.cve-filter .field { min-width: 180px; }
+.cve-pkg, .cve-adv, .cve-fix, .cve-reach { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+.cve-pkg b, .cve-adv b { overflow-wrap: anywhere; }
+.cve-adv a { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--ink-2); }
+.cve-adv a:hover { color: var(--ink); text-decoration: underline; }
+.cve-title { white-space: normal; overflow-wrap: anywhere; }
+.cve-rels { display: flex; flex-direction: column; gap: 2px; font-size: 12px; overflow-wrap: anywhere; }
+.cve-fix code { font-family: var(--font-mono); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.cve .tbl-wrap { max-width: 100%; }

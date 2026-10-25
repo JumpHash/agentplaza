@@ -28,9 +28,14 @@ apz-metrics.workspace = true
 apz-uds = { path = "../apz-uds" }
 apz-gateway = { path = "../apz-gateway" }
 apz-plaza = { path = "../apz-plaza" }
+# The iOS simulator's command lines (simctl) and the Mac-side permission checks (user_test/simulator.rs).
+apz-desktop-macos = { path = "../apz-desktop-macos" }
+apz-android = { path = "../apz-android" }
 # Test selection (PLAN 15.4): the coverage maps, the build graph and the selection (test_select.rs).
 apz-testsel = { path = "../apz-testsel" }
 apz-ide = { path = "../apz-ide" }
+# The terminal target's grid (user_test/tui.rs): a program's screen as text and as pixels.
+apz-vt = { path = "../apz-vt" }
 # The workstation link protocol (docs/design/workstations.md; crates/apz-station): frames, operations, facts, settings.
 apz-station = { path = "../apz-station", features = ["store"] }
 apz-rich = { path = "../apz-rich" }
@@ -44,15 +49,24 @@ serde_json.workspace = true
 # The API's OpenAPI spec (openapi.rs): the routes' request and response schemas.
 schemars = "1"
 toml = "1"
+# The release manifests of a Kubernetes deploy (deploy/kubernetes.rs): the same YAML reader the topology import uses.
+serde_yaml_ng = "0.10"
 # The glue tier (PLAN 14.4; glue.rs): connector components run under wasmtime's component model, compiled by
 # cranelift. Already in the lock (48.0.7, through tree-sitter). No WASI and no HTTP: the hub mediates both.
 wasmtime = { version = "48", default-features = false, features = ["runtime", "component-model", "cranelift"] }
 ureq.workspace = true
 sha2.workspace = true
+# The checksum files of a Maven publish (9.5: releases/registries/wire.rs): the .md5 and .sha1 next to each file.
+md-5 = "0.10"
+sha1 = "0.10"
 blake2.workspace = true
+blake3 = "1.8"
 apz-trust = { path = "../apz-trust" }
 apz-os = { path = "../apz-os" }
 apz-egress-rules = { path = "../apz-egress-rules" }
+# The test topologies (PLAN 22.6): the typed file, the guest plan and the runner (topology.rs).
+apz-topology = { path = "../apz-topology" }
+apz-ux = { path = "../apz-ux" }
 apz-secrets = { path = "../apz-secrets" }
 # The vault's crypto (docs/design/vault.md): XChaCha20-Poly1305, Argon2id, HKDF, HMAC.
 chacha20poly1305.workspace = true
@@ -69,6 +83,8 @@ tungstenite = { version = "0.30", default-features = false, features = ["handsha
 # The relay's signatures (shares/relay.rs), matching crates/apz-trust.
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 flate2 = "1.1"
+# The stand-in target's screenshots (user_test/target.rs): PNG encoding; the crate is already in Cargo.lock.
+png = "0.18"
 # The stdio servers' OS sandbox (crates/apz-sandbox) and the archives of the runtimes and binary packages.
 apz-sandbox = { path = "../apz-sandbox" }
 tar = "0.4"
@@ -95,5 +111,9 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+# The desktop agent of a Linux desktop target, served on a loopback port by the fork tests (desktop_test.rs).
+apz-gui-agent = { path = "../apz-gui-agent" }
 # The glue tests build their components from WAT text (glue.rs).
 wat = "1"
+# The scrubbed-copy route's test makes a production snapshot (SQLite) to copy.
+rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

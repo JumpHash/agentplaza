@@ -35,7 +35,9 @@ export const NAV: [string, LucideName, string][] = [
 ];
 export const MORE: [string, LucideName, string][] = [
   ['tasks', 'list-checks', 'Tasks'],
+  ['releases', 'package', 'Releases'],
   ['metrics', 'chart-column', 'Metrics'],
+  ['evals', 'chart-column', 'Evals'],
   ['library', 'library', 'Library'],
   ['board', 'pin', 'Board'],
   ['rules', 'scale', 'Rules'],

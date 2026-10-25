@@ -121,11 +121,14 @@ export interface RecipeList { recipes: RecipeSummary[]; proposals: RecipeProposa
 /** A run's state: `running`, `owner` (a card waits for the owner), or how it ended (`passed`, `failed`, `cancelled`). */
 export type RecipeRunState = 'running' | 'owner' | 'passed' | 'failed' | 'cancelled';
 
-/** A run of an engine recipe, as `GET /v1/recipe-runs` lists it (newest first) and `GET /v1/recipe-runs/{id}` gives it. */
+/** A check a run's step made: whether it passed, the commands it ran, and the log it wrote (`summary`). */
+export interface RecipeRunCheck { step: string; passed: boolean; commands: string; summary: string }
+
+/** A run of an engine recipe, as `GET /v1/recipe-runs` lists it (newest first) and `GET /v1/recipe-runs/{id}` gives it. `checks` is set on the detail (a workflow run's checks). */
 export interface RecipeRun {
   run: string; recipe: string; version: number; source: string; trigger: string;
   task: string | null; project: string | null; subject: string; state: RecipeRunState; outcome: string | null;
-  created_ms: number; updated_ms: number;
+  created_ms: number; updated_ms: number; checks?: RecipeRunCheck[];
 }
 
 export interface RecipeRunList { runs: RecipeRun[] }

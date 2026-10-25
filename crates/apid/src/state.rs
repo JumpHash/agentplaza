@@ -147,8 +147,14 @@ pub struct App {
     pub platforms: crate::platforms::Store,
     /// Projects in maintenance: their signals, map, proposals and sweeps.
     pub maintenance: crate::maintenance::Store,
+    /// Incidents (24.1): the alerts and breaches a project is handling, from opening to postmortem.
+    pub incidents: crate::incidents::Store,
     /// Where each project runs.
     pub environments: crate::environments::Store,
+    /// Each project's dependency upgrades: its schedules and the batches it made (upgrades/).
+    pub upgrades: crate::upgrades::Store,
+    /// Each project's CVE record: the feeds' last polls and the findings they make (cves/).
+    pub cves: crate::cves::Store,
     /// The review graph's runs and recipes (review_graph), kept in plaza.db; the change trees are in the object store.
     pub reviews: crate::review_graph::Reviews,
     /// The hub's store: SQLite in the state folder (store/mod.rs). Memory is the working copy; the saver keeps the
@@ -165,6 +171,8 @@ pub struct App {
     pub seats: crate::seats::Seats,
     /// The recipe engine's runs and the owner's recipe versions (recipes/runs.rs).
     pub recipe_runs: crate::recipes::runs::Runs,
+    /// The releases of every project, each with its life as Weft's statements made it (releases/).
+    pub releases: crate::releases::entity::Store,
     /// The triggers of the recipes (14.6): the schedules and the event records, and the deliveries in their windows.
     pub triggers: crate::triggers::Triggers,
     pub budgets: crate::budgets::Budgets,
@@ -193,6 +201,12 @@ pub struct App {
     pub nodes: Arc<crate::nodes::Store>,
     /// The routes the server dispatches to (set at start). A node's requests over its tunnel go through them too.
     pub routes: std::sync::OnceLock<Arc<apz_http::Router<App>>>,
+    /// The test lab: its runs and their reservations (test_lab.rs).
+    pub test_lab: crate::test_lab::Store,
+    /// The qualifications of release candidates (PLAN 22.10): their runs, stages, histories and acceptances.
+    pub qualify: crate::qualify::Store,
+    /// The ephemeral instances of the projects' environments (`ephemeral`): their rows, their targets and addresses.
+    pub ephemeral: crate::ephemeral::Store,
     /// The workstations: their join codes, registry, live links and leases (docs/design/workstations.md).
     pub stations: crate::stations::Store,
     /// Model prices (OpenRouter, LiteLLM and the owner's own), for usage costs.
@@ -238,6 +252,10 @@ pub struct App {
     pub engines: crate::engine_instances::Store,
     /// The usage providers (CLIProxyAPI hubs), `usage_providers.rs`.
     pub usage_providers: crate::usage_providers::Store,
+    /// The login bridge's switches, per vendor (`login_bridge.rs`).
+    pub login_bridges: crate::login_bridge::Store,
+    /// The sessions an allowance paused, and the vendor each waits on (`allowances.rs`).
+    pub allowance_waits: crate::allowances::Waits,
     pub roles: agents::Roles,
     pub agents: agents::Roster,
     /// The model registry: the records on disk and the compiled models in memory.
@@ -320,6 +338,9 @@ impl App {
             weft: crate::weft_hub::Weft::default(),
             platforms: crate::platforms::Store::new(),
             maintenance: Default::default(),
+            incidents: Default::default(),
+            upgrades: crate::upgrades::Store::default(),
+            cves: crate::cves::Store::default(),
             environments: crate::environments::Store::default()
                 .with_generations(Arc::clone(&generations)),
             reviews: crate::review_graph::Reviews::new(Arc::clone(&blobs)),
@@ -329,6 +350,7 @@ impl App {
             sessions: Default::default(),
             seats: Default::default(),
             recipe_runs: Default::default(),
+            releases: Default::default(),
             triggers: Default::default(),
             budgets: crate::budgets::Budgets::announcing(Arc::clone(&bus)),
             cards: Default::default(),
@@ -347,6 +369,9 @@ impl App {
             verifier: crate::verifier::Store::default(),
             nodes: Arc::default(),
             routes: std::sync::OnceLock::new(),
+            test_lab: crate::test_lab::Store::default(),
+            qualify: crate::qualify::Store::default(),
+            ephemeral: crate::ephemeral::Store::default(),
             stations: crate::stations::Store::default(),
             prices: crate::prices::Catalog::default(),
             usage: crate::usage::Ledger::new(Arc::clone(store.db(crate::store::PLAZA))),
@@ -408,6 +433,8 @@ impl App {
             engines: crate::engine_instances::Store::new(&config.state_dir)
                 .with_generations(Arc::clone(&generations)),
             usage_providers: crate::usage_providers::Store::default(),
+            login_bridges: crate::login_bridge::Store::default(),
+            allowance_waits: crate::allowances::Waits::default(),
             roles: agents::Roles::load(&config.roles, &config.prompts)?,
             spawned: spawned::Store::default(),
             agents: agents::Roster::default(),
@@ -427,6 +454,7 @@ impl App {
         agents::spawn_reconcile(Arc::clone(&app));
         crate::sleep::spawn_sweeper(Arc::clone(&app));
         crate::previews::life::spawn_sweeper(Arc::clone(&app));
+        crate::ephemeral::spawn_ticker(Arc::clone(&app));
         crate::e2b::start(&app);
         scheduler::spawn(Arc::clone(&app));
         crate::mover::spawn(Arc::clone(&app));
@@ -524,6 +552,7 @@ impl App {
         crate::stations::spawn(Arc::clone(&app));
         crate::harness_control::spawn_ticker(Arc::clone(&app));
         crate::maintenance::spawn_ticker(Arc::clone(&app));
+        crate::allowances::spawn_ticker(Arc::clone(&app));
         // Deliverables (videos, images) arrive as request bodies: allow up to 512 MiB.
         // On loopback the hub serves plain HTTP as before. Bound anywhere else it is a hub other
         // machines reach: always HTTPS, with the certificate made on first start (its SHA-256 is

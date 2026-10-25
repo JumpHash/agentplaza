@@ -7,8 +7,8 @@
 //
 // Derived from Firecracker src/vmm/src/devices/virtio/mod.rs (trimmed: the
 // PCI transport, the userspace vsock muxer (`csm`/`unix`) and the device
-// metrics are dropped or replaced by a local shim; there is no network device
-// by design). The userspace vsock core below is ported so the VMM can mediate
+// metrics are dropped or replaced by a local shim. The network device (`net`) is for lab topologies only.
+// The userspace vsock core below is ported so the VMM can mediate
 // vsock itself instead of handing the rings to the kernel's vhost-vsock; that
 // vhost device is retired and is not on the boot path.
 
@@ -45,6 +45,7 @@ pub mod block;
 pub mod iov_deque;
 pub mod iovec;
 pub mod mmio;
+pub mod net;
 pub mod queue;
 #[cfg(target_os = "linux")]
 pub mod vhost;
@@ -143,6 +144,9 @@ pub enum VirtioError {
     /// The block device: {0}
     #[error("block device: {0}")]
     Block(#[from] crate::devices::virtio::block::VirtioBlockError),
+    /// The net device: {0}
+    #[error("net device: {0}")]
+    Net(#[from] crate::devices::virtio::net::NetError),
     /// Failed to activate the block device: {0}
     #[error("failed to activate the block device: {0}")]
     BlockActivate(#[from] crate::devices::virtio::block::ActivateError),

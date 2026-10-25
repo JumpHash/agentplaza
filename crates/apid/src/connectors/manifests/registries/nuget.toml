@@ -1,0 +1,11 @@
+id = "nuget"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["www.nuget.org"]
+secrets = ["NUGET_API_KEY"]
+events = []
+actions = []
+webhook = false
+auth_header = "X-NuGet-ApiKey"
+auth_format = "${SECRET}"

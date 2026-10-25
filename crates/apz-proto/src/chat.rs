@@ -88,6 +88,12 @@ pub enum Block {
         kind: String,
         raw: Value,
     },
+    /// An image the user sends (a screenshot, say): its media type (`image/png`, …) and its bytes in base64.
+    /// Only the providers whose wire format has an image block take it; the others refuse the call.
+    Image {
+        media_type: String,
+        data: String,
+    },
 }
 
 /// The concatenated text of `blocks`' text blocks, newline-joined.
@@ -152,6 +158,13 @@ pub struct ChatRequest {
 }
 
 impl ChatRequest {
+    /// Whether any message carries an image block.
+    pub fn has_images(&self) -> bool {
+        self.messages
+            .iter()
+            .any(|m| m.content.iter().any(|b| matches!(b, Block::Image { .. })))
+    }
+
     /// The system prompt as one text: the parts joined by a blank line, or `system`. `None` when it is empty.
     pub fn system_text(&self) -> Option<String> {
         if self.system_parts.is_empty() {
@@ -255,6 +268,48 @@ pub enum Delta {
     BlockEnd {
         index: usize,
     },
+}
+
+/// The in-VM tools the tool library names by path: `code.read` is the guest tool `read`. The harness rewrites a
+/// `tools_call` for one of these into the tool itself, so the call runs under the policy like a call of its own.
+pub const GUEST_TOOL_PATHS: &[(&str, &str)] = &[
+    ("code.read", "read"),
+    ("code.edit", "edit"),
+    ("code.find", "find"),
+    ("code.search", "search"),
+    ("code.run_tests", "run_tests"),
+    ("code.symbols", "symbols"),
+    ("code.definition", "definition"),
+    ("code.references", "references"),
+    ("code.diagnostics", "diagnostics"),
+    ("code.outline", "outline"),
+    ("code.engine", "code_engine"),
+    ("shell.run", "run"),
+    ("shell.script", "run_script"),
+    ("helpers.spawn", "spawn_helper"),
+    ("helpers.await", "await_helper"),
+    ("files.share", "share_file"),
+    ("files.deliver", "deliver_file"),
+    ("web.fetch", "fetch_url"),
+    ("web.download", "download"),
+    ("packages.install", "install_packages"),
+    ("todo.write", "todo_write"),
+    ("artifacts.create", "artifact_create"),
+    ("artifacts.update", "artifact_update"),
+    ("artifacts.attach_data", "artifact_attach_data"),
+    ("artifacts.share_request", "artifact_share_request"),
+    ("tools.package", "tool_package"),
+    ("checkpoints.list", "checkpoint_list"),
+    ("checkpoints.diff", "checkpoint_diff"),
+    ("checkpoints.restore", "checkpoint_restore"),
+];
+
+/// The guest tool a library path names, if it names one.
+pub fn guest_tool_of(path: &str) -> Option<&'static str> {
+    GUEST_TOOL_PATHS
+        .iter()
+        .find(|(p, _)| *p == path)
+        .map(|(_, tool)| *tool)
 }
 
 #[cfg(test)]

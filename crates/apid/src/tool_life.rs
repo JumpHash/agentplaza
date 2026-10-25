@@ -475,6 +475,7 @@ mod tests {
             Ok(Reply {
                 status: 200,
                 body: r#"{"ok":true}"#.into(),
+                bytes: br#"{"ok":true}"#.to_vec(),
             })
         }
     }

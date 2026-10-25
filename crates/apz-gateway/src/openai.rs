@@ -167,7 +167,24 @@ fn messages(req: &ChatRequest, replay: bool, compat: bool) -> Vec<Value> {
                         out.push(json!({"role": "tool", "tool_call_id": call_id(tool_use_id), "content": content}));
                     }
                 }
-                if !text.is_empty() {
+                if m.content.iter().any(|b| matches!(b, Block::Image { .. })) {
+                    // With an image the user's turn is a list of parts, in the order the blocks came.
+                    let parts: Vec<Value> = m
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            Block::Text { text } if !text.is_empty() => {
+                                Some(json!({"type": "text", "text": text}))
+                            }
+                            Block::Image { media_type, data } => Some(json!({
+                                "type": "image_url",
+                                "image_url": {"url": format!("data:{media_type};base64,{data}")},
+                            })),
+                            _ => None,
+                        })
+                        .collect();
+                    out.push(json!({"role": "user", "content": parts}));
+                } else if !text.is_empty() {
                     out.push(json!({"role": "user", "content": text}));
                 }
             }
@@ -1306,5 +1323,44 @@ mod tests {
         assert_eq!(sent.header("api-key"), Some("sk-secret-value"));
         assert_eq!(sent.json()["model"], "my-deploy");
         assert_eq!(sent.json()["max_tokens"], 9);
+    }
+
+    #[test]
+    fn an_image_goes_as_an_image_url_data_part_in_the_order_of_the_turn() {
+        let server = FakeServer::start(vec![Reply::json(
+            400,
+            &json!({"error": {"message": "stub"}}),
+        )]);
+        let p = provider(
+            "o",
+            ProviderKind::OpenAi,
+            &server,
+            Auth::Env("OPENAI_API_KEY".into()),
+        );
+        let req = ChatRequest {
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![
+                    Block::Text {
+                        text: "What is on the screen?".into(),
+                    },
+                    Block::Image {
+                        media_type: "image/png".into(),
+                        data: "iVBORw0KGgo=".into(),
+                    },
+                ],
+            }],
+            model: "o/gpt-6-astra".into(),
+            ..request("unused")
+        };
+        // The provider answers with an error: the request body is what the test reads.
+        assert!(gateway(vec![p]).complete(&req, &mut |_| {}).is_err());
+        assert_eq!(
+            server.requests()[0].json()["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "What is on the screen?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+            ])
+        );
     }
 }

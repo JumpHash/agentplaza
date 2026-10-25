@@ -1,0 +1,16 @@
+meta {
+  name: The runs of a change of an unknown project are not found
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/changes/ch-1/workflow-runs
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

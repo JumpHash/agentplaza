@@ -1,0 +1,15 @@
+meta {
+  name: The releases of an unknown project are not found
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/releases
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

@@ -29,6 +29,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::graph::Cond;
+use crate::user_test::target::StandIn;
 
 /// Where a recipe applies: the built-ins, a project's own, or every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +119,415 @@ pub struct Step {
     /// For a fixed fan-out: how many more items a large or risky change runs (8.2: a third sceptic).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub risk: Option<Risk>,
+    /// A `test:user` step's configuration (PLAN 19): its three roles' models, the target and the budgets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<UserTest>,
+    /// A workflow step's work (PLAN 21, 23): the job it belongs to and what the step does. Its engine is `workflow`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<crate::workflows::model::Work>,
+}
+
+/// The engine of a step that runs user tests of a change (PLAN 19.1).
+pub const USER_TEST: &str = "test:user";
+
+/// A `test:user` step's configuration: the models of its three roles, the target its scenarios drive and the budgets.
+/// The models are `provider/model` names (the gateway's).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UserTest {
+    /// The planner: writes the scenarios from the acceptance, the past confirmed findings and an exploratory budget,
+    /// and reads each failure.
+    pub planner: String,
+    /// The driver's fast picker, and the stronger model it escalates to with a screenshot.
+    pub driver: String,
+    pub escalate: String,
+    /// The checker: looks at checkpoints, and at screens the target gives no tree for.
+    pub checker: String,
+    /// The target the scenarios drive. Without one the step is not run (it fails, and says why).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stand_in: Option<StandIn>,
+    /// A web target (PLAN 19.3): a headless browser on the change's lane preview, at `path` under its address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebTarget>,
+    /// A terminal target (PLAN 19.3): a program in a pseudo-terminal in the lane's test fork, typed into by the scenarios.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tui: Option<TuiTarget>,
+    /// A desktop target (PLAN 19.3): a Linux or Windows station's screen, leased for the run and driven through its tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop: Option<DesktopTarget>,
+    /// A macOS app target (PLAN 19.3): an app on a Mac node, read through the macOS Accessibility API and driven through
+    /// the station's workstation tools, as the agent `agent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos: Option<MacTarget>,
+    /// An iOS simulator target (PLAN 19.3): a device of a Mac node, driven through `simctl` and an accessibility bridge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub simulator: Option<SimTarget>,
+    /// An Android target (PLAN 19.3, 8.5): an emulator or a phone on a node, named by its adb serial and leased for the step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub android: Option<AndroidTarget>,
+    /// A device-farm run (PLAN 19.3, 8.5): an instrumentation suite on a farm's devices, through the farm's connector. Its
+    /// results come back as the run's evidence, and the step has no scenarios.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub farm: Option<FarmTest>,
+    /// An iPhone target (PLAN 19.3, 8.5): a physical iPhone on a Mac node, leased for the step like an Android phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iphone: Option<IphoneTarget>,
+    /// The spec's acceptance criteria, as the planner reads them: each becomes acceptance scenarios.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance: Vec<String>,
+    /// Below this confidence the fast pick escalates (0 to 1).
+    #[serde(default = "threshold")]
+    pub threshold: f64,
+    /// Most actions one scenario step takes.
+    #[serde(default = "actions")]
+    pub actions: u32,
+    /// Most exploratory scenarios the planner may add.
+    #[serde(default)]
+    pub exploratory: u32,
+}
+
+fn threshold() -> f64 {
+    0.6
+}
+
+fn actions() -> u32 {
+    8
+}
+
+impl UserTest {
+    /// The configuration must make sense before a run starts on it.
+    pub fn check(&self) -> Result<(), String> {
+        for (role, model) in [
+            ("planner", &self.planner),
+            ("driver", &self.driver),
+            ("escalate", &self.escalate),
+            ("checker", &self.checker),
+        ] {
+            if !model.contains('/') {
+                return Err(format!("the {role} is a provider/model name, not {model}"));
+            }
+        }
+        if !(self.threshold > 0.0 && self.threshold <= 1.0) {
+            return Err("the driver's threshold is between 0 and 1".into());
+        }
+        if self.actions == 0 {
+            return Err("a scenario step takes at least one action".into());
+        }
+        let named = [
+            self.stand_in.is_some(),
+            self.web.is_some(),
+            self.tui.is_some(),
+            self.desktop.is_some(),
+            self.macos.is_some(),
+            self.simulator.is_some(),
+            self.android.is_some(),
+            self.farm.is_some(),
+            self.iphone.is_some(),
+        ]
+        .iter()
+        .filter(|set| **set)
+        .count();
+        if named > 1 {
+            return Err("a test:user step names one target: stand_in, web, tui, desktop, macos, simulator, android or farm".into());
+        }
+        if let Some(android) = &self.android {
+            android.check()?;
+        }
+        if let Some(farm) = &self.farm {
+            farm.check()?;
+        }
+        if let Some(phone) = &self.iphone {
+            phone.check()?;
+        }
+        if let Some(desk) = &self.desktop {
+            crate::user_test::desktop::kind_of(&desk.os)?;
+            match (desk.os.as_str(), &desk.station) {
+                (crate::user_test::desktop::LINUX, None) => {}
+                (crate::user_test::desktop::LINUX, Some(_)) => {
+                    return Err("a Linux desktop is the lane's fork, and names no station".into());
+                }
+                (_, Some(station)) if !station.trim().is_empty() => {}
+                _ => return Err("a Windows desktop names its station".into()),
+            }
+        }
+        if let Some(mac) = &self.macos {
+            mac.check()?;
+        }
+        if let Some(sim) = &self.simulator {
+            sim.check()?;
+        }
+        if let Some(web) = &self.web
+            && web.path.contains("://")
+        {
+            return Err("a web target's path is under the lane's preview, not an address".into());
+        }
+        if let Some(tui) = &self.tui {
+            if tui.command.first().is_none_or(|p| p.trim().is_empty()) {
+                return Err("a terminal target names a program to run".into());
+            }
+            if tui.cols == 0 || tui.rows == 0 {
+                return Err("a terminal target has a size of at least 1 by 1".into());
+            }
+        }
+        match &self.stand_in {
+            Some(stand) => stand.check(),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A web target's configuration (PLAN 19.3): the page of the lane's preview the scenarios start on. `path` is under the
+/// preview's address (`/` or empty is its root). The browser reaches the preview through a link the hub mints for the run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebTarget {
+    #[serde(default)]
+    pub path: String,
+}
+
+/// A terminal target's configuration (PLAN 19.3): the program (argv, its first item the program, run in the fork's
+/// workspace) and the terminal's size in cells.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TuiTarget {
+    pub command: Vec<String>,
+    #[serde(default = "columns")]
+    pub cols: u16,
+    #[serde(default = "rows")]
+    pub rows: u16,
+}
+
+/// A macOS app target's configuration (PLAN 19.3). The app runs on the Mac node `station`, on the owner's screen (the lease
+/// is `owner_screen`: the Mac has no virtual display). The target acts as the agent `agent`, so the station's laws and audit
+/// apply to its calls as they do to that agent's. The lease is held for each scenario, and only the app's windows are read,
+/// captured and pointed at.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MacTarget {
+    pub station: String,
+    pub agent: u64,
+    /// The app, as the station lists it (its name): the scope of its tree, its pictures and its pointer input.
+    pub app: String,
+    /// Its bundle id: the app is quit by it at the end of the step, and brought to the front before keys and pointer input.
+    pub bundle: String,
+    /// Its bundle path on the node: the app is launched from it (`open -n -a`) for each scenario.
+    pub path: String,
+    /// The lease's task on the station, for its audit and its time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// How many levels of the app's tree each observation reads (1 to 8).
+    #[serde(default = "tree_depth")]
+    pub depth: u8,
+}
+
+fn tree_depth() -> u8 {
+    4
+}
+
+impl MacTarget {
+    fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "a macOS target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty() || self.app.trim().is_empty() {
+            return Err("a macOS target names its station and its app".into());
+        }
+        let bundle_id = !self.bundle.is_empty()
+            && self
+                .bundle
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'));
+        if !bundle_id {
+            return Err("a macOS target's bundle is a bundle id (letters, digits, dots, dashes, underscores)".into());
+        }
+        if !self.path.starts_with('/') {
+            return Err(
+                "a macOS target's path is the app's bundle, an absolute path on the Mac node"
+                    .into(),
+            );
+        }
+        if !(1..=8).contains(&self.depth) {
+            return Err("a macOS target reads between 1 and 8 levels of its tree".into());
+        }
+        Ok(())
+    }
+}
+
+/// An iOS simulator target's configuration (PLAN 19.3). The device is a simulator of the Mac node `station`, booted for the
+/// step and shut down after it; the app is installed from `app` (an absolute path on the node) when it is given, and
+/// launched fresh for each scenario. `video` (an absolute path on the node) records each scenario to that file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimTarget {
+    pub station: String,
+    pub agent: u64,
+    /// The device: a UDID, a name, or `booted`.
+    pub device: String,
+    /// The app's bundle id.
+    pub bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video: Option<String>,
+}
+
+impl SimTarget {
+    fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "a simulator target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty()
+            || self.device.trim().is_empty()
+            || self.bundle.trim().is_empty()
+        {
+            return Err(
+                "a simulator target names its station, its device and its app's bundle id".into(),
+            );
+        }
+        for (what, path) in [("the app", &self.app), ("the video", &self.video)] {
+            if path.as_deref().is_some_and(|p| !p.starts_with('/')) {
+                return Err(format!("{what} is an absolute path on the Mac node"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An Android target's configuration (PLAN 19.3, 8.5). The device is the adb serial `serial` of the node `station` (an
+/// emulator, or a phone plugged into the node). The step leases it for the agent `agent`, as a workstation is leased: the
+/// lease is held from the step's start until its end, and the device is refused to another agent meanwhile. The app is
+/// installed from `apk` (an absolute path on the node) when it is given, and started fresh (`component`, the full
+/// `package/.Activity`) for each scenario. `record` records the device's screen for the whole step; the video lands as an
+/// artifact of the run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AndroidTarget {
+    pub station: String,
+    pub agent: u64,
+    pub serial: String,
+    pub component: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apk: Option<String>,
+    #[serde(default)]
+    pub record: bool,
+    /// The lease's task on the station, for its audit and its time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+impl AndroidTarget {
+    pub fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "an Android target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty() || self.serial.trim().is_empty() {
+            return Err("an Android target names its station and its device's serial".into());
+        }
+        if let Some(apk) = &self.apk
+            && !apk.starts_with('/')
+        {
+            return Err("an Android target's apk is an absolute path on the node".into());
+        }
+        if !self.component.contains('/') {
+            return Err("an Android target's component is package/.Activity".into());
+        }
+        Ok(())
+    }
+}
+
+/// An iPhone target's configuration (PLAN 19.3, 8.5). The device is the physical iPhone `udid` (its UDID) attached to the Mac
+/// node `station`: leased for the step as an Android phone is (`device` kind), its app installed from `app` (an absolute path
+/// on the node) when given, and launched for each scenario (`bundle`). It needs Xcode on the node (`devicectl`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IphoneTarget {
+    pub station: String,
+    pub agent: u64,
+    pub udid: String,
+    pub bundle: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+impl IphoneTarget {
+    pub fn check(&self) -> Result<(), String> {
+        if self.agent == 0 {
+            return Err(
+                "an iPhone target acts as an agent (its cid), never the owner's client (cid 0)"
+                    .into(),
+            );
+        }
+        if self.station.trim().is_empty()
+            || self.udid.trim().is_empty()
+            || self.bundle.trim().is_empty()
+        {
+            return Err(
+                "an iPhone target names its station, its device's UDID and its app's bundle id"
+                    .into(),
+            );
+        }
+        if let Some(app) = &self.app
+            && !app.starts_with('/')
+        {
+            return Err("an iPhone target's app is an absolute path on the Mac node".into());
+        }
+        Ok(())
+    }
+}
+
+/// A device-farm run's configuration (PLAN 19.3, 8.5). `farm` is the farm's connector: `browserstack`, `firebase-test-lab`
+/// or `aws-device-farm` (each with a manifest under `connectors/manifests/farms`). `app` and `tests` are the ids of blobs
+/// in the hub's object store (the app's build and the instrumentation package), never paths on the hub. `devices` are the
+/// farm's own device names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FarmTest {
+    pub farm: String,
+    pub app: String,
+    pub tests: String,
+    pub devices: Vec<String>,
+}
+
+impl FarmTest {
+    pub fn check(&self) -> Result<(), String> {
+        if !matches!(
+            self.farm.as_str(),
+            "browserstack" | "firebase-test-lab" | "aws-device-farm"
+        ) {
+            return Err(format!(
+                "a device farm is browserstack, firebase-test-lab or aws-device-farm, not {}",
+                self.farm
+            ));
+        }
+        if self.app.trim().is_empty() || self.tests.trim().is_empty() {
+            return Err("a device-farm run names its app's blob and its tests' blob".into());
+        }
+        if self.devices.is_empty() || self.devices.iter().any(|d| d.trim().is_empty()) {
+            return Err("a device-farm run names at least one device".into());
+        }
+        Ok(())
+    }
+}
+
+fn columns() -> u16 {
+    100
+}
+
+fn rows() -> u16 {
+    30
+}
+
+/// A desktop target's configuration (PLAN 19.3): the station whose desktop the scenarios drive (its id) and the operating
+/// system that desktop runs, `linux` or `windows`. The station must be online and report that OS in its facts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesktopTarget {
+    /// The station that runs a Windows desktop (its id). A Linux desktop is the lane's fork, and names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub station: Option<String>,
+    pub os: String,
 }
 
 /// What makes a change large or risky: more than `lines` changed lines, or a path one of `paths` matches. Then the
@@ -252,6 +662,22 @@ impl Recipe {
             for condition in step.gate_conditions() {
                 Cond::parse(&condition).map_err(|e| format!("step {} gate: {e}", step.id))?;
             }
+            match (step.engine.as_deref() == Some(USER_TEST), &step.user) {
+                (true, Some(user)) => user.check().map_err(|e| format!("step {}: {e}", step.id))?,
+                (true, None) => {
+                    return Err(format!(
+                        "step {} is a test:user step with no [user] table",
+                        step.id
+                    ));
+                }
+                (false, Some(_)) => {
+                    return Err(format!(
+                        "step {}: a [user] table is for test:user steps",
+                        step.id
+                    ));
+                }
+                (false, None) => {}
+            }
         }
         for edge in &self.edges {
             for end in [&edge.from, &edge.to] {
@@ -307,6 +733,7 @@ pub fn builtin() -> Vec<Recipe> {
         include_str!("builtin/intake.toml"),
         include_str!("builtin/plan.toml"),
         include_str!("builtin/release.toml"),
+        include_str!("builtin/qualify.toml"),
         include_str!("builtin/deploy.toml"),
         include_str!("builtin/incident.toml"),
         include_str!("builtin/upgrade.toml"),
@@ -382,7 +809,7 @@ max = 2
     #[test]
     fn the_built_in_recipes_check_and_round_trip() {
         let recipes = builtin();
-        assert_eq!(recipes.len(), 13);
+        assert_eq!(recipes.len(), 14);
         // The intake and plan recipes are real (planning.rs): their steps are the engine's and the planner's.
         let intake = builtin_named("intake").unwrap();
         assert!(!intake.description.contains("Stub"), "intake is real");
@@ -401,16 +828,39 @@ max = 2
                 .iter()
                 .all(|s| s.role.as_deref() == Some("planner"))
         );
-        for stub in ["release", "deploy", "incident", "upgrade", "cve"] {
-            let r = builtin_named(stub).unwrap_or_else(|| panic!("{stub} is a built-in"));
-            assert!(
-                r.description.contains("Stub until"),
-                "{stub} says which phase fills it"
-            );
-            assert!(
-                r.steps.iter().all(|s| s.engine.is_some()),
-                "{stub} runs by its engine"
-            );
+        let deploy = builtin_named("deploy").unwrap();
+        assert!(!deploy.description.contains("Stub"), "deploy is real");
+        assert_eq!(deploy.steps[0].fan_out, Fan::Named("per_target".into()));
+        // The incident recipe is real (incidents/): its four steps are the engine's.
+        let incident = builtin_named("incident").unwrap();
+        assert!(!incident.description.contains("Stub"), "incident is real");
+        assert_eq!(
+            incident
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["triage", "act", "tell", "after"]
+        );
+        let upgrade = builtin_named("upgrade").unwrap();
+        assert!(!upgrade.description.contains("Stub"), "upgrade is real");
+        assert_eq!(
+            upgrade
+                .steps
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            crate::upgrades::STEPS
+        );
+        // The CVE recipe is real (cves/): its four steps are the engine's, and no built-in is a stub any more.
+        let cve = builtin_named("cve").unwrap();
+        assert!(!cve.description.contains("Stub"), "cve is real");
+        assert_eq!(
+            cve.steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["match", "reach", "fix", "report"]
+        );
+        for r in &recipes {
+            assert!(!r.description.contains("Stub"), "{} is not a stub", r.id);
         }
         for r in recipes {
             r.check().unwrap();

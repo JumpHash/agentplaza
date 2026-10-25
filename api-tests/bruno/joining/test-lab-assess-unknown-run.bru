@@ -1,0 +1,27 @@
+meta {
+  name: Answer 404 for assessing an unknown test-lab run
+  type: http
+  seq: 44
+}
+
+post {
+  url: {{baseUrl}}/v1/test-lab/runs/q999/assess
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "topology": "name = \"fake-run\"\n[[service]]\nname = \"api\"\nimage = \"api:1\"\n[[assert]]\nkind = \"no_errors\"\n"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

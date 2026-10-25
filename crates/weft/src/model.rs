@@ -99,6 +99,16 @@ pub struct RepoCreate {
     pub description: String,
 }
 
+/// `ref.create`: a branch of a repo, starting at a landed revision (`at`: `root` for an empty one). A branch's landings are
+/// its own: nothing moves another branch's head.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RefCreate {
+    pub repo: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub at: RevId,
+}
+
 /// `lane.open`: a task's lane, on `base` (a landed revision of `ref`) or stacked on another change.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LaneOpen {
@@ -540,6 +550,71 @@ pub struct ReleaseExport {
     pub tag: String,
     #[serde(default)]
     pub url: Option<String>,
+}
+
+/// `release.candidate` (hub-signed): the hub cuts a candidate of a proposed release from its artifacts, one per
+/// declared target, with their digest (the digest `release.sign` covers). `number` is the candidate's `rc.N` when the
+/// project numbers its candidates.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseCandidate {
+    pub repo: String,
+    pub version: String,
+    pub artifacts: Vec<String>,
+    pub digest: Hash,
+    #[serde(default)]
+    pub number: Option<u32>,
+    /// The declared targets no pool could build (20.5): the candidate is cut without them, each with its reason.
+    #[serde(default)]
+    pub not_run: Vec<NotRunTarget>,
+}
+
+/// A declared target a candidate did not build, and why.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NotRunTarget {
+    pub target: String,
+    pub reason: String,
+}
+
+/// `release.qualify`, `release.publish`, `release.promote` and `release.yank` (hub-signed): one move of a release's
+/// life. `environment` names the deploy environment or store track a promotion is for; `reason` says why a yank.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseMove {
+    pub repo: String,
+    pub version: String,
+    #[serde(default)]
+    pub environment: Option<String>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `release.lane` (hub-signed): cuts a release's line (`release/1.4`, or the release's own `line`) at the revision the
+/// release was cut from, so maintenance releases and their backports land on it (PLAN 22.3). Only a published release
+/// has a lane.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseLaneCut {
+    pub repo: String,
+    pub version: String,
+}
+
+/// `release.notes` (hub-signed): the owner's edit of a release's notes. It replaces the notes the release was drafted
+/// with, so the edit is in the log and survives a replay or a refresh.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseNotes {
+    pub repo: String,
+    pub version: String,
+    pub notes: String,
+}
+
+/// `release.verdict` (hub-signed): a verdict on a release from its source, `ci` (the checks of its commit) or
+/// `qualification`. `verdict` is `passed`, `failed` or `abandoned`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseVerdict {
+    pub repo: String,
+    pub version: String,
+    pub source: String,
+    pub verdict: String,
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// `pack.add`: a language or format pack (its files are blobs).

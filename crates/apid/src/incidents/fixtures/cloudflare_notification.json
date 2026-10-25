@@ -1,0 +1,8 @@
+{
+  "name": "Worker site: errors above threshold",
+  "text": "Errors on site exceeded 5% over 5 minutes",
+  "data": { "worker": "site", "status": "triggered", "error_ratio": 0.09 },
+  "ts": 1729764300,
+  "policy_id": "5b1e0c9a-0000-4000-8000-000000000003",
+  "alert_type": "workers_alert"
+}

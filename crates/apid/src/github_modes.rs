@@ -12,9 +12,12 @@
 //! weft_hub::land_queues calls [`ci_step`] for a `ci` repo's queue instead of Weft's own step. Everything reaches GitHub
 //! through the repo's connection's authorization (platforms::access) and the platform's API (platforms::github).
 
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
 use serde_json::{Value, json};
 
-use crate::platforms::github::{CheckRun, GitHub, Pull};
+use crate::platforms::github::{CheckRun, CheckWrite, GitHub, Pull};
 use crate::platforms::model::Kind;
 use crate::recipes::runs::{CheckRow, source_of};
 use crate::state::App;
@@ -335,6 +338,161 @@ fn land(
     }
 }
 
+/// A workflow run's phase, as GitHub's check run shows it.
+pub enum RunPhase<'a> {
+    Started,
+    Finished { passed: bool, summary: &'a str },
+}
+
+/// The check runs this hub created for workflow runs, by (run, workflow): a started run's check is completed when the run
+/// ends. A hub that restarts forgets them, and a run that ends then gets a completed check of its own.
+static RUN_CHECKS: Mutex<BTreeMap<(String, String), u64>> = Mutex::new(BTreeMap::new());
+
+/// The most characters of a run's summary GitHub's output takes.
+const SUMMARY_CHARS: usize = 1000;
+
+/// The name of a workflow's check run on GitHub.
+fn check_name(workflow: &str) -> String {
+    format!("plaza / {workflow}")
+}
+
+/// A finished run's conclusion (GitHub's words).
+fn conclusion_of(passed: bool) -> &'static str {
+    if passed { "success" } else { "failure" }
+}
+
+/// A run's summary as GitHub's output takes it: its first characters.
+fn summary_of(summary: &str) -> String {
+    summary.chars().take(SUMMARY_CHARS).collect()
+}
+
+/// Reports a workflow run's phase as its check run on GitHub, on the commit the run's subject is gated at. Only a `ci`
+/// project has one: a `mirror` project and a run without a change (a release) report nothing, and a change whose gate
+/// is not recorded yet (its lane is not pushed and checked) reports nothing yet. Errors are returned for the caller to
+/// print: the run does not fail on them.
+pub fn report_run(
+    app: &App,
+    project: &str,
+    subject: Option<&str>,
+    run: &str,
+    workflow: &str,
+    phase: RunPhase<'_>,
+) -> Result<(), String> {
+    let p = app
+        .projects
+        .get(project)
+        .ok_or_else(|| format!("no project {project}"))?;
+    let Some(repo) = p.repo.as_deref() else {
+        return Ok(());
+    };
+    if mode_of(app, repo) != CI {
+        return Ok(());
+    }
+    let Some(change) = subject.and_then(|s| s.strip_prefix("change:")) else {
+        return Ok(());
+    };
+    let gated = app
+        .weft
+        .gates
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(change)
+        .map(|(sha, _)| sha.clone());
+    let Some(sha) = gated else {
+        return Ok(());
+    };
+    let t = target(app, repo)?;
+    let mut open = RUN_CHECKS.lock().unwrap_or_else(|p| p.into_inner());
+    report_on(&t, &sha, run, workflow, phase, &mut open)
+}
+
+/// Writes a run's phase on `sha` through `t`'s GitHub API: a started run creates its check (in progress) and remembers
+/// its id in `open`; a finished run completes that check, or creates a completed one when none is remembered.
+fn report_on(
+    t: &Target,
+    sha: &str,
+    run: &str,
+    workflow: &str,
+    phase: RunPhase<'_>,
+    open: &mut BTreeMap<(String, String), u64>,
+) -> Result<(), String> {
+    let key = (run.to_string(), workflow.to_string());
+    let (name, api) = (check_name(workflow), &t.api);
+    match phase {
+        RunPhase::Started => {
+            let check = CheckWrite {
+                name,
+                status: "in_progress".into(),
+                conclusion: None,
+                title: format!("plaza workflow {workflow}: running"),
+                summary: format!("Run {run} is running."),
+            };
+            let id = api.create_check_run(&t.token, &t.owner, &t.name, sha, &check)?;
+            open.insert(key, id);
+        }
+        RunPhase::Finished { passed, summary } => {
+            let verdict = if passed { "passed" } else { "failed" };
+            let summary = match summary_of(summary) {
+                s if s.trim().is_empty() => format!("Run {run} {verdict}."),
+                s => s,
+            };
+            let check = CheckWrite {
+                name,
+                status: "completed".into(),
+                conclusion: Some(conclusion_of(passed).into()),
+                title: format!("plaza workflow {workflow}: {verdict}"),
+                summary,
+            };
+            match open.get(&key).copied() {
+                Some(id) => {
+                    api.update_check_run(&t.token, &t.owner, &t.name, id, &check)?;
+                    open.remove(&key);
+                }
+                None => {
+                    api.create_check_run(&t.token, &t.owner, &t.name, sha, &check)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A push to GitHub's repository `full_name` (`owner/name`): every `ci` project whose GitHub connection is that repository
+/// imports its main now, instead of on the next poll (21.6). Returns the repos it imported.
+pub fn on_push(app: &App, full_name: &str) -> Vec<String> {
+    let mut done = Vec::new();
+    for project in app.projects.list() {
+        if project.github != CI {
+            continue;
+        }
+        let Some(repo) = project.repo.clone() else {
+            continue;
+        };
+        let Ok(t) = target(app, &repo) else {
+            continue;
+        };
+        if format!("{}/{}", t.owner, t.name) != full_name {
+            continue;
+        }
+        match poll(app, &repo) {
+            Ok(()) => done.push(repo),
+            Err(e) => eprintln!("apid: importing {repo}'s main after a push: {e}"),
+        }
+    }
+    done
+}
+
+/// Imports what landed on a `ci` repo's GitHub main since the last import (the catch-up pass polls for it).
+pub fn poll(app: &App, repo: &str) -> Result<(), String> {
+    let t = target(app, repo)?;
+    // A lane in the queue has its own step (its gate and its landing) with the import in it: the poll waits for it.
+    let queue = app.weft.get(&format!("/repos/{repo}/queue?ref=main"))?;
+    if queue["queue"].as_array().is_some_and(|q| !q.is_empty()) {
+        return Ok(());
+    }
+    sync_main(app, repo, &t)
+}
+
 /// GitHub's main moved (a merge that was not a lane): Weft imports what landed there and records the head it reached.
 fn sync_main(app: &App, repo: &str, t: &Target) -> Result<(), String> {
     let report = app.weft.post(
@@ -360,6 +518,8 @@ fn s(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::platforms::http::{Body, Fake};
+    use std::sync::Arc;
 
     fn check(name: &str, status: &str, conclusion: Option<&str>) -> CheckRun {
         CheckRun {
@@ -426,5 +586,173 @@ mod tests {
     #[test]
     fn a_lane_is_pushed_to_its_own_branch() {
         assert_eq!(branch_of("w-12"), "agentplaza/w-12");
+    }
+
+    #[test]
+    fn a_run_reports_its_check_name_conclusion_and_summary() {
+        assert_eq!(check_name("build"), "plaza / build");
+        assert_eq!(conclusion_of(true), "success");
+        assert_eq!(conclusion_of(false), "failure");
+        assert_eq!(summary_of("all green"), "all green");
+        assert_eq!(summary_of(&"é".repeat(1500)).chars().count(), SUMMARY_CHARS);
+    }
+
+    /// The last JSON body the fake was sent.
+    fn last_sent(fake: &Fake) -> Value {
+        match fake.seen().last().map(|s| s.3.clone()) {
+            Some(Some(Body::Json(v))) => v,
+            _ => Value::Null,
+        }
+    }
+
+    /// A target on `JumpHash/site` whose GitHub keeps check runs: a POST creates one (ids from 1), a PATCH updates it,
+    /// a GET lists the runs of the commit it names.
+    fn checks_api() -> (Target, Arc<Fake>) {
+        let runs: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let store = Arc::clone(&runs);
+        let fake = Arc::new(Fake::new(move |m, u, b| {
+            let mut runs = store.lock().unwrap_or_else(|p| p.into_inner());
+            let body = match b {
+                Some(Body::Json(v)) => v.clone(),
+                _ => Value::Null,
+            };
+            match m {
+                "POST" => {
+                    let id = runs.len() as u64 + 1;
+                    runs.push(json!({
+                        "id": id, "name": body["name"], "status": body["status"], "conclusion": body["conclusion"],
+                        "output": body["output"], "head_sha": body["head_sha"], "html_url": "",
+                    }));
+                    (201, json!({ "id": id }))
+                }
+                "PATCH" => {
+                    let id = u.rsplit('/').next().and_then(|n| n.parse::<u64>().ok());
+                    match runs.iter_mut().find(|r| r["id"].as_u64() == id) {
+                        Some(r) => {
+                            r["status"] = body["status"].clone();
+                            r["conclusion"] = body["conclusion"].clone();
+                            r["output"] = body["output"].clone();
+                            (200, json!({ "id": id }))
+                        }
+                        None => (404, json!({ "message": "Not Found" })),
+                    }
+                }
+                "GET" => {
+                    let sha = u
+                        .split("/commits/")
+                        .nth(1)
+                        .and_then(|r| r.split('/').next())
+                        .unwrap_or("");
+                    let mine: Vec<&Value> = runs.iter().filter(|r| r["head_sha"] == sha).collect();
+                    (200, json!({ "check_runs": mine }))
+                }
+                _ => (404, json!({ "message": "Not Found" })),
+            }
+        }));
+        let target = Target {
+            connection: "c1".into(),
+            owner: "JumpHash".into(),
+            name: "site".into(),
+            main: "main".into(),
+            remote: "https://github.com/JumpHash/site.git".into(),
+            token: "ghs_1".into(),
+            api: GitHub::new("https://github.com", fake.clone()),
+        };
+        (target, fake)
+    }
+
+    #[test]
+    fn a_run_is_an_in_progress_check_that_the_gate_waits_on_until_its_end() {
+        let (t, fake) = checks_api();
+        let mut open = BTreeMap::new();
+        let names = |sha: &str| t.api.check_runs("ghs_1", "JumpHash", "site", sha).unwrap();
+
+        report_on(&t, "c0ffee", "r1", "build", RunPhase::Started, &mut open).unwrap();
+        let created = last_sent(&fake);
+        assert_eq!(
+            (
+                created["name"].as_str(),
+                created["status"].as_str(),
+                created["head_sha"].as_str(),
+                created["conclusion"].is_null()
+            ),
+            (
+                Some("plaza / build"),
+                Some("in_progress"),
+                Some("c0ffee"),
+                true
+            ),
+            "{created}"
+        );
+        assert_eq!(open.len(), 1, "the started check is remembered");
+        assert_eq!(gate_of(&names("c0ffee")), Gate::Pending);
+
+        let long = "x".repeat(1500);
+        report_on(
+            &t,
+            "c0ffee",
+            "r1",
+            "build",
+            RunPhase::Finished {
+                passed: false,
+                summary: &long,
+            },
+            &mut open,
+        )
+        .unwrap();
+        assert!(
+            fake.urls().last().is_some_and(
+                |u| u == "PATCH https://api.github.com/repos/JumpHash/site/check-runs/1"
+            ),
+            "the end updates the started check: {:?}",
+            fake.urls()
+        );
+        let patched = last_sent(&fake);
+        assert_eq!(patched["conclusion"], "failure");
+        assert_eq!(patched["output"]["title"], "plaza workflow build: failed");
+        assert_eq!(
+            patched["output"]["summary"]
+                .as_str()
+                .map(|s| s.chars().count()),
+            Some(SUMMARY_CHARS)
+        );
+        assert!(open.is_empty());
+        assert_eq!(gate_of(&names("c0ffee")), Gate::Failed);
+
+        // A passing run passes its gate; a run that ends without a started check creates a completed one.
+        report_on(&t, "beef", "r2", "build", RunPhase::Started, &mut open).unwrap();
+        assert_eq!(gate_of(&names("beef")), Gate::Pending);
+        report_on(
+            &t,
+            "beef",
+            "r2",
+            "build",
+            RunPhase::Finished {
+                passed: true,
+                summary: "all green",
+            },
+            &mut open,
+        )
+        .unwrap();
+        assert_eq!(gate_of(&names("beef")), Gate::Passed);
+        report_on(
+            &t,
+            "beef",
+            "r3",
+            "lint",
+            RunPhase::Finished {
+                passed: false,
+                summary: "",
+            },
+            &mut open,
+        )
+        .unwrap();
+        let orphan = last_sent(&fake);
+        assert_eq!(
+            (orphan["status"].as_str(), orphan["conclusion"].as_str()),
+            (Some("completed"), Some("failure"))
+        );
+        assert_eq!(orphan["output"]["summary"], "Run r3 failed.");
+        assert!(fake.urls().last().is_some_and(|u| u.starts_with("POST ")));
     }
 }

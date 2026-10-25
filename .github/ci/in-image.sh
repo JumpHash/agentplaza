@@ -31,6 +31,19 @@ case " $(docker info --format '{{join .SecurityOptions " "}}' 2>/dev/null) " in
   *" name=userns"*) userns="--userns=host" ;;
 esac
 
+# Cargo's parallel compiles: one per 4 GiB the host has available, at most one per core. Four release builds of the big
+# crates at once (the hub, the desktop, the engine and its web build) went past an 11 GB runner's memory, and the kernel
+# killed the job (exit 137) with nothing in its log. A runner that sets CARGO_BUILD_JOBS keeps its own.
+jobs="${CARGO_BUILD_JOBS:-}"
+if [ -z "$jobs" ] && [ -r /proc/meminfo ]; then
+  avail_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+  jobs=$((avail_kib / (4 * 1024 * 1024)))
+  cores=$(nproc)
+  [ "$jobs" -gt "$cores" ] && jobs=$cores
+  [ "$jobs" -lt 1 ] && jobs=1
+  echo "in-image: $jobs parallel compiles ($((avail_kib / 1024 / 1024)) GiB available, $cores cores)" >&2
+fi
+
 target_args=""
 if [ "${APZ_CI_TARGET:-shared}" != workspace ]; then
   target_args="-v $cache/target:/ci-target -e CARGO_TARGET_DIR=/ci-target"
@@ -44,7 +57,7 @@ exec docker run --rm \
   -v "$cache/registry:/usr/local/cargo/registry" -v "$cache/git:/usr/local/cargo/git" \
   $target_args \
   -v "$cache/npm:/ci-npm" -e npm_config_cache=/ci-npm -e npm_config_prefer_offline=true \
-  -e CARGO_TERM_COLOR=always -e CARGO_NET_RETRY=10 \
+  -e CARGO_TERM_COLOR=always -e CARGO_NET_RETRY=10 ${jobs:+-e CARGO_BUILD_JOBS=$jobs} \
   -e VERSION -e APZ_ALLOW_NO_GUEST -e APZ_REQUIRE_ENGINE -e CROSS_COMPILE -e APZ_BUSYBOX \
   -e APZ_PERF_SLACK -e CI \
   -e GH_TOKEN -e GITHUB_REPOSITORY -e GITHUB_SHA ${GITHUB_REPOSITORY:+-e GH_REPO=$GITHUB_REPOSITORY} \

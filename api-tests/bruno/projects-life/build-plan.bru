@@ -1,0 +1,17 @@
+meta {
+  name: A project's build plan: targets on the pools that build them
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/{{projectId}}/build-plan
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+  res.body.targets: isArray
+}

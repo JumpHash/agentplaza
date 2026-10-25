@@ -1,0 +1,15 @@
+meta {
+  name: The release channels are listed
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/v1/release-channels
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}

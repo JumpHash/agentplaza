@@ -41,6 +41,7 @@
 //! | `POST /v1/platforms/{id}/connect {repo, project, sign?, export?}` | a granted repository joins a project |
 //! | `POST /v1/platforms/{id}/disconnect {weft_repo, connection}` | the project's repo stops exporting to it |
 
+pub mod forge;
 pub mod forgejo;
 pub mod github;
 pub mod gitlab;
@@ -294,6 +295,11 @@ impl Store {
 
     pub(crate) fn github(&self, host: &str) -> GitHub {
         GitHub::new(host, self.http.clone())
+    }
+
+    /// The platforms' HTTP (the hub's client, or a stand-in in the tests).
+    pub(crate) fn http(&self) -> Arc<dyn Http> {
+        self.http.clone()
     }
 
     /// Starts a flow: its state, random and single-use.

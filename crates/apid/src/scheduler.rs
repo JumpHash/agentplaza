@@ -938,6 +938,16 @@ fn settle_task(app: &App, task: &str, status: WorkStatus, summary: &str) {
     // A failed task's lane will never land.
     if finished && matches!(outcome, FinishOutcome::Failed) {
         crate::weft_hub::abandon(app, task.id(), summary);
+        // A replay that failed is scored against its case (its branch stays as evidence).
+        if let Err(err) = app
+            .evals
+            .replay_finished(task.id(), false, apz_plaza::now_ms())
+        {
+            eprintln!(
+                "apid: evals: the replay of {} was not scored: {err}",
+                task.id()
+            );
+        }
     }
 }
 
@@ -1130,9 +1140,15 @@ pub fn spawn(app: Arc<App>) {
                     crate::triggers::tick(&app, apz_plaza::now_ms());
                     // The CI runs asked for through `POST /v1/recipe-runs/ci` (4.5).
                     crate::checks::tick(&app);
+                    // The user tests of recipe runs (19): each queued run on its own thread.
+                    crate::user_test::tick(&app);
                     app.work.assign_reviews(&app);
                     crate::review_graph::tick(&app);
                     crate::weft_hub::land_queues(&app);
+                    crate::weft_hub::adoptions_tick(&app);
+                    // The history keeps in step with the git platforms (21.6) and the releases on them (22.4).
+                    crate::weft_hub::catch_up(&app);
+                    crate::releases::sync::tick(&app);
                     withdraw_stale_reviews(&app);
                 }
                 crate::llm_proxy::drain_usage(&app);

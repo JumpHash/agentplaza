@@ -1,0 +1,11 @@
+id = "go-proxy"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["proxy.golang.org"]
+secrets = []
+events = []
+actions = []
+webhook = false
+auth_header = ""
+auth_format = ""

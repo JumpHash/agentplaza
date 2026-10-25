@@ -63,6 +63,47 @@ at the arch layout's kernel offset, the device tree from `crate::arch::aarch64::
 PSCI "hvc", X0 = the FDT's address, PC = the kernel entry, PSTATE = EL1h with DAIF masked
 (0x3c5), MPIDR per vCPU. Secondary vCPUs are created stopped; the guest's PSCI CPU_ON starts them.
 
+## Status on this tree
+
+Written (`crates/vmm/src/whp/arm64/`, `arch/aarch64`, `spawner.rs`):
+
+- `abi.rs` (every host, unit-tested on the Mac): the register IDs, the exit context and message
+  decoding, the MMIO completion (a load fills its transfer register with the width, sign and `SF`
+  rules; a store writes its width; the PC moves on), the reset mapping, the interrupt request bytes,
+  the GICv3 property bytes, the boot registers and each vCPU's MPIDR and redistributor frame. The
+  data-abort decision reuses `hvf::exit`; the GIC layout is `hvf::gic`'s, which the hypervisor's GIC
+  uses at the same addresses, so the device tree is the shared one.
+- `vm.rs` (Windows arm64): the partition with the GICv3 property, the processor count, the guest
+  memory mapped, the vCPUs, register reads and writes, runs, cancels and interrupt requests, through
+  the `WinHvPlatform.dll` loader of the x64 backend.
+- `vcpu.rs`: the run loop, one thread per vCPU. A device access goes to the MMIO bus; an address no
+  device claims reads as zero. A write to a transport's `InterruptACK` drops its level. A guest reset
+  ends the VM; an exit the backend does not serve (a hypercall, an access without a valid decode)
+  stops it with its reason.
+- `boot.rs`: a cold boot. The arm64 `Image` is loaded the way linux-loader's PE loader does it, the
+  initrd and the command line are placed, the device tree comes from the shared `create_fdt` with
+  the GICv3 node, vCPU 0 starts at the entry with the device tree in X0, and the workspace, the data
+  volumes and vsock sit on the bus with their interrupts relayed to SPIs.
+- `spawner.rs` routes `windows` + `aarch64` to the backend.
+
+Checked here: `cargo check` and `clippy -D warnings` for `aarch64-pc-windows-msvc` and
+`x86_64-pc-windows-msvc` (all targets), and the Mac tests (the `abi` tests run on the Mac).
+
+Not written: a snapshot restore (the boot refuses one), the serial console (the UART range reads as
+zero, so the guest has no console output), and the packaging change in step 4 (`stage.sh` still ships
+no VM node for `aarch64-pc-windows-msvc`).
+
+Not verified: the layouts. The exit-context and message offsets, the reset message's fields, the
+size and fields of the GIC property buffer, and the register IDs come from this design doc, not from
+`WinHvPlatformDefs.h`, which is not on this machine. The check is `WinHvPlatformDefs.h`, and the
+boot itself, on a Windows-on-Arm machine with the Hypervisor Platform feature (e.g. Snapdragon X).
+That machine, and the arm64 build of `windows.yml` (gated by `APZ_WINDOWS_ARM64`), are what remain.
+
+Deviations from the x86 path: linux-loader cannot build on Windows (its vm-memory defaults enable
+`rawfd`), so `arch::aarch64`'s loader functions are compiled out on Windows and the Windows boot loads
+the Image itself; the initrd is read and copied there, since vm-memory's volatile file reads need raw
+descriptors.
+
 ## Pieces
 
 1. `whp/sys.rs` arm64: the register-name constants, the exit-context layout, `WHV_ARM64_IC_PARAMETERS`,

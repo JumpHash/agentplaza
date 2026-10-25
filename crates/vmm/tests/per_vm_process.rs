@@ -117,6 +117,7 @@ fn spec(dir: &Path, cid: u64, cmdline: &str) -> VmSpec {
         balloon: None,
         restore: None,
         volumes: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -828,7 +829,7 @@ fn a_short_lived_caller_thread_does_not_take_the_guest_down() {
 /// mechanism is the signal: measured, with the backstop absent, a child in
 /// exactly this shape outlived its `SIGKILL`ed parent for minutes with its
 /// guest still parked (the stdin EOF only ends console-input forwarding; see
-/// `arm_parent_death_signal` in `src/bin/apz-vmm/linux.rs`).
+/// `arm_parent_death_signal` in `src/bin/apz-vmm/child.rs`).
 #[test]
 fn the_per_vm_process_dies_with_its_parent() {
     if smoke_kernel().is_none() {

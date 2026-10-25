@@ -1,0 +1,11 @@
+id = "sentry"
+kind = ["intake"]
+version = "1.0.0"
+scopes = []
+egress = []
+secrets = ["SENTRY_AUTH_TOKEN"]
+events = []
+actions = []
+webhook = true
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"

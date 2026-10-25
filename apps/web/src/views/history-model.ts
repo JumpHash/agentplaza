@@ -1,7 +1,7 @@
 // The History screen's logic without the DOM: the labels, the query presets, a change's sign-off chain, its status
 // line, blame runs, the file tree and the routes. Types only come from the API module, so the tests run it under node.
 
-import type { WeftBlameLine, WeftChange, WeftChangeState, WeftChangeSummary, WeftConnection, WeftRecord, WeftRelease, WeftRepo } from '../api-weft';
+import type { WeftBlameLine, WeftChange, WeftChangeState, WeftChangeSummary, WeftConnection, WeftHistory, WeftRecord, WeftRelease, WeftRepo } from '../api-weft';
 import type { Tone } from '../ui/components';
 
 // ---- Labels ------------------------------------------------------------------
@@ -613,4 +613,45 @@ export function queryError(text: string): { pos: number; message: string } | nul
     throw e;
   }
   return null;
+}
+
+// ---- The history as a graph (21.6) ---------------------------------------------
+
+/** A node of the history graph: a landing on main (column 0) or an open lane (its own column), at a row (the newest
+ *  landing is row 0; a lane sits half a row above the landing it starts from). `parent` is the node it joins. */
+export interface HistoryNode {
+  kind: 'landing' | 'lane';
+  id: string;
+  label: string;
+  column: number;
+  row: number;
+  parent: string | null;
+}
+
+/** Lays a repo's history out as a graph: landings on the first column, newest on top; each open lane in a column of
+ *  its own, branching off the landing it starts from. */
+export function layoutHistory(history: WeftHistory): { nodes: HistoryNode[]; columns: number; rows: number } {
+  const landings = history.landings;
+  const rowOf = new Map<string, number>();
+  landings.forEach((l, i) => rowOf.set(l.id, landings.length - 1 - i));
+  const nodes: HistoryNode[] = landings.map((l) => ({
+    kind: 'landing',
+    id: l.id,
+    label: l.title,
+    column: 0,
+    row: rowOf.get(l.id) ?? 0,
+    parent: l.parents[l.parents.length - 1] ?? null,
+  }));
+  history.lanes.forEach((lane, i) => {
+    const base = lane.base && rowOf.has(lane.base) ? lane.base : null;
+    nodes.push({
+      kind: 'lane',
+      id: lane.change,
+      label: lane.title,
+      column: i + 1,
+      row: base ? (rowOf.get(base) ?? 0) - 0.5 : -0.5,
+      parent: base,
+    });
+  });
+  return { nodes, columns: 1 + history.lanes.length, rows: landings.length };
 }

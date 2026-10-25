@@ -1,0 +1,27 @@
+meta {
+  name: Refuse a scrubbed copy for an unknown test-lab run
+  type: http
+  seq: 101
+}
+
+post {
+  url: {{baseUrl}}/v1/test-lab/runs/q999/scrub
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "source": "prod-db"
+  }
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+  res.body.error: isString
+}

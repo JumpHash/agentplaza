@@ -1,0 +1,58 @@
+{
+  "listing": {
+    "path": "deploy",
+    "summary": "Deploys and rollbacks: put a version in an environment, or take it back.",
+    "children": [
+      { "path": "deploy.promote", "kind": "entry", "summary": "Promote a published release to an environment.", "count": 0 },
+      { "path": "deploy.rollback", "kind": "entry", "summary": "Roll an environment back: deploy an earlier version to it (the version is the input).", "count": 0 },
+      { "path": "deploy.run", "kind": "entry", "summary": "Deploy a version to an environment now.", "count": 0 }
+    ],
+    "internal": []
+  },
+  "root": {
+    "path": "",
+    "summary": "",
+    "children": [
+      { "path": "code", "kind": "group", "summary": "Read, edit, search and test code in your own VM.", "count": 7 },
+      { "path": "deploy", "kind": "group", "summary": "Deploys and rollbacks: put a version in an environment, or take it back.", "count": 3 },
+      { "path": "connectors", "kind": "group", "summary": "Outside services, each as a connector with its actions.", "count": 120 }
+    ],
+    "internal": [
+      { "group": "vault", "reason": "secrets: never exposed to an agent" }
+    ]
+  },
+  "entry": {
+    "path": "deploy.rollback",
+    "summary": "Roll an environment back: deploy an earlier version to it (the version is the input).",
+    "description": "Roll an environment back: deploy an earlier version to it. The hub answers POST /v1/projects/{id}/environments/{env}/deploy with its own rules.",
+    "runs": "hub",
+    "source": "route",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "the id in the path" },
+        "env": { "type": "string", "description": "the env in the path" }
+      },
+      "required": ["id", "env"],
+      "additionalProperties": true
+    },
+    "output_schema": { "type": "object", "description": "the route's JSON answer" },
+    "access": "operator",
+    "approval": true,
+    "cost": "slow",
+    "exec": "route POST /v1/projects/{id}/environments/{env}/deploy",
+    "available": false,
+    "reason": "deploy.rollback is the orchestrator's: the builder seat may not use it",
+    "seats": [
+      { "seat": "orchestrator", "allowed": true, "reason": null },
+      { "seat": "builder", "allowed": false, "reason": "deploy.rollback is the orchestrator's: the builder seat may not use it" }
+    ]
+  },
+  "search": {
+    "query": "rollback",
+    "hits": [
+      { "path": "deploy.rollback", "summary": "Roll an environment back.", "runs": "hub", "score": 9 },
+      { "path": "deploy.kubernetes.undo", "summary": "Roll a deployment back to an earlier revision.", "runs": "hub", "score": 9 }
+    ]
+  }
+}

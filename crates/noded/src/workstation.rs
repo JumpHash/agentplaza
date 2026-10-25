@@ -551,6 +551,7 @@ pub fn boot_spec(record: &Record, guest: &Guest, disk: &Path) -> Result<VmSpec, 
         balloon: None,
         restore: None,
         volumes: Vec::new(),
+        ..Default::default()
     })
 }
 

@@ -1,0 +1,4 @@
+{"type":"diagnostic","fields":{"code":"unmaintained","level":"warning","severity":"warning","message":"unmaintained crate atty","labels":[],"notes":["ID: RUSTSEC-2021-0145"]}}
+{"type":"diagnostic","fields":{"code":"vulnerability","level":"error","severity":"error","message":"Security vulnerability detected for crate time","labels":[],"notes":["ID: RUSTSEC-2024-0001","Advisory: https://rustsec.org/advisories/RUSTSEC-2024-0001"]}}
+{"type":"diagnostic","fields":{"code":"banned","level":"error","severity":"error","message":"crate `openssl` is banned","labels":[],"notes":["Crate `openssl` is banned by the `bans` configuration"]}}
+{"type":"summary","fields":{"advisories":{"errors":1,"warnings":1},"bans":{"errors":1,"warnings":0},"licenses":{"errors":0,"warnings":0},"sources":{"errors":0,"warnings":0}}}

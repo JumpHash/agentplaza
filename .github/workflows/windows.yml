@@ -156,6 +156,9 @@ jobs:
       - name: Test (the guest harness runs only inside Linux VMs)
         id: test
         if: matrix.arch == 'x64' && inputs.tests
+        # Six tests at once, not the fleet's twelve: on this 4-core runner the hub's integration tests (each starts a hub)
+        # took the job past its memory now and then, and the worker died with no log.
+        env: { NEXTEST_TEST_THREADS: "6" }
         run: CARGO_INCREMENTAL=1 bash .github/ci/incremental-retry.sh ${{ env.TRIPLE }} cargo nextest run --workspace --exclude agent-harness --locked --cargo-profile checked --profile ci --target ${{ env.TRIPLE }} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER" --no-tests=warn}
       - name: Build the tests (arm64 cannot run here)
         id: build_tests

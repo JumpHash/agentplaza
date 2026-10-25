@@ -1,0 +1,27 @@
+meta {
+  name: A group's children: the deploy entries, with their kind and summary
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/v1/tool-library?path=deploy
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("each child is a group or an entry with a summary", function () {
+    const b = res.getBody();
+    expect(b.children.length).to.be.greaterThan(0);
+    b.children.forEach((c) => {
+      expect(["group", "entry"]).to.include(c.kind);
+      expect(c.summary).to.be.a("string");
+    });
+  });
+}

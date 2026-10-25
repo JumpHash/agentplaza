@@ -1994,11 +1994,15 @@ sectionEnd('machine view helper tests: ok');
 
 // The Weft screens' own suites (History; the review graph and recipes).
 import './history-tests';
+import './evals-tests';
 import './review-tests';
 import './platforms-tests';
 import './attachments-tests';
 import './new-project-tests';
 import './environments-tests';
+import './releases-tests';
+import './release-report-tests';
+import './project-trends-tests';
 import './previews-tests';
 import './maintenance-tests';
 import './chat-tools-tests';
@@ -2007,6 +2011,9 @@ import './sessions-tests';
 import './inbox-chats-tests';
 import './budget-tests';
 import './recipe-graph-tests';
+import './cves-tests';
+import './workflows-tests';
+import './tool-library-tests';
 
 // The web console's code highlighter (src/view/highlight.ts) against the golden vectors the Rust twin also checks.
 import { spans as highlightSpans } from '../src/view/highlight';

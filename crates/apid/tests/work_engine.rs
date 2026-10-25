@@ -13,6 +13,7 @@ mod common;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use apz_store::rusqlite::params;
 use serde_json::{Value, json};
 
 use common::{FakeDaemon, Hub, Scratch, text};
@@ -1292,5 +1293,114 @@ fn a_helpers_model_call_is_held_on_its_sessions_budget_and_recorded_on_a_helper_
             .any(|s| s["kind"] == "helper" && s["parent"] == main_id)),
         "the helper session is still the orchestrator's: {listed}"
     );
+    every_save_succeeded(&hub);
+}
+
+/// One eval record of a builder step (`build`) that ran on `model`, and succeeded or not. Its id is far past the sessions
+/// the test starts, so the hub's own records never replace it.
+fn eval_record(hub: &Hub, id: i64, model: &str, ok: bool) {
+    let conn = hub.seed_connection();
+    conn.execute(
+        r#"INSERT INTO "eval_run" ("id","pos","session","project","task","recipe","step","seat","round","engine","engine_version","model","provider","harness","node","pool","tokens_in","tokens_out","tokens_cached","cost_micros","model_calls","tool_calls","tool_ms","wall_ms","verdict","outcome","ok","landed","reverted","ended_ms","recipe_version","harness_version","gate","later_findings","incidents","memory_cites","qual_stages","lab_minutes","choice","choice_reason")
+           VALUES (?1,?1,'s'||?1,'pr0','t0','change','build','builder',1,'harness','0.1.0',?2,'mock','acp',NULL,NULL,10,5,0,100,1,2,30,1000,NULL,'the step ended',?3,NULL,NULL,?1,2,'','none',0,0,0,0,0,'','')"#,
+        params![id, model, ok as i64],
+    )
+    .expect("an eval row");
+}
+
+/// A task of `pid` whose change recipe runs its builder on the evals' choice: the model its builder's session started on.
+fn builder_model(hub: &Hub, pid: &str, goal: &str) -> String {
+    let (status, task) = hub.call(
+        "POST",
+        "/v1/tasks",
+        Some(json!({ "goal": goal, "project": pid })),
+    );
+    assert_eq!(status, 201, "{task}");
+    let tid = text(&task["id"]);
+    let sessions = hub.wait_for(&format!("/v1/sessions?task={tid}"), WAIT, |s| {
+        s.as_array().is_some_and(|s| {
+            s.iter()
+                .any(|s| s["seat"] == "builder" && s["model"].is_string())
+        })
+    });
+    let builder = sessions
+        .as_array()
+        .and_then(|s| s.iter().find(|s| s["seat"] == "builder"))
+        .expect("the builder's session");
+    text(&builder["model"])
+}
+
+#[test]
+fn a_step_with_model_eval_starts_its_session_on_the_model_the_evals_favour_and_moves_when_they_change()
+ {
+    let vms: Vms = Arc::default();
+    let (noded, gateway) = daemons(&vms);
+    let role = |name: &str, title: &str| json!({ "role": name, "title": title, "tools": ["run", "run_tests", "read"] });
+    let roles = json!({ "roles": {
+        "orchestrator": role("orchestrator", "Orchestrator"),
+        "builder": role("builder", "Builder"),
+        "reviewer": role("reviewer", "Reviewer"),
+        "verifier": role("verifier", "Verifier"),
+    } });
+    let scratch = Scratch::new("work-engine-eval");
+    let no_weft = scratch.0.join("no-weft");
+    let hub = Hub::start_with_env(
+        &scratch,
+        Some(gateway.port),
+        Some(noded.port),
+        Some(&roles),
+        &[("WEFT_BIN", no_weft.to_str().expect("a path"))],
+    );
+
+    // The plaza's worker models are the two mock models and a third nobody has run; exploration is off, so the choice
+    // is exactly the evals' best.
+    let (status, saved) = hub.call(
+        "PUT",
+        "/v1/settings",
+        Some(json!({
+            "model_policy": {
+                "orchestrator": ["anthropic/claude-opus-5-5"],
+                "worker": ["mock/agent", "mock/echo", "deepseek/deepseek-flash"],
+            },
+            "eval_explore_pct": 0,
+        })),
+    );
+    assert_eq!(status, 200, "{saved}\n{}", hub.log());
+
+    // The change recipe's builder step takes the evals' choice: a newer version of the recipe says `eval`.
+    let (status, current) = hub.call("GET", "/v1/recipes/change", None);
+    assert_eq!(status, 200, "{current}");
+    let mut recipe = current["recipe"].clone();
+    assert_eq!(recipe["steps"][0]["id"], "build", "{current}");
+    recipe["version"] = json!(recipe["version"].as_u64().unwrap_or(2) + 1);
+    recipe["steps"][0]["model"] = json!("eval");
+    let (status, put) = hub.call("PUT", "/v1/recipes/change", Some(recipe));
+    assert_eq!(status, 200, "{put}");
+
+    let (status, project) = hub.call(
+        "POST",
+        "/v1/projects",
+        Some(json!({ "title": "Eval choice", "goal": "Choose the builder's model by its evals.", "kind": "other" })),
+    );
+    assert_eq!(status, 201, "{project}");
+    let pid = text(&project["id"]);
+
+    // mock/agent: five runs, all succeed. mock/echo: five runs, two succeed. Each is trusted (the minimum is five).
+    for n in 0..5 {
+        eval_record(&hub, 9001 + n, "mock/agent", true);
+    }
+    for n in 0..5 {
+        eval_record(&hub, 9011 + n, "mock/echo", n < 2);
+    }
+    assert_eq!(builder_model(&hub, &pid, "First change"), "mock/agent");
+
+    // The evals move: mock/echo takes twenty more successes and mock/agent ten failures, so the next run takes mock/echo.
+    for n in 0..20 {
+        eval_record(&hub, 9101 + n, "mock/echo", true);
+    }
+    for n in 0..10 {
+        eval_record(&hub, 9201 + n, "mock/agent", false);
+    }
+    assert_eq!(builder_model(&hub, &pid, "Second change"), "mock/echo");
     every_save_succeeded(&hub);
 }

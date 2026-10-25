@@ -1,0 +1,34 @@
+meta {
+  name: Archive a task with its known outcome as a benchmark case
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/v1/evals/archive
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "project": "{{projectId}}",
+    "task": "old-1",
+    "start": "root",
+    "goal": "Write the notes",
+    "check": "the notes are written and reviewed",
+    "command": "test -d notes",
+    "outcome": "landed"
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+tests {
+  test("the archived case has an id", function () {
+    expect(res.getBody().id).to.be.a("number");
+    bru.setVar("caseId", res.getBody().id);
+  });
+}

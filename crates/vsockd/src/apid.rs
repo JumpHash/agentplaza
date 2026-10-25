@@ -96,7 +96,6 @@ impl fmt::Debug for TokenCache {
 
 impl Apid {
     /// Forwarding off (the daemon's own is `new` without a token file).
-    #[cfg(test)]
     pub fn off() -> Self {
         Self {
             port: 0,

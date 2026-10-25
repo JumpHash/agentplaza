@@ -1,0 +1,21 @@
+meta {
+  name: A compatibility matrix that does not parse is refused
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/compatibility
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "matrix": "[nope]\n"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

@@ -31,6 +31,8 @@ fn detail(v: &View) -> Value {
     let mut out = summary(v);
     out["steps"] = json!(v.run.steps);
     out["edges"] = json!(v.run.edges);
+    out["checks"] = json!(v.run.checks);
+    out["evidence"] = json!(v.run.evidence);
     out["recipe_toml"] = json!(v.recipe.to_toml());
     out
 }

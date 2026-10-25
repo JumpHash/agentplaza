@@ -643,6 +643,8 @@ fn stand_in_node(key: &NodeKey) -> Node {
         draining: false,
         revoked: false,
         address: String::new(),
+        label: String::new(),
+        test_share: 0,
         path: crate::nodes::TUNNEL.to_string(),
         mesh_address: String::new(),
         mesh_token: String::new(),

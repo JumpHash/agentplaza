@@ -1,35 +1,35 @@
-# The release recipe (PLAN 21.1, 22). Stub: it needs the release phase (22); none runs yet. A release is a candidate built
-# from main, its notes, and its publication.
+# The release recipe (PLAN 22.2): a draft collects the changes since the base and writes the notes; the build step
+# runs once per declared target (fan_out per_target; 7.5 places each target on a pool that can build it); the
+# candidate is cut and signed by the hub once every target is built. The release entity (releases/) owns the run.
 id = "release"
 name = "Release"
-description = "Stub until the release phase (22): declares its steps, none runs yet."
 version = 1
-inputs = ["main"]
+inputs = ["changes"]
 outputs = ["release"]
-triggers = ["release.requested"]
+triggers = ["release.cut"]
+
+[[steps]]
+id = "draft"
+engine = "release"
+gate = ["passed"]
+
+[[steps]]
+id = "build"
+engine = "release"
+fan_out = "per_target"
+gate = ["passed"]
 
 [[steps]]
 id = "candidate"
 engine = "release"
 gate = ["passed"]
 
-[[steps]]
-id = "notes"
-engine = "release"
-gate = ["passed"]
-
-[[steps]]
-id = "publish"
-engine = "release"
-gate = ["passed"]
-output = "release"
-
 [[edges]]
-from = "candidate"
-to = "notes"
+from = "draft"
+to = "build"
 when = "passed"
 
 [[edges]]
-from = "notes"
-to = "publish"
+from = "build"
+to = "candidate"
 when = "passed"

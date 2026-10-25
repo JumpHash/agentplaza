@@ -1,0 +1,11 @@
+id = "osv"
+kind = ["tool"]
+version = "1.0.0"
+scopes = ["read"]
+egress = ["api.osv.dev"]
+secrets = []
+events = []
+actions = ["query"]
+webhook = false
+auth_header = ""
+auth_format = ""

@@ -278,8 +278,15 @@ pub fn open_lease(
     agent: u64,
     task: Option<String>,
     kind: Kind,
+    device: Option<String>,
     actor: &str,
 ) -> Result<LeaseView, Failure> {
+    if (kind == Kind::Device) != device.is_some() {
+        return Err((
+            400,
+            "a device lease names its device, and only a device lease does".into(),
+        ));
+    }
     let station = app
         .stations
         .station(station_id)
@@ -300,11 +307,18 @@ pub fn open_lease(
         return Err((409, "this workstation is offline".into()));
     }
     super::vms::before_lease(app, station_id)?;
-    let lease = app
-        .stations
-        .leases
-        .open(station_id, agent, task.clone(), kind, now())
-        .map_err(|e| (409, e))?;
+    let opened = match &device {
+        Some(serial) => {
+            app.stations
+                .leases
+                .open_device(station_id, agent, task.clone(), serial, now())
+        }
+        None => app
+            .stations
+            .leases
+            .open(station_id, agent, task.clone(), kind, now()),
+    };
+    let lease = opened.map_err(|e| (409, e))?;
     let event = StationAudit::LeaseOpen {
         lease: lease.id.clone(),
         lease_kind: kind,
@@ -314,7 +328,7 @@ pub fn open_lease(
         app.stations.leases.remove(&lease.id);
         return Err(server_error(e));
     }
-    if kind == Kind::Pixel {
+    if kind.holds_session() {
         grant_next(app, station_id);
     }
     let view = lease_view(app, &lease.id).ok_or((
@@ -386,7 +400,7 @@ fn release_with(
     recordings::end(app, station_id, lease_id);
     hooks::lease_ended(app, station_id);
     let close_error = match (lease.kind, lease.session, app.stations.live(station_id)) {
-        (Kind::Pixel, Some(session), Some(link)) => link
+        (kind, Some(session), Some(link)) if kind.holds_session() => link
             .request(Op::SessionClose { session }, RPC_TIMEOUT)
             .err(),
         _ => None,
@@ -413,6 +427,17 @@ fn release_with(
 /// Grants queued pixel leases of `station` while the machine has room: each opens its session on the daemon.
 /// Stops at STOP ALL, at a station with no link (the leases wait), at a failed open (its lease is dropped), and on a
 /// machine with one session while the owner holds a pixel session there (takeover.rs `pixel_held`).
+/// The session the station opens for a lease that holds one: a pixel session, or the owner's own screen (a shared session,
+/// which the daemon serves on a machine with no virtual display, under the lease's agent).
+fn session_kind(kind: Kind) -> SessionKind {
+    match kind {
+        Kind::OwnerScreen | Kind::Shared => SessionKind::Shared,
+        // A device lease holds no session: it is never asked for one (`grant_next` takes only the session kinds).
+        Kind::Device => SessionKind::Shared,
+        Kind::Pixel => SessionKind::Pixel,
+    }
+}
+
 pub fn grant_next(app: &App, station_id: &str) {
     loop {
         if app.control.paused() || app.stations.is_resetting(station_id) {
@@ -436,7 +461,7 @@ pub fn grant_next(app: &App, station_id: &str) {
             .request(
                 Op::SessionOpen {
                     agent: lease.agent,
-                    kind: SessionKind::Pixel,
+                    kind: session_kind(lease.kind),
                 },
                 OPEN_TIMEOUT,
             )

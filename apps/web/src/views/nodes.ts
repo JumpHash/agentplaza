@@ -331,7 +331,23 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     );
   };
 
-  // The node's buttons by its state: Resume or Stop, Move now while it stops, Revoke, or the hub's own note.
+  // The roles dialog: the percent of the machine the test lab takes (0 work only, 100 test only) and its label.
+  const openRoles = (n: NodeView): void => {
+    const share = input({ type: 'number', min: 0, max: 100, step: 5, value: n.test_share, 'aria-label': 'Test-lab share' });
+    const label = input({ placeholder: 'studio-pc', maxlength: 64, value: n.label ?? '', 'aria-label': 'Label' });
+    const body = h('div.vlt-form', null, field('Test-lab share', share, 'Percent of this machine the test lab takes: 0 is work only, 100 is test only.'), field('Label', label));
+    const save = async (): Promise<void> => {
+      const pct = Number(share.value);
+      if (!Number.isInteger(pct) || pct < 0 || pct > 100) return toast('The share is a whole percentage from 0 to 100.', 'error');
+      const saved = await attempt(() => api.setNodeRoles(n.id, pct, label.value.trim()), `${n.name}: work ${100 - pct}%, test lab ${pct}%`);
+      if (!saved) return;
+      closeOpen?.();
+      void load();
+    };
+    open(`Roles of ${n.name}`, [body], [button('Cancel', () => closeOpen?.()), button('Save', () => void save(), { kind: 'primary' })]);
+  };
+
+  // The node's buttons by its state: Resume or Stop, Move now while it stops, Roles, Revoke, or the hub's own note.
   const actionsOf = (n: NodeView): Node[] => {
     if (n.revoked) return [];
     const resumeBtn = button('Resume', () => void resume(n));
@@ -348,7 +364,7 @@ export function mount(root: HTMLElement, _params: string[]): Cleanup {
     }
     const tail: Node[] = n.id === HUB_NODE ? [h('span.muted', null, 'this hub')] : [button('Revoke', () => confirmRevoke(n))];
     const path: Node[] = n.id === HUB_NODE ? [] : [n.path === 'mesh' ? button('Back to tunnel', () => void setPath(n, 'tunnel', '')) : button('Move to mesh', () => confirmMesh(n))];
-    return [...main, ...path, ...tail];
+    return [...main, button('Roles', () => openRoles(n), { title: 'Set the share of this machine the test lab takes' }), ...path, ...tail];
   };
 
   // The run kills in a node's detail: then the page reloads.

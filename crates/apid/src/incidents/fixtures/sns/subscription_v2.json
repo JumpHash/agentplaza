@@ -1,0 +1,13 @@
+{
+  "MessageId": "a1b2c3d4-0000-4000-8000-000000000004",
+  "TopicArn": "arn:aws:sns:eu-west-1:123456789012:plaza-alarms",
+  "Timestamp": "2026-10-24T10:04:31.600Z",
+  "SigningCertURL": "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-test.pem",
+  "UnsubscribeURL": "https://sns.eu-west-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=example",
+  "Type": "SubscriptionConfirmation",
+  "Message": "You have chosen to subscribe to the topic arn:aws:sns:eu-west-1:123456789012:plaza-alarms.",
+  "SubscribeURL": "https://sns.eu-west-1.amazonaws.com/?Action=ConfirmSubscription&TopicArn=arn:aws:sns:eu-west-1:123456789012:plaza-alarms&Token=2336412f37fb687f5d51e6e2425",
+  "Token": "2336412f37fb687f5d51e6e2425",
+  "SignatureVersion": "2",
+  "Signature": "l/g+w5pJZ3fr5wnyfW0OcmoOx24UVUOIzgYR+mWzIo/psp9hEhNuLV9L6iYsm28WqxY9g4CciXsaDCRm/eGc38uNaSASmhr4+RAXbTif0Lvu6wsU/Ayy4H3BlDwtvdgPe7dBFtDA9CtCX967/LcHR19goZ1ZCNa+Z47RezHoSHNy4eunW7zZy94iLAp3BrVWy8vI3BmA+u0z1eBEvmJ1M9D5SdLdNle+Epx9i8tt9gq5kcKHwLrFEbEMfEK9Uv/MqN9e5pxT/rLwRTSIHZo1lGZBctcnedkBIDWqXlkOJVjxyKzOm5/b3nXjtYbl3NzAwOqGzn7+qGt9HTQMWtgXmg=="
+}

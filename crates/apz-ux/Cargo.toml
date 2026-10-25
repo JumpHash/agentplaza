@@ -1,0 +1,18 @@
+[package]
+name = "apz-ux"
+description = "UI and UX checks (PLAN 22.8, 22.9): image diffs of screenshots with a tolerance and an ignore mask, axe-style accessibility rules and overflowing text over a page's DevTools snapshot, run at each declared size, theme and locale"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+# The workspace's PNG codec (apid's visual regression reads the same pictures the browser writes).
+png = "0.18"
+toml = "1"
+
+[lints]
+workspace = true

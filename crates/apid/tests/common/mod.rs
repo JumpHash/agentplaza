@@ -67,12 +67,43 @@ pub struct Hub {
     pub port: u16,
     /// The internal token the agent gateway sends; apid writes it to its state dir.
     token: String,
+    /// The directory of the attempt that came up: its state and config.
+    dir: PathBuf,
 }
 
 impl Drop for Hub {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+impl Hub {
+    /// The hub's state folder: its `plaza.db` and the rest (a test may read or seed the store beside the running hub).
+    #[allow(dead_code)] // not every test binary that includes `common` reads the state
+    pub fn state_dir(&self) -> PathBuf {
+        self.dir.join("state")
+    }
+
+    /// Stops the hub as a stop signal does (its last state writes run), waits for it to exit, and starts it again on
+    /// the same state: the directory of the attempt that came up, not a fresh one.
+    #[allow(dead_code)] // not every test binary that includes `common` restarts its hub
+    pub fn restart_with_env(
+        mut self,
+        gateway: Option<u16>,
+        noded: Option<u16>,
+        roles: Option<&Value>,
+        env: &[(&str, &str)],
+    ) -> Hub {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status();
+        let _ = self.child.wait();
+        let dir = self.dir.clone();
+        drop(self);
+        (1..=ATTEMPTS)
+            .find_map(|_| boot(&dir, gateway, noded, roles, env))
+            .expect("the hub comes up again")
     }
 }
 
@@ -154,6 +185,17 @@ impl Hub {
             json!({ "type": "work_done", "work": work, "status": status, "summary": summary });
         let (code, body) = self.guest(cid, "message", message);
         assert_eq!(code, 200, "{body}");
+    }
+
+    /// The hub's `plaza.db`, opened beside it for a test to seed rows into (WAL: the hub's own connection sees what this
+    /// one commits). The hub's writer holds the write lock through each commit, and a loaded runner can hold it for
+    /// seconds, so the seed waits as long as a call does rather than failing as "database is locked".
+    pub fn seed_connection(&self) -> apz_store::rusqlite::Connection {
+        let conn = apz_store::rusqlite::Connection::open(self.state_dir().join("plaza.db"))
+            .expect("the hub's plaza.db");
+        conn.busy_timeout(CALL_TIMEOUT.mul_f64(slack()))
+            .expect("a busy timeout");
+        conn
     }
 
     /// Waits up to `timeout` (times [`slack`]) for `ready` to hold of the owner's `GET path`; the last answer
@@ -349,6 +391,7 @@ fn boot(
         output,
         port,
         token,
+        dir: dir.to_path_buf(),
     })
 }
 

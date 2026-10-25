@@ -4,7 +4,7 @@
 // rules are in environments-model.ts. Archived projects are read only; the others keep their environments after delivery.
 // The markup is the prototype's Environments tab (styles/proto/projects.css).
 
-import { ENV_KINDS, projectsApi, type Deploy, type EnvKind, type Environment, type EnvironmentInput, type EnvTrack } from '../api-projects';
+import { ENV_KINDS, projectsApi, type Deploy, type EnvKind, type Environment, type EnvironmentInput, type EnvTrack, type EphemeralInstance } from '../api-projects';
 import type { Project } from '../api';
 import { on } from '../store';
 import { ago, attempt, badge, button, field, input, modal, select, textarea, toast } from '../ui/components';
@@ -18,7 +18,11 @@ import {
   defaultTrack,
   deployOutcome,
   deployStatusText,
+  canTearDown,
   deployTone,
+  instanceStateText,
+  instanceSubject,
+  instanceTone,
   kindLabel,
   parseVariables,
   recentDeploys,
@@ -79,6 +83,8 @@ export function environmentsTab(p: Project): HTMLElement {
   const writable = !p.archived;
   /** Undefined until the first answer. A failed reload keeps the list it had. */
   let list: Environment[] | undefined;
+  /** The project's ephemeral instances (`ephemeral`), newest first. Kept when a reload fails. */
+  let instances: EphemeralInstance[] = [];
   let failed = false;
   let alive = true;
   let attached = false;
@@ -88,9 +94,11 @@ export function environmentsTab(p: Project): HTMLElement {
 
   const load = async (): Promise<void> => {
     const got = await attempt(() => projectsApi.environments(p.id));
+    const more = await attempt(() => projectsApi.ephemeral(p.id));
     if (!alive) return;
     failed = got === undefined;
     if (got) list = sortEnvironments(got);
+    if (more) instances = more;
     draw();
   };
 
@@ -331,6 +339,38 @@ export function environmentsTab(p: Project): HTMLElement {
     );
   };
 
+  /** One ephemeral instance: its environment and subject, its state, its address, and its teardown while it is up. */
+  const instanceRow = (i: EphemeralInstance): HTMLElement =>
+    h(
+      'div.env-inst',
+      null,
+      h('div.env-inst-head', null, h('strong', null, `${i.environment} · ${instanceSubject(i)}`), badge(instanceStateText(i.state.state), instanceTone(i.state.state))),
+      i.state.state === 'failed' ? h('p.pj-faint', null, i.state.reason) : null,
+      i.url && webUrl(i.url) ? h('div.env-url', null, h('a', { href: i.url, target: '_blank', rel: 'noopener' }, h('span', null, i.url), lu('external-link', 12))) : null,
+      h(
+        'div.env-inst-foot',
+        null,
+        h('span.pj-faint', null, `Until ${new Date(i.expires_ms).toLocaleTimeString()}`),
+        writable && canTearDown(i.state.state) ? lbtn('Tear down', () => void tearDown(i), { size: 'sm', kind: 'ghost', icon: 'trash' }) : null,
+      ),
+    );
+
+  const tearDown = async (i: EphemeralInstance): Promise<void> => {
+    const done = await attempt(() => projectsApi.tearDownEphemeral(i.id), `${instanceSubject(i)} is torn down`);
+    if (done !== undefined) reload();
+  };
+
+  const instancesSection = (): HTMLElement | null =>
+    instances.length
+      ? h(
+          'div.env-instances',
+          null,
+          h('h3', null, 'Ephemeral instances'),
+          h('p.pj-faint', null, 'Short-lived copies of a lane or a release. Each is torn down when its time is up.'),
+          instances.map(instanceRow),
+        )
+      : null;
+
   function draw(): void {
     if (!alive) return;
     if (root.isConnected) attached = true;
@@ -344,6 +384,8 @@ export function environmentsTab(p: Project): HTMLElement {
     } else {
       rest = [h('div.env-list', null, list.map(envCard))];
     }
+    const section = instancesSection();
+    if (section) rest.push(section);
     replace(root, intro(), rest);
   }
 

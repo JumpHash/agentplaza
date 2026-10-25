@@ -47,6 +47,7 @@
 //! starts on a machine without the feature and reports the missing feature
 //! when a VM is booted.
 
+pub mod arm64;
 pub mod boot_state;
 pub mod ioapic;
 pub mod kernel;

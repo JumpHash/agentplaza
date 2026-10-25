@@ -1,0 +1,23 @@
+[
+  {
+    "ghsa_id": "GHSA-qx2v-8332-m7x4",
+    "cve_id": "CVE-2024-27316",
+    "url": "https://api.github.com/advisories/GHSA-qx2v-8332-m7x4",
+    "html_url": "https://github.com/advisories/GHSA-qx2v-8332-m7x4",
+    "summary": "h2 does not limit CONTINUATION frames",
+    "severity": "high",
+    "cvss": { "vector_string": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H", "score": 7.5 },
+    "published_at": "2024-03-11T00:00:00Z",
+    "identifiers": [
+      { "type": "GHSA", "value": "GHSA-qx2v-8332-m7x4" },
+      { "type": "CVE", "value": "CVE-2024-27316" }
+    ],
+    "vulnerabilities": [
+      {
+        "package": { "ecosystem": "rust", "name": "h2" },
+        "vulnerable_version_range": "< 0.3.26",
+        "first_patched_version": { "identifier": "0.3.26" }
+      }
+    ]
+  }
+]

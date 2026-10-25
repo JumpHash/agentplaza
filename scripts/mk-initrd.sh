@@ -894,6 +894,33 @@ static int find_workspace_dev(char *dev)
 // error. Set once the volume is mounted at /workspace (workspace_ready reads it).
 static int workspace_mounted;
 
+// Grows the workspace's filesystem to fill its disk. The host makes a workspace by copying a small base image and
+// truncating the copy to the workspace's size, so until this runs the filesystem is smaller than its disk. resize2fs
+// with no size does that, and does nothing when the two agree. Without resize2fs in the initramfs (the build host had
+// none) the volume mounts as it is.
+static void grow_workspace(const char *devpath)
+{
+    if (access("/sbin/resize2fs", X_OK) < 0)
+        return;
+    pid_t pid = fork();
+    if (pid < 0)
+        return;
+    if (pid == 0) {
+        char *argv[] = { "resize2fs", (char *)devpath, NULL };
+        execv("/sbin/resize2fs", argv);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0)
+        return;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        char msg[128];
+        int len = snprintf(msg, sizeof msg, "plaza guest: resize2fs %s: status %d\n", devpath,
+                           WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        write_all(1, msg, (size_t)len);
+    }
+}
+
 static void mount_workspace(void)
 {
     char dev[4];
@@ -914,6 +941,7 @@ static void mount_workspace(void)
         put("\n");
         return;
     }
+    grow_workspace(devpath);
     if (mount(devpath, "/workspace", "ext4", 0, "") < 0) {
         char msg[160];
         int len = snprintf(msg, sizeof msg,
@@ -1434,6 +1462,33 @@ EOF
 
 "${CROSS_COMPILE:-}gcc" -static -Os -Wall -Wextra -o "$root/init" "$out_dir/init.c"
 "${CROSS_COMPILE:-}strip" "$root/init"
+
+# resize2fs grows the workspace's filesystem at mount (the init runs it, see grow_workspace). It is added when the build
+# host has an e2fsprogs resize2fs for this architecture (the Linux build container does; a Mac has none and makes the
+# workspace from a template that is already sized). Its dynamic loader and shared libraries go in at their own paths.
+resize_bin="${APZ_RESIZE2FS:-}"
+if [ -z "$resize_bin" ]; then
+    for candidate in /sbin/resize2fs /usr/sbin/resize2fs; do
+        if [ -x "$candidate" ]; then resize_bin="$candidate"; break; fi
+    done
+fi
+if [ -n "$resize_bin" ] && [ "$arch" = "$host_arch" ]; then
+    mkdir -p "$root/sbin"
+    cp "$resize_bin" "$root/sbin/resize2fs"
+    chmod 755 "$root/sbin/resize2fs"
+    ldd "$resize_bin" | while read -r name _ path _; do
+        case "$name" in
+            /*) lib=$name ;;
+            *) lib=$path ;;
+        esac
+        case "$lib" in
+            /*) mkdir -p "$root$(dirname "$lib")"; cp -L "$lib" "$root$lib" ;;
+        esac
+    done
+    echo "resize2fs: $resize_bin -> /sbin/resize2fs (with its libraries)"
+else
+    echo "mk-initrd: no resize2fs for $arch on this host: the workspace volume is not grown at mount" >&2
+fi
 
 (cd "$root" && find . | cpio -o -H newc --quiet) | gzip -9 > "$out_dir/initrd.$arch.gz"
 

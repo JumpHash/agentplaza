@@ -60,7 +60,13 @@ pub struct Input<'a> {
     /// Starts the lane's preview (the `preview` step): its summary, or why it did not start. `None` in tests that
     /// have no preview to start.
     pub preview: Option<&'a dyn Fn() -> Result<String, String>>,
+    /// Runs the change's tests against an ephemeral instance of it (the `against` step, `ephemeral::against`): given the
+    /// tests' commands and the fork's exec, its evidence, or why it failed. `None` in tests with no environment to run in.
+    pub against: Option<&'a Against<'a>>,
 }
+
+/// The `against` step's runner: the tests' commands, the fork's exec, and the stage's evidence or its failure.
+pub type Against<'a> = dyn Fn(&[Command], &mut Exec<'_>) -> Result<String, String> + 'a;
 
 /// The commands of each check, and what the scan found, worked out before anything runs.
 pub struct Plan {
@@ -284,7 +290,7 @@ pub fn run_with(runs: &Runs, input: &Input, exec: &mut Exec, now: u64) -> Result
     let mut ready = starts(moves);
     while let Some(step) = ready.pop_front() {
         runs.started(&run, &step, now);
-        let (report, row) = check(&step, &plan, exec, input.preview);
+        let (report, row) = check(&step, &plan, exec, input.preview, input.against);
         runs.record_check(&run, row, now);
         ready.extend(starts(runs.settle(&run, &step, &report, now)));
     }
@@ -307,9 +313,11 @@ fn check(
     plan: &Plan,
     exec: &mut Exec,
     preview: Option<&dyn Fn() -> Result<String, String>>,
+    against: Option<&Against>,
 ) -> (Report, CheckRow) {
     match step {
         "preview" => run_preview(preview),
+        "against" => run_against(against, &plan.tests, exec),
         "scan" => {
             let findings = plan.findings.len() as u32;
             let summary = if plan.findings.is_empty() {
@@ -371,6 +379,36 @@ fn run_preview(preview: Option<&dyn Fn() -> Result<String, String>>) -> (Report,
         step: "preview".to_string(),
         passed,
         commands: "the preview base: checkout, build, serve, wait, register".into(),
+        summary,
+    };
+    (report, row)
+}
+
+/// The against step: the change's tests run against an ephemeral instance of it, and the instance is torn down after. A
+/// project with no ephemeral environment passes with a note (the runner says so); the runner's error fails the step.
+fn run_against(
+    against: Option<&Against>,
+    tests: &[Command],
+    exec: &mut Exec,
+) -> (Report, CheckRow) {
+    let (passed, summary) = match against {
+        Some(run) => match run(tests, exec) {
+            Ok(summary) => (true, summary),
+            Err(why) => (false, why),
+        },
+        None => (
+            true,
+            "no ephemeral environment: nothing to run against".to_string(),
+        ),
+    };
+    let report = Report {
+        passed,
+        ..Report::default()
+    };
+    let row = CheckRow {
+        step: "against".to_string(),
+        passed,
+        commands: "the tests, in the fork, against an ephemeral instance's address".into(),
         summary,
     };
     (report, row)
@@ -477,7 +515,7 @@ pub fn tick(app: &Arc<App>) {
 /// The CI run of a change of `project` (the production entry): the change's newest revision and its diff, the stack on
 /// main, whether the repository configures `cargo deny`, and a test fork on the project's test base for its commands.
 /// The run is recorded on the hub's runs; the fork is retired when its checks are done.
-pub fn start(app: &App, project: &str, change: &str, now: u64) -> Result<String, String> {
+pub fn start(app: &Arc<App>, project: &str, change: &str, now: u64) -> Result<String, String> {
     let rev = crate::project_memory::landed_revision(app, change)?;
     let diff = revision_diff(app, &rev)?;
     let stack = project_stack::read(app, project)?
@@ -506,6 +544,9 @@ pub fn start(app: &App, project: &str, change: &str, now: u64) -> Result<String,
         repo: &repo,
     };
     let start_preview = || previews::life::start(app, &lane, &stack, now);
+    let run_against = |tests: &[Command], exec: &mut Exec<'_>| {
+        crate::ephemeral::against::ci(app, project, change, tests, exec)
+    };
     let input = Input {
         project,
         change,
@@ -514,6 +555,7 @@ pub fn start(app: &App, project: &str, change: &str, now: u64) -> Result<String,
         deny,
         maps: &app.test_select,
         preview: Some(&start_preview),
+        against: Some(&run_against),
     };
     let mut fork = fork;
     let outcome = {
@@ -744,6 +786,7 @@ mod tests {
             deny,
             maps,
             preview: None,
+            against: None,
         }
     }
 
@@ -797,13 +840,19 @@ mod tests {
         let run = run_with(&runs, &input(&stack, &diff, &maps, false), &mut fork, 5).unwrap();
         let view = runs.view(&run).unwrap();
         assert_eq!(view.run.state, crate::recipes::runs::RunState::Passed);
-        assert_eq!(view.run.checks.len(), 6, "{:?}", view.run.checks);
+        assert_eq!(view.run.checks.len(), 7, "{:?}", view.run.checks);
         assert!(view.run.checks.iter().all(|c| c.passed));
         // A project with no preview target passes its preview step with that note.
         assert!(
             row(&runs, &run, "preview")
                 .summary
                 .contains("no preview target")
+        );
+        // The against step (ephemeral environments) passes with its note when the project has none.
+        assert!(
+            row(&runs, &run, "against")
+                .summary
+                .contains("no ephemeral environment")
         );
         // The selection picked the leaf's test: the tests step ran only that package's tests.
         let tests = row(&runs, &run, "tests");

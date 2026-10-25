@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::{EdgeRec, EdgeState, Move, Outcome, Report, StepRec, StepState, Walk};
 
-use super::model::{Fan, Model, Recipe, Risk, builtin};
+use super::model::{Fan, Recipe, Risk, Step, builtin};
 
 /// Where a run is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, apz_store::Column)]
@@ -60,6 +60,10 @@ pub struct RecipeRun {
     /// The results of a CI run's checks (4.5): one per step that ran, in the order they ended.
     #[table(child)]
     pub checks: Vec<CheckRow>,
+    /// The evidence of a `test:user` step (PLAN 19.2): the tree, the screenshot and the action of each observation, in
+    /// the order the loop made them. The screenshots and trees are in the object store, by their hashes.
+    #[table(child)]
+    pub evidence: Vec<EvidenceRow>,
     pub created_ms: u64,
     pub updated_ms: u64,
 }
@@ -99,6 +103,20 @@ pub struct CheckRow {
     pub commands: String,
     /// What the check found, in a line: the output's end of a failing command, a count of tests or findings.
     pub summary: String,
+}
+
+/// One observation of a user test (PLAN 19.2): the tree and the screenshot the loop saw in `scenario`'s `step`, the
+/// action it took after them (empty when it took none) and why. `tree` and `screenshot` are object-store hashes in hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, apz_store::Table)]
+pub struct EvidenceRow {
+    #[table(key)]
+    pub seq: u32,
+    pub scenario: String,
+    pub step: u32,
+    pub action: String,
+    pub tree: String,
+    pub screenshot: String,
+    pub note: String,
 }
 
 /// A version of a recipe the owner saved.
@@ -206,6 +224,7 @@ impl Runs {
             steps: Vec::new(),
             edges: Vec::new(),
             checks: Vec::new(),
+            evidence: Vec::new(),
             created_ms: now,
             updated_ms: now,
         };
@@ -231,14 +250,39 @@ impl Runs {
         subject: Option<&str>,
         now: u64,
     ) -> Option<String> {
+        self.start_engine_items(
+            recipe,
+            &BTreeMap::new(),
+            trigger,
+            task,
+            project,
+            subject,
+            now,
+        )
+    }
+
+    /// As [`Runs::start_engine`], with the items of the fan-out steps (`items` by step id). A release's `build` step runs
+    /// one item per placed target (targets.rs, the `release` recipe).
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_engine_items(
+        &self,
+        recipe: &str,
+        items: &BTreeMap<String, u32>,
+        trigger: &str,
+        task: Option<&str>,
+        project: Option<&str>,
+        subject: Option<&str>,
+        now: u64,
+    ) -> Option<String> {
         let recipe = self.recipe(recipe, None)?;
-        let (id, moves) = self.start(
+        let (id, moves) = self.start_with_items(
             &recipe,
             source_of(&recipe),
             trigger,
             task,
             project,
             subject,
+            items,
             now,
         );
         for m in moves {
@@ -283,14 +327,14 @@ impl Runs {
         Some((count, s.risk.clone()))
     }
 
-    /// The model a step of the task's active run is to use, as its recipe file says.
-    pub fn step_model(&self, task: &str, step: &str) -> Option<Model> {
+    /// The step of the task's active run as its recipe file says it (its model, engine and budget share).
+    pub fn step_spec(&self, task: &str, step: &str) -> Option<Step> {
         let inner = self.lock();
         let entry = inner
             .runs
             .values()
             .find(|e| e.run.task.as_deref() == Some(task) && e.walk.outcome.is_none())?;
-        entry.recipe.step(step).map(|s| s.model.clone())
+        entry.recipe.step(step).cloned()
     }
 
     /// A step settled with `report`, in the task's active run. Returns the moves the caller applies.
@@ -380,6 +424,19 @@ impl Runs {
         self.update(run, now, |e| {
             e.run.checks.retain(|c| c.step != check.step);
             e.run.checks.push(check);
+        });
+    }
+
+    /// Adds the evidence of a run's user-test step, numbered after the evidence the run has.
+    pub fn record_evidence(&self, run: &str, rows: Vec<EvidenceRow>, now: u64) {
+        self.update(run, now, |e| {
+            let base = e.run.evidence.len() as u32;
+            e.run
+                .evidence
+                .extend(rows.into_iter().enumerate().map(|(i, mut row)| {
+                    row.seq = base + i as u32 + 1;
+                    row
+                }));
         });
     }
 

@@ -201,3 +201,14 @@ pub const DATA_MMIO_START: u64 = BALLOON_MMIO_START + MMIO_LEN;
 /// the ISA lines (8 RTC, 9 ACPI, 12 the i8042's mouse port, 14/15 IDE) and inside the MPTable's
 /// identity map, which runs to [`GSI_LEGACY_END`].
 pub const DATA_GSI_START: u32 = 16;
+
+/// The lab topology's network device (`devices::virtio::net`): the slot after the data volumes, with
+/// GSI 20, the next legacy line after them. Only a lab topology's VM has it (see `spawner::check_net`).
+pub const NET_MMIO_START: u64 =
+    DATA_MMIO_START + crate::spawner::MAX_DATA_VOLUMES as u64 * MMIO_LEN;
+
+/// The network device's interrupt line: `DATA_GSI_START` plus the data volumes.
+pub const NET_GSI: u32 = DATA_GSI_START + crate::spawner::MAX_DATA_VOLUMES as u32;
+
+// The net device's line is a legacy line, past the data volumes' and inside the MPTable's identity map.
+const _: () = assert!(NET_GSI > DATA_GSI_START && NET_GSI <= GSI_LEGACY_END);

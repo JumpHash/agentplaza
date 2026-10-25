@@ -1,0 +1,15 @@
+meta {
+  name: A sync of an unknown release is not found
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/v1/releases/rel-0/sync
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+}

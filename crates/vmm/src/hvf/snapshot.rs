@@ -75,6 +75,9 @@ pub struct HvfControl {
     pub vsock: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub workspace: Option<Weak<Mutex<VirtioMmioTransport>>>,
     pub volumes: Vec<Weak<Mutex<VirtioMmioTransport>>>,
+    /// The lab topology's network device, when the VM has one: such a VM is not snapshotted (its device's
+    /// queues are not in a snapshot, see [`crate::spawner::check_net`]).
+    pub net: Option<Weak<Mutex<VirtioMmioTransport>>>,
     /// The vsock event thread's gate: held for writing while the devices and memory are saved.
     pub gate: DeviceGate,
     pub vcpus: u8,
@@ -118,6 +121,11 @@ impl VmControl for HvfControl {
 
     fn snapshot(&self, dir: &Path, _kind: SnapshotKind) -> Result<SnapshotInfo, SpawnError> {
         let _busy = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.net.is_some() {
+            return Err(failed(
+                "a VM with a network device cannot be snapshotted yet: its device's queues are not in a snapshot",
+            ));
+        }
         let vm = self.live_vm()?;
         let started = Instant::now();
         // Each vCPU reads its own state as it parks (or, already parked, when asked).

@@ -1,0 +1,28 @@
+meta {
+  name: List the login bridge switches (off by default)
+  type: http
+  seq: 90
+}
+
+get {
+  url: {{baseUrl}}/v1/login-bridges
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("each vendor's switch is labelled with its terms and off unless the owner turned it on", function () {
+    const body = res.getBody();
+    expect(body).to.be.an("array");
+    for (const bridge of body) {
+      expect(bridge.vendor).to.be.a("string");
+      expect(bridge.enabled).to.be.a("boolean");
+      expect(bridge.terms).to.contain("PLAN 28.1 point 2");
+    }
+  });
+}

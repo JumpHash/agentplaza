@@ -24,6 +24,7 @@
 use std::fmt;
 
 // The runner logic lives in `apz_os::runner`, shared with apid's tests: one implementation.
+#[allow(unused_imports)]
 pub use apz_os::runner::command;
 
 /// Writes `message` as a line to the run's stderr, where it shows **even on a
@@ -33,4 +34,26 @@ pub use apz_os::runner::command;
 pub fn note(message: impl fmt::Display) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stderr(), "{message}");
+}
+
+/// Ends the test binary when the test it guards is still running after `limit`: a VM whose guest
+/// never stops, or a vCPU that never returns from the hypervisor, must not hold the machine. The
+/// guard cancels the watchdog when it is dropped at the end of the test.
+pub struct Watchdog {
+    _cancel: std::sync::mpsc::Sender<()>,
+}
+
+impl Watchdog {
+    pub fn new(name: &'static str, limit: std::time::Duration) -> Self {
+        let (cancel, waiting) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = waiting.recv_timeout(limit) {
+                note(format_args!(
+                    "watchdog: {name} is still running after {limit:?}; ending the test binary"
+                ));
+                std::process::exit(124);
+            }
+        });
+        Self { _cancel: cancel }
+    }
 }

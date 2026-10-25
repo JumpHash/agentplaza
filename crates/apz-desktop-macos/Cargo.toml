@@ -18,5 +18,8 @@ core-graphics = { version = "0.23", features = ["highsierra"] }
 foreign-types = "0.5"
 objc2-app-kit = { version = "0.3", features = ["NSRunningApplication", "NSWorkspace"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

@@ -92,6 +92,9 @@ pub mod cpu_baseline;
 pub mod events;
 pub mod fleet;
 pub mod hostcheck;
+mod lab_caps;
+pub mod lab_net;
+pub mod mac_sandbox;
 mod mcp_vm;
 pub mod metrics;
 pub mod migrate;
@@ -261,6 +264,8 @@ pub struct MachineView {
     pub model: Option<String>,
     /// A Mac's Apple Silicon details; null elsewhere.
     pub apple: Option<Apple>,
+    /// A Mac's build and simulator caps and what runs now; null elsewhere (see `mac_sandbox::facts_for`).
+    pub mac: Option<mac_sandbox::MacFacts>,
     pub cpu: Cpu,
     pub gpus: Vec<Gpu>,
     /// The devices that run trainers (GPUs, Apple's GPU); empty on a CPU-only machine.
@@ -285,6 +290,16 @@ pub struct MachineView {
     /// The launch backends this node can run a workstation VM under: `plaza`, and `qemu` when QEMU and its firmware are here.
     pub workstation_backends: Vec<&'static str>,
     pub started_at_ms: u64,
+    /// The browsers the node has, in the test lab's names (`chromium`, `firefox`, `webkit`).
+    pub browsers: Vec<String>,
+    /// The Android phones attached and authorized, by serial (`adb devices`).
+    pub phones: Vec<String>,
+    /// The shells the node has on its PATH (`lab_caps::shells`): what a CLI release's shell cells need.
+    pub shells: Vec<String>,
+    /// The release-check tools the node has (`lab_caps::tools`).
+    pub tools: Vec<String>,
+    /// Whether the node can shape its traffic (`lab_caps::traffic_shaping`).
+    pub traffic_shaping: bool,
 }
 
 impl Node {
@@ -349,6 +364,11 @@ impl Node {
             vendor: self.probed.vendor.clone(),
             model: self.probed.model.clone(),
             apple: self.probed.apple.clone(),
+            mac: mac_sandbox::facts_for(
+                Some(self.probed.memory_mib),
+                host_cpus(),
+                mac_sandbox::Load::default(),
+            ),
             cpu: self.probed.cpu.clone(),
             gpus: host_gpus(),
             accelerators: accelerators_now(&self.probed.facts.accelerators, &train::busy_devices()),
@@ -368,6 +388,11 @@ impl Node {
             vsock_mode: "uds-muxer",
             workstation_backends: self.workstations.backends(),
             started_at_ms: self.started_at_ms,
+            browsers: lab_caps::browsers(),
+            phones: lab_caps::phones(),
+            shells: lab_caps::shells(),
+            tools: lab_caps::tools(),
+            traffic_shaping: lab_caps::traffic_shaping(),
         }
     }
 

@@ -1,0 +1,27 @@
+meta {
+  name: The benchmark's replays of archived tasks
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/v1/evals/bench
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.responseTime: lt {{budgetMs}}
+}
+
+tests {
+  test("each replay says what its check did and whether it matched the known outcome", function () {
+    const b = res.getBody();
+    expect(b).to.be.an("array");
+    b.forEach((r) => {
+      expect(["passed", "failed"]).to.include(r.outcome);
+      expect(r.matched).to.be.a("boolean");
+    });
+  });
+}

@@ -35,6 +35,12 @@ use audit::{Head, Record};
 use crypto::Key;
 use model::{Document, Entry, Slot, Tombstone, Version};
 
+/// Random bytes for a run's scrubber salt (the vault's generator).
+pub(crate) fn random_salt() -> Result<[u8; 32], String> {
+    let bytes = crypto::random_vec(32)?;
+    <[u8; 32]>::try_from(bytes).map_err(|_| "no random salt".to_string())
+}
+
 /// The hub's own machine.
 pub const LOCAL_NODE: &str = crate::fleet::LOCAL;
 const FORMAT: u32 = 1;

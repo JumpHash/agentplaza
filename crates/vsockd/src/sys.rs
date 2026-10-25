@@ -141,12 +141,19 @@ pub fn raise_fd_limit() -> io::Result<u64> {
         return Err(io::Error::last_os_error());
     }
     if limit.rlim_cur < limit.rlim_max {
+        // macOS reports an unlimited hard limit that it does not take as a soft limit: the kernel caps the soft
+        // limit at `kern.maxfilesperproc` (61440 on the Apple Silicon node this was built on), and 24576 holds the
+        // default 4096 sessions, three descriptors each, with room to spare.
+        #[cfg(target_os = "macos")]
+        let soft = limit.rlim_max.min(24_576);
+        #[cfg(not(target_os = "macos"))]
+        let soft = limit.rlim_max;
         let raised = libc::rlimit {
-            rlim_cur: limit.rlim_max,
+            rlim_cur: soft,
             rlim_max: limit.rlim_max,
         };
-        // SAFETY: `setrlimit` reads one `rlimit` through the valid pointer `&raised`. The new soft limit equals
-        // the hard limit read above, which an unprivileged process may raise its soft limit to.
+        // SAFETY: `setrlimit` reads one `rlimit` through the valid pointer `&raised`. The new soft limit is at
+        // most the hard limit read above, which an unprivileged process may raise its soft limit to.
         if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -183,6 +190,8 @@ extern "C" fn on_signal(_signal: libc::c_int) {
     // end, so the interrupted code sees the errno it had before the handler ran.
     #[cfg(target_os = "linux")]
     let saved = unsafe { *libc::__errno_location() };
+    #[cfg(target_os = "macos")]
+    let saved = unsafe { *libc::__error() };
     SHUTDOWN.store(true, Ordering::SeqCst);
     let fd = SHUTDOWN_WAKE.load(Ordering::SeqCst);
     if fd >= 0 {
@@ -198,6 +207,10 @@ extern "C" fn on_signal(_signal: libc::c_int) {
     #[cfg(target_os = "linux")]
     unsafe {
         *libc::__errno_location() = saved;
+    }
+    #[cfg(target_os = "macos")]
+    unsafe {
+        *libc::__error() = saved;
     }
 }
 

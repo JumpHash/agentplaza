@@ -1,9 +1,14 @@
-# The deploy recipe (PLAN 21.1, 23). Stub: it needs the deployment phase (23); none runs yet. A deploy rolls a release out
-# and checks it.
+# The deploy recipe (PLAN 21.1, 23): a qualified, published release goes to an environment in stages. The rollout is the
+# deploy engine's (crates/apid/src/deploy): one item per target (fan_out per_target), each uploaded as a new version and
+# served at each stage's percentage. After each stage the smoke set (the project's user-test scenarios, run through a web
+# target, 8.2) and the environment's health (error signals, and the monitoring source's error rate and latency, 11.4) are
+# checked; a failed check or a breach restores the previous version, records a rollback deploy and, for a breach, opens an
+# incident. A protected environment deploys only after a passing staging stage, through the owner's approval, and the
+# project's chat is told how each step ended.
 id = "deploy"
 name = "Deploy"
-description = "Stub until the deployment phase (23): declares its steps, none runs yet."
-version = 1
+description = "Deploys a qualified, published release to a Cloudflare environment in stages, with checks after each stage and a rollback to the previous version."
+version = 2
 inputs = ["release"]
 outputs = ["deployment"]
 triggers = ["release.published"]
@@ -11,15 +16,6 @@ triggers = ["release.published"]
 [[steps]]
 id = "rollout"
 engine = "deploy"
+fan_out = "per_target"
 gate = ["passed"]
-
-[[steps]]
-id = "verify"
-engine = "deploy"
-gate = ["passed", "no findings"]
 output = "deployment"
-
-[[edges]]
-from = "rollout"
-to = "verify"
-when = "passed"

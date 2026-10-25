@@ -1,0 +1,16 @@
+meta {
+  name: CVE report of an unknown project
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/projects/no-such-project/cves
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.responseTime: lt {{budgetMs}}
+}

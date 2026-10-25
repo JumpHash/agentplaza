@@ -32,16 +32,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 /// The per-VM process mode ([`SpawnMode::Process`]): the parent half of the
-/// `apz-vmm` child protocol. Linux only (the child boots through
-/// [`crate::builder`]). Read the module documentation for what is proxied
-/// and why.
-#[cfg(target_os = "linux")]
+/// `apz-vmm` child protocol. Linux and macOS (the child boots the VM through
+/// [`spawn`], whose backend is KVM or Hypervisor.framework). Read the module
+/// documentation for what is proxied and why.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod process;
 
 /// How long the per-VM process is given to report that its VM is up or to
 /// fail. A boot that is still silently working after this is treated as a
 /// boot failure, so a stuck child cannot hold a [`spawn`] call forever.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const CHILD_BOOT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often [`VmHandle::wait_timeout`] re-checks whether the VM's backend
@@ -167,6 +167,63 @@ pub struct VmSpec {
     /// device id (`VIRTIO_BLK_T_GET_ID`), which is the volume's name. Every backend carries them (KVM, WHP and
     /// Hypervisor.framework).
     pub volumes: Vec<DataVolume>,
+    /// What the VM is for (see [`VmKind`]). Every VM is a session's unless its caller says it is a lab
+    /// topology's: only a lab topology's VM may carry a network device.
+    pub kind: VmKind,
+    /// The VM's network interface on a lab topology's private segment, `None` for no network device
+    /// (every session's VM has none). The device is attached to the switch when the VM boots; see
+    /// [`NetAttachment`] and [`check_net`].
+    pub net: Option<NetAttachment>,
+}
+
+/// What a VM is for. A session's VM (and any fork of one) has no network device by construction: the
+/// VMM's guests reach the outside through the hub, not a network. A lab topology's VM may carry one,
+/// on the private segment its topology declares.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VmKind {
+    /// A session's VM, or a fork of one.
+    #[default]
+    Session,
+    /// A test topology's VM (PLAN 22.6): one of the VMs of a multi-VM topology, on its segment.
+    LabTopology,
+}
+
+/// The network interface of a lab topology's VM: the segment it joins, its MAC, and the switch that
+/// carries the segment (one per node: the overlay joins the nodes' switches, see
+/// [`crate::devices::virtio::net::overlay`]).
+#[derive(Clone)]
+pub struct NetAttachment {
+    /// The segment the VM's interface is on. The switch must have it.
+    pub segment: String,
+    /// The MAC the interface presents to the guest.
+    pub mac: [u8; 6],
+    /// The switch the segment lives on.
+    pub switch: Arc<crate::devices::virtio::net::switch::Switch>,
+}
+
+impl std::fmt::Debug for NetAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NetAttachment")
+            .field("segment", &self.segment)
+            .field("mac", &crate::devices::virtio::net::mac_text(&self.mac))
+            .finish()
+    }
+}
+
+/// Checks a VM's network device, which every backend runs before it builds the VM: a session's VM
+/// (a fork of one included) never carries one, and a VM with one cannot be restored from a snapshot,
+/// because the device's queues are not in a snapshot.
+pub fn check_net(spec: &VmSpec) -> Result<(), SpawnError> {
+    let Some(_) = &spec.net else {
+        return Ok(());
+    };
+    if spec.kind == VmKind::Session {
+        return Err(SpawnError::NetOnSessionVm);
+    }
+    if spec.restore.is_some() {
+        return Err(SpawnError::NetRestore);
+    }
+    Ok(())
 }
 
 /// The most shared data volumes one VM carries.
@@ -235,6 +292,8 @@ impl Default for VmSpec {
             balloon: None,
             restore: None,
             volumes: Vec::new(),
+            kind: VmKind::Session,
+            net: None,
         }
     }
 }
@@ -394,6 +453,15 @@ pub enum SpawnError {
         /// bytes once the guest has drained the console's input queue.
         reason: String,
     },
+    /// A session's VM may not carry a network device: only a lab topology's VM may
+    #[error("a session's VM may not carry a network device: only a lab topology's VM may")]
+    NetOnSessionVm,
+    /// A VM with a network device cannot be restored: its device's queues are not in a snapshot
+    #[error("a VM with a network device cannot be restored from a snapshot yet")]
+    NetRestore,
+    /// A VM with a network device runs in-process: the segment's switch is in this process
+    #[error("a VM with a network device must boot in this process, not in a child process")]
+    NetInChildProcess,
     /// The boot mode is misconfigured: {reason}
     #[error("the VMM's boot mode is misconfigured: {reason}")]
     SpawnMode {
@@ -494,8 +562,8 @@ pub enum SpawnMode {
     /// ([`crate::jail::jailer`]) can confine: `unshare(CLONE_NEWUSER)` — the
     /// unprivileged road to a mount namespace — is refused by a multi-threaded
     /// process, and the child is single-threaded at its boot by construction,
-    /// because one process holds one VM. Linux only (the child boots through
-    /// [`crate::builder`]).
+    /// because one process holds one VM. Linux and macOS (the child boots the VM
+    /// through [`spawn`]; macOS has no jail).
     Process,
 }
 
@@ -633,7 +701,13 @@ fn mode_from_env() -> Result<SpawnMode, SpawnError> {
 /// the running binary (and of its parent directory, which is where cargo puts
 /// it relative to a `deps/` test or example binary). Every candidate is
 /// returned in order when none exists, so the error names what was tried.
-#[cfg(target_os = "linux")]
+/// The child binary's file name on this platform: `apz-vmm`, `apz-vmm.exe` on Windows.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn child_binary_file() -> String {
+    format!("{CHILD_BINARY_NAME}{}", std::env::consts::EXE_SUFFIX)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn child_binary() -> Result<PathBuf, SpawnError> {
     if let Some(path) = CHILD_BINARY
         .lock()
@@ -651,9 +725,9 @@ fn child_binary() -> Result<PathBuf, SpawnError> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
-        tried.push(dir.join(CHILD_BINARY_NAME));
+        tried.push(dir.join(child_binary_file()));
         if let Some(parent) = dir.parent() {
-            tried.push(parent.join(CHILD_BINARY_NAME));
+            tried.push(parent.join(child_binary_file()));
         }
     }
     match tried.iter().find(|candidate| candidate.is_file()) {
@@ -1282,6 +1356,7 @@ fn spawn_with_id(spec: VmSpec, id: u32) -> Result<VmHandle, SpawnError> {
 /// config space claims a reserved (or unconvertible) CID and that no host
 /// listener path can match, so it is refused before any VM is built.
 fn validate_spec(spec: &VmSpec) -> Result<(), SpawnError> {
+    check_net(spec)?;
     if let Some(vsock) = &spec.vsock
         && !(MIN_GUEST_CID..=MAX_GUEST_CID).contains(&vsock.guest_cid)
     {
@@ -1614,6 +1689,34 @@ pub fn materialize_workspaces(
         .collect()
 }
 
+/// Whether this platform runs a VM in a child `apz-vmm` process: Linux and macOS (the jailed or the
+/// Hypervisor.framework one) and Windows (confined by a job object and an AppContainer).
+pub(crate) const CHILD_PROCESS_SUPPORTED: bool =
+    cfg!(any(target_os = "linux", target_os = "macos", windows));
+
+/// Where a boot goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootRoute {
+    /// In the caller's process, as the backend's threads.
+    InProcess,
+    /// In a child `apz-vmm` process.
+    Child,
+}
+
+/// The route of a boot, from the mode and whether this platform has a child process to run it in: the mode
+/// decides, and a platform with no `apz-vmm` refuses the child mode by name rather than booting somewhere
+/// the caller did not ask for.
+pub(crate) fn boot_route(mode: SpawnMode, child_supported: bool) -> Result<BootRoute, SpawnError> {
+    match (mode, child_supported) {
+        (SpawnMode::InProcess, _) => Ok(BootRoute::InProcess),
+        (SpawnMode::Process, true) => Ok(BootRoute::Child),
+        (SpawnMode::Process, false) => Err(SpawnError::SpawnMode {
+            reason: "the per-VM process mode needs an `apz-vmm` binary: this platform has none"
+                .to_string(),
+        }),
+    }
+}
+
 /// Hands the VM to the backend of the current platform.
 ///
 /// Linux/KVM uses the arch-dispatched `crate::builder::boot`; Apple Silicon
@@ -1633,31 +1736,11 @@ pub fn materialize_workspaces(
 /// proxy that satisfies the same six rules from outside — which is what makes
 /// the two modes interchangeable to a caller.
 fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
-    if spawn_mode()? == SpawnMode::Process {
-        #[cfg(target_os = "linux")]
-        {
-            return process::boot(spec, runtime);
+    if boot_route(spawn_mode()?, CHILD_PROCESS_SUPPORTED)? == BootRoute::Child {
+        if spec.net.is_some() {
+            return Err(SpawnError::NetInChildProcess);
         }
-        // The per-VM process boots through `crate::builder`, which is the
-        // Linux/KVM path. Windows has no `apz-vmm` binary either, so there the
-        // request boots in-process (warned once); macOS refuses the mode rather
-        // than silently downgrading it.
-        #[cfg(windows)]
-        {
-            static WARNED: std::sync::Once = std::sync::Once::new();
-            WARNED.call_once(|| {
-                eprintln!("vmm: APZ_VMM_SPAWN=process is Linux-only; booting in-process");
-            });
-        }
-        #[cfg(not(any(target_os = "linux", windows)))]
-        {
-            let _ = (spec, runtime);
-            return Err(SpawnError::SpawnMode {
-                reason: "the per-VM process mode is Linux-only: this platform has no `apz-vmm` \
-                         binary to run"
-                    .to_string(),
-            });
-        }
+        return process::boot(spec, runtime);
     }
 
     #[cfg(target_os = "linux")]
@@ -1675,10 +1758,16 @@ fn boot(spec: &VmSpec, runtime: Arc<VmRuntime>) -> Result<(), SpawnError> {
         crate::whp::boot(spec, runtime)
     }
 
+    #[cfg(all(windows, target_arch = "aarch64"))]
+    {
+        crate::whp::arm64::boot(spec, runtime)
+    }
+
     #[cfg(not(any(
         target_os = "linux",
         all(target_os = "macos", target_arch = "aarch64"),
-        all(windows, target_arch = "x86_64")
+        all(windows, target_arch = "x86_64"),
+        all(windows, target_arch = "aarch64")
     )))]
     {
         let _ = (spec, runtime);
@@ -1711,6 +1800,41 @@ pub fn copy_sparse(from: &Path, to: &Path) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mode_decides_the_route_and_a_platform_without_a_child_refuses_the_child_mode() {
+        assert_eq!(
+            boot_route(SpawnMode::InProcess, true).unwrap(),
+            BootRoute::InProcess
+        );
+        assert_eq!(
+            boot_route(SpawnMode::InProcess, false).unwrap(),
+            BootRoute::InProcess
+        );
+        assert_eq!(
+            boot_route(SpawnMode::Process, true).unwrap(),
+            BootRoute::Child
+        );
+        let refused = boot_route(SpawnMode::Process, false).unwrap_err();
+        assert!(
+            refused.to_string().contains("apz-vmm"),
+            "the refusal names the missing binary: {refused}"
+        );
+    }
+
+    #[test]
+    fn windows_and_the_unix_hosts_have_a_child_process() {
+        assert_eq!(
+            CHILD_PROCESS_SUPPORTED,
+            cfg!(any(target_os = "linux", target_os = "macos", windows))
+        );
+    }
+
+    #[test]
+    fn the_child_binary_has_the_platform_executable_suffix() {
+        assert!(child_binary_file().starts_with(CHILD_BINARY_NAME));
+        assert_eq!(child_binary_file().ends_with(".exe"), cfg!(windows),);
+    }
 
     /// A scratch directory unique to this process and test.
     fn scratch(name: &str) -> PathBuf {
@@ -1850,6 +1974,67 @@ mod tests {
         assert_eq!(std::fs::read(&copy).expect("the copy"), want);
 
         std::fs::remove_dir_all(&dir).expect("cleanup");
+    }
+
+    /// A network attachment on a fresh switch's segment `lab`, for the refusal tests.
+    fn a_net_attachment() -> NetAttachment {
+        let switch = crate::devices::virtio::net::switch::Switch::new();
+        switch.create_segment("lab");
+        NetAttachment {
+            segment: "lab".into(),
+            mac: [0x02, 0x41, 0x50, 0x01, 0x00, 0x02],
+            switch,
+        }
+    }
+
+    #[test]
+    fn a_net_device_is_for_lab_topologies_only() {
+        // A session's VM, and a fork of one, may not carry a net device: the builder refuses it.
+        let session = VmSpec {
+            net: Some(a_net_attachment()),
+            ..VmSpec::default()
+        };
+        assert!(matches!(
+            check_net(&session),
+            Err(SpawnError::NetOnSessionVm)
+        ));
+        assert!(matches!(
+            validate_spec(&session),
+            Err(SpawnError::NetOnSessionVm)
+        ));
+        let session_fork = VmSpec {
+            net: Some(a_net_attachment()),
+            restore: Some(PathBuf::from("/snapshots/session")),
+            ..VmSpec::default()
+        };
+        assert!(matches!(
+            check_net(&session_fork),
+            Err(SpawnError::NetOnSessionVm)
+        ));
+
+        // A lab topology's VM may carry one, booted fresh.
+        let lab = VmSpec {
+            kind: VmKind::LabTopology,
+            net: Some(a_net_attachment()),
+            ..VmSpec::default()
+        };
+        assert!(check_net(&lab).is_ok());
+
+        // A lab VM restored from a snapshot is refused: the device's queues are not in one.
+        let lab_restore = VmSpec {
+            kind: VmKind::LabTopology,
+            net: Some(a_net_attachment()),
+            restore: Some(PathBuf::from("/snapshots/lab")),
+            ..VmSpec::default()
+        };
+        assert!(matches!(
+            check_net(&lab_restore),
+            Err(SpawnError::NetRestore)
+        ));
+
+        // A VM with no net device is never refused for it, whatever its kind.
+        assert!(check_net(&VmSpec::default()).is_ok());
+        assert_eq!(VmSpec::default().kind, VmKind::Session);
     }
 
     fn spec_with_cid(guest_cid: u64) -> VmSpec {

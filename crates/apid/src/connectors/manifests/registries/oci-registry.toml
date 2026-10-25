@@ -1,0 +1,11 @@
+id = "oci-registry"
+kind = ["publish"]
+version = "1.0.0"
+scopes = ["write"]
+egress = ["ghcr.io"]
+secrets = ["OCI_TOKEN"]
+events = []
+actions = []
+webhook = false
+auth_header = "Authorization"
+auth_format = "Bearer ${SECRET}"
