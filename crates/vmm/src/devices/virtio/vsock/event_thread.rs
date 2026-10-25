@@ -125,31 +125,40 @@ fn drain(event: &EventFd) {
 }
 
 /// RX queue event: the driver made new RX buffers available. Deliver any
-/// pending host data into them.
-fn handle_rxq<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSet) -> Vec<usize> {
+/// pending host data into them. The queues to signal are left in `used`.
+fn handle_rxq<B: VsockBackend + Debug>(
+    device: &mut Vsock<B>,
+    evset: EventSet,
+    used: &mut Vec<usize>,
+) {
+    used.clear();
     if evset != EventSet::IN {
         eprintln!("vsock: rxq unexpected event {evset:?}");
         METRICS.rx_queue_event_fails.inc();
-        return Vec::new();
+        return;
     }
 
     if device.queue_events[RXQ_INDEX].read().is_err() {
         METRICS.rx_queue_event_fails.inc();
     } else if device.backend().has_pending_rx() && device.process_rx().unwrap_or(false) {
-        return vec![RXQ_INDEX];
+        used.push(RXQ_INDEX);
     }
-    Vec::new()
 }
 
-/// TX queue event: the driver handed us packets to forward to the host.
-fn handle_txq<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSet) -> Vec<usize> {
+/// TX queue event: the driver handed us packets to forward to the host. The
+/// queues to signal are left in `used`.
+fn handle_txq<B: VsockBackend + Debug>(
+    device: &mut Vsock<B>,
+    evset: EventSet,
+    used: &mut Vec<usize>,
+) {
+    used.clear();
     if evset != EventSet::IN {
         eprintln!("vsock: txq unexpected event {evset:?}");
         METRICS.tx_queue_event_fails.inc();
-        return Vec::new();
+        return;
     }
 
-    let mut used = Vec::new();
     if device.queue_events[TXQ_INDEX].read().is_err() {
         METRICS.tx_queue_event_fails.inc();
     } else {
@@ -162,15 +171,20 @@ fn handle_txq<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSet) -
             used.push(RXQ_INDEX);
         }
     }
-    used
 }
 
-/// Event queue event: the driver acknowledged a TRANSPORT_RESET.
-fn handle_evq<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSet) -> Vec<usize> {
+/// Event queue event: the driver acknowledged a TRANSPORT_RESET. The queues to
+/// signal are left in `used`.
+fn handle_evq<B: VsockBackend + Debug>(
+    device: &mut Vsock<B>,
+    evset: EventSet,
+    used: &mut Vec<usize>,
+) {
+    used.clear();
     if evset != EventSet::IN {
         eprintln!("vsock: evq unexpected event {evset:?}");
         METRICS.ev_queue_event_fails.inc();
-        return Vec::new();
+        return;
     }
 
     if device.queue_events[EVQ_INDEX].read().is_err() {
@@ -181,14 +195,18 @@ fn handle_evq<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSet) -
     // any RX the backend buffered while it was up.
     device.pending_event_ack = false;
     if device.backend().has_pending_rx() && device.process_rx().unwrap_or(false) {
-        return vec![RXQ_INDEX];
+        used.push(RXQ_INDEX);
     }
-    Vec::new()
 }
 
 /// Backend event: a host-side fd became readable (data, or a host connection).
-fn handle_backend<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSet) -> Vec<usize> {
-    let mut used = Vec::new();
+/// The queues to signal are left in `used`.
+fn handle_backend<B: VsockBackend + Debug>(
+    device: &mut Vsock<B>,
+    evset: EventSet,
+    used: &mut Vec<usize>,
+) {
+    used.clear();
     device.backend_mut().notify(evset);
     if device.process_tx().unwrap_or(false) {
         used.push(TXQ_INDEX);
@@ -196,7 +214,6 @@ fn handle_backend<B: VsockBackend + Debug>(device: &mut Vsock<B>, evset: EventSe
     if device.backend().has_pending_rx() && device.process_rx().unwrap_or(false) {
         used.push(RXQ_INDEX);
     }
-    used
 }
 
 fn run<B>(
@@ -229,6 +246,10 @@ fn run<B>(
 
     let mut activated = false;
     let mut events = [EpollEvent::new(EventSet::empty(), 0); 8];
+    // The queues a handler asks to be signalled. The buffer lives for the whole
+    // thread and is reused by every event, so steady-state processing does not
+    // allocate. Two is the most any handler reports (the TX and RX queues).
+    let mut used: Vec<usize> = Vec::with_capacity(2);
 
     loop {
         // The exit flag is the source of truth, checked before and after every
@@ -320,13 +341,13 @@ fn run<B>(
                         }
                         continue;
                     }
-                    let used = match source {
-                        RXQ => handle_rxq(&mut dev, event.event_set()),
-                        TXQ => handle_txq(&mut dev, event.event_set()),
-                        EVQ => handle_evq(&mut dev, event.event_set()),
-                        BACKEND => handle_backend(&mut dev, event.event_set()),
-                        _ => Vec::new(),
-                    };
+                    match source {
+                        RXQ => handle_rxq(&mut dev, event.event_set(), &mut used),
+                        TXQ => handle_txq(&mut dev, event.event_set(), &mut used),
+                        EVQ => handle_evq(&mut dev, event.event_set(), &mut used),
+                        BACKEND => handle_backend(&mut dev, event.event_set(), &mut used),
+                        _ => used.clear(),
+                    }
                     if !used.is_empty() && dev.signal_used_queue(0).is_err() {
                         eprintln!("vsock: failed to raise the device interrupt");
                     }

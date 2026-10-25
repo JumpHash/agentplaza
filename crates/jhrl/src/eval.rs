@@ -518,7 +518,11 @@ impl<'a> Env<'a> {
         match op {
             BinOp::And | BinOp::Or | BinOp::Implies => {
                 let av = self.eval(a)?;
-                let ab = as_bool(&av, a.span, &format!("the left side of `{}`", op.text()))?;
+                // A Bool needs no message, so the common case skips the `format!`.
+                let ab = match &av {
+                    Value::Bool(v) => Some(*v),
+                    _ => as_bool(&av, a.span, &format!("the left side of `{}`", op.text()))?,
+                };
                 // short circuit
                 match (op, ab) {
                     (BinOp::And, Some(false)) => return Ok(Value::Bool(false)),
@@ -527,7 +531,10 @@ impl<'a> Env<'a> {
                     _ => {}
                 }
                 let bv = self.eval(b)?;
-                let bb = as_bool(&bv, b.span, &format!("the right side of `{}`", op.text()))?;
+                let bb = match &bv {
+                    Value::Bool(v) => Some(*v),
+                    _ => as_bool(&bv, b.span, &format!("the right side of `{}`", op.text()))?,
+                };
                 let unk = || first_unknown(&[&av, &bv]).unwrap();
                 Ok(match (op, ab, bb) {
                     (BinOp::And, Some(true), Some(x)) => Value::Bool(x),
@@ -635,7 +642,7 @@ impl<'a> Env<'a> {
             let n0 = self.locals.len();
             if g.tuple {
                 let parts = match &x {
-                    Value::Tuple(p) | Value::List(p) if p.len() == g.names.len() => p.to_vec(),
+                    Value::Tuple(p) | Value::List(p) if p.len() == g.names.len() => p,
                     _ => {
                         return err(
                             g.span,
@@ -643,8 +650,8 @@ impl<'a> Env<'a> {
                         )
                     }
                 };
-                for (n, p) in g.names.iter().zip(parts) {
-                    self.locals.push((n.clone(), p));
+                for (n, p) in g.names.iter().zip(parts.iter()) {
+                    self.locals.push((n.clone(), p.clone()));
                 }
             } else {
                 self.locals.push((g.names[0].clone(), x));
@@ -731,7 +738,7 @@ impl<'a> Env<'a> {
     fn call(&mut self, callee: &Expr, args: &[Arg], span: Span) -> R {
         self.tick(span)?;
         let name = match &callee.kind {
-            ExprKind::Name(n) => n.clone(),
+            ExprKind::Name(n) => n.as_str(),
             ExprKind::Field(obj, method) => {
                 let o = self.eval(obj)?;
                 return match (&o, method.as_str()) {
@@ -752,7 +759,7 @@ impl<'a> Env<'a> {
             );
         }
         if let Some(m) = self.m {
-            if let Some((params, body)) = m.defs.get(&name) {
+            if let Some((params, body)) = m.defs.get(name) {
                 if params.len() != args.len() {
                     return err(
                         span,
@@ -773,7 +780,7 @@ impl<'a> Env<'a> {
         if self.depth > MAX_DEPTH {
             return err(span, "call depth exceeded (functions may not recurse)");
         }
-        match self.prog.lookup(self.pack, &name) {
+        match self.prog.lookup(self.pack, name) {
             Err(e) => return err(callee.span, e),
             Ok(Some((NameKind::Decl, r))) => {
                 let pack = self.prog.pack_of(r.file);
@@ -781,7 +788,7 @@ impl<'a> Env<'a> {
                     Item::Fn(d) => self.call_fn(d, pack, args, span),
                     Item::Table(d) => self.call_table(d, pack, args, span),
                     Item::Kind(d) => {
-                        let vals = self.positional(args, &name)?;
+                        let vals = self.positional(args, name)?;
                         let ex = resolve_kind(self.prog, d, pack, vals, span)?;
                         Ok(kind_value(&ex, d))
                     }
@@ -804,12 +811,12 @@ impl<'a> Env<'a> {
             }
             Ok(None) => {}
         }
-        let vals = self.positional(args, &name)?;
-        builtin(&name, vals, span, self)
+        let vals = self.positional(args, name)?;
+        builtin(name, vals, span, self)
     }
 
     fn positional(&mut self, args: &[Arg], name: &str) -> Result<Vec<Value>, Diag> {
-        let mut v = Vec::new();
+        let mut v = Vec::with_capacity(args.len());
         for a in args {
             if a.name.is_some() {
                 return err(a.value.span, format!("`{name}` takes no named arguments"));
@@ -853,7 +860,7 @@ impl<'a> Env<'a> {
             }
             slots[i] = Some(self.eval(&a.value)?);
         }
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(params.len());
         for (p, s) in params.iter().zip(slots) {
             let v = match s {
                 Some(v) => v,
@@ -911,7 +918,11 @@ impl<'a> Env<'a> {
             .into_iter()
             .map(|x| x.1)
             .collect();
-        if let Some(u) = first_unknown(&vals.iter().collect::<Vec<_>>()) {
+        if let Some(u) = vals
+            .iter()
+            .find(|v| matches!(v, Value::Unknown(_)))
+            .cloned()
+        {
             return Ok(u);
         }
         for (keys, out) in &d.rows {
