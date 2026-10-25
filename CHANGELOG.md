@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0
+## Unreleased
 
 The work engine. A project's work is run by the hub as sessions, seats, budgets, cards, chats and threads. Each
 session runs on a VM of its own, on a node, and its change lands through Weft, the hub's version control.
