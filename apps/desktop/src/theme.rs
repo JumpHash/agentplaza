@@ -13,7 +13,7 @@ use iced::{
     Background, Border, Color, Font, Shadow, Theme, Vector, font, theme::Palette as IcedPalette,
 };
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 /// The interface and reading voice: Geist, embedded by the console (`console::run`) and the app's default font.
 /// Its weights are the TTFs the console embeds (Regular, Medium, SemiBold, Bold, Italic); they share the family.
@@ -379,6 +379,7 @@ pub fn apply(appearance: &Appearance, saved: &[ThemeFile]) {
             CHOSEN.store(false, Ordering::Relaxed);
         }
     }
+    GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The look in use.
@@ -405,6 +406,12 @@ pub fn palette() -> &'static Palette {
     } else {
         &l.dark_palette
     }
+}
+
+/// How many times the palette in use has been replaced: by [`apply`], by a light or dark switch, or by the OS
+/// appearance. Canvas caches key on it, so they redraw after a change without hashing every colour.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
 }
 
 /// The skin in use now.
@@ -779,6 +786,8 @@ static LIGHT: AtomicBool = AtomicBool::new(false);
 static CHOSEN: AtomicBool = AtomicBool::new(false);
 /// The OS appearance as the shell last reported it (dark until it does). `apply(System)` falls back to it.
 static SYSTEM_LIGHT: AtomicBool = AtomicBool::new(false);
+/// Counts the palette replacements, read through [`generation`].
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Whether the light palette is in use.
 pub fn is_light() -> bool {
@@ -789,6 +798,7 @@ pub fn is_light() -> bool {
 pub fn choose(light: bool) {
     LIGHT.store(light, Ordering::Relaxed);
     CHOSEN.store(true, Ordering::Relaxed);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The mode saved by an older build (`"light"` or `"dark"` in `desktop.json`, key `theme`); nothing when none is saved.
@@ -806,6 +816,7 @@ pub fn follow_system(mode: iced::theme::Mode) {
     SYSTEM_LIGHT.store(light, Ordering::Relaxed);
     if !CHOSEN.load(Ordering::Relaxed) {
         LIGHT.store(light, Ordering::Relaxed);
+        GENERATION.fetch_add(1, Ordering::Relaxed);
     }
 }
 

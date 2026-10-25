@@ -3,6 +3,10 @@
 //! caches that document in desktop.json and applies it at start-up. A device may keep its own look
 //! (`appearance_device`), which wins here until it is cleared, and then the hub's choice shows again.
 
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use iced::widget::canvas::{self, Path, Stroke};
 use iced::widget::{Space, button, column, container, row, text};
 use iced::{
@@ -718,69 +722,96 @@ struct PatternSwatch {
     color: Color,
 }
 
+/// The drawing of a pattern swatch, kept between redraws, and the key of the inputs it was drawn from.
+#[derive(Default)]
+struct SwatchState {
+    cache: canvas::Cache,
+    key: Cell<u64>,
+}
+
+impl PatternSwatch {
+    /// A hash of every input the drawing depends on. The size is not in it: the cache redraws when that changes.
+    fn cache_key(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        std::mem::discriminant(&self.pattern).hash(&mut hasher);
+        self.scale.to_bits().hash(&mut hasher);
+        [self.color.r, self.color.g, self.color.b, self.color.a]
+            .map(f32::to_bits)
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 impl<M> canvas::Program<M> for PatternSwatch {
-    type State = ();
+    type State = SwatchState;
 
     fn draw(
         &self,
-        _: &(),
+        state: &SwatchState,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let (w, h) = (bounds.width, bounds.height);
-        let s = if self.scale > 0.0 { self.scale } else { 22.0 };
-        let stroke = || Stroke::default().with_width(1.0).with_color(self.color);
-        match self.pattern {
-            Pattern::None => {}
-            Pattern::Dots => {
-                let mut y = 0.0;
-                while y <= h {
+        // Nothing here depends on the cursor, so the whole swatch sits in the cache.
+        let key = self.cache_key();
+        if state.key.get() != key {
+            state.cache.clear();
+            state.key.set(key);
+        }
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            let (w, h) = (bounds.width, bounds.height);
+            let s = if self.scale > 0.0 { self.scale } else { 22.0 };
+            let stroke = || Stroke::default().with_width(1.0).with_color(self.color);
+            match self.pattern {
+                Pattern::None => {}
+                Pattern::Dots => {
+                    let mut y = 0.0;
+                    while y <= h {
+                        let mut x = 0.0;
+                        while x <= w {
+                            frame.fill(&Path::circle(Point::new(x, y), 0.9), self.color);
+                            x += s;
+                        }
+                        y += s;
+                    }
+                }
+                Pattern::Grid | Pattern::Blueprint => {
                     let mut x = 0.0;
                     while x <= w {
-                        frame.fill(&Path::circle(Point::new(x, y), 0.9), self.color);
+                        frame.stroke(&Path::line(Point::new(x, 0.0), Point::new(x, h)), stroke());
                         x += s;
                     }
-                    y += s;
+                    let mut y = 0.0;
+                    while y <= h {
+                        frame.stroke(&Path::line(Point::new(0.0, y), Point::new(w, y)), stroke());
+                        y += s;
+                    }
+                }
+                Pattern::Weave => {
+                    // Lines running down to the right, 8 px apart across the stripe.
+                    let step = 8.0 * std::f32::consts::SQRT_2;
+                    let mut c = -h;
+                    while c < w {
+                        frame.stroke(
+                            &Path::line(Point::new(c, 0.0), Point::new(c + h, h)),
+                            stroke(),
+                        );
+                        c += step;
+                    }
+                }
+                Pattern::Contours => {
+                    let centre = Point::new(w * 0.3, h * 0.4);
+                    let reach = w.max(h) * 1.5;
+                    let mut r = s;
+                    while r < reach {
+                        frame.stroke(&Path::circle(centre, r), stroke());
+                        r += s;
+                    }
                 }
             }
-            Pattern::Grid | Pattern::Blueprint => {
-                let mut x = 0.0;
-                while x <= w {
-                    frame.stroke(&Path::line(Point::new(x, 0.0), Point::new(x, h)), stroke());
-                    x += s;
-                }
-                let mut y = 0.0;
-                while y <= h {
-                    frame.stroke(&Path::line(Point::new(0.0, y), Point::new(w, y)), stroke());
-                    y += s;
-                }
-            }
-            Pattern::Weave => {
-                // Lines running down to the right, 8 px apart across the stripe.
-                let step = 8.0 * std::f32::consts::SQRT_2;
-                let mut c = -h;
-                while c < w {
-                    frame.stroke(
-                        &Path::line(Point::new(c, 0.0), Point::new(c + h, h)),
-                        stroke(),
-                    );
-                    c += step;
-                }
-            }
-            Pattern::Contours => {
-                let centre = Point::new(w * 0.3, h * 0.4);
-                let reach = w.max(h) * 1.5;
-                let mut r = s;
-                while r < reach {
-                    frame.stroke(&Path::circle(centre, r), stroke());
-                    r += s;
-                }
-            }
-        }
-        vec![frame.into_geometry()]
+        });
+        vec![geometry]
     }
 }
 

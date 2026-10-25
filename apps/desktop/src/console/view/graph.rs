@@ -10,8 +10,10 @@ use iced::widget::scrollable::{Direction, Scrollbar};
 use iced::widget::text::Alignment;
 use iced::widget::{column, scrollable, text};
 use iced::{Color, Element, Font, Length, Pixels, Point, Rectangle, Renderer, Size, Theme, mouse};
-use std::cell::RefCell;
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 /// The most nodes a graph draws; the rest are cut and a note says how many.
 const MAX_NODES: usize = 1_000;
@@ -147,89 +149,174 @@ struct Layered<'a> {
 }
 
 impl<M> canvas::Program<M> for Layered<'_> {
-    type State = ();
+    type State = CachedDrawing;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &CachedDrawing,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry<Renderer>> {
         let p = *palette();
-        let mut frame = Frame::new(renderer, bounds.size());
-        let labels: HashMap<(&str, &str), &str> = self
-            .edges
-            .iter()
-            .map(|e| ((e.from.as_str(), e.to.as_str()), e.label.as_str()))
-            .collect();
-        for route in &self.laid.routes {
-            let points: Vec<Point> = route
-                .points
+        // Nothing here follows the cursor, so a move only hands back the cached geometry.
+        state.refresh(layered_key(self, &p));
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            let labels: HashMap<(&str, &str), &str> = self
+                .edges
                 .iter()
-                .map(|&[x, y]| Point::new(x as f32, y as f32))
+                .map(|e| ((e.from.as_str(), e.to.as_str()), e.label.as_str()))
                 .collect();
-            polyline(&mut frame, &points, p.rule_strong, self.directed);
-            if let Some(label) = labels
-                .get(&(route.from.as_str(), route.to.as_str()))
-                .filter(|l| !l.is_empty())
-            {
-                let at = midpoint(&points);
-                write(
-                    &mut frame,
-                    *label,
-                    Point::new(at.x, at.y - 16.0),
-                    TYPE_META,
-                    p.ink_3,
-                    SANS,
-                    Alignment::Center,
-                );
+            for route in &self.laid.routes {
+                let points: Vec<Point> = route
+                    .points
+                    .iter()
+                    .map(|&[x, y]| Point::new(x as f32, y as f32))
+                    .collect();
+                polyline(frame, &points, p.rule_strong, self.directed);
+                if let Some(label) = labels
+                    .get(&(route.from.as_str(), route.to.as_str()))
+                    .filter(|l| !l.is_empty())
+                {
+                    let at = midpoint(&points);
+                    write(
+                        frame,
+                        *label,
+                        Point::new(at.x, at.y - 16.0),
+                        TYPE_META,
+                        p.ink_3,
+                        SANS,
+                        Alignment::Center,
+                    );
+                }
             }
-        }
-        let by_id: HashMap<&str, &GraphNode> =
-            self.nodes.iter().map(|&n| (n.id.as_str(), n)).collect();
-        for card in &self.laid.cards {
-            let Some(&node) = by_id.get(card.id.as_str()) else {
-                continue;
-            };
-            let origin = Point::new(card.x as f32, card.y as f32);
-            let size = Size::new(card.width as f32, card.height as f32);
-            let shape = Path::rounded_rectangle(origin, size, skin().radius.into());
-            frame.fill(&shape, p.sheet);
-            frame.stroke(&shape, Stroke::default().with_color(p.rule).with_width(1.0));
-            frame.fill_rectangle(
-                origin,
-                Size::new(3.0, size.height),
-                fill_of(node, &self.groups, &p),
-            );
-            write(
-                &mut frame,
-                clip(&node.label, 26),
-                Point::new(origin.x + 14.0, origin.y + 12.0),
-                TYPE_UI,
-                p.ink,
-                SANS_MEDIUM,
-                Alignment::Left,
-            );
-            if !node.sub.is_empty() {
+            let by_id: HashMap<&str, &GraphNode> =
+                self.nodes.iter().map(|&n| (n.id.as_str(), n)).collect();
+            for card in &self.laid.cards {
+                let Some(&node) = by_id.get(card.id.as_str()) else {
+                    continue;
+                };
+                let origin = Point::new(card.x as f32, card.y as f32);
+                let size = Size::new(card.width as f32, card.height as f32);
+                let shape = Path::rounded_rectangle(origin, size, skin().radius.into());
+                frame.fill(&shape, p.sheet);
+                frame.stroke(&shape, Stroke::default().with_color(p.rule).with_width(1.0));
+                frame.fill_rectangle(
+                    origin,
+                    Size::new(3.0, size.height),
+                    fill_of(node, &self.groups, &p),
+                );
                 write(
-                    &mut frame,
-                    clip(&node.sub, 32),
-                    Point::new(origin.x + 14.0, origin.y + 32.0),
-                    TYPE_META,
-                    p.ink_3,
-                    SANS,
+                    frame,
+                    clip(&node.label, 26),
+                    Point::new(origin.x + 14.0, origin.y + 12.0),
+                    TYPE_UI,
+                    p.ink,
+                    SANS_MEDIUM,
                     Alignment::Left,
                 );
+                if !node.sub.is_empty() {
+                    write(
+                        frame,
+                        clip(&node.sub, 32),
+                        Point::new(origin.x + 14.0, origin.y + 32.0),
+                        TYPE_META,
+                        p.ink_3,
+                        SANS,
+                        Alignment::Left,
+                    );
+                }
             }
-        }
-        vec![frame.into_geometry()]
+        });
+        vec![geometry]
     }
 }
 
-/// A force graph's state: the positions it settled at, and the canvas width they were settled for.
-type Settled = RefCell<Option<(f32, Vec<Point>)>>;
+/// What a canvas program keeps across redraws: the cached geometry of its drawing, and the key of the inputs that
+/// drawing was made from. The cache also starts again when the canvas changes size.
+#[derive(Default)]
+struct CachedDrawing {
+    cache: canvas::Cache,
+    key: Cell<u64>,
+}
+
+impl CachedDrawing {
+    /// Clears the cache when `key` is not the key of the drawing it holds, so the next draw makes it again.
+    fn refresh(&self, key: u64) {
+        if self.key.get() != key {
+            self.cache.clear();
+            self.key.set(key);
+        }
+    }
+}
+
+/// Hashes what a drawing reads from a node: its id, label, sub-line, group and tone.
+fn hash_node(h: &mut DefaultHasher, node: &GraphNode) {
+    node.id.hash(h);
+    node.label.hash(h);
+    node.sub.hash(h);
+    node.group.hash(h);
+    node.tone.hash(h);
+}
+
+/// Hashes the theme generation, which every palette change bumps, so a change of theme draws
+/// the geometry again. The graph draws with the theme palette, so the generation covers it.
+fn hash_palette(h: &mut DefaultHasher, _p: &Palette) {
+    h.write_u64(crate::theme::generation());
+}
+
+/// The key of a layered drawing: every node, edge, route and card it draws, with the arrows, the radius and the
+/// palette. The group colours follow from the node groups, so they need no hashing of their own.
+fn layered_key(layer: &Layered<'_>, p: &Palette) -> u64 {
+    let mut h = DefaultHasher::new();
+    layer.directed.hash(&mut h);
+    layer.nodes.len().hash(&mut h);
+    for &node in &layer.nodes {
+        hash_node(&mut h, node);
+    }
+    layer.edges.len().hash(&mut h);
+    for edge in &layer.edges {
+        edge.from.hash(&mut h);
+        edge.to.hash(&mut h);
+        edge.label.hash(&mut h);
+    }
+    layer.laid.routes.len().hash(&mut h);
+    for route in &layer.laid.routes {
+        route.from.hash(&mut h);
+        route.to.hash(&mut h);
+        route.points.len().hash(&mut h);
+        for &[x, y] in &route.points {
+            (x as f32).to_bits().hash(&mut h);
+            (y as f32).to_bits().hash(&mut h);
+        }
+    }
+    layer.laid.cards.len().hash(&mut h);
+    for card in &layer.laid.cards {
+        card.id.hash(&mut h);
+        (card.x as f32).to_bits().hash(&mut h);
+        (card.y as f32).to_bits().hash(&mut h);
+        (card.width as f32).to_bits().hash(&mut h);
+        (card.height as f32).to_bits().hash(&mut h);
+    }
+    skin().radius.to_bits().hash(&mut h);
+    hash_palette(&mut h, p);
+    h.finish()
+}
+
+/// The key of a force drawing: its nodes, its links, the arrows and the palette. The positions follow from the nodes,
+/// the links and the canvas width, and the cache checks the width itself.
+fn forced_key(force: &Forced<'_>, p: &Palette) -> u64 {
+    let mut h = DefaultHasher::new();
+    force.directed.hash(&mut h);
+    force.nodes.len().hash(&mut h);
+    for &node in &force.nodes {
+        hash_node(&mut h, node);
+    }
+    force.pairs.hash(&mut h);
+    hash_palette(&mut h, p);
+    h.finish()
+}
 
 /// A force graph's drawing: straight links, then a circle per node with its label beside it.
 struct Forced<'a> {
@@ -256,65 +343,63 @@ impl Forced<'_> {
 }
 
 impl<M> canvas::Program<M> for Forced<'_> {
-    type State = Settled;
+    type State = CachedDrawing;
 
     fn draw(
         &self,
-        state: &Settled,
+        state: &CachedDrawing,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry<Renderer>> {
         let p = *palette();
-        let mut frame = Frame::new(renderer, bounds.size());
-        // The layout runs again only when the width changes; a cache-free draw would settle it on every frame.
-        let mut cache = state.borrow_mut();
-        if cache.as_ref().is_none_or(|(w, _)| *w != bounds.width) {
-            *cache = Some((bounds.width, self.settle(bounds.width)));
-        }
-        let at: &[Point] = cache.as_ref().map_or(&[], |(_, at)| at.as_slice());
-        for &(a, b) in &self.pairs {
-            let (from, to) = (at[a], at[b]);
-            frame.stroke(
-                &Path::line(from, to),
-                Stroke::default().with_color(p.rule_strong).with_width(1.0),
-            );
-            if self.directed {
-                arrow(
-                    &mut frame,
-                    from,
-                    stop_short(from, to, NODE_R + 1.0),
-                    p.rule_strong,
+        // The layout settles again only when the width changes, and the cache checks that size itself.
+        state.refresh(forced_key(self, &p));
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            let at = self.settle(bounds.width);
+            for &(a, b) in &self.pairs {
+                let (from, to) = (at[a], at[b]);
+                frame.stroke(
+                    &Path::line(from, to),
+                    Stroke::default().with_color(p.rule_strong).with_width(1.0),
+                );
+                if self.directed {
+                    arrow(
+                        frame,
+                        from,
+                        stop_short(from, to, NODE_R + 1.0),
+                        p.rule_strong,
+                    );
+                }
+            }
+            for (node, &pos) in self.nodes.iter().zip(&at) {
+                let disc = Path::circle(pos, NODE_R);
+                frame.fill(&disc, fill_of(node, &self.groups, &p));
+                frame.stroke(&disc, Stroke::default().with_color(p.sheet).with_width(1.5));
+                // A label goes left of a node on the right side of the panel, so it stays inside the panel.
+                let right = pos.x <= bounds.width * 0.6;
+                let x = if right {
+                    pos.x + NODE_R + 5.0
+                } else {
+                    pos.x - NODE_R - 5.0
+                };
+                write(
+                    frame,
+                    clip(&node.label, 28),
+                    Point::new(x, pos.y - 7.0),
+                    TYPE_META,
+                    p.ink,
+                    SANS,
+                    if right {
+                        Alignment::Left
+                    } else {
+                        Alignment::Right
+                    },
                 );
             }
-        }
-        for (node, &pos) in self.nodes.iter().zip(at) {
-            let disc = Path::circle(pos, NODE_R);
-            frame.fill(&disc, fill_of(node, &self.groups, &p));
-            frame.stroke(&disc, Stroke::default().with_color(p.sheet).with_width(1.5));
-            // A label goes left of a node on the right side of the panel, so it stays inside the panel.
-            let right = pos.x <= bounds.width * 0.6;
-            let x = if right {
-                pos.x + NODE_R + 5.0
-            } else {
-                pos.x - NODE_R - 5.0
-            };
-            write(
-                &mut frame,
-                clip(&node.label, 28),
-                Point::new(x, pos.y - 7.0),
-                TYPE_META,
-                p.ink,
-                SANS,
-                if right {
-                    Alignment::Left
-                } else {
-                    Alignment::Right
-                },
-            );
-        }
-        vec![frame.into_geometry()]
+        });
+        vec![geometry]
     }
 }
 
