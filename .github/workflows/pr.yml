@@ -178,10 +178,12 @@ jobs:
       # without this the tests would meet a Weft another job built from other code.
       - name: Build the hub
         run: .github/ci/in-image.sh 'cargo build --release --locked -p apid --bin apid -p weft --bin weft'
+      # Each request's budget catches a hang; the timings step measures latency. On the shared runners one busy second
+      # (another job's build beside this one) put a single request past a 1 s budget in most runs, so CI allows 3 s.
       - name: Run the API tests
         id: run
         continue-on-error: true
-        run: .github/ci/in-image.sh 'api-tests/run.sh /ci-target/release/apid api-out'
+        run: .github/ci/in-image.sh 'APZ_API_BUDGET_MS=3000 api-tests/run.sh /ci-target/release/apid api-out'
       - name: Keep the results (data only)
         if: always()
         run: |
