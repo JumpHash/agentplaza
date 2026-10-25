@@ -89,7 +89,7 @@ def _fleet_run(lab: Lab) -> str | None:
 
 def _connected_count(lab: Lab, cid: int) -> int:
     """How many times vsockd has logged guest ``cid`` connecting (one line per hello it registered)."""
-    needle = f"vsockd: agent {cid} role "
+    needle = f"vsockd: agent {cid} claimed role "
     return sum(1 for line in lab.vsockd_log_text().splitlines() if needle in line and line.endswith("connected"))
 
 
