@@ -233,9 +233,11 @@ fn opening_takes_the_same_time_at_any_size() {
         let blobs = Blobs::open(dir.path()).unwrap();
         blobs.put(b"small").unwrap()
     };
-    // Grow the pack to 100 GB (sparse) and checkpoint the index past it, as a store that size would be.
+    // Grow the pack to 100 GB (sparse) and checkpoint the index past it, as a store that size would be. NTFS allocates
+    // what `set_len` adds unless the file is marked sparse, so on Windows the pack is 4 GB: still far past what an open
+    // that read the pack would get through in the second it is given.
     let pack = pack_path(dir.path(), 1);
-    let size: u64 = 100 << 30;
+    let size: u64 = if cfg!(windows) { 4 << 30 } else { 100 << 30 };
     OpenOptions::new()
         .write(true)
         .open(&pack)
@@ -255,7 +257,8 @@ fn opening_takes_the_same_time_at_any_size() {
     let took = started.elapsed();
     assert!(
         took < Duration::from_secs(1),
-        "opened a 100 GB store in {took:?}"
+        "opened a {} GB store in {took:?}",
+        size >> 30
     );
     assert_eq!(blobs.get(&h).unwrap(), b"small");
 }

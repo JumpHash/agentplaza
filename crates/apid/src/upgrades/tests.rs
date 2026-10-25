@@ -556,6 +556,8 @@ fn installed_dependencies_are_not_source_changes_but_a_tracked_file_under_them_i
     );
 }
 
+// Unix only: on Windows the probe is MSYS's `env`, which adds variables of its own (TERM, SHLVL) to what it was given.
+#[cfg(unix)]
 #[test]
 fn a_local_run_sees_only_the_allow_listed_environment() {
     let scratch = Scratch::new("env");

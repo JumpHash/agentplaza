@@ -89,6 +89,26 @@ pub trait Exec: Send + Sync {
 #[cfg(test)]
 pub struct Local;
 
+/// The variables a Windows program needs from the system to start (Local passes them on Windows only).
+#[cfg(test)]
+pub(crate) const WINDOWS_SYSTEM_ENV: &[&str] = &[
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "ComSpec",
+    "PATHEXT",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+];
+
 #[cfg(test)]
 impl Exec for Local {
     fn run(
@@ -102,7 +122,8 @@ impl Exec for Local {
         // of the hub user's environment or credentials does. A project builds in its own `target/`.
         let home = std::env::temp_dir().join(format!("apid-upgrade-home-{}", std::process::id()));
         std::fs::create_dir_all(&home).map_err(|e| format!("{program}: {e}"))?;
-        let out = std::process::Command::new(program)
+        let mut command = std::process::Command::new(program);
+        command
             .args(args)
             .current_dir(dir)
             .env_clear()
@@ -111,7 +132,15 @@ impl Exec for Local {
                 "LANG",
                 std::env::var("LANG").unwrap_or_else(|_| "C.UTF-8".into()),
             )
-            .env("HOME", &home)
+            .env("HOME", &home);
+        // Windows programs need the system's own variables to start at all (the system root, the temp directory, the
+        // profile cargo and rustup read); they carry no credentials.
+        for name in WINDOWS_SYSTEM_ENV.iter().filter(|_| cfg!(windows)) {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        let out = command
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .output()
             .map_err(|e| format!("{program}: {e}"))?;
