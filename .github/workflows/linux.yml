@@ -115,9 +115,10 @@ jobs:
       # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
-      # Under qemu-user there is no Landlock, and a program that fails to exec is not reported back to the spawn: the
-      # tests that start an MCP server in the sandbox, and the bridge's missing-program test, run on x86_64 and on the
-      # arm64 runners natively instead.
+      # What qemu-user cannot do: Landlock (the MCP servers started in the sandbox, adb's confinement), report a program
+      # that fails to exec back to the spawn (the bridge's, the eval harness's and the security stage's missing
+      # programs), apply RLIMIT_AS (the language servers' cap), or show the emulated CPU in /proc/cpuinfo (noded's arm64
+      # baseline). These run on x86_64; the bridge's and noded's also natively on the arm64 runners (PACKAGES).
       - name: Which tests
         if: inputs.tests && (inputs.only != '' || (matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')))
         env:
@@ -128,7 +129,13 @@ jobs:
           for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
           if [ -n "$filter" ]; then echo "the tests of $ONLY and of what depends on them: $filter"; fi
           if [ "$EMULATED" = true ]; then
-            emulated='(package(apid) & test(/^mcp::tests::/)) | (package(vsockd) & test(=mcp_bridge::tests::mcp_server_that_cannot_start_reports_on_5201_and_exits_1))'
+            emulated='(package(apid) & test(/^mcp::tests::/))'
+            emulated="$emulated | (package(apz-android) & test(=adb::tests::a_confined_line_is_the_sandbox_command_for_the_work_dir_and_the_server_port))"
+            emulated="$emulated | (package(vsockd) & test(=mcp_bridge::tests::mcp_server_that_cannot_start_reports_on_5201_and_exits_1))"
+            emulated="$emulated | (package(apz-evals) & test(=noded::tests::a_harness_that_cannot_start_fails_the_run_and_starts_no_vm))"
+            emulated="$emulated | (package(apz-topology) & test(=security::exec::tests::a_missing_program_is_an_error_not_a_pass))"
+            emulated="$emulated | (package(apz-lsp) & test(=limits::tests::the_child_is_capped_where_the_os_enforces_it_and_only_there))"
+            emulated="$emulated | (package(noded) & test(=cpu_baseline::tests::the_container_reads_its_own_arm64_baseline))"
             filter="${filter:+($filter) & }not ($emulated)"
             echo "not under qemu: $emulated"
           fi
