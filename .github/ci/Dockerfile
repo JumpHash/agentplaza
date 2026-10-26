@@ -175,9 +175,14 @@ ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
 ENV QEMU_LD_PREFIX=/usr/aarch64-linux-gnu
 # A child started with a cleared environment (the topology runner's services, the harness's ACP relay) inherits no
 # prefix, and qemu then reads the loader and the libraries at their own paths: they are linked where Ubuntu's arm64
-# loader looks for them.
+# loader looks for them. The library folder already exists (a package puts files there); each library is linked into
+# it, and what is already there stays.
 RUN ln -sT /usr/aarch64-linux-gnu/lib/ld-linux-aarch64.so.1 /lib/ld-linux-aarch64.so.1 \
- && ln -sT /usr/aarch64-linux-gnu/lib /lib/aarch64-linux-gnu
+ && mkdir -p /lib/aarch64-linux-gnu && echo "already in /lib/aarch64-linux-gnu:" && ls -A /lib/aarch64-linux-gnu \
+ && for f in /usr/aarch64-linux-gnu/lib/*; do \
+      [ -e "/lib/aarch64-linux-gnu/${f##*/}" ] || ln -s "$f" /lib/aarch64-linux-gnu/; \
+    done \
+ && test -e /lib/aarch64-linux-gnu/libc.so.6
 
 FROM common AS arch-arm64
 # Native: linked with lld like x86_64's.
