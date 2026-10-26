@@ -115,10 +115,10 @@ jobs:
       # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
-      # What qemu-user cannot do, so these run on x86_64 and on the arm64 runners natively instead: Landlock (the MCP
-      # servers started in the sandbox, adb's confinement), report a program that fails to exec back to the spawn (the
-      # bridge's, the eval harness's and the security stage's missing programs), apply RLIMIT_AS (the language
-      # servers' cap), or show the emulated CPU in /proc/cpuinfo (noded's arm64 baseline).
+      # What qemu-user cannot do: Landlock (the MCP servers started in the sandbox, adb's confinement), report a program
+      # that fails to exec back to the spawn (the bridge's, the eval harness's and the security stage's missing
+      # programs), apply RLIMIT_AS (the language servers' cap), or show the emulated CPU in /proc/cpuinfo (noded's arm64
+      # baseline). These run on x86_64; the bridge's and noded's also natively on the arm64 runners (PACKAGES).
       - name: Which tests
         if: inputs.tests && (inputs.only != '' || (matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')))
         env:
