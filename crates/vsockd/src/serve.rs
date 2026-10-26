@@ -12,7 +12,8 @@
 //! A tool that cannot run answers `ok: false`; a line that is not a valid
 //! guest message drops the session. The CID is the socket's, never the line's.
 
-use std::fmt;
+use std::cell::RefCell;
+use std::fmt::{self, Write as _};
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -198,6 +199,7 @@ pub fn handle_session<S: Read + Write + ReadTimeout + WaitReady>(
         vm,
         limits,
         log,
+        scratch: RefCell::new(String::new()),
     };
     if !keepalive {
         session.send(lines, &HostMessage::welcome(None, None, None))?;
@@ -230,6 +232,8 @@ struct Session<'a> {
     vm: u32,
     limits: SessionLimits,
     log: &'a dyn SessionLog,
+    /// The buffer a log line is built in, reused so that logging allocates nothing per line.
+    scratch: RefCell<String>,
 }
 
 impl Session<'_> {
@@ -255,9 +259,9 @@ impl Session<'_> {
                     self.charge(&mut calls, &name)?;
                     let (ok, output) = run_tool(&name, &args);
                     self.send(lines, &HostMessage::ToolResult { call, ok, output })?;
-                    self.log.line(&format!(
+                    self.note(format_args!(
                         "vsockd: answered call {call} ({}) for guest {cid} vm {vm}",
-                        sanitize_for_log(&name)
+                        Sanitized(&name)
                     ));
                 }
                 GuestMessage::Bye { calls: guest_calls } => {
@@ -398,7 +402,7 @@ impl Session<'_> {
             }
             // apid's answers, written here: this thread is the guest's only writer.
             while let Ok(done) = bridge.settled.try_recv() {
-                self.log.line(&format!("vsockd: agent {cid} {}", done.note));
+                self.note(format_args!("vsockd: agent {cid} {}", done.note));
                 if let Some(line) = done.line {
                     if let HostMessage::Profile { profile: found } = &line {
                         next_hello = None;
@@ -484,7 +488,9 @@ impl Session<'_> {
                 GuestMessage::ToolResult { call, ok, output } => {
                     match outstanding.iter().position(|(issued, _)| *issued == call) {
                         Some(index) => {
-                            self.log.line(&format!("vsockd: agent {cid} answered tool call {call} (ok: {ok})"));
+                            self.note(format_args!(
+                                "vsockd: agent {cid} answered tool call {call} (ok: {ok})"
+                            ));
                             // A waiter that gave up has dropped its receiver.
                             if let (_, Some(reply)) = outstanding.remove(index) {
                                 let _ = reply.send(ToolReply { ok, output });
@@ -500,9 +506,9 @@ impl Session<'_> {
                     hub.note_calls(cid, calls);
                     let (ok, output) = run_tool(&name, &args);
                     self.send(lines, &HostMessage::ToolResult { call, ok, output })?;
-                    self.log.line(&format!(
+                    self.note(format_args!(
                         "vsockd: answered call {call} ({}) for agent {cid}",
-                        sanitize_for_log(&name)
+                        Sanitized(&name)
                     ));
                 }
                 GuestMessage::Bye { calls: guest_calls } => {
@@ -530,9 +536,7 @@ impl Session<'_> {
                 | GuestMessage::Compressed { .. }
                 | GuestMessage::Stats { .. }
                 | GuestMessage::ExecResult { .. }
-                | GuestMessage::Listening { .. }) => {
-                    self.forward(lines, &bridge, &line, message)?
-                }
+                | GuestMessage::Listening { .. }) => self.forward(lines, &bridge, line, message)?,
             }
         }
     }
@@ -573,7 +577,7 @@ impl Session<'_> {
         &self,
         lines: &mut Lines<S>,
         bridge: &Bridge,
-        line: &str,
+        line: String,
         message: GuestMessage,
     ) -> Result<(), HostError> {
         let (cid, kind) = (self.cid, guest_kind(&message));
@@ -588,12 +592,11 @@ impl Session<'_> {
             return Ok(());
         }
         bridge.in_flight.fetch_add(1, Ordering::SeqCst);
-        let (apid, in_flight, tx, waker, line) = (
+        let (apid, in_flight, tx, waker) = (
             Arc::clone(&bridge.apid),
             Arc::clone(&bridge.in_flight),
             bridge.settled_tx.clone(),
             Arc::clone(&bridge.waker),
-            line.to_string(),
         );
         thread::spawn(move || {
             let done = match apid.message(cid, &line) {
@@ -638,13 +641,22 @@ impl Session<'_> {
         }
     }
 
+    /// Writes one log line, built in the session's reused buffer.
+    fn note(&self, text: fmt::Arguments<'_>) {
+        let mut buffer = self.scratch.borrow_mut();
+        buffer.clear();
+        // Writing into a String cannot fail.
+        let _ = buffer.write_fmt(text);
+        self.log.line(buffer.as_str());
+    }
+
     /// Logs a guest line and parses it; an unparsable line drops the session.
     fn parse(&self, line: &str) -> Result<GuestMessage, HostError> {
-        self.log.line(&format!(
+        self.note(format_args!(
             "[guest {} vm{} ->] {}",
             self.cid,
             self.vm,
-            sanitize_for_log(line)
+            Sanitized(line)
         ));
         GuestMessage::from_line(line)
             .map_err(|err| violation(format!("unparsable guest line ({err}): {line:?}")))
@@ -669,11 +681,11 @@ impl Session<'_> {
         let line = message
             .to_line()
             .map_err(|err| violation(format!("cannot encode a host line: {err}")))?;
-        self.log.line(&format!(
+        self.note(format_args!(
             "[<-] guest {} vm{} {}",
             self.cid,
             self.vm,
-            sanitize_for_log(&line)
+            Sanitized(&line)
         ));
         lines.send(&line)?;
         Ok(())
@@ -824,21 +836,29 @@ fn host_uptime() -> io::Result<String> {
 const LOG_LINE_CHARS: usize = 240;
 
 /// Escapes control characters so a guest cannot forge or erase log lines, and
-/// cuts long lines to [`LOG_LINE_CHARS`].
-fn sanitize_for_log(line: &str) -> String {
-    let mut sanitized = String::with_capacity(line.len().min(LOG_LINE_CHARS + 32));
-    let total = line.chars().count();
-    for character in line.chars().take(LOG_LINE_CHARS) {
-        if character.is_control() {
-            sanitized.push_str(&format!("\\x{:02x}", character as u32));
-        } else {
-            sanitized.push(character);
+/// cuts long lines to [`LOG_LINE_CHARS`]. It writes straight into the log line.
+struct Sanitized<'a>(&'a str);
+
+impl fmt::Display for Sanitized<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let total = self.0.chars().count();
+        for character in self.0.chars().take(LOG_LINE_CHARS) {
+            if character.is_control() {
+                write!(f, "\\x{:02x}", character as u32)?;
+            } else {
+                f.write_char(character)?;
+            }
         }
+        if total > LOG_LINE_CHARS {
+            write!(f, " … ({total} chars)")?;
+        }
+        Ok(())
     }
-    if total > LOG_LINE_CHARS {
-        sanitized.push_str(&format!(" … ({total} chars)"));
-    }
-    sanitized
+}
+
+/// The guest's text as a whole log line shows it (see [`Sanitized`]).
+fn sanitize_for_log(line: &str) -> String {
+    Sanitized(line).to_string()
 }
 
 #[cfg(test)]

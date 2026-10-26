@@ -1635,7 +1635,8 @@ impl canvas::Program<Msg> for Surface<'_> {
             let mut run: Option<Run> = None;
             for col in 0..screen.cols() {
                 let c = row.cells.get(col).copied().unwrap_or_default();
-                let (fg, bg) = colors(c.style, p);
+                let style = c.style();
+                let (fg, bg) = colors(style, p);
                 let x = PAD + col as f32 * CELL_W;
                 if bg != p.paper {
                     frame.fill_rectangle(Point::new(x, top), cell, bg);
@@ -1643,29 +1644,27 @@ impl canvas::Program<Msg> for Surface<'_> {
                 if range.is_some_and(|(start, end)| in_range(start, end, line, col)) {
                     frame.fill_rectangle(Point::new(x, top), cell, Color { a: 0.3, ..p.info });
                 }
-                if c.style.underline && c.width != 0 {
+                if style.underline && c.width() != 0 {
                     frame.fill_rectangle(
                         Point::new(x, top + CELL_H - 2.0),
                         Size::new(CELL_W, 1.0),
                         fg,
                     );
                 }
-                match c.width {
+                match c.width() {
                     0 => flush(&mut frame, &mut run, top),
                     2 => {
                         flush(&mut frame, &mut run, top);
-                        draw_text(&mut frame, x, top, c.ch.to_string(), fg, c.style.bold);
+                        draw_text(&mut frame, x, top, c.ch().to_string(), fg, style.bold);
                     }
-                    _ if c.ch == ' ' => flush(&mut frame, &mut run, top),
+                    _ if c.ch() == ' ' => flush(&mut frame, &mut run, top),
                     _ => match &mut run {
-                        Some((_, color, bold, content))
-                            if *color == fg && *bold == c.style.bold =>
-                        {
-                            content.push(c.ch)
+                        Some((_, color, bold, content)) if *color == fg && *bold == style.bold => {
+                            content.push(c.ch())
                         }
                         _ => {
                             flush(&mut frame, &mut run, top);
-                            run = Some((col, fg, c.style.bold, c.ch.to_string()));
+                            run = Some((col, fg, style.bold, c.ch().to_string()));
                         }
                     },
                 }
@@ -1680,15 +1679,15 @@ impl canvas::Program<Msg> for Surface<'_> {
                 if let Some(under) = screen
                     .view_row(cy)
                     .and_then(|row| row.cells.get(cx))
-                    .filter(|c| c.width == 1 && c.ch != ' ')
+                    .filter(|c| c.width() == 1 && c.ch() != ' ')
                 {
                     draw_text(
                         &mut frame,
                         x,
                         top,
-                        under.ch.to_string(),
+                        under.ch().to_string(),
                         p.paper,
-                        under.style.bold,
+                        under.style().bold,
                     );
                 }
             } else {

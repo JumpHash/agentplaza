@@ -368,7 +368,7 @@ fn file_in(path: &str, bytes: &[u8]) -> FileIn {
 #[test]
 fn a_version_file_is_kept_in_the_object_store_under_its_hash() {
     let dir = scratch("version-file");
-    let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
+    let objects = Arc::new(apz_blobs::Blobs::scratch(&dir).expect("opens the object store"));
     let skills = Skills::with_generations(
         Arc::new(store_db::DbSkills::for_tests()),
         Arc::new(StoreBlobs::new(Arc::clone(&objects))),
@@ -401,7 +401,7 @@ fn a_version_file_is_kept_in_the_object_store_under_its_hash() {
 #[test]
 fn store_blobs_read_only_lower_case_hashes_the_store_holds() {
     let dir = scratch("store-blobs");
-    let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
+    let objects = Arc::new(apz_blobs::Blobs::scratch(&dir).expect("opens the object store"));
     let blobs = StoreBlobs::new(objects);
     let hash = blobs.put(b"reference").expect("puts");
     assert_eq!(hash, apz_blobs::Hash::of(b"reference").to_string());
@@ -476,7 +476,7 @@ fn hashes_are_every_file_of_every_version_archived_or_not() {
 #[test]
 fn a_known_hash_reads_its_bytes_back_from_the_store() {
     let dir = scratch("known-hash");
-    let objects = Arc::new(apz_blobs::Blobs::open(&dir).expect("opens the object store"));
+    let objects = Arc::new(apz_blobs::Blobs::scratch(&dir).expect("opens the object store"));
     let skills = Skills::with_generations(
         Arc::new(store_db::DbSkills::for_tests()),
         Arc::new(StoreBlobs::new(objects)),

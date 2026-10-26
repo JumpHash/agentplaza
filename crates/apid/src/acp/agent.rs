@@ -44,7 +44,7 @@ pub trait Hub: Sync {
     /// or why there is none (no such agent, offline, a model agent with no chat).
     fn agent(&self, name: Option<&str>) -> Result<u64, String>;
     /// Subscribes to the bus. Taken before the work is queued, so no frame is missed.
-    fn subscribe(&self) -> Receiver<Frame>;
+    fn subscribe(&self) -> Receiver<Arc<Frame>>;
     /// Queues `text` as the owner's chat on agent `cid`, thread `thread` (origin: the owner, over
     /// ACP), in `lane` when the session has one; the work item's id.
     fn chat(
@@ -527,7 +527,7 @@ fn prompt(conn: &Conn<'_>, peer: &Peer, params: &Value) -> Result<Value, types::
 struct Turn {
     session: Session,
     work: u64,
-    frames: Receiver<Frame>,
+    frames: Receiver<Arc<Frame>>,
     govern: bool,
     /// Given back when the turn ends (its drop), so the connection may run another prompt.
     _slot: Option<TurnSlot>,
@@ -960,7 +960,7 @@ fn stream(
     peer: &Peer,
     session: &Session,
     work: u64,
-    frames: &Receiver<Frame>,
+    frames: &Receiver<Arc<Frame>>,
     govern: bool,
     wire: Wire,
 ) -> Result<Value, types::Error> {
@@ -1430,7 +1430,7 @@ mod tests {
     struct FakeHub {
         calls: Mutex<Vec<String>>,
         /// The bus receivers, one handed out per `subscribe`, first in first out; the test keeps the senders.
-        frames: Mutex<Vec<Receiver<Frame>>>,
+        frames: Mutex<Vec<Receiver<Arc<Frame>>>>,
         mode: Mutex<String>,
         /// What `usage` reports for any work (None: no model call).
         usage: Mutex<Option<Value>>,
@@ -1466,7 +1466,7 @@ mod tests {
             }
         }
 
-        fn subscribe(&self) -> Receiver<Frame> {
+        fn subscribe(&self) -> Receiver<Arc<Frame>> {
             let mut frames = lock(&self.frames);
             assert!(!frames.is_empty(), "the fake hub has no receiver left");
             frames.remove(0)
@@ -1578,7 +1578,7 @@ mod tests {
     struct Harness {
         client: FakeClient,
         plaza: Arc<Plaza>,
-        frames: Sender<Frame>,
+        frames: Sender<Arc<Frame>>,
         _server: Peer,
     }
 
@@ -1601,7 +1601,11 @@ mod tests {
 
     /// The plaza a connection serves: a fake hub with the bus's sender kept by the test, and whether the
     /// owner allows the v2 draft.
-    fn plaza(agent: Option<&str>, caller: Caller, allow_v2: bool) -> (Arc<Plaza>, Sender<Frame>) {
+    fn plaza(
+        agent: Option<&str>,
+        caller: Caller,
+        allow_v2: bool,
+    ) -> (Arc<Plaza>, Sender<Arc<Frame>>) {
         let (frames, rx) = mpsc::channel();
         let plaza = Arc::new(Plaza {
             hub: FakeHub {
@@ -1696,8 +1700,8 @@ mod tests {
     }
 
     /// The work's end on the bus, as the agent's transcript sends it.
-    fn work_end() -> Frame {
-        Frame {
+    fn work_end() -> Arc<Frame> {
+        Arc::new(Frame {
             kind: "transcript".to_string(),
             queued: std::time::Instant::now(),
             seq: 0,
@@ -1708,7 +1712,7 @@ mod tests {
                 "data": {"status": "done", "summary": ""},
             })
             .to_string(),
-        }
+        })
     }
 
     #[test]
@@ -2070,7 +2074,7 @@ mod tests {
     fn a_fifth_v2_prompt_is_refused_while_four_turns_run() {
         let (plaza, editor, frames, _server) = v2_harness(true);
         // Each turn takes the next bus receiver; the test keeps the sender of each one.
-        let extra: Vec<Sender<Frame>> = (0..4)
+        let extra: Vec<Sender<Arc<Frame>>> = (0..4)
             .map(|_| {
                 let (tx, rx) = mpsc::channel();
                 lock(&plaza.hub.frames).push(rx);
@@ -2202,7 +2206,7 @@ mod tests {
     }
 
     /// A connection to a fake plaza whose owner allows the v2 draft or not, with the editor on its end.
-    fn v2_harness(allow_v2: bool) -> (Arc<Plaza>, RawEditor, Sender<Frame>, Peer) {
+    fn v2_harness(allow_v2: bool) -> (Arc<Plaza>, RawEditor, Sender<Arc<Frame>>, Peer) {
         let (plaza, frames) = plaza(None, Caller::Owner, allow_v2);
         let (server, client_in, client_out) = serve(&plaza);
         (plaza, raw_editor(client_in, client_out), frames, server)
@@ -2515,7 +2519,7 @@ mod tests {
         let session = h.client.new_session("/work/app").expect("session/new");
         // The work's end is already on the bus; the turn reads it.
         h.frames
-            .send(Frame {
+            .send(Arc::new(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
                 seq: 0,
@@ -2526,7 +2530,7 @@ mod tests {
                     "data": {"status": "done", "summary": ""},
                 })
                 .to_string(),
-            })
+            }))
             .expect("the bus is open");
         h.client
             .prompt(&session, "Fix the parser\nthen test it")
@@ -2994,7 +2998,7 @@ mod tests {
         let id = h.plaza.sessions.list(None)[0].id.clone();
         h.plaza.sessions.add_work(&id, 1, "earlier", 0);
         h.frames
-            .send(Frame {
+            .send(Arc::new(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
                 seq: 0,
@@ -3005,7 +3009,7 @@ mod tests {
                     "data": {"status": "done", "summary": ""},
                 })
                 .to_string(),
-            })
+            }))
             .expect("the bus is open");
         h.client.prompt(&session, "again").expect("session/prompt");
         let said = serde_json::to_string(&h.client.updates()).expect("serialize");
@@ -3051,7 +3055,7 @@ mod tests {
         // The work's end is already on the bus when the prompt subscribes; the channel keeps it.
         // The frame's shape is the transcript entry's (`cid`, `work`, `kind`, `data`).
         h.frames
-            .send(Frame {
+            .send(Arc::new(Frame {
                 kind: "transcript".to_string(),
                 queued: std::time::Instant::now(),
                 seq: 0,
@@ -3062,7 +3066,7 @@ mod tests {
                     "data": {"status": "done", "summary": ""},
                 })
                 .to_string(),
-            })
+            }))
             .expect("the bus is open");
         let stop = h.client.prompt(&session, "hello").expect("session/prompt");
         assert_eq!(

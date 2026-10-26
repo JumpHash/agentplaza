@@ -88,7 +88,7 @@ pub(super) fn run<'a>(
         picks: Cell::new(0),
     };
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Blobs::open(dir.path()).unwrap();
+    let blobs = Blobs::scratch(dir.path()).unwrap();
     let ctx = Ctx {
         models: &fake,
         blobs: &blobs,
@@ -670,7 +670,7 @@ fn a_smoke_set_on_a_local_chrome_passes_the_healthy_page_and_fails_a_broken_depl
         }
     };
     let blobs_dir = tempfile::tempdir().unwrap();
-    let blobs = Blobs::open(blobs_dir.path()).unwrap();
+    let blobs = Blobs::scratch(blobs_dir.path()).unwrap();
     // The smoke set reads the screen as it is: the cart page shows "Cart", and a broken deploy's page does not.
     let set = [scenario("The cart loads", "look at the cart", "Cart")];
     let healthy = format!("{}/", serve(true));

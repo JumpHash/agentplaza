@@ -1204,7 +1204,7 @@ pub(crate) mod tests {
 
     pub(crate) fn reviews_in(dir: &tempfile::TempDir) -> Reviews {
         let blobs =
-            apz_blobs::Blobs::open(&dir.path().join("blobs")).expect("the object store opens");
+            apz_blobs::Blobs::scratch(&dir.path().join("blobs")).expect("the object store opens");
         Reviews::new(Arc::new(blobs))
     }
 

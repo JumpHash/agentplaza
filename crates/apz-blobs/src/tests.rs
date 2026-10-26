@@ -35,6 +35,27 @@ fn blobs_round_trip_and_survive_a_reopen() {
 }
 
 #[test]
+fn a_scratch_store_keeps_its_blobs_across_a_reopen_and_reads_as_a_synced_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = big(300_000, 7);
+    let h = {
+        let blobs = Blobs::scratch(dir.path()).unwrap();
+        assert!(!blobs.sync);
+        blobs.put(&text).unwrap()
+    };
+    let blobs = Blobs::scratch(dir.path()).unwrap();
+    assert_eq!(blobs.get(&h).unwrap(), text);
+    drop(blobs);
+    let synced = Blobs::open(dir.path()).unwrap();
+    assert!(synced.sync);
+    assert_eq!(
+        synced.get(&h).unwrap(),
+        text,
+        "the same folder opens either way"
+    );
+}
+
+#[test]
 fn a_large_blob_is_chunked_and_a_small_edit_shares_chunks() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = Blobs::open(dir.path()).unwrap();

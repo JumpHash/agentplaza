@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn a_confirmed_failure_reads_feature_and_a_slow_timing_reads_performance() {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = apz_blobs::Blobs::open(dir.path()).unwrap();
+        let blobs = apz_blobs::Blobs::scratch(dir.path()).unwrap();
         let reviews = Reviews::new(std::sync::Arc::new(blobs));
         let scenario = json!({"id": "pay"}).to_string();
         reviews

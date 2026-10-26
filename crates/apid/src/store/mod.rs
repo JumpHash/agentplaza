@@ -71,9 +71,26 @@ pub const FILES: &[FileSpec] = &[
 ];
 
 /// Opens the hub's store in `state_dir`: takes the folder's lock (refusing when another hub holds it), then opens and
-/// migrates the three files.
+/// migrates the three files. A unit test's store is [`scratch`].
 pub fn open(state_dir: &Path) -> Result<Store, StoreError> {
-    Store::open(state_dir, FILES)
+    #[cfg(test)]
+    let files = &scratch(FILES);
+    #[cfg(not(test))]
+    let files = FILES;
+    Store::open(state_dir, files)
+}
+
+/// `files` as a test's throwaway store ([`Durability::Scratch`]): the same files, never synced. Twenty store tests
+/// syncing at once on a shared CI disk took single tests past two minutes.
+#[cfg(test)]
+pub(crate) fn scratch(files: &[FileSpec]) -> Vec<FileSpec> {
+    files
+        .iter()
+        .map(|f| FileSpec {
+            durability: Durability::Scratch,
+            ..*f
+        })
+        .collect()
 }
 
 /// The DDL of every component's tables, as `sql/plaza/0001_init.sql` holds it (`apid schema` prints it).

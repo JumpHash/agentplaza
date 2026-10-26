@@ -1,5 +1,6 @@
 //! The plaza as the ACP methods see it: [`super::agent::Hub`] over the hub's [`App`].
 
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use apz_proto::wire::{Control, WorkKind, WorkLane};
@@ -50,7 +51,7 @@ impl Hub for AppHub<'_> {
         }
     }
 
-    fn subscribe(&self) -> Receiver<Frame> {
+    fn subscribe(&self) -> Receiver<Arc<Frame>> {
         self.app.bus.subscribe()
     }
 

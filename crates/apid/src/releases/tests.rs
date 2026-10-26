@@ -315,7 +315,7 @@ impl World {
         let dir =
             std::env::temp_dir().join(format!("apid-release-blobs-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let blobs = Arc::new(Blobs::open(&dir).expect("the object store opens"));
+        let blobs = Arc::new(Blobs::scratch(&dir).expect("the object store opens"));
         World {
             ledger: WeftLedger(client),
             runs: Runs::default(),

@@ -21,6 +21,11 @@ schemars = "1"
 
 [dev-dependencies]
 rcgen = "0.13"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "http"
+harness = false
 
 [lints]
 workspace = true

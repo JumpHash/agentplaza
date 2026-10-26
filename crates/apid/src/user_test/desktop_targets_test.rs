@@ -94,7 +94,7 @@ pub(super) fn scenario() -> Scenario {
 /// One scenario on the targets `open` makes (a fresh one for each run), through the loop.
 pub(super) fn run<'a>(open: &mut dyn FnMut() -> Result<Box<dyn Target + 'a>, String>) -> Execution {
     let dir = tempfile::tempdir().unwrap();
-    let blobs = Blobs::open(dir.path()).unwrap();
+    let blobs = Blobs::scratch(dir.path()).unwrap();
     let models = Fake;
     let ctx = Ctx {
         models: &models,

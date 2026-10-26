@@ -3,6 +3,10 @@
 //! (the Lab's job detail does). The math that places them (stacking, round axis
 //! ceilings, blending between two frames, the point under a cursor) is pure and tested alone.
 
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use iced::alignment;
 use iced::mouse;
 use iced::widget::canvas::{self, Path, Stroke};
@@ -176,13 +180,55 @@ pub struct StackedArea {
     pub heads: Option<Vec<String>>,
 }
 
+/// Hashes a colour bit for bit, so a change to any channel changes a chart's key.
+fn hash_color(h: &mut DefaultHasher, c: Color) {
+    [c.r, c.g, c.b, c.a].map(f32::to_bits).hash(h);
+}
+
+/// Hashes a series of values bit for bit, after their count.
+fn hash_values(h: &mut DefaultHasher, values: &[f64]) {
+    values.len().hash(h);
+    for v in values {
+        v.to_bits().hash(h);
+    }
+}
+
+/// What a stacked area keeps between frames: its static drawing, the key that drawing was made
+/// for, and the hovered point.
+#[derive(Default)]
+pub struct StackedState {
+    cache: canvas::Cache,
+    key: Cell<u64>,
+    hover: Option<usize>,
+}
+
+impl StackedArea {
+    /// A hash of every input the static drawing reads: the values, colours, labels, axis format,
+    /// empty message and the palette colours it uses. The keys, heads and hover are left out, as
+    /// the tooltip is drawn fresh each time.
+    fn static_key(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        self.series.len().hash(&mut h);
+        for s in &self.series {
+            hash_color(&mut h, s.color);
+            hash_values(&mut h, &s.values);
+        }
+        self.labels.hash(&mut h);
+        (self.format as usize).hash(&mut h);
+        self.empty.hash(&mut h);
+        hash_color(&mut h, crate::theme::palette().rule);
+        hash_color(&mut h, crate::theme::palette().rule_faint);
+        hash_color(&mut h, crate::theme::palette().ink_3);
+        h.finish()
+    }
+}
+
 impl<M> canvas::Program<M> for StackedArea {
-    /// The hovered point.
-    type State = Option<usize>;
+    type State = StackedState;
 
     fn update(
         &self,
-        hover: &mut Option<usize>,
+        state: &mut StackedState,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
@@ -194,8 +240,8 @@ impl<M> canvas::Program<M> for StackedArea {
         let next = cursor
             .position_in(bounds)
             .and_then(|p| point_at(p.x, self.labels.len(), left, width));
-        if next != *hover {
-            *hover = next;
+        if next != state.hover {
+            state.hover = next;
             return Some(canvas::Action::request_redraw());
         }
         None
@@ -203,203 +249,233 @@ impl<M> canvas::Program<M> for StackedArea {
 
     fn draw(
         &self,
-        hover: &Option<usize>,
+        state: &StackedState,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (left, top, width, height) = plot(bounds, PAD_LEFT, PAD_BOTTOM);
-        let tops = stacked_tops(&self.series);
-        let n = tops.first().map_or(0, Vec::len);
-        // A snapshot hovers the chart at its window point (`APZ_HOVER`), as a real cursor would.
-        let hover = (*hover).or_else(|| snapshot_hover_index(bounds, n, left, width));
-        let hover = &hover;
-        let peak = tops
-            .last()
-            .map_or(0.0, |t| t.iter().copied().fold(0.0, f64::max));
+        // The point count and the peak total come straight from the series, so a redraw for the
+        // cursor builds no stacked sums.
+        let n = self
+            .series
+            .iter()
+            .map(|s| s.values.len())
+            .max()
+            .unwrap_or(0);
+        let peak = (0..n).fold(0.0, |best, i| {
+            let total = self
+                .series
+                .iter()
+                .fold(0.0, |acc, s| acc + s.values.get(i).copied().unwrap_or(0.0));
+            f64::max(best, total)
+        });
+        let empty = n == 0 || peak <= 0.0;
         let ceiling = nice_ceiling(peak);
         let y = |v: f64| top + height - (v / ceiling) as f32 * height;
         let x = |i: usize| point_x(i, n, left, width);
         let at = |v: &[f64], i: usize| v.get(i).copied().unwrap_or(0.0);
 
-        for k in 0..=4 {
-            let v = ceiling * k as f64 / 4.0;
-            let yy = y(v);
-            let rule = if k == 0 {
-                crate::theme::palette().rule
-            } else {
-                crate::theme::palette().rule_faint
-            };
-            frame.stroke(
-                &Path::line(Point::new(left, yy), Point::new(left + width, yy)),
-                Stroke::default().with_color(rule).with_width(1.0),
-            );
-            label(
-                &mut frame,
-                (self.format)(v),
-                Point::new(left - 8.0, yy - 6.0),
-                crate::theme::palette().ink_3,
-                10.5,
-                true,
-            );
+        // The static part (gridlines, areas, x-axis) is drawn again only when its inputs change,
+        // so a cursor move does not tessellate it.
+        let key = self.static_key();
+        if state.key.get() != key {
+            state.cache.clear();
+            state.key.set(key);
         }
-        if n == 0 || peak <= 0.0 {
-            label(
-                &mut frame,
-                self.empty.to_string(),
-                Point::new(left + width / 2.0, top + height / 2.0 - 7.0),
-                crate::theme::palette().ink_3,
-                13.0,
-                false,
-            );
-            return vec![frame.into_geometry()];
-        }
+        let cached = state.cache.draw(renderer, bounds.size(), |frame| {
+            for k in 0..=4 {
+                let v = ceiling * k as f64 / 4.0;
+                let yy = y(v);
+                let rule = if k == 0 {
+                    crate::theme::palette().rule
+                } else {
+                    crate::theme::palette().rule_faint
+                };
+                frame.stroke(
+                    &Path::line(Point::new(left, yy), Point::new(left + width, yy)),
+                    Stroke::default().with_color(rule).with_width(1.0),
+                );
+                label(
+                    frame,
+                    (self.format)(v),
+                    Point::new(left - 8.0, yy - 6.0),
+                    crate::theme::palette().ink_3,
+                    10.5,
+                    true,
+                );
+            }
+            if empty {
+                label(
+                    frame,
+                    self.empty.to_string(),
+                    Point::new(left + width / 2.0, top + height / 2.0 - 7.0),
+                    crate::theme::palette().ink_3,
+                    13.0,
+                    false,
+                );
+                return;
+            }
 
-        for (s, series) in self.series.iter().enumerate() {
-            let upper = &tops[s];
-            let lower: Vec<f64> = if s == 0 {
-                vec![0.0; n]
-            } else {
-                tops[s - 1].clone()
-            };
-            let area = Path::new(|b| {
-                for i in 0..n {
-                    let p = Point::new(x(i), y(at(upper, i)));
-                    if i == 0 {
-                        b.move_to(p);
-                    } else {
-                        b.line_to(p);
+            let tops = stacked_tops(&self.series);
+            for (s, series) in self.series.iter().enumerate() {
+                let upper = &tops[s];
+                let lower: Vec<f64> = if s == 0 {
+                    vec![0.0; n]
+                } else {
+                    tops[s - 1].clone()
+                };
+                let area = Path::new(|b| {
+                    for i in 0..n {
+                        let p = Point::new(x(i), y(at(upper, i)));
+                        if i == 0 {
+                            b.move_to(p);
+                        } else {
+                            b.line_to(p);
+                        }
                     }
-                }
-                for i in (0..n).rev() {
-                    b.line_to(Point::new(x(i), y(at(&lower, i))));
-                }
-                b.close();
-            });
-            frame.fill(
-                &area,
-                Color {
-                    a: 0.55,
-                    ..series.color
-                },
-            );
-            let edge = Path::new(|b| {
-                for i in 0..n {
-                    let p = Point::new(x(i), y(at(upper, i)));
-                    if i == 0 {
-                        b.move_to(p);
-                    } else {
-                        b.line_to(p);
+                    for i in (0..n).rev() {
+                        b.line_to(Point::new(x(i), y(at(&lower, i))));
                     }
-                }
-            });
-            frame.stroke(
-                &edge,
-                Stroke::default().with_color(series.color).with_width(1.5),
-            );
-        }
+                    b.close();
+                });
+                frame.fill(
+                    &area,
+                    Color {
+                        a: 0.55,
+                        ..series.color
+                    },
+                );
+                let edge = Path::new(|b| {
+                    for i in 0..n {
+                        let p = Point::new(x(i), y(at(upper, i)));
+                        if i == 0 {
+                            b.move_to(p);
+                        } else {
+                            b.line_to(p);
+                        }
+                    }
+                });
+                frame.stroke(
+                    &edge,
+                    Stroke::default().with_color(series.color).with_width(1.5),
+                );
+            }
 
-        // The x-axis: up to six labels, evenly spaced over the points.
-        let ticks = n.min(6);
-        for k in 0..ticks {
-            let i = if ticks <= 1 {
-                0
-            } else {
-                k * (n - 1) / (ticks - 1)
-            };
-            let text = self.labels.get(i).cloned().unwrap_or_default();
-            let anchor = if k == 0 {
-                Point::new(x(i) + 2.0, top + height + 6.0)
-            } else if k + 1 == ticks {
-                Point::new(x(i) - 2.0, top + height + 6.0)
-            } else {
-                Point::new(x(i), top + height + 6.0)
-            };
-            label(
-                &mut frame,
-                text,
-                anchor,
-                crate::theme::palette().ink_3,
-                10.5,
-                k + 1 == ticks && ticks > 1,
-            );
-        }
+            // The x-axis: up to six labels, evenly spaced over the points.
+            let ticks = n.min(6);
+            for k in 0..ticks {
+                let i = if ticks <= 1 {
+                    0
+                } else {
+                    k * (n - 1) / (ticks - 1)
+                };
+                let text = self.labels.get(i).cloned().unwrap_or_default();
+                let anchor = if k == 0 {
+                    Point::new(x(i) + 2.0, top + height + 6.0)
+                } else if k + 1 == ticks {
+                    Point::new(x(i) - 2.0, top + height + 6.0)
+                } else {
+                    Point::new(x(i), top + height + 6.0)
+                };
+                label(
+                    frame,
+                    text,
+                    anchor,
+                    crate::theme::palette().ink_3,
+                    10.5,
+                    k + 1 == ticks && ticks > 1,
+                );
+            }
+        });
 
-        if let Some(i) = hover.filter(|i| *i < n) {
-            let hx = x(i);
-            frame.stroke(
-                &Path::line(Point::new(hx, top), Point::new(hx, top + height)),
-                Stroke::default()
-                    .with_color(crate::theme::palette().ink_3)
-                    .with_width(1.0),
-            );
-            let rows: Vec<(Color, String)> = self
-                .series
-                .iter()
-                .enumerate()
-                .filter_map(|(s, series)| {
-                    let v = at(&tops[s], i) - if s == 0 { 0.0 } else { at(&tops[s - 1], i) };
-                    (v > 0.0).then(|| {
-                        (
-                            series.color,
-                            format!("{}  {}", series.key, (self.format)(v)),
-                        )
-                    })
+        // The crosshair and tooltip follow the cursor, so they sit on their own layer over the
+        // cached part. A snapshot hovers the chart at its window point (`APZ_HOVER`), as a real
+        // cursor would.
+        let hover = state
+            .hover
+            .or_else(|| snapshot_hover_index(bounds, n, left, width));
+        let i = match hover {
+            Some(i) if i < n && !empty => i,
+            _ => return vec![cached],
+        };
+        let mut overlay = canvas::Frame::new(renderer, bounds.size());
+        let hx = x(i);
+        overlay.stroke(
+            &Path::line(Point::new(hx, top), Point::new(hx, top + height)),
+            Stroke::default()
+                .with_color(crate::theme::palette().ink_3)
+                .with_width(1.0),
+        );
+        // Each series' own value at `i` is its stacked top less the top below it, summed in the
+        // same order as the stacked tops.
+        let mut below = 0.0;
+        let rows: Vec<(Color, String)> = self
+            .series
+            .iter()
+            .filter_map(|series| {
+                let stacked = below + at(&series.values, i);
+                let v = stacked - below;
+                below = stacked;
+                (v > 0.0).then(|| {
+                    (
+                        series.color,
+                        format!("{}  {}", series.key, (self.format)(v)),
+                    )
                 })
-                .collect();
-            let heading = self
-                .heads
-                .as_ref()
-                .and_then(|h| h.get(i))
-                .or_else(|| self.labels.get(i))
-                .cloned()
-                .unwrap_or_default();
-            let box_w = 200.0;
-            let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
-            let bx = if hx > left + width / 2.0 {
-                hx - 12.0 - box_w
-            } else {
-                hx + 12.0
-            };
-            let by = top + 4.0;
-            frame.fill_rectangle(
-                Point::new(bx, by),
-                Size::new(box_w, box_h),
-                crate::theme::palette().sheet,
-            );
-            frame.stroke(
-                &Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)),
-                Stroke::default()
-                    .with_color(crate::theme::palette().rule)
-                    .with_width(1.0),
+            })
+            .collect();
+        let heading = self
+            .heads
+            .as_ref()
+            .and_then(|h| h.get(i))
+            .or_else(|| self.labels.get(i))
+            .cloned()
+            .unwrap_or_default();
+        let box_w = 200.0;
+        let box_h = 14.0 + 16.0 * (rows.len() as f32 + 1.0) + 6.0;
+        let bx = if hx > left + width / 2.0 {
+            hx - 12.0 - box_w
+        } else {
+            hx + 12.0
+        };
+        let by = top + 4.0;
+        overlay.fill_rectangle(
+            Point::new(bx, by),
+            Size::new(box_w, box_h),
+            crate::theme::palette().sheet,
+        );
+        overlay.stroke(
+            &Path::rectangle(Point::new(bx, by), Size::new(box_w, box_h)),
+            Stroke::default()
+                .with_color(crate::theme::palette().rule)
+                .with_width(1.0),
+        );
+        label(
+            &mut overlay,
+            heading,
+            Point::new(bx + 10.0, by + 8.0),
+            crate::theme::palette().ink,
+            11.0,
+            false,
+        );
+        for (k, (color, text)) in rows.into_iter().enumerate() {
+            let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
+            overlay.fill(
+                &Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5),
+                color,
             );
             label(
-                &mut frame,
-                heading,
-                Point::new(bx + 10.0, by + 8.0),
-                crate::theme::palette().ink,
+                &mut overlay,
+                text,
+                Point::new(bx + 24.0, row_y),
+                crate::theme::palette().ink_2,
                 11.0,
                 false,
             );
-            for (k, (color, text)) in rows.into_iter().enumerate() {
-                let row_y = by + 8.0 + 16.0 * (k as f32 + 1.0);
-                frame.fill(
-                    &Path::circle(Point::new(bx + 14.0, row_y + 6.0), 3.5),
-                    color,
-                );
-                label(
-                    &mut frame,
-                    text,
-                    Point::new(bx + 24.0, row_y),
-                    crate::theme::palette().ink_2,
-                    11.0,
-                    false,
-                );
-            }
         }
-        vec![frame.into_geometry()]
+        vec![cached, overlay.into_geometry()]
     }
 }
 
@@ -412,44 +488,76 @@ pub struct Bars {
     pub color: Color,
 }
 
+/// What the bars keep between frames: their drawing and the key that drawing was made for.
+#[derive(Default)]
+pub struct BarsState {
+    cache: canvas::Cache,
+    key: Cell<u64>,
+}
+
+impl Bars {
+    /// A hash of the inputs the bars are drawn from: values, bar colour and palette rule.
+    fn static_key(&self) -> u64 {
+        let mut h = DefaultHasher::new();
+        hash_color(&mut h, self.color);
+        hash_values(&mut h, &self.values);
+        hash_color(&mut h, crate::theme::palette().rule);
+        h.finish()
+    }
+}
+
 impl<M> canvas::Program<M> for Bars {
-    type State = ();
+    type State = BarsState;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &BarsState,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let (w, h) = (bounds.width, bounds.height);
-        frame.stroke(
-            &Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)),
-            Stroke::default()
-                .with_color(crate::theme::palette().rule)
-                .with_width(1.0),
-        );
-        let n = self.values.len();
-        let peak = self.values.iter().copied().fold(0.0, f64::max);
-        if n > 0 && peak > 0.0 {
-            let slot = w / n as f32;
-            let bar = (slot * 0.7).max(1.0);
-            for (i, v) in self.values.iter().enumerate() {
-                let bh = (*v / peak) as f32 * (h - 2.0);
-                if bh > 0.0 {
-                    let bx = slot * i as f32 + (slot - bar) / 2.0;
-                    frame.fill_rectangle(
-                        Point::new(bx, h - bh - 1.0),
-                        Size::new(bar, bh),
-                        self.color,
-                    );
+        // Nothing here depends on the cursor, so the whole chart sits in the cache.
+        let key = self.static_key();
+        if state.key.get() != key {
+            state.cache.clear();
+            state.key.set(key);
+        }
+        let bars = state.cache.draw(renderer, bounds.size(), |frame| {
+            let (w, h) = (bounds.width, bounds.height);
+            frame.stroke(
+                &Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)),
+                Stroke::default()
+                    .with_color(crate::theme::palette().rule)
+                    .with_width(1.0),
+            );
+            let n = self.values.len();
+            let peak = self.values.iter().copied().fold(0.0, f64::max);
+            if n > 0 && peak > 0.0 {
+                let slot = w / n as f32;
+                let bar = (slot * 0.7).max(1.0);
+                for (i, v) in self.values.iter().enumerate() {
+                    let bh = (*v / peak) as f32 * (h - 2.0);
+                    if bh > 0.0 {
+                        let bx = slot * i as f32 + (slot - bar) / 2.0;
+                        frame.fill_rectangle(
+                            Point::new(bx, h - bh - 1.0),
+                            Size::new(bar, bh),
+                            self.color,
+                        );
+                    }
                 }
             }
-        }
-        vec![frame.into_geometry()]
+        });
+        vec![bars]
     }
+}
+
+/// What a sparkline keeps between frames: its drawing and the key that drawing was made for.
+#[derive(Default)]
+pub struct SparklineState {
+    cache: canvas::Cache,
+    key: Cell<u64>,
 }
 
 /// A line of values with a faint fill beneath it, scaled to its own peak.
@@ -458,61 +566,82 @@ pub struct Sparkline {
     pub color: Color,
 }
 
+impl Sparkline {
+    /// A hash of every input the line is drawn from: the values, the colour, the size and the
+    /// theme generation, which changes with every palette change.
+    fn static_key(&self, size: Size) -> u64 {
+        let mut h = DefaultHasher::new();
+        hash_values(&mut h, &self.values);
+        hash_color(&mut h, self.color);
+        size.width.to_bits().hash(&mut h);
+        size.height.to_bits().hash(&mut h);
+        crate::theme::generation().hash(&mut h);
+        h.finish()
+    }
+}
+
 impl<M> canvas::Program<M> for Sparkline {
-    type State = ();
+    type State = SparklineState;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &SparklineState,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let (w, h) = (bounds.width, bounds.height);
-        let n = self.values.len();
-        let peak = self.values.iter().copied().fold(0.0, f64::max);
-        if n == 0 {
-            return vec![frame.into_geometry()];
+        // Nothing here depends on the cursor, so the whole line sits in the cache.
+        let key = self.static_key(bounds.size());
+        if state.key.get() != key {
+            state.cache.clear();
+            state.key.set(key);
         }
-        let y = |v: f64| {
-            if peak > 0.0 {
-                h - 2.0 - (v / peak) as f32 * (h - 4.0)
-            } else {
-                h - 2.0
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            let (w, h) = (bounds.width, bounds.height);
+            let n = self.values.len();
+            let peak = self.values.iter().copied().fold(0.0, f64::max);
+            if n == 0 {
+                return;
             }
-        };
-        let line = Path::new(|b| {
-            for (i, v) in self.values.iter().enumerate() {
-                let p = Point::new(point_x(i, n, 0.0, w), y(*v));
-                if i == 0 {
-                    b.move_to(p);
+            let y = |v: f64| {
+                if peak > 0.0 {
+                    h - 2.0 - (v / peak) as f32 * (h - 4.0)
                 } else {
-                    b.line_to(p);
+                    h - 2.0
                 }
-            }
+            };
+            let line = Path::new(|b| {
+                for (i, v) in self.values.iter().enumerate() {
+                    let p = Point::new(point_x(i, n, 0.0, w), y(*v));
+                    if i == 0 {
+                        b.move_to(p);
+                    } else {
+                        b.line_to(p);
+                    }
+                }
+            });
+            let area = Path::new(|b| {
+                b.move_to(Point::new(point_x(0, n, 0.0, w), h));
+                for (i, v) in self.values.iter().enumerate() {
+                    b.line_to(Point::new(point_x(i, n, 0.0, w), y(*v)));
+                }
+                b.line_to(Point::new(point_x(n - 1, n, 0.0, w), h));
+                b.close();
+            });
+            frame.fill(
+                &area,
+                Color {
+                    a: 0.18,
+                    ..self.color
+                },
+            );
+            frame.stroke(
+                &line,
+                Stroke::default().with_color(self.color).with_width(1.5),
+            );
         });
-        let area = Path::new(|b| {
-            b.move_to(Point::new(point_x(0, n, 0.0, w), h));
-            for (i, v) in self.values.iter().enumerate() {
-                b.line_to(Point::new(point_x(i, n, 0.0, w), y(*v)));
-            }
-            b.line_to(Point::new(point_x(n - 1, n, 0.0, w), h));
-            b.close();
-        });
-        frame.fill(
-            &area,
-            Color {
-                a: 0.18,
-                ..self.color
-            },
-        );
-        frame.stroke(
-            &line,
-            Stroke::default().with_color(self.color).with_width(1.5),
-        );
-        vec![frame.into_geometry()]
+        vec![geometry]
     }
 }
 

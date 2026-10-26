@@ -2,8 +2,11 @@
 //! each machine, then a section per machine with its live usage, where its resources go, its runs
 //! (serial, kill) and its technical details, folded away.
 
+use std::cell::Cell;
 use std::cmp::Ordering;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap};
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iced::advanced::widget::operate;
@@ -1106,37 +1109,42 @@ struct Wires {
 }
 
 impl canvas::Program<Msg> for Wires {
-    type State = ();
+    type State = CachedDrawing;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &CachedDrawing,
         renderer: &iced::Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let (w, h) = (bounds.width, bounds.height);
-        let rows = self.live.len().max(1) as f32;
-        let p = crate::theme::palette();
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        for (i, (live, label)) in self.live.iter().zip(self.labels.iter()).enumerate() {
-            let y = (i as f32 + 0.5) * h / rows;
-            let color = if *live { p.signal } else { p.rule_strong };
-            frame.stroke(
-                &Path::line(Point::new(0.0, y), Point::new(w, y)),
-                Stroke::default().with_color(color).with_width(2.0),
-            );
-            frame.fill_text(canvas::Text {
-                content: label.clone(),
-                position: Point::new(w * 0.5, y - 18.0),
-                color: p.ink_3,
-                size: Pixels(11.0),
-                font: SANS,
-                ..canvas::Text::default()
-            });
-        }
-        vec![frame.into_geometry()]
+        let mut hasher = DefaultHasher::new();
+        self.live.hash(&mut hasher);
+        self.labels.hash(&mut hasher);
+        hash_palette(&mut hasher);
+        state.sync(hasher.finish());
+        vec![state.cache.draw(renderer, bounds.size(), |frame| {
+            let (w, h) = (bounds.width, bounds.height);
+            let rows = self.live.len().max(1) as f32;
+            let p = crate::theme::palette();
+            for (i, (live, label)) in self.live.iter().zip(self.labels.iter()).enumerate() {
+                let y = (i as f32 + 0.5) * h / rows;
+                let color = if *live { p.signal } else { p.rule_strong };
+                frame.stroke(
+                    &Path::line(Point::new(0.0, y), Point::new(w, y)),
+                    Stroke::default().with_color(color).with_width(2.0),
+                );
+                frame.fill_text(canvas::Text {
+                    content: label.clone(),
+                    position: Point::new(w * 0.5, y - 18.0),
+                    color: p.ink_3,
+                    size: Pixels(11.0),
+                    font: SANS,
+                    ..canvas::Text::default()
+                });
+            }
+        })]
     }
 }
 
@@ -1364,13 +1372,13 @@ fn look_of(kind: &str, vendor: &str) -> Look {
 }
 
 /// A pen over the web's 120 x 90 device grid, scaled to the figure's width; strokes take `ink`.
-struct Pen {
-    frame: canvas::Frame,
+struct Pen<'a> {
+    frame: &'a mut canvas::Frame,
     scale: f32,
     ink: Color,
 }
 
-impl Pen {
+impl<'a> Pen<'a> {
     fn at(&self, x: f32, y: f32) -> Point {
         Point::new(x * self.scale, y * self.scale)
     }
@@ -1701,35 +1709,42 @@ struct Device {
 }
 
 impl canvas::Program<Msg> for Device {
-    type State = ();
+    type State = CachedDrawing;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &CachedDrawing,
         renderer: &iced::Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut pen = Pen {
-            frame: canvas::Frame::new(renderer, bounds.size()),
-            scale: bounds.width / 120.0,
-            ink: crate::theme::palette().ink_2,
-        };
-        let riser = match self.look {
-            Look::Server => server(&mut pen, self.active),
-            Look::Workstation => workstation(&mut pen, self.active),
-            Look::Edge => edge(&mut pen, self.active),
-            Look::Laptop => laptop(&mut pen, self.active),
-            Look::MacBook => macbook(&mut pen, self.active),
-            Look::Mini => mini(&mut pen, self.active),
-            Look::Phone => phone(&mut pen, self.active),
-        };
-        let portable = matches!(self.look, Look::Laptop | Look::MacBook | Look::Phone);
-        if self.gpu && !portable {
-            gpu_card(&mut pen, riser);
-        }
-        vec![pen.frame.into_geometry()]
+        let mut hasher = DefaultHasher::new();
+        std::mem::discriminant(&self.look).hash(&mut hasher);
+        self.gpu.hash(&mut hasher);
+        self.active.hash(&mut hasher);
+        hash_palette(&mut hasher);
+        state.sync(hasher.finish());
+        vec![state.cache.draw(renderer, bounds.size(), |frame| {
+            let mut pen = Pen {
+                frame,
+                scale: bounds.width / 120.0,
+                ink: crate::theme::palette().ink_2,
+            };
+            let riser = match self.look {
+                Look::Server => server(&mut pen, self.active),
+                Look::Workstation => workstation(&mut pen, self.active),
+                Look::Edge => edge(&mut pen, self.active),
+                Look::Laptop => laptop(&mut pen, self.active),
+                Look::MacBook => macbook(&mut pen, self.active),
+                Look::Mini => mini(&mut pen, self.active),
+                Look::Phone => phone(&mut pen, self.active),
+            };
+            let portable = matches!(self.look, Look::Laptop | Look::MacBook | Look::Phone);
+            if self.gpu && !portable {
+                gpu_card(&mut pen, riser);
+            }
+        })]
     }
 }
 
@@ -2111,47 +2126,79 @@ fn tally<'a>(
 struct Spark(Vec<f64>);
 
 impl canvas::Program<Msg> for Spark {
-    type State = ();
+    type State = CachedDrawing;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &CachedDrawing,
         renderer: &iced::Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let (w, h) = (bounds.width, bounds.height);
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        frame.stroke(
-            &Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)),
-            Stroke::default()
-                .with_color(crate::theme::palette().rule)
-                .with_width(1.0),
-        );
         let pts = &self.0[self.0.len().saturating_sub(SPARK_POINTS)..];
-        if pts.len() >= 2 {
-            let steps = (pts.len() - 1) as f32;
-            let path = Path::new(|b| {
-                for (i, cpu) in pts.iter().enumerate() {
-                    let x = i as f32 / steps * w;
-                    let y = h - 4.0 - (cpu.clamp(0.0, 100.0) as f32 / 100.0) * (h - 8.0);
-                    if i == 0 {
-                        b.move_to(Point::new(x, y));
-                    } else {
-                        b.line_to(Point::new(x, y));
-                    }
-                }
-            });
-            frame.stroke(
-                &path,
-                Stroke::default()
-                    .with_color(crate::theme::palette().ink)
-                    .with_width(2.0),
-            );
+        let mut hasher = DefaultHasher::new();
+        hasher.write_usize(pts.len());
+        for cpu in pts {
+            hasher.write_u64(cpu.to_bits());
         }
-        vec![frame.into_geometry()]
+        hash_palette(&mut hasher);
+        state.sync(hasher.finish());
+        vec![state.cache.draw(renderer, bounds.size(), |frame| {
+            let (w, h) = (bounds.width, bounds.height);
+            frame.stroke(
+                &Path::line(Point::new(0.0, h - 0.5), Point::new(w, h - 0.5)),
+                Stroke::default()
+                    .with_color(crate::theme::palette().rule)
+                    .with_width(1.0),
+            );
+            if pts.len() >= 2 {
+                let steps = (pts.len() - 1) as f32;
+                let path = Path::new(|b| {
+                    for (i, cpu) in pts.iter().enumerate() {
+                        let x = i as f32 / steps * w;
+                        let y = h - 4.0 - (cpu.clamp(0.0, 100.0) as f32 / 100.0) * (h - 8.0);
+                        if i == 0 {
+                            b.move_to(Point::new(x, y));
+                        } else {
+                            b.line_to(Point::new(x, y));
+                        }
+                    }
+                });
+                frame.stroke(
+                    &path,
+                    Stroke::default()
+                        .with_color(crate::theme::palette().ink)
+                        .with_width(2.0),
+                );
+            }
+        })]
     }
+}
+
+/// The geometry of a static canvas drawing, kept in its program's state. It is drawn once and
+/// reused until the key of its inputs changes, so a redraw for another reason (the cursor moving)
+/// costs no tessellation.
+#[derive(Default)]
+struct CachedDrawing {
+    cache: canvas::Cache,
+    key: Cell<u64>,
+}
+
+impl CachedDrawing {
+    /// Clears the cache when `key` is not the key it was last drawn with.
+    fn sync(&self, key: u64) {
+        if self.key.get() != key {
+            self.cache.clear();
+            self.key.set(key);
+        }
+    }
+}
+
+/// Hashes the theme generation, so a theme change redraws the cached drawings.
+/// The palette is not walked: the generation moves whenever the palette in use is replaced.
+fn hash_palette(hasher: &mut DefaultHasher) {
+    hasher.write_u64(crate::theme::generation());
 }
 
 fn spark<'a>(history: &[f64]) -> Element<'a, Msg> {

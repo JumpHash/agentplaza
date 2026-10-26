@@ -3451,7 +3451,7 @@ mod tests {
 
     /// A review graph over an object store in `dir` (which the test keeps alive).
     fn reviews_in(dir: &tempfile::TempDir) -> Reviews {
-        let blobs = Blobs::open(&dir.path().join("blobs")).expect("the object store opens");
+        let blobs = Blobs::scratch(&dir.path().join("blobs")).expect("the object store opens");
         Reviews::new(Arc::new(blobs))
     }
 
@@ -3493,7 +3493,7 @@ mod tests {
     #[test]
     fn the_book_is_kept_in_its_tables_with_the_tree_in_the_object_store() {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = Arc::new(Blobs::open(&dir.path().join("blobs")).unwrap());
+        let blobs = Arc::new(Blobs::scratch(&dir.path().join("blobs")).unwrap());
         let reviews = Reviews::new(Arc::clone(&blobs));
         let tree = json!({ "files": [{ "path": "src/lib.rs", "symbols": [{ "id": "a", "lineage": "L1" }] }] });
         let mut run = run_with(RunState::Running);
@@ -3860,7 +3860,7 @@ mod carried_tests {
     }
 
     fn reviews_in(dir: &Path) -> Reviews {
-        let blobs = Blobs::open(&dir.join("blobs")).expect("the object store opens");
+        let blobs = Blobs::scratch(&dir.join("blobs")).expect("the object store opens");
         Reviews::new(Arc::new(blobs))
     }
 

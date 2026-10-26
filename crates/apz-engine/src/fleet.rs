@@ -238,7 +238,12 @@ pub fn status_of(text: &str) -> Status {
 
 /// What a machine's status light shows: working (online with an agent at work), idle, strained (draining) or offline.
 pub fn lamp_of(m: &Machine) -> Lamp {
-    match status_of(&m.status) {
+    lamp_for(status_of(&m.status), m)
+}
+
+/// The status light for `m` once its status is parsed as `status`, so the frame's update parses it once.
+fn lamp_for(status: Status, m: &Machine) -> Lamp {
+    match status {
         Status::Online if m.working > 0 => Lamp::Working,
         Status::Online => Lamp::Idle,
         Status::Draining => Lamp::Strained,
@@ -479,6 +484,8 @@ pub struct FleetScene {
     palette: Palette,
     hovered: Option<String>,
     time: f32,
+    /// The fleet's machine indices in id order, kept between frames so the layout check needs no allocation.
+    order: Vec<usize>,
 }
 
 /// A tag for the overlay: the machine's name and its lamp, above its label.
@@ -498,12 +505,28 @@ pub struct FleetFrame {
 }
 
 /// The fleet's GPU tables: each machine's fan angle, its row (busy, activity, hover lift, 0) and its status colour,
-/// by its slot. Each `MACHINE_SLOTS` long.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// by its slot. Each table is an inline array `MACHINE_SLOTS` long, laid out as the Globals block's tables hold them,
+/// so a frame builds them with no allocation of their own.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FleetInstances {
-    pub machine_angles: Vec<f32>,
-    pub machine_states: Vec<[f32; 4]>,
-    pub machine_statuses: Vec<[f32; 4]>,
+    pub machine_angles: [f32; MACHINE_SLOTS],
+    pub machine_states: [[f32; 4]; MACHINE_SLOTS],
+    pub machine_statuses: [[f32; 4]; MACHINE_SLOTS],
+}
+
+impl FleetInstances {
+    /// Every table zero: no machine, no fan turning.
+    pub const ZERO: FleetInstances = FleetInstances {
+        machine_angles: [0.0; MACHINE_SLOTS],
+        machine_states: [[0.0; 4]; MACHINE_SLOTS],
+        machine_statuses: [[0.0; 4]; MACHINE_SLOTS],
+    };
+}
+
+impl Default for FleetInstances {
+    fn default() -> Self {
+        Self::ZERO
+    }
 }
 
 /// A colour as RGBA, opaque.
@@ -527,6 +550,7 @@ pub fn build_fleet(fleet: &FleetResponse, palette: &Palette) -> FleetScene {
         palette: palette.clone(),
         hovered: None,
         time: 0.0,
+        order: Vec::new(),
     };
     scene.rebuild(fleet, layout_of(fleet));
     scene
@@ -709,13 +733,33 @@ impl FleetScene {
         }
     }
 
+    /// Whether `fleet` has another layout than the scene's: other machines, models or zones. It checks the machines in
+    /// id order, as [`layout_of`] sorts them, without building a layout: `order` keeps its capacity between frames.
+    fn layout_changed(&mut self, fleet: &FleetResponse) -> bool {
+        let Some(layout) = &self.layout else {
+            return true;
+        };
+        let machines = &fleet.machines;
+        if layout.0.len() != machines.len() {
+            return true;
+        }
+        self.order.clear();
+        self.order.extend(0..machines.len());
+        // Equal ids keep their input order, as the stable sort in `layout_of` keeps them.
+        self.order
+            .sort_unstable_by(|&a, &b| by_id(&machines[a].id, &machines[b].id).then(a.cmp(&b)));
+        layout.0.iter().zip(&self.order).any(|(entry, &i)| {
+            let m = &machines[i];
+            entry.0 != m.id || entry.1 != kit_model_of(m) || entry.2 != zone_of(m)
+        })
+    }
+
     /// Advances the scene by `dt` seconds with the fleet's latest snapshot: rebuilds when the machines, their models or
     /// zones change; otherwise updates each machine's name, status, fans, load bars and hover lift. `ambient` is the
     /// ambient clock in seconds and `ambient_dt` its step (the fans turn by it).
     pub fn update(&mut self, dt: f32, ambient: f32, ambient_dt: f32, fleet: &FleetResponse) {
-        let layout = layout_of(fleet);
-        if self.layout.as_ref() != Some(&layout) {
-            self.rebuild(fleet, layout);
+        if self.layout_changed(fleet) {
+            self.rebuild(fleet, layout_of(fleet));
         }
         self.time = ambient;
         for m in &fleet.machines {
@@ -723,9 +767,13 @@ impl FleetScene {
             let Some(node) = self.machines.get_mut(&m.id) else {
                 continue;
             };
-            node.name = m.name.clone();
-            node.status = status_of(&m.status);
-            node.lamp = lamp_of(m);
+            // A name changes only on a rename, so the string's buffer is reused while it stays the same.
+            if node.name != m.name {
+                node.name.clone_from(&m.name);
+            }
+            let status = status_of(&m.status);
+            node.status = status;
+            node.lamp = lamp_for(status, m);
             node.activity = activity(m);
             if node.status == Status::Online {
                 // Two turns a second at rest, three times that with every agent at work.
@@ -744,11 +792,7 @@ impl FleetScene {
 
     /// The fleet's GPU tables for this frame.
     pub fn instances(&self, _fleet: &FleetResponse) -> FleetInstances {
-        let mut out = FleetInstances {
-            machine_angles: vec![0.0; MACHINE_SLOTS],
-            machine_states: vec![[0.0; 4]; MACHINE_SLOTS],
-            machine_statuses: vec![[0.0; 4]; MACHINE_SLOTS],
-        };
+        let mut out = FleetInstances::ZERO;
         for m in self.machines.values() {
             let Some(i) = m.slot else {
                 continue;

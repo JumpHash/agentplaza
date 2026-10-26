@@ -5,13 +5,16 @@
 //! watchers read. The owner's answers are the web's dialogs (Do it, Not this, Add a signal, Sweeps, the ingest
 //! address). The mode switch lives on the project's page.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::f32::consts::PI;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use iced::advanced::text::Alignment as TextAlign;
-use iced::widget::canvas::{self, Canvas, Frame, LineDash, Path, Stroke};
+use iced::widget::canvas::{self, Canvas, LineDash, Path, Stroke};
 use iced::widget::text_editor::Content;
 use iced::widget::{
     Space, button, checkbox, column, container, pick_list, row, text, text_editor, text_input,
@@ -1677,12 +1680,26 @@ impl MapView {
     }
 }
 
+/// What the map keeps between redraws: the drawn map, and the key of the data it was drawn from.
+#[derive(Default)]
+struct MapState {
+    cache: canvas::Cache,
+    key: Cell<u64>,
+}
+
+/// Feeds the exact bits of some floats into a hasher, so any changed value changes the hash.
+fn hash_floats(values: &[f32], h: &mut DefaultHasher) {
+    for v in values {
+        v.to_bits().hash(h);
+    }
+}
+
 impl canvas::Program<Msg> for MapView {
-    type State = ();
+    type State = MapState;
 
     fn update(
         &self,
-        _state: &mut (),
+        _state: &mut MapState,
         event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
@@ -1701,7 +1718,7 @@ impl canvas::Program<Msg> for MapView {
 
     fn mouse_interaction(
         &self,
-        _state: &(),
+        _state: &MapState,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
@@ -1713,69 +1730,97 @@ impl canvas::Program<Msg> for MapView {
 
     fn draw(
         &self,
-        _state: &(),
+        state: &MapState,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry<Renderer>> {
         let pal = theme::palette();
-        let mut frame = Frame::new(renderer, bounds.size());
-        let c = Self::centre();
-        let spoke = Stroke::default()
-            .with_color(pal.rule_strong)
-            .with_width(1.0);
-        for a in &self.areas {
-            frame.stroke(&Path::line(c, a.at), spoke);
-        }
-        let dashed = Stroke {
-            line_dash: LineDash {
-                segments: &[3.0, 3.0],
-                offset: 0,
-            },
-            ..spoke
-        };
+        // The map reads only the data and the palette: it is drawn again only when one of them changes.
+        let mut h = DefaultHasher::new();
+        self.heard.hash(&mut h);
+        self.links.len().hash(&mut h);
         for (p, q) in &self.links {
-            frame.stroke(&Path::line(*p, *q), dashed);
+            hash_floats(&[p.x, p.y, q.x, q.y], &mut h);
         }
-        // The product: a ring that turns signal when it has heard something new, and its heart.
-        let ring_colour = if self.heard { pal.signal } else { pal.ink_3 };
-        frame.fill(&Path::circle(c, 16.0), pal.sheet);
-        frame.stroke(
-            &Path::circle(c, 16.0),
-            Stroke::default().with_color(ring_colour).with_width(1.5),
-        );
-        frame.fill(&Path::circle(c, 9.0), pal.ink_2);
+        self.areas.len().hash(&mut h);
         for a in &self.areas {
-            let r = if a.on { 15.0 } else { 12.0 };
-            let body = Path::circle(a.at, r);
-            frame.fill(&body, a.color);
+            hash_floats(&[a.at.x, a.at.y], &mut h);
+            a.on.hash(&mut h);
+            a.label.hash(&mut h);
+            hash_floats(&[a.color.r, a.color.g, a.color.b, a.color.a], &mut h);
+            a.waiting.len().hash(&mut h);
+            for colour in &a.waiting {
+                hash_floats(&[colour.r, colour.g, colour.b, colour.a], &mut h);
+            }
+        }
+        for colour in [pal.rule_strong, pal.signal, pal.ink_3, pal.sheet, pal.ink_2] {
+            hash_floats(&[colour.r, colour.g, colour.b, colour.a], &mut h);
+        }
+        let key = h.finish();
+        if state.key.get() != key {
+            state.cache.clear();
+            state.key.set(key);
+        }
+        // Nothing here depends on the cursor, so the whole map is cached and there is no overlay.
+        let cached = state.cache.draw(renderer, bounds.size(), |frame| {
+            let c = Self::centre();
+            let spoke = Stroke::default()
+                .with_color(pal.rule_strong)
+                .with_width(1.0);
+            for a in &self.areas {
+                frame.stroke(&Path::line(c, a.at), spoke);
+            }
+            let dashed = Stroke {
+                line_dash: LineDash {
+                    segments: &[3.0, 3.0],
+                    offset: 0,
+                },
+                ..spoke
+            };
+            for (p, q) in &self.links {
+                frame.stroke(&Path::line(*p, *q), dashed);
+            }
+            // The product: a ring that turns signal when it has heard something new, and its heart.
+            let ring_colour = if self.heard { pal.signal } else { pal.ink_3 };
+            frame.fill(&Path::circle(c, 16.0), pal.sheet);
             frame.stroke(
-                &body,
-                Stroke::default().with_color(pal.sheet).with_width(2.0),
+                &Path::circle(c, 16.0),
+                Stroke::default().with_color(ring_colour).with_width(1.5),
             );
-            if a.on {
+            frame.fill(&Path::circle(c, 9.0), pal.ink_2);
+            for a in &self.areas {
+                let r = if a.on { 15.0 } else { 12.0 };
+                let body = Path::circle(a.at, r);
+                frame.fill(&body, a.color);
                 frame.stroke(
                     &body,
-                    Stroke::default().with_color(pal.signal).with_width(3.0),
+                    Stroke::default().with_color(pal.sheet).with_width(2.0),
                 );
+                if a.on {
+                    frame.stroke(
+                        &body,
+                        Stroke::default().with_color(pal.signal).with_width(3.0),
+                    );
+                }
+                for (k, colour) in a.waiting.iter().enumerate() {
+                    let t = -PI / 2.0 + k as f32 * PI / 4.0;
+                    let dot = Point::new(a.at.x + 21.0 * t.cos(), a.at.y + 21.0 * t.sin());
+                    frame.fill(&Path::circle(dot, 3.5), *colour);
+                }
+                frame.fill_text(canvas::Text {
+                    content: a.label.clone(),
+                    position: Point::new(a.at.x, a.at.y + 28.0),
+                    color: pal.ink_2,
+                    size: Pixels(11.0),
+                    font: theme::SANS,
+                    align_x: TextAlign::Center,
+                    ..canvas::Text::default()
+                });
             }
-            for (k, colour) in a.waiting.iter().enumerate() {
-                let t = -PI / 2.0 + k as f32 * PI / 4.0;
-                let dot = Point::new(a.at.x + 21.0 * t.cos(), a.at.y + 21.0 * t.sin());
-                frame.fill(&Path::circle(dot, 3.5), *colour);
-            }
-            frame.fill_text(canvas::Text {
-                content: a.label.clone(),
-                position: Point::new(a.at.x, a.at.y + 28.0),
-                color: pal.ink_2,
-                size: Pixels(11.0),
-                font: theme::SANS,
-                align_x: TextAlign::Center,
-                ..canvas::Text::default()
-            });
-        }
-        vec![frame.into_geometry()]
+        });
+        vec![cached]
     }
 }
 

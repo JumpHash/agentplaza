@@ -262,7 +262,8 @@ fn check_models(c: &mut Ctx, prog: &Program) {
             Some((rep, i)) => {
                 c.ok(&format!(
                     "{head} reachable in \"{}\" at depth {}",
-                    rep.model, rep.states[i].depth
+                    rep.model,
+                    rep.states.depth(i)
                 ));
                 if c.verbose {
                     let v = mc::Violation {

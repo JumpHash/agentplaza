@@ -1,7 +1,10 @@
 //! The other Metrics figures, as the web's figures.ts: the latency heatmap, treemaps, gauges, lifecycle swimlanes and
 //! sparklines (canvas programs).
 
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
 use std::f32::consts::PI;
+use std::hash::{Hash, Hasher};
 
 use apz_metrics_view::{
     GaugeItem, Heatmap, Lane, LegendItem, Swimlanes, Tone, TreeItem, Unit, format,
@@ -119,6 +122,47 @@ fn tip(frame: &mut canvas::Frame, at: Point, text: &str, limit: f32) {
     .draw(frame);
 }
 
+/// A canvas's drawing that does not depend on the pointer or the time: the canvas keeps its geometry until the hash
+/// of the inputs it was drawn from (`key`) or its size changes, so a redraw for the pointer alone reuses it.
+#[derive(Default)]
+struct Cached {
+    cache: canvas::Cache,
+    /// The hash of the inputs the cached geometry was drawn from.
+    key: Cell<u64>,
+}
+
+impl Cached {
+    /// The geometry of `paint`, drawn again only when `key` differs from the last draw's or the size changed.
+    fn draw(
+        &self,
+        renderer: &Renderer,
+        size: Size,
+        key: u64,
+        paint: impl Fn(&mut canvas::Frame),
+    ) -> canvas::Geometry {
+        if self.key.get() != key {
+            self.cache.clear();
+            self.key.set(key);
+        }
+        self.cache.draw(renderer, size, paint)
+    }
+}
+
+/// Hashes a colour's channels into a canvas key.
+fn hash_color(hasher: &mut DefaultHasher, c: Color) {
+    for channel in [c.r, c.g, c.b, c.a] {
+        channel.to_bits().hash(hasher);
+    }
+}
+
+/// The heatmap's canvas state: the hovered cell (column, row) and the pointer's place on the canvas, and the cached
+/// grid and labels.
+#[derive(Default)]
+struct HeatState {
+    hover: Option<(usize, usize, Point)>,
+    cached: Cached,
+}
+
 /// The latency heatmap: one canvas of `h.counts[col][row]` cells, row 0 at the bottom, with the duration labels at the
 /// lowest, middle and highest rows, the time labels under, and a tooltip under the pointer. A click on a cell
 /// sends its column's time as a point.
@@ -205,12 +249,11 @@ impl Heat<'_> {
 }
 
 impl canvas::Program<Msg> for Heat<'_> {
-    /// The hovered cell (column, row) and the pointer's place on the canvas.
-    type State = Option<(usize, usize, Point)>;
+    type State = HeatState;
 
     fn update(
         &self,
-        hover: &mut Self::State,
+        state: &mut Self::State,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
@@ -228,8 +271,8 @@ impl canvas::Program<Msg> for Heat<'_> {
             return None;
         }
         let next = at.and_then(|p| self.cell_at(bounds, p).map(|(c, r)| (c, r, p)));
-        if next != *hover {
-            *hover = next;
+        if next != state.hover {
+            state.hover = next;
             return Some(canvas::Action::request_redraw());
         }
         None
@@ -237,98 +280,122 @@ impl canvas::Program<Msg> for Heat<'_> {
 
     fn draw(
         &self,
-        hover: &Self::State,
+        state: &Self::State,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
         let (cols, rows) = (self.cols(), self.rows());
-        if cols == 0 || rows == 0 {
-            return vec![frame.into_geometry()];
-        }
         let (cw, rh) = self.cell_size(bounds);
         let width = bounds.width.max(HEAT_MIN_W);
         let axis = axis_color();
         let cold = tone(Tone::C1);
         let hot = tone(Tone::C3);
 
-        let max = self
-            .h
-            .counts
-            .iter()
-            .flatten()
-            .fold(0.0_f64, |m, v| m.max(*v));
-        let top = if max > 0.0 { max } else { 1.0 };
-        for c in 0..cols {
-            for r in 0..rows {
-                let v = self.count(c, r) / top;
-                if v < 0.02 {
-                    continue;
-                }
-                let base = if v > 0.6 { hot } else { cold };
-                let fill = Color {
-                    a: (0.12 + v * 0.95).min(1.0) as f32,
-                    ..base
-                };
-                frame.fill_rectangle(
-                    Point::new(HEAT_PAD_LEFT + c as f32 * cw, (rows - 1 - r) as f32 * rh),
-                    Size::new(cw.ceil(), rh.ceil()),
-                    fill,
-                );
+        // The grid and the labels depend on the counts, the scales, the zone and the colours, not on the pointer.
+        let mut hasher = DefaultHasher::new();
+        self.h.counts.len().hash(&mut hasher);
+        for col in &self.h.counts {
+            col.len().hash(&mut hasher);
+            for v in col {
+                v.to_bits().hash(&mut hasher);
             }
         }
+        self.h.start_ms.hash(&mut hasher);
+        self.h.step_ms.hash(&mut hasher);
+        self.h.lo.to_bits().hash(&mut hasher);
+        self.h.hi.to_bits().hash(&mut hasher);
+        std::mem::discriminant(&self.h.unit).hash(&mut hasher);
+        self.tz.hash(&mut hasher);
+        hash_color(&mut hasher, axis);
+        hash_color(&mut hasher, cold);
+        hash_color(&mut hasher, hot);
+        let cached = state
+            .cached
+            .draw(renderer, bounds.size(), hasher.finish(), |frame| {
+                if cols == 0 || rows == 0 {
+                    return;
+                }
+                let max = self
+                    .h
+                    .counts
+                    .iter()
+                    .flatten()
+                    .fold(0.0_f64, |m, v| m.max(*v));
+                let top = if max > 0.0 { max } else { 1.0 };
+                for c in 0..cols {
+                    for r in 0..rows {
+                        let v = self.count(c, r) / top;
+                        if v < 0.02 {
+                            continue;
+                        }
+                        let base = if v > 0.6 { hot } else { cold };
+                        let fill = Color {
+                            a: (0.12 + v * 0.95).min(1.0) as f32,
+                            ..base
+                        };
+                        frame.fill_rectangle(
+                            Point::new(HEAT_PAD_LEFT + c as f32 * cw, (rows - 1 - r) as f32 * rh),
+                            Size::new(cw.ceil(), rh.ceil()),
+                            fill,
+                        );
+                    }
+                }
 
-        for (k, v) in [self.h.lo, self.edge(rows as f64 / 2.0), self.h.hi]
-            .into_iter()
-            .enumerate()
-        {
-            let r = (k as f64 / 2.0 * (rows as f64 - 1.0)).round() as usize;
-            let y = (rows - 1 - r) as f32 * rh + rh / 2.0;
-            Label::new(
-                format::format(self.h.unit, v),
-                Point::new(HEAT_PAD_LEFT - 6.0, y),
-                AXIS_SIZE,
-                axis,
-            )
-            .align(Horizontal::Right, Vertical::Center)
-            .draw(&mut frame);
-        }
+                for (k, v) in [self.h.lo, self.edge(rows as f64 / 2.0), self.h.hi]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let r = (k as f64 / 2.0 * (rows as f64 - 1.0)).round() as usize;
+                    let y = (rows - 1 - r) as f32 * rh + rh / 2.0;
+                    Label::new(
+                        format::format(self.h.unit, v),
+                        Point::new(HEAT_PAD_LEFT - 6.0, y),
+                        AXIS_SIZE,
+                        axis,
+                    )
+                    .align(Horizontal::Right, Vertical::Center)
+                    .draw(frame);
+                }
 
-        let nt = if width < 460.0 { 2 } else { 4 };
-        for k in 0..=nt {
-            let c = (k as f64 / nt as f64 * (cols as f64 - 1.0)).round() as usize;
-            let (x, align) = match k {
-                0 => (HEAT_PAD_LEFT, Horizontal::Left),
-                k if k == nt => (HEAT_PAD_LEFT + c as f32 * cw + cw, Horizontal::Right),
-                _ => (HEAT_PAD_LEFT + c as f32 * cw, Horizontal::Center),
-            };
-            Label::new(
-                format::time_label(self.time_at(c), self.h.step_ms, self.tz),
-                Point::new(x, bounds.height - 4.0),
-                AXIS_SIZE,
-                axis,
-            )
-            .align(align, Vertical::Bottom)
-            .draw(&mut frame);
-        }
+                let nt = if width < 460.0 { 2 } else { 4 };
+                for k in 0..=nt {
+                    let c = (k as f64 / nt as f64 * (cols as f64 - 1.0)).round() as usize;
+                    let (x, align) = match k {
+                        0 => (HEAT_PAD_LEFT, Horizontal::Left),
+                        k if k == nt => (HEAT_PAD_LEFT + c as f32 * cw + cw, Horizontal::Right),
+                        _ => (HEAT_PAD_LEFT + c as f32 * cw, Horizontal::Center),
+                    };
+                    Label::new(
+                        format::time_label(self.time_at(c), self.h.step_ms, self.tz),
+                        Point::new(x, bounds.height - 4.0),
+                        AXIS_SIZE,
+                        axis,
+                    )
+                    .align(align, Vertical::Bottom)
+                    .draw(frame);
+                }
+            });
 
-        if let Some((c, r, at)) = *hover {
-            let text = format!(
-                "{} · {}: {:.0} calls",
-                format::time_label(self.time_at(c), self.h.step_ms, self.tz),
-                self.bucket_range(r),
-                self.count(c, r)
-            );
-            tip(
-                &mut frame,
-                Point::new(at.x + 12.0, at.y + 10.0),
-                &text,
-                width,
-            );
-        }
-        vec![frame.into_geometry()]
+        // Only the tooltip moves with the pointer, so it goes on a layer of its own over the cached geometry.
+        let Some((c, r, at)) = state.hover.filter(|_| cols > 0 && rows > 0) else {
+            return vec![cached];
+        };
+        let mut overlay = canvas::Frame::new(renderer, bounds.size());
+        let text = format!(
+            "{} · {}: {:.0} calls",
+            format::time_label(self.time_at(c), self.h.step_ms, self.tz),
+            self.bucket_range(r),
+            self.count(c, r)
+        );
+        tip(
+            &mut overlay,
+            Point::new(at.x + 12.0, at.y + 10.0),
+            &text,
+            width,
+        );
+        vec![cached, overlay.into_geometry()]
     }
 }
 
@@ -411,53 +478,67 @@ struct Tiles<'a> {
 }
 
 impl<M> canvas::Program<M> for Tiles<'_> {
-    type State = ();
+    type State = Cached;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Cached,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let mut hasher = DefaultHasher::new();
+        std::mem::discriminant(&self.unit).hash(&mut hasher);
+        self.total.to_bits().hash(&mut hasher);
+        hash_color(&mut hasher, theme::palette().on_hue);
         for cell in &self.cells {
-            let x = (cell.x / 100.0) as f32 * bounds.width;
-            let y = (cell.y / 100.0) as f32 * bounds.height;
-            let w = (cell.w / 100.0) as f32 * bounds.width;
-            let h = (cell.h / 100.0) as f32 * bounds.height;
-            frame.fill_rectangle(Point::new(x, y), Size::new(w, h), tone(cell.item.tone));
-            if w * h <= TREE_TEXT_MIN_AREA {
-                continue;
-            }
-            let share = if self.total > 0.0 {
-                cell.item.value.max(0.0) / self.total * 100.0
-            } else {
-                0.0
-            };
-            let name = ui::ellipsize(&cell.item.name, ((w - 12.0) / 6.5).max(0.0) as usize);
-            Label::new(
-                name,
-                Point::new(x + 6.0, y + 6.0),
-                12.0,
-                crate::theme::palette().on_hue,
-            )
-            .semibold()
-            .draw(&mut frame);
-            Label::new(
-                format!(
-                    "{} · {:.0}%",
-                    format::format(self.unit, cell.item.value),
-                    share
-                ),
-                Point::new(x + 6.0, y + 22.0),
-                11.0,
-                crate::theme::palette().on_hue,
-            )
-            .draw(&mut frame);
+            cell.x.to_bits().hash(&mut hasher);
+            cell.y.to_bits().hash(&mut hasher);
+            cell.w.to_bits().hash(&mut hasher);
+            cell.h.to_bits().hash(&mut hasher);
+            cell.item.name.as_str().hash(&mut hasher);
+            cell.item.value.to_bits().hash(&mut hasher);
+            hash_color(&mut hasher, tone(cell.item.tone));
         }
-        vec![frame.into_geometry()]
+        let geometry = state.draw(renderer, bounds.size(), hasher.finish(), |frame| {
+            for cell in &self.cells {
+                let x = (cell.x / 100.0) as f32 * bounds.width;
+                let y = (cell.y / 100.0) as f32 * bounds.height;
+                let w = (cell.w / 100.0) as f32 * bounds.width;
+                let h = (cell.h / 100.0) as f32 * bounds.height;
+                frame.fill_rectangle(Point::new(x, y), Size::new(w, h), tone(cell.item.tone));
+                if w * h <= TREE_TEXT_MIN_AREA {
+                    continue;
+                }
+                let share = if self.total > 0.0 {
+                    cell.item.value.max(0.0) / self.total * 100.0
+                } else {
+                    0.0
+                };
+                let name = ui::ellipsize(&cell.item.name, ((w - 12.0) / 6.5).max(0.0) as usize);
+                Label::new(
+                    name,
+                    Point::new(x + 6.0, y + 6.0),
+                    12.0,
+                    crate::theme::palette().on_hue,
+                )
+                .semibold()
+                .draw(frame);
+                Label::new(
+                    format!(
+                        "{} · {:.0}%",
+                        format::format(self.unit, cell.item.value),
+                        share
+                    ),
+                    Point::new(x + 6.0, y + 22.0),
+                    11.0,
+                    crate::theme::palette().on_hue,
+                )
+                .draw(frame);
+            }
+        });
+        vec![geometry]
     }
 }
 
@@ -480,47 +561,56 @@ struct Gauge<'a> {
 }
 
 impl<M> canvas::Program<M> for Gauge<'_> {
-    type State = ();
+    type State = Cached;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Cached,
         renderer: &Renderer,
         _theme: &Theme,
         _bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, Size::new(GAUGE_W, GAUGE_H));
-        let center = Point::new(GAUGE_CX, GAUGE_CY);
-        let frac = if self.g.frac.is_finite() {
-            self.g.frac.clamp(0.0, 1.0) as f32
-        } else {
-            0.0
-        };
-        // The arc runs clockwise from the left end (angle PI) over the top, to `end`.
-        let arc = |end: f32| {
-            Path::new(|b| {
-                b.arc(canvas::path::Arc {
-                    center,
-                    radius: GAUGE_R,
-                    start_angle: PI.into(),
-                    end_angle: end.into(),
-                });
-            })
-        };
-        let stroke = |color: Color| Stroke::default().with_color(color).with_width(GAUGE_STROKE);
-        frame.stroke(&arc(2.0 * PI), stroke(grid_color()));
-        frame.stroke(&arc(PI + PI * frac), stroke(status(self.g.status)));
-        Label::new(
-            self.g.label.as_str(),
-            Point::new(GAUGE_CX, GAUGE_CY - 6.0),
-            17.0,
-            theme::palette().ink,
-        )
-        .semibold()
-        .align(Horizontal::Center, Vertical::Bottom)
-        .draw(&mut frame);
-        vec![frame.into_geometry()]
+        let mut hasher = DefaultHasher::new();
+        self.g.frac.to_bits().hash(&mut hasher);
+        self.g.label.as_str().hash(&mut hasher);
+        hash_color(&mut hasher, status(self.g.status));
+        hash_color(&mut hasher, grid_color());
+        hash_color(&mut hasher, theme::palette().ink);
+        let size = Size::new(GAUGE_W, GAUGE_H);
+        let geometry = state.draw(renderer, size, hasher.finish(), |frame| {
+            let center = Point::new(GAUGE_CX, GAUGE_CY);
+            let frac = if self.g.frac.is_finite() {
+                self.g.frac.clamp(0.0, 1.0) as f32
+            } else {
+                0.0
+            };
+            // The arc runs clockwise from the left end (angle PI) over the top, to `end`.
+            let arc = |end: f32| {
+                Path::new(|b| {
+                    b.arc(canvas::path::Arc {
+                        center,
+                        radius: GAUGE_R,
+                        start_angle: PI.into(),
+                        end_angle: end.into(),
+                    });
+                })
+            };
+            let stroke =
+                |color: Color| Stroke::default().with_color(color).with_width(GAUGE_STROKE);
+            frame.stroke(&arc(2.0 * PI), stroke(grid_color()));
+            frame.stroke(&arc(PI + PI * frac), stroke(status(self.g.status)));
+            Label::new(
+                self.g.label.as_str(),
+                Point::new(GAUGE_CX, GAUGE_CY - 6.0),
+                17.0,
+                theme::palette().ink,
+            )
+            .semibold()
+            .align(Horizontal::Center, Vertical::Bottom)
+            .draw(frame);
+        });
+        vec![geometry]
     }
 }
 
@@ -571,31 +661,40 @@ struct Segments<'a> {
 }
 
 impl<M> canvas::Program<M> for Segments<'_> {
-    type State = ();
+    type State = Cached;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Cached,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let plot = bounds.width - 4.0;
+        let mut hasher = DefaultHasher::new();
+        self.start.hash(&mut hasher);
+        self.span.hash(&mut hasher);
         for seg in &self.lane.segs {
-            let x0 = fraction(seg.start_ms, self.start, self.span) * plot;
-            let x1 = fraction(seg.end_ms, self.start, self.span) * plot;
-            if x1 <= x0 {
-                continue;
-            }
-            frame.fill_rectangle(
-                Point::new(x0, 3.0),
-                Size::new(x1 - x0, 15.0),
-                tone(seg.tone),
-            );
+            seg.start_ms.hash(&mut hasher);
+            seg.end_ms.hash(&mut hasher);
+            hash_color(&mut hasher, tone(seg.tone));
         }
-        vec![frame.into_geometry()]
+        let geometry = state.draw(renderer, bounds.size(), hasher.finish(), |frame| {
+            let plot = bounds.width - 4.0;
+            for seg in &self.lane.segs {
+                let x0 = fraction(seg.start_ms, self.start, self.span) * plot;
+                let x1 = fraction(seg.end_ms, self.start, self.span) * plot;
+                if x1 <= x0 {
+                    continue;
+                }
+                frame.fill_rectangle(
+                    Point::new(x0, 3.0),
+                    Size::new(x1 - x0, 15.0),
+                    tone(seg.tone),
+                );
+            }
+        });
+        vec![geometry]
     }
 }
 
@@ -612,36 +711,43 @@ struct Axis {
 }
 
 impl<M> canvas::Program<M> for Axis {
-    type State = ();
+    type State = Cached;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Cached,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        let plot = bounds.width - 4.0;
-        for k in 0..=4u64 {
-            let x = plot * k as f32 / 4.0;
-            let align = match k {
-                0 => Horizontal::Left,
-                4 => Horizontal::Right,
-                _ => Horizontal::Center,
-            };
-            let t = self.start + self.span * k / 4;
-            Label::new(
-                format::time_label(t, self.span / 4, self.tz),
-                Point::new(x, 3.0),
-                AXIS_SIZE,
-                axis_color(),
-            )
-            .align(align, Vertical::Top)
-            .draw(&mut frame);
-        }
-        vec![frame.into_geometry()]
+        let color = axis_color();
+        let mut hasher = DefaultHasher::new();
+        self.start.hash(&mut hasher);
+        self.span.hash(&mut hasher);
+        self.tz.hash(&mut hasher);
+        hash_color(&mut hasher, color);
+        let geometry = state.draw(renderer, bounds.size(), hasher.finish(), |frame| {
+            let plot = bounds.width - 4.0;
+            for k in 0..=4u64 {
+                let x = plot * k as f32 / 4.0;
+                let align = match k {
+                    0 => Horizontal::Left,
+                    4 => Horizontal::Right,
+                    _ => Horizontal::Center,
+                };
+                let t = self.start + self.span * k / 4;
+                Label::new(
+                    format::time_label(t, self.span / 4, self.tz),
+                    Point::new(x, 3.0),
+                    AXIS_SIZE,
+                    color,
+                )
+                .align(align, Vertical::Top)
+                .draw(frame);
+            }
+        });
+        vec![geometry]
     }
 }
 
@@ -741,59 +847,67 @@ struct Spark<'a> {
 }
 
 impl<M> canvas::Program<M> for Spark<'_> {
-    type State = ();
+    type State = Cached;
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Cached,
         renderer: &Renderer,
         _theme: &Theme,
         _bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, Size::new(self.width, self.height));
-        let n = self.values.len();
-        if n == 0 {
-            return vec![frame.into_geometry()];
-        }
-        let lo = self.values.iter().copied().fold(f64::INFINITY, f64::min);
-        let hi = self
-            .values
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        let range = hi - lo;
-        let pts: Vec<Point> = self
-            .values
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                let x = if n > 1 {
-                    i as f32 / (n - 1) as f32 * self.width
-                } else {
-                    self.width / 2.0
-                };
-                // A flat series sits in the middle of the box.
-                let y = if range > 0.0 {
-                    self.height - 2.0 - ((v - lo) / range) as f32 * (self.height - 4.0)
-                } else {
-                    self.height / 2.0
-                };
-                Point::new(x, y)
-            })
-            .collect();
         let color = tone(self.tone);
-        let line = Path::new(|b| {
-            for (i, p) in pts.iter().enumerate() {
-                if i == 0 {
-                    b.move_to(*p);
-                } else {
-                    b.line_to(*p);
-                }
+        let mut hasher = DefaultHasher::new();
+        self.values.len().hash(&mut hasher);
+        for v in self.values {
+            v.to_bits().hash(&mut hasher);
+        }
+        hash_color(&mut hasher, color);
+        let size = Size::new(self.width, self.height);
+        let geometry = state.draw(renderer, size, hasher.finish(), |frame| {
+            let n = self.values.len();
+            if n == 0 {
+                return;
             }
+            let lo = self.values.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = self
+                .values
+                .iter()
+                .copied()
+                .fold(f64::NEG_INFINITY, f64::max);
+            let range = hi - lo;
+            let pts: Vec<Point> = self
+                .values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let x = if n > 1 {
+                        i as f32 / (n - 1) as f32 * self.width
+                    } else {
+                        self.width / 2.0
+                    };
+                    // A flat series sits in the middle of the box.
+                    let y = if range > 0.0 {
+                        self.height - 2.0 - ((v - lo) / range) as f32 * (self.height - 4.0)
+                    } else {
+                        self.height / 2.0
+                    };
+                    Point::new(x, y)
+                })
+                .collect();
+            let line = Path::new(|b| {
+                for (i, p) in pts.iter().enumerate() {
+                    if i == 0 {
+                        b.move_to(*p);
+                    } else {
+                        b.line_to(*p);
+                    }
+                }
+            });
+            frame.stroke(&line, Stroke::default().with_color(color).with_width(1.3));
         });
-        frame.stroke(&line, Stroke::default().with_color(color).with_width(1.3));
-        vec![frame.into_geometry()]
+        vec![geometry]
     }
 }
 

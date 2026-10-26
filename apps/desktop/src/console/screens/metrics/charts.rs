@@ -3,6 +3,10 @@
 //! tooltip, drag-to-zoom and a click for what changed. Formatting is `apz_metrics_view::format`, the same as the
 //! web's.
 
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use apz_metrics_view::format::{format, ticks, time_label};
 use apz_metrics_view::{Annotation, Chart, Series, Tone, XAxis};
 use iced::alignment;
@@ -76,13 +80,17 @@ struct LineChart<'a> {
     tz: i32,
 }
 
-/// The left button's press across a draw of the chart: where it went down, whether it has become a drag, and the
-/// last fraction the pointer reached (where a drag ends when the pointer leaves the chart).
-#[derive(Debug, Default)]
+/// The canvas state across draws: the left button's press (where it went down, whether it has become a drag, and the
+/// last fraction the pointer reached, where a drag ends when the pointer leaves the chart), and the cached static
+/// drawing with the key it was drawn from and the scale it was drawn at.
+#[derive(Default)]
 pub struct Gesture {
     press: Option<f32>,
     dragging: bool,
     last: f32,
+    cache: canvas::Cache,
+    key: Cell<u64>,
+    scale: Cell<Option<Scale>>,
 }
 
 /// The plot area inside a canvas of `size`: where the lines, areas and gridlines go.
@@ -178,9 +186,65 @@ impl LineChart<'_> {
         rows
     }
 
-    /// Draws the whole chart: the axes, the gaps, the band, the series, the overlays, the markers, the limit, the
-    /// annotations, the crosshair and the drag brush, then the tooltip where the pointer is over this panel.
-    fn paint(&self, frame: &mut canvas::Frame, bounds: Rectangle) {
+    /// A hash of every input the static drawing reads: the data, the axis and its labels, the flags, the markers, the
+    /// limit, the annotations, the unit and the colours in use. The cached drawing is stale when it changes.
+    fn static_key(&self) -> u64 {
+        let c = self.c;
+        let palette = crate::theme::palette();
+        let mut h = DefaultHasher::new();
+        std::mem::discriminant(&c.unit).hash(&mut h);
+        match &c.x {
+            XAxis::Time { start_ms, step_ms } => (0u8, start_ms, step_ms).hash(&mut h),
+            XAxis::Labels { labels } => (1u8, labels).hash(&mut h),
+        }
+        c.series.len().hash(&mut h);
+        for s in &c.series {
+            hash_series(s, &mut h);
+        }
+        c.ghosts.len().hash(&mut h);
+        for g in &c.ghosts {
+            hash_series(g, &mut h);
+        }
+        c.band.is_some().hash(&mut h);
+        if let Some(b) = &c.band {
+            hash_color(tone(b.tone), &mut h);
+            b.lo.len().hash(&mut h);
+            for &v in b.lo.iter().chain(&b.hi) {
+                v.to_bits().hash(&mut h);
+            }
+        }
+        c.stacked.hash(&mut h);
+        c.area.hash(&mut h);
+        c.annotate.hash(&mut h);
+        c.y_max.map(f64::to_bits).hash(&mut h);
+        c.limit
+            .as_ref()
+            .map(|l| (l.value.to_bits(), &l.label))
+            .hash(&mut h);
+        c.markers.len().hash(&mut h);
+        for mk in &c.markers {
+            mk.index.hash(&mut h);
+            mk.label.hash(&mut h);
+        }
+        self.show_annotations.hash(&mut h);
+        self.tz.hash(&mut h);
+        self.annotations.len().hash(&mut h);
+        for a in self.annotations {
+            a.t_ms.hash(&mut h);
+        }
+        hash_color(grid_color(), &mut h);
+        hash_color(axis_color(), &mut h);
+        hash_color(palette.rule_faint, &mut h);
+        hash_color(palette.ink_3, &mut h);
+        hash_color(palette.signal, &mut h);
+        hash_color(tone(Tone::Signal), &mut h);
+        hash_color(tone(Tone::Crit), &mut h);
+        h.finish()
+    }
+
+    /// Draws the static part of the chart, which `draw` caches: the axes, the gaps, the band, the series, the overlays,
+    /// the markers, the limit and the annotations. It returns the scale it drew at, which the hover parts need.
+    fn paint_static(&self, frame: &mut canvas::Frame, bounds: Rectangle) -> Scale {
         let c = self.c;
         let palette = crate::theme::palette();
         let plot = plot_area(bounds.size());
@@ -449,6 +513,17 @@ impl LineChart<'_> {
             }
         }
 
+        scale
+    }
+
+    /// Draws what the pointer adds over the cached chart: the crosshair with its dots, the drag brush and the tooltip.
+    fn paint_hover(&self, frame: &mut canvas::Frame, bounds: Rectangle, scale: Scale) {
+        let c = self.c;
+        let palette = crate::theme::palette();
+        let plot = scale.plot;
+        let bottom = plot.top + plot.height;
+        let n = scale.n;
+
         // The crosshair at the hovered fraction (shared by every chart), with a dot on each series there.
         if let (Some(frac), true) = (self.pointer.hover, n > 0)
             && let Some(i) = index_at(frac, n)
@@ -459,7 +534,7 @@ impl LineChart<'_> {
                 stroke(palette.ink_3, 1.0, None),
             );
             let mut acc = 0.0;
-            for (s, _) in &series {
+            for s in &c.series {
                 let v = s.values.get(i).copied().flatten();
                 acc += v.unwrap_or(0.0);
                 if let Some(v) = v {
@@ -558,6 +633,24 @@ struct TipRow {
     muted: bool,
 }
 
+/// Feeds a colour's four channels into the hash of the static drawing, by their bits.
+fn hash_color(color: Color, h: &mut DefaultHasher) {
+    [color.r, color.g, color.b, color.a]
+        .map(f32::to_bits)
+        .hash(h);
+}
+
+/// Feeds a series' tone, flags and values into the hash of the static drawing.
+fn hash_series(s: &Series, h: &mut DefaultHasher) {
+    hash_color(tone(s.tone), h);
+    s.dash.hash(h);
+    s.gap_reason.hash(h);
+    s.values.len().hash(h);
+    for &v in &s.values {
+        v.map(f64::to_bits).hash(h);
+    }
+}
+
 impl<'a> canvas::Program<Msg> for LineChart<'a> {
     type State = Gesture;
 
@@ -653,15 +746,27 @@ impl<'a> canvas::Program<Msg> for LineChart<'a> {
 
     fn draw(
         &self,
-        _gesture: &Gesture,
+        gesture: &Gesture,
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        self.paint(&mut frame, bounds);
-        vec![frame.into_geometry()]
+        // The static part is redrawn only when its key changes or the size does; the hover parts are drawn over it.
+        let key = self.static_key();
+        if gesture.key.get() != key {
+            gesture.cache.clear();
+            gesture.key.set(key);
+        }
+        let scale = &gesture.scale;
+        let chart = gesture.cache.draw(renderer, bounds.size(), |frame| {
+            scale.set(Some(self.paint_static(frame, bounds)));
+        });
+        let mut overlay = canvas::Frame::new(renderer, bounds.size());
+        if let Some(scale) = gesture.scale.get() {
+            self.paint_hover(&mut overlay, bounds, scale);
+        }
+        vec![chart, overlay.into_geometry()]
     }
 }
 

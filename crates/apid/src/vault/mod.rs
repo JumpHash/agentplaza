@@ -2197,7 +2197,7 @@ fn test_files(dir: &Path) -> apz_store::Store {
     let files: &'static [apz_store::FileSpec] = Box::leak(Box::new([apz_store::FileSpec {
         name: crate::store::PLAZA,
         file: "plaza.db",
-        durability: apz_store::Durability::Full,
+        durability: apz_store::Durability::Scratch,
         migrations,
     }]));
     apz_store::Store::open(dir, files).expect("the folder opens")

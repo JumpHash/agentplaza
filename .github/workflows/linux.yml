@@ -115,13 +115,23 @@ jobs:
       # Fresh clone, old mtimes: unchanged crates stay built (.github/ci/build-cache.py).
       - name: Keep the build directory fresh
         run: python3 .github/ci/build-cache.py mtimes "${APZ_CI_CACHE:-$HOME/.cache/agentplaza-ci}"
+      # Under qemu-user there is no Landlock, and a program that fails to exec is not reported back to the spawn: the
+      # tests that start an MCP server in the sandbox, and the bridge's missing-program test, run on x86_64 and on the
+      # arm64 runners natively instead.
       - name: Which tests
-        if: inputs.tests && inputs.only != ''
-        env: { ONLY: "${{ inputs.only }}" }
+        if: inputs.tests && (inputs.only != '' || (matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full')))
+        env:
+          ONLY: "${{ inputs.only }}"
+          EMULATED: "${{ matrix.arch == 'aarch64' && (inputs.package || inputs.arm64 == 'full') }}"
         run: |
           filter=""
           for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
-          echo "the tests of $ONLY and of what depends on them: $filter"
+          if [ -n "$filter" ]; then echo "the tests of $ONLY and of what depends on them: $filter"; fi
+          if [ "$EMULATED" = true ]; then
+            emulated='(package(apid) & test(/^mcp::tests::/)) | (package(vsockd) & test(=mcp_bridge::tests::mcp_server_that_cannot_start_reports_on_5201_and_exits_1))'
+            filter="${filter:+($filter) & }not ($emulated)"
+            echo "not under qemu: $emulated"
+          fi
           echo "NEXTEST_FILTER=-E '$filter' --no-tests=warn" >> "$GITHUB_ENV"
       # A report from an earlier run must not pass for this one's.
       - name: Clear the last test report

@@ -45,19 +45,19 @@ struct Globals {
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
+    @location(1) normal: vec4<f32>,
     @location(2) uv: vec2<f32>,
     // The vertex's own colour: white, except in a batch of meshes that differ only in colour.
-    @location(10) color: vec3<f32>,
+    @location(10) color: vec4<f32>,
     // The robot slot: 0 unchanged, 1 shell, 2 shell2, 3 panel, 4 glass (robot materials only).
     @location(11) slot: u32,
 };
 
 struct InstanceIn {
-    @location(3) m0: vec4<f32>,
-    @location(4) m1: vec4<f32>,
-    @location(5) m2: vec4<f32>,
-    @location(6) m3: vec4<f32>,
+    // The model matrix's top three rows (the bottom row is 0, 0, 0, 1).
+    @location(3) r0: vec4<f32>,
+    @location(4) r1: vec4<f32>,
+    @location(5) r2: vec4<f32>,
     // rgb: colour (material x instance); a: opacity.
     @location(7) color: vec4<f32>,
     // rgb: emissive x intensity; a: flags (1 receives shadow, 2 has a map, 4 two-sided).
@@ -87,8 +87,13 @@ struct Varyings {
     @location(8) @interpolate(flat) glass: f32,
 };
 
-fn model_of(i: InstanceIn) -> mat4x4<f32> {
-    return mat4x4<f32>(i.m0, i.m1, i.m2, i.m3);
+fn model(i: InstanceIn) -> mat4x4<f32> {
+    return mat4x4<f32>(
+        vec4<f32>(i.r0.x, i.r1.x, i.r2.x, 0.0),
+        vec4<f32>(i.r0.y, i.r1.y, i.r2.y, 0.0),
+        vec4<f32>(i.r0.z, i.r1.z, i.r2.z, 0.0),
+        vec4<f32>(i.r0.w, i.r1.w, i.r2.w, 1.0),
+    );
 }
 
 // The normal matrix of a translate-rotate-scale matrix: rotation x inverse scale squared.
@@ -127,7 +132,7 @@ fn lift(slot: u32) -> vec4<f32> {
 
 @vertex
 fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
-    let m = model_of(i);
+    let m = model(i);
     var o: Varyings;
     o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
     var r: Varyings;
@@ -140,10 +145,10 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
         let world = c + right * v.position.x * length(m[0].xyz) + up * v.position.y * length(m[1].xyz);
         r = finish(o, vec4<f32>(world, 1.0), toward, v.uv, i);
     } else {
-        r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), world_normal(m, v.normal), v.uv, i);
+        r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), world_normal(m, v.normal.xyz), v.uv, i);
     }
     let slot = v.slot & 0xffu;
-    r.color = vec4<f32>(r.color.rgb * v.color, r.color.a);
+    r.color = vec4<f32>(r.color.rgb * v.color.rgb, r.color.a);
     if has(i.emissive.a, 8.0) {
         // Slots 1 to 3 take the robot's hue (x the vertex colour); 4 is glass (no emissive).
         var hue = vec3<f32>(0.0);
@@ -155,7 +160,7 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
             hue = i.robot_panel.rgb;
         }
         let paint = slot >= 1u && slot <= 3u;
-        r.robot = vec4<f32>(select(vec3<f32>(0.0), hue * v.color, paint), select(0.0, 1.0, paint));
+        r.robot = vec4<f32>(select(vec3<f32>(0.0), hue * v.color.rgb, paint), select(0.0, 1.0, paint));
         r.glass = select(0.0, 1.0, slot == 4u);
     }
     return r;
@@ -165,11 +170,11 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
 // camera in clip space so a line wins the depth test against the faces it outlines.
 @vertex
 fn vs_line(v: VertexIn, i: InstanceIn) -> Varyings {
-    let m = model_of(i);
+    let m = model(i);
     var o: Varyings;
     o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
     var r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), vec3<f32>(0.0, 1.0, 0.0), v.uv, i);
-    r.color = vec4<f32>(r.color.rgb * v.color, r.color.a);
+    r.color = vec4<f32>(r.color.rgb * v.color.rgb, r.color.a);
     r.clip.z = r.clip.z - 0.0006 * r.clip.w;
     return r;
 }
@@ -177,7 +182,7 @@ fn vs_line(v: VertexIn, i: InstanceIn) -> Varyings {
 // Grass: each blade bends by its height, the wind a function of where the tuft stands.
 @vertex
 fn vs_grass(v: VertexIn, i: InstanceIn) -> Varyings {
-    let m = model_of(i);
+    let m = model(i);
     let wp = m * vec4<f32>(0.0, 0.0, 0.0, 1.0);
     let t = g.eye.w;
     let sway = sin(t * 1.7 + wp.x * 0.35 + wp.z * 0.25) * 0.5 + sin(t * 3.1 + wp.x) * 0.15;
@@ -186,15 +191,15 @@ fn vs_grass(v: VertexIn, i: InstanceIn) -> Varyings {
     p.z += sway * v.position.y * 0.2;
     var o: Varyings;
     o.extra = vec4<f32>(0.75 + v.position.y * 1.1, 0.0, 0.0, 0.0);
-    return finish(o, m * vec4<f32>(p, 1.0), world_normal(m, v.normal), v.uv, i);
+    return finish(o, m * vec4<f32>(p, 1.0), world_normal(m, v.normal.xyz), v.uv, i);
 }
 
 // The ink hull: pushed out along its smooth normals by a width that grows with distance.
 @vertex
 fn vs_outline(v: VertexIn, i: InstanceIn) -> Varyings {
-    let m = model_of(i);
+    let m = model(i);
     var mv = g.view * (m * vec4<f32>(v.position, 1.0) + lift(v.slot));
-    let n = normalize((g.view * vec4<f32>(world_normal(m, v.normal), 0.0)).xyz);
+    let n = normalize((g.view * vec4<f32>(world_normal(m, v.normal.xyz), 0.0)).xyz);
     let grow = g.params.y * clamp(-mv.z * 0.06, 0.7, 4.0);
     mv = vec4<f32>(mv.xyz + n * grow, 1.0);
     var o: Varyings;
@@ -212,7 +217,7 @@ fn vs_outline(v: VertexIn, i: InstanceIn) -> Varyings {
 // The sky dome: always at the far plane.
 @vertex
 fn vs_sky(v: VertexIn, i: InstanceIn) -> Varyings {
-    let m = model_of(i);
+    let m = model(i);
     var o: Varyings;
     let world = m * vec4<f32>(v.position, 1.0);
     o.clip = g.view_proj * world;
@@ -231,7 +236,7 @@ fn vs_sky(v: VertexIn, i: InstanceIn) -> Varyings {
 // vertices per instance.
 @vertex
 fn vs_points(@builtin(vertex_index) vi: u32, i: InstanceIn) -> Varyings {
-    let m = model_of(i);
+    let m = model(i);
     let world = m * vec4<f32>(0.0, 0.0, 0.0, 1.0);
     let mv = g.view * world;
     let size_px = i.uv_xform.x * (g.params.z * 0.5) / max(-mv.z, 1e-3);
@@ -258,12 +263,12 @@ fn vs_points(@builtin(vertex_index) vi: u32, i: InstanceIn) -> Varyings {
 
 @vertex
 fn vs_shadow(v: VertexIn, i: InstanceIn) -> @builtin(position) vec4<f32> {
-    return g.light_view_proj * (model_of(i) * vec4<f32>(v.position, 1.0) + lift(v.slot));
+    return g.light_view_proj * (model(i) * vec4<f32>(v.position, 1.0) + lift(v.slot));
 }
 
 @vertex
 fn vs_shadow_grass(v: VertexIn, i: InstanceIn) -> @builtin(position) vec4<f32> {
-    return g.light_view_proj * model_of(i) * vec4<f32>(v.position, 1.0);
+    return g.light_view_proj * model(i) * vec4<f32>(v.position, 1.0);
 }
 
 // ---- Lighting --------------------------------------------------------------------------------

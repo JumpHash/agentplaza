@@ -8,6 +8,7 @@
 //! 47, 1047, 1049) keeps no history: its rows do not scroll into the scrollback.
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::mem;
 
 use vte::{Params, Perform};
@@ -41,22 +42,121 @@ pub struct Style {
     pub inverse: bool,
 }
 
-/// One cell. `width` is 1 for a normal character, 2 for the first cell of a wide one, and 0 for the
-/// second cell of a wide one (its `ch` is a space and is never drawn on its own).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// One cell, packed into 12 bytes: the character, its width and the four style flags in one word,
+/// and each colour in its own word.
+///
+/// `width` is 1 for a normal character, 2 for the first cell of a wide one, and 0 for the second
+/// cell of a wide one (its character is a space and is never drawn on its own).
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
-    pub ch: char,
-    pub width: u8,
-    pub style: Style,
+    /// Bits 0-20: the character. Bits 21-22: the width (0, 1 or 2). Bits 23-26: bold, italic,
+    /// underline, inverse.
+    bits: u32,
+    /// The foreground colour, as `pack_color` writes it.
+    fg: u32,
+    /// The background colour, as `pack_color` writes it.
+    bg: u32,
+}
+
+/// The character bits of a cell's first word.
+const CHAR_MASK: u32 = 0x1F_FFFF;
+/// Where the width bits of a cell's first word start.
+const WIDTH_SHIFT: u32 = 21;
+/// The bold flag of a cell's first word.
+const BOLD: u32 = 1 << 23;
+/// The italic flag of a cell's first word.
+const ITALIC: u32 = 1 << 24;
+/// The underline flag of a cell's first word.
+const UNDERLINE: u32 = 1 << 25;
+/// The inverse flag of a cell's first word.
+const INVERSE: u32 = 1 << 26;
+
+impl Cell {
+    /// A cell holding `ch` at `width`, in `style`.
+    #[inline]
+    pub fn new(ch: char, width: u8, style: Style) -> Cell {
+        let mut bits = u32::from(ch) | ((u32::from(width) & 0x3) << WIDTH_SHIFT);
+        if style.bold {
+            bits |= BOLD;
+        }
+        if style.italic {
+            bits |= ITALIC;
+        }
+        if style.underline {
+            bits |= UNDERLINE;
+        }
+        if style.inverse {
+            bits |= INVERSE;
+        }
+        Cell {
+            bits,
+            fg: pack_color(style.fg),
+            bg: pack_color(style.bg),
+        }
+    }
+
+    /// The character.
+    #[inline]
+    pub fn ch(&self) -> char {
+        char::from_u32(self.bits & CHAR_MASK).unwrap_or(' ')
+    }
+
+    /// The width: 1 for a normal character, 2 for the first cell of a wide one, 0 for the second.
+    #[inline]
+    pub fn width(&self) -> u8 {
+        ((self.bits >> WIDTH_SHIFT) & 0x3) as u8
+    }
+
+    /// The colours and the style flags.
+    #[inline]
+    pub fn style(&self) -> Style {
+        Style {
+            fg: unpack_color(self.fg),
+            bg: unpack_color(self.bg),
+            bold: (self.bits & BOLD) != 0,
+            italic: (self.bits & ITALIC) != 0,
+            underline: (self.bits & UNDERLINE) != 0,
+            inverse: (self.bits & INVERSE) != 0,
+        }
+    }
+}
+
+impl fmt::Debug for Cell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cell")
+            .field("ch", &self.ch())
+            .field("width", &self.width())
+            .field("style", &self.style())
+            .finish()
+    }
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell {
-            ch: ' ',
-            width: 1,
-            style: Style::default(),
+        Cell::new(' ', 1, Style::default())
+    }
+}
+
+/// Packs a colour into one word: the tag in the top byte (0 for the default colour, 1 for an
+/// indexed one, 2 for a 24-bit one), then the index or the three channels.
+#[inline]
+fn pack_color(color: Color) -> u32 {
+    match color {
+        Color::Default => 0,
+        Color::Indexed(i) => (1 << 24) | u32::from(i),
+        Color::Rgb(r, g, b) => {
+            (2 << 24) | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
         }
+    }
+}
+
+/// Unpacks a colour written by `pack_color`. A tag it does not know reads as the default colour.
+#[inline]
+fn unpack_color(word: u32) -> Color {
+    match word >> 24 {
+        1 => Color::Indexed(word as u8),
+        2 => Color::Rgb((word >> 16) as u8, (word >> 8) as u8, word as u8),
+        _ => Color::Default,
     }
 }
 
@@ -71,14 +171,7 @@ pub struct Row {
 impl Row {
     fn blank(cols: usize, style: Style) -> Row {
         Row {
-            cells: vec![
-                Cell {
-                    ch: ' ',
-                    width: 1,
-                    style
-                };
-                cols
-            ],
+            cells: vec![Cell::new(' ', 1, style); cols],
             wrapped: false,
         }
     }
@@ -136,11 +229,11 @@ fn arg(nums: &[u16], i: usize, default: usize) -> usize {
     }
 }
 
-/// Reads the colour after `38` or `48` (`i` is that group's index). Both the colon form
+/// Reads the colour after `38` or `48` (`group` is that group, at index `i`). Both the colon form
 /// (`38:5:n`, `38:2::r:g:b`) and the semicolon form (`38;5;n`, `38;2;r;g;b`) are read; the
-/// semicolon form takes the groups after it, so `i` moves past them.
-fn extended(groups: &[Vec<u16>], i: &mut usize) -> Option<Color> {
-    let group = &groups[*i];
+/// semicolon form takes the groups after it, so `i` moves past them. Those groups are read from
+/// `params` in place, so no list of them is built.
+fn extended(params: &Params, group: &[u16], i: &mut usize) -> Option<Color> {
     if group.len() > 1 {
         return match *group.get(1)? {
             5 => group.get(2).map(|&n| Color::Indexed(clamp8(n))),
@@ -155,7 +248,12 @@ fn extended(groups: &[Vec<u16>], i: &mut usize) -> Option<Color> {
             _ => None,
         };
     }
-    let first = |offset: usize| groups.get(*i + offset).and_then(|g| g.first().copied());
+    let first = |offset: usize| {
+        params
+            .iter()
+            .nth(*i + offset)
+            .and_then(|g| g.first().copied())
+    };
     match first(1)? {
         5 => {
             let n = first(2)?;
@@ -180,7 +278,7 @@ fn clamp8(v: u16) -> u8 {
 fn fit_row(row: &mut Row, cols: usize) {
     if row.cells.len() > cols {
         row.cells.truncate(cols);
-        if let Some(last) = row.cells.last_mut().filter(|last| last.width == 2) {
+        if let Some(last) = row.cells.last_mut().filter(|last| last.width() == 2) {
             *last = Cell::default();
         }
     } else {
@@ -439,14 +537,11 @@ impl Screen {
 
     /// A blank cell that keeps the current background, as erasing does.
     fn blank_cell(&self) -> Cell {
-        Cell {
-            ch: ' ',
-            width: 1,
-            style: Style {
-                bg: self.style.bg,
-                ..Style::default()
-            },
-        }
+        let style = Style {
+            bg: self.style.bg,
+            ..Style::default()
+        };
+        Cell::new(' ', 1, style)
     }
 
     fn blank_row(&self) -> Row {
@@ -456,16 +551,27 @@ impl Screen {
         }
     }
 
-    fn push_history(&mut self, row: Row) {
+    /// Adds `row` to the history. When the history is full, its oldest row is dropped and returned,
+    /// so the caller can reuse its buffer.
+    fn push_history(&mut self, row: Row) -> Option<Row> {
         self.scrollback.push_back(row);
+        let mut dropped_row = None;
         if self.scrollback.len() > SCROLLBACK {
-            self.scrollback.pop_front();
+            dropped_row = self.scrollback.pop_front();
             self.dropped += 1;
         }
         if self.view > 0 {
             // Keep the same lines in view while output arrives.
             self.view = (self.view + 1).min(self.scrollback.len());
         }
+        dropped_row
+    }
+
+    /// Makes `row` a blank row of the current width, reusing its buffer.
+    fn clear_row(&self, row: &mut Row) {
+        row.cells.clear();
+        row.cells.resize(self.cols, self.blank_cell());
+        row.wrapped = false;
     }
 
     /// Scrolls the scroll region up by `n`: the top rows leave (into the history when the region
@@ -474,11 +580,18 @@ impl Screen {
         let n = n.min(self.bottom - self.top + 1);
         let to_history = self.top == 0 && !self.alt_screen();
         for _ in 0..n {
-            let row = self.grid.remove(self.top);
-            if to_history {
-                self.push_history(row);
-            }
-            let blank = self.blank_row();
+            let leaving = self.grid.remove(self.top);
+            // The blank row reuses the buffer of the row that leaves, or of the oldest history row
+            // that is dropped to make room for it, so a full history scrolls without allocating.
+            let mut blank = if to_history {
+                self.push_history(leaving).unwrap_or_else(|| Row {
+                    cells: Vec::new(),
+                    wrapped: false,
+                })
+            } else {
+                leaving
+            };
+            self.clear_row(&mut blank);
             self.grid.insert(self.bottom, blank);
         }
     }
@@ -487,8 +600,8 @@ impl Screen {
     fn scroll_down(&mut self, n: usize) {
         let n = n.min(self.bottom - self.top + 1);
         for _ in 0..n {
-            self.grid.remove(self.bottom);
-            let blank = self.blank_row();
+            let mut blank = self.grid.remove(self.bottom);
+            self.clear_row(&mut blank);
             self.grid.insert(self.top, blank);
         }
     }
@@ -550,7 +663,7 @@ impl Screen {
         if col >= cells.len() {
             return;
         }
-        match cells[col].width {
+        match cells[col].width() {
             0 if col > 0 => cells[col - 1] = Cell::default(),
             2 if col + 1 < cells.len() => cells[col + 1] = Cell::default(),
             _ => {}
@@ -645,14 +758,13 @@ impl Screen {
     }
 
     fn sgr(&mut self, params: &Params) {
-        let groups: Vec<Vec<u16>> = params.iter().map(<[u16]>::to_vec).collect();
-        if groups.is_empty() {
+        if params.iter().next().is_none() {
             self.style = Style::default();
             return;
         }
+        // The groups are read from `params` by index, so no copy of them is made.
         let mut i = 0;
-        while i < groups.len() {
-            let group = &groups[i];
+        while let Some(group) = params.iter().nth(i) {
             let code = group.first().copied().unwrap_or(0);
             match code {
                 0 => self.style = Style::default(),
@@ -667,14 +779,14 @@ impl Screen {
                 27 => self.style.inverse = false,
                 30..=37 => self.style.fg = Color::Indexed((code - 30) as u8),
                 38 => {
-                    if let Some(color) = extended(&groups, &mut i) {
+                    if let Some(color) = extended(params, group, &mut i) {
                         self.style.fg = color;
                     }
                 }
                 39 => self.style.fg = Color::Default,
                 40..=47 => self.style.bg = Color::Indexed((code - 40) as u8),
                 48 => {
-                    if let Some(color) = extended(&groups, &mut i) {
+                    if let Some(color) = extended(params, group, &mut i) {
                         self.style.bg = color;
                     }
                 }
@@ -696,8 +808,8 @@ fn row_text(row: &Row, from: usize, to: usize) -> String {
         .get(from..end)
         .unwrap_or(&[])
         .iter()
-        .filter(|cell| cell.width != 0)
-        .map(|cell| cell.ch)
+        .filter(|cell| cell.width() != 0)
+        .map(|cell| cell.ch())
         .collect()
 }
 
@@ -729,17 +841,9 @@ impl Perform for Screen {
         }
         let style = self.style;
         let cells = &mut self.grid[row].cells;
-        cells[col] = Cell {
-            ch: c,
-            width: width as u8,
-            style,
-        };
+        cells[col] = Cell::new(c, width as u8, style);
         if width == 2 {
-            cells[col + 1] = Cell {
-                ch: ' ',
-                width: 0,
-                style,
-            };
+            cells[col + 1] = Cell::new(' ', 0, style);
         }
         let next = col + width;
         if next >= self.cols {
@@ -783,15 +887,19 @@ impl Perform for Screen {
             self.sgr(params);
             return;
         }
-        let nums: Vec<u16> = params
-            .iter()
-            .map(|group| group.first().copied().unwrap_or(0))
-            .collect();
+        // One number per parameter group, on the stack: vte holds at most 32 parameters.
+        let mut buf = [0u16; 32];
+        let mut len = 0;
+        for group in params.iter().take(buf.len()) {
+            buf[len] = group.first().copied().unwrap_or(0);
+            len += 1;
+        }
+        let nums = &buf[..len];
         let private = intermediates.first() == Some(&b'?');
         if private && intermediates.len() == 1 {
             match action {
                 'h' | 'l' => {
-                    for &mode in &nums {
+                    for &mode in nums {
                         self.set_private_mode(usize::from(mode), action == 'h');
                     }
                 }
@@ -805,26 +913,20 @@ impl Perform for Screen {
         }
         match action {
             '@' => {
-                let n = arg(&nums, 0, 1).min(self.cols - self.col);
+                let n = arg(nums, 0, 1).min(self.cols - self.col);
                 let row = &mut self.grid[self.row].cells;
                 for _ in 0..n {
                     row.pop();
-                    row.insert(
-                        self.col,
-                        Cell {
-                            ch: ' ',
-                            width: 1,
-                            style: Style {
-                                bg: self.style.bg,
-                                ..Style::default()
-                            },
-                        },
-                    );
+                    let style = Style {
+                        bg: self.style.bg,
+                        ..Style::default()
+                    };
+                    row.insert(self.col, Cell::new(' ', 1, style));
                 }
             }
             'A' | 'F' => {
                 let (up, _) = self.move_limits();
-                let n = arg(&nums, 0, 1);
+                let n = arg(nums, 0, 1);
                 self.row = self.row.saturating_sub(n).max(up);
                 self.wrap_next = false;
                 if action == 'F' {
@@ -833,7 +935,7 @@ impl Perform for Screen {
             }
             'B' | 'E' => {
                 let (_, down) = self.move_limits();
-                let n = arg(&nums, 0, 1);
+                let n = arg(nums, 0, 1);
                 self.row = (self.row + n).min(down);
                 self.wrap_next = false;
                 if action == 'E' {
@@ -841,24 +943,24 @@ impl Perform for Screen {
                 }
             }
             'C' => {
-                self.col = (self.col + arg(&nums, 0, 1)).min(self.cols - 1);
+                self.col = (self.col + arg(nums, 0, 1)).min(self.cols - 1);
                 self.wrap_next = false;
             }
             'D' => {
-                self.col = self.col.saturating_sub(arg(&nums, 0, 1));
+                self.col = self.col.saturating_sub(arg(nums, 0, 1));
                 self.wrap_next = false;
             }
             'G' => {
-                self.col = (arg(&nums, 0, 1) - 1).min(self.cols - 1);
+                self.col = (arg(nums, 0, 1) - 1).min(self.cols - 1);
                 self.wrap_next = false;
             }
             'H' | 'f' => {
-                let row = arg(&nums, 0, 1) - 1;
-                let col = arg(&nums, 1, 1) - 1;
+                let row = arg(nums, 0, 1) - 1;
+                let col = arg(nums, 1, 1) - 1;
                 self.place(row, col);
             }
             'd' => {
-                let row = arg(&nums, 0, 1) - 1;
+                let row = arg(nums, 0, 1) - 1;
                 let col = self.col;
                 self.place(row, col);
             }
@@ -904,13 +1006,13 @@ impl Perform for Screen {
             'X' => {
                 let row = self.row;
                 let from = self.col;
-                self.erase_cells(row, from, from + arg(&nums, 0, 1));
+                self.erase_cells(row, from, from + arg(nums, 0, 1));
             }
             'L' | 'M' => {
                 if self.row < self.top || self.row > self.bottom {
                     return;
                 }
-                let n = arg(&nums, 0, 1).min(self.bottom - self.row + 1);
+                let n = arg(nums, 0, 1).min(self.bottom - self.row + 1);
                 for _ in 0..n {
                     if action == 'L' {
                         self.grid.remove(self.bottom);
@@ -927,7 +1029,7 @@ impl Perform for Screen {
             }
             'P' => {
                 let row = self.row;
-                let n = arg(&nums, 0, 1).min(self.cols - self.col);
+                let n = arg(nums, 0, 1).min(self.cols - self.col);
                 let blank = self.blank_cell();
                 let cells = &mut self.grid[row].cells;
                 for _ in 0..n {
@@ -935,16 +1037,16 @@ impl Perform for Screen {
                     cells.push(blank);
                 }
             }
-            'S' => self.scroll_up(arg(&nums, 0, 1)),
-            'T' => self.scroll_down(arg(&nums, 0, 1)),
+            'S' => self.scroll_up(arg(nums, 0, 1)),
+            'T' => self.scroll_down(arg(nums, 0, 1)),
             'g' => match nums.first().copied().unwrap_or(0) {
                 0 => self.tabs[self.col] = false,
                 3 => self.tabs.iter_mut().for_each(|tab| *tab = false),
                 _ => {}
             },
             'r' => {
-                let top = arg(&nums, 0, 1) - 1;
-                let bottom = arg(&nums, 1, self.rows) - 1;
+                let top = arg(nums, 0, 1) - 1;
+                let bottom = arg(nums, 1, self.rows) - 1;
                 if top < bottom && bottom < self.rows {
                     self.top = top;
                     self.bottom = bottom;
@@ -1013,5 +1115,39 @@ impl Perform for Screen {
         {
             self.title = String::from_utf8_lossy(text).into_owned();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cell_is_twelve_bytes() {
+        assert_eq!(std::mem::size_of::<Cell>(), 12);
+    }
+
+    #[test]
+    fn wide_cell_round_trips_its_fields() {
+        let style = Style {
+            fg: Color::Rgb(10, 20, 30),
+            bg: Color::Indexed(200),
+            bold: true,
+            italic: true,
+            underline: true,
+            inverse: true,
+        };
+        let cell = Cell::new('字', 2, style);
+        assert_eq!(cell.ch(), '字');
+        assert_eq!(cell.width(), 2);
+        assert_eq!(cell.style(), style);
+    }
+
+    #[test]
+    fn default_cell_round_trips_its_fields() {
+        let cell = Cell::default();
+        assert_eq!(cell.ch(), ' ');
+        assert_eq!(cell.width(), 1);
+        assert_eq!(cell.style(), Style::default());
     }
 }

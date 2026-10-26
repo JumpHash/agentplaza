@@ -210,7 +210,7 @@ mod tests {
             .join(format!("apid-storage-{}-{name}", std::process::id()))
             .join("blobs");
         let _ = std::fs::remove_dir_all(dir.parent().expect("a parent"));
-        Arc::new(Blobs::open(&dir).expect("the store opens"))
+        Arc::new(Blobs::scratch(&dir).expect("the store opens"))
     }
 
     /// Bytes that do not repeat within a few chunks, so a chunked blob's chunks differ.

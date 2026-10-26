@@ -9,7 +9,10 @@
 //! draws what a widget's border cannot (dashed frames, the links), the widgets carry the text and take the clicks. The
 //! rules are in `work_model.rs`.
 
+use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -791,18 +794,18 @@ struct PaintFrame {
 
 const DASH: &[f32] = &[4.0, 4.0];
 
-impl canvas::Program<Msg> for MapPaint {
-    type State = ();
+/// The canvas's state between redraws: the map's drawing, kept until its values change.
+#[derive(Default)]
+struct PaintState {
+    cache: canvas::Cache,
+    /// The `paint_key` of the values `cache` was drawn from.
+    key: Cell<u64>,
+}
 
-    fn draw(
-        &self,
-        _state: &(),
-        renderer: &Renderer,
-        _theme: &Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<canvas::Geometry<Renderer>> {
-        let mut frame = Frame::new(renderer, bounds.size());
+/// The static part of the map, its links and frames: `draw` keeps it in the canvas's cache.
+impl MapPaint {
+    /// Draws the links, then the frames over them.
+    fn paint(&self, frame: &mut Frame) {
         for line in &self.lines {
             // The web's `bez`: out to the middle, then in, with both ends level.
             let mid = (line.from.x + line.to.x) / 2.0;
@@ -854,7 +857,66 @@ impl canvas::Program<Msg> for MapPaint {
             );
             frame.stroke(&edge, Stroke::default().with_color(f.edge).with_width(1.0));
         }
-        vec![frame.into_geometry()]
+    }
+}
+
+/// A key of the values the static drawing depends on: the links and frames by their values, colours included. The
+/// dash is a constant. Floats go in by their bits, as `f32` and `Color` are not `Hash`.
+fn paint_key(paint: &MapPaint) -> u64 {
+    fn floats(h: &mut DefaultHasher, values: &[f32]) {
+        for v in values {
+            v.to_bits().hash(h);
+        }
+    }
+    let mut h = DefaultHasher::new();
+    paint.lines.len().hash(&mut h);
+    for line in &paint.lines {
+        floats(&mut h, &[line.from.x, line.from.y, line.to.x, line.to.y]);
+        let c = line.color;
+        floats(&mut h, &[c.r, c.g, c.b, c.a]);
+        line.dashed.hash(&mut h);
+        line.head.hash(&mut h);
+    }
+    paint.frames.len().hash(&mut h);
+    for f in &paint.frames {
+        floats(&mut h, &[f.rect.x, f.rect.y, f.rect.width, f.rect.height]);
+        for c in [f.fill, f.edge] {
+            floats(&mut h, &[c.r, c.g, c.b, c.a]);
+        }
+        match f.ring {
+            Some(c) => {
+                1u8.hash(&mut h);
+                floats(&mut h, &[c.r, c.g, c.b, c.a]);
+            }
+            None => 0u8.hash(&mut h),
+        }
+    }
+    h.finish()
+}
+
+impl canvas::Program<Msg> for MapPaint {
+    type State = PaintState;
+
+    fn draw(
+        &self,
+        state: &PaintState,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry<Renderer>> {
+        // Nothing here follows the cursor, so the whole map is cached: it is drawn again only when its values
+        // change or the canvas changes size.
+        let key = paint_key(self);
+        if state.key.get() != key {
+            state.cache.clear();
+            state.key.set(key);
+        }
+        vec![
+            state
+                .cache
+                .draw(renderer, bounds.size(), |frame| self.paint(frame)),
+        ]
     }
 }
 

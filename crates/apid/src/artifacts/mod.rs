@@ -1361,7 +1361,8 @@ mod tests {
     /// The store in `dir` as the hub has it at start: the plaza database (its tables made if missing) and the objects.
     fn open(dir: tempfile::TempDir) -> Fixture {
         let plaza = crate::store::open(dir.path()).expect("the store opens");
-        let objects = Arc::new(apz_blobs::Blobs::open(&dir.path().join("blobs")).expect("objects"));
+        let objects =
+            Arc::new(apz_blobs::Blobs::scratch(&dir.path().join("blobs")).expect("objects"));
         let store = Store::new(
             Arc::clone(plaza.db(crate::store::PLAZA)),
             Arc::clone(&objects),
@@ -1881,7 +1882,7 @@ mod tests {
             .prefix("apid-artifacts-objects")
             .tempdir()
             .expect("a temporary folder");
-        let empty = Arc::new(apz_blobs::Blobs::open(other.path()).expect("objects"));
+        let empty = Arc::new(apz_blobs::Blobs::scratch(other.path()).expect("objects"));
         let reloaded = Store::new(Arc::clone(&fx.store.db), empty);
         assert!(reloaded.exists(&made.id));
         assert!(reloaded.get(&made.id, None).is_none());

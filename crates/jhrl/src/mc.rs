@@ -4,7 +4,8 @@
 //! deduplicated by their canonical byte encoding, so the first time a state is reached is by a
 //! shortest path and every counterexample trace is a shortest one. Invariants are checked in every
 //! reachable state, transition invariants on every non-stuttering step, and a state with no
-//! enabled action is a deadlock unless it is terminal or the model allows deadlock.
+//! enabled action is a deadlock unless it is terminal or the model allows deadlock. States are
+//! kept packed (one record plus the canonical bytes each, see `States`) and rebuilt when expanded.
 //!
 //! Not in v0: temporal properties and fairness (parsed, reported as skipped), symmetry
 //! reduction (the full space is explored, which gives the same verdicts), parallel workers and
@@ -16,7 +17,6 @@ use crate::machine::{MachineCtx, State};
 use crate::program::{DeclRef, Program};
 use crate::span::{Diag, Span};
 use crate::value::Value;
-use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Debug)]
 pub struct Step {
@@ -39,6 +39,8 @@ impl Step {
     }
 }
 
+/// One state, decoded from the packed store by `States::get`: its values are rebuilt from the
+/// canonical bytes, and the parent, step and depth come from the state's record.
 #[derive(Clone, Debug)]
 pub struct StateRec {
     pub vals: State,
@@ -103,7 +105,7 @@ pub struct Report {
     pub machine: String,
     pub model: String,
     pub ctx: MachineCtx,
-    pub states: Vec<StateRec>,
+    pub states: States,
     pub generated: usize,
     pub depth: u32,
     pub violations: Vec<Violation>,
@@ -114,12 +116,212 @@ pub struct Report {
     pub notes: Vec<String>,
 }
 
-fn encode(s: &[Value]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(64);
-    for v in s {
-        v.encode(&mut out);
+const NONE: u32 = u32::MAX;
+
+/// One reached state's fixed-size record (24 bytes, no padding).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Rec {
+    /// Where the state starts in the arena: its canonical encoding, then its step's parameters.
+    start: u64,
+    /// The length of the encoding; the parameters run from there to the next state's start.
+    len: u32,
+    /// The state it was reached from, `NONE` for an initial state.
+    parent: u32,
+    /// The action that reached it, an index into `States::actions`; `NONE` for an initial state.
+    action: u32,
+    /// BFS level, counting the initial states as 1.
+    depth: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<Rec>() == 24);
+
+/// The reached states, packed. Each has a 24-byte record; its canonical encoding and its step's
+/// parameters share one byte arena. An open-addressed table of 8-byte slots finds a state again:
+/// a slot holds the upper half of the state's hash, then its index + 1 (0 is empty). A state's
+/// values are rebuilt from its bytes when they are needed, so a state costs about 35 bytes plus
+/// its encoding, where a tree of `Value`s costs kilobytes.
+pub struct States {
+    recs: Vec<Rec>,
+    arena: Vec<u8>,
+    slots: Vec<u64>,
+    /// The machine's action names, which records refer to by index.
+    actions: Vec<String>,
+}
+
+impl States {
+    fn new(actions: Vec<String>) -> States {
+        States {
+            recs: Vec::new(),
+            arena: Vec::new(),
+            slots: vec![0; 1024],
+            actions,
+        }
     }
-    out
+
+    pub fn len(&self) -> usize {
+        self.recs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.recs.is_empty()
+    }
+
+    pub fn depth(&self, i: usize) -> u32 {
+        self.recs[i].depth
+    }
+
+    pub fn parent(&self, i: usize) -> Option<usize> {
+        let p = self.recs[i].parent;
+        (p != NONE).then_some(p as usize)
+    }
+
+    /// State `i`'s canonical encoding.
+    fn bytes(&self, i: usize) -> &[u8] {
+        let r = self.recs[i];
+        &self.arena[r.start as usize..r.start as usize + r.len as usize]
+    }
+
+    /// State `i`'s values, rebuilt from its encoding.
+    pub fn vals(&self, i: usize) -> State {
+        let mut b = self.bytes(i);
+        let mut out = State::new();
+        while !b.is_empty() {
+            out.push(Value::decode(&mut b));
+        }
+        out
+    }
+
+    /// The step that reached state `i`; none for an initial state.
+    pub fn via(&self, i: usize) -> Option<Step> {
+        let r = self.recs[i];
+        if r.action == NONE {
+            return None;
+        }
+        let end = self
+            .recs
+            .get(i + 1)
+            .map_or(self.arena.len(), |n| n.start as usize);
+        let mut b = &self.arena[r.start as usize + r.len as usize..end];
+        let mut params = Vec::new();
+        while !b.is_empty() {
+            let n = u32::from_le_bytes(b[..4].try_into().unwrap()) as usize;
+            let name = std::str::from_utf8(&b[4..4 + n])
+                .expect("parameter names are UTF-8")
+                .to_owned();
+            b = &b[4 + n..];
+            params.push((name, Value::decode(&mut b)));
+        }
+        Some(Step {
+            action: self.actions[r.action as usize].clone(),
+            params,
+        })
+    }
+
+    /// State `i`, decoded.
+    pub fn get(&self, i: usize) -> StateRec {
+        StateRec {
+            vals: self.vals(i),
+            parent: self.parent(i),
+            via: self.via(i),
+            depth: self.depth(i),
+        }
+    }
+
+    /// Adds the state encoded as `enc` unless it is already known, and returns its index when it
+    /// is new. `via` is the index of the action that reached it and that step's parameters.
+    fn add(
+        &mut self,
+        enc: &[u8],
+        parent: Option<usize>,
+        via: Option<(usize, &[(String, Value)])>,
+        depth: u32,
+    ) -> Option<usize> {
+        let tag = hash(enc) >> 32;
+        let mask = self.slots.len() - 1;
+        let mut p = (tag >> (32 - self.slots.len().trailing_zeros())) as usize;
+        loop {
+            let s = self.slots[p];
+            if s == 0 {
+                break;
+            }
+            if s >> 32 == tag && self.bytes((s as u32 - 1) as usize) == enc {
+                return None;
+            }
+            p = (p + 1) & mask;
+        }
+        let idx = self.recs.len();
+        assert!(idx < NONE as usize, "more states than a u32 index holds");
+        self.slots[p] = (tag << 32) | (idx as u64 + 1);
+        let start = self.arena.len() as u64;
+        self.arena.extend_from_slice(enc);
+        let action = match via {
+            Some((a, params)) => {
+                for (k, v) in params {
+                    self.arena.extend((k.len() as u32).to_le_bytes());
+                    self.arena.extend(k.as_bytes());
+                    v.encode(&mut self.arena);
+                }
+                a as u32
+            }
+            None => NONE,
+        };
+        self.recs.push(Rec {
+            start,
+            len: enc.len() as u32,
+            parent: parent.map_or(NONE, |p| p as u32),
+            action,
+            depth,
+        });
+        if self.recs.len() * 4 > self.slots.len() * 3 {
+            self.grow();
+        }
+        Some(idx)
+    }
+
+    /// Doubles the table. A slot's position comes from its tag, so nothing is hashed again.
+    fn grow(&mut self) {
+        let n = self.slots.len() * 2;
+        let old = std::mem::replace(&mut self.slots, vec![0; n]);
+        let mask = self.slots.len() - 1;
+        let shift = 32 - self.slots.len().trailing_zeros();
+        for s in old.into_iter().filter(|&s| s != 0) {
+            let mut p = ((s >> 32) >> shift) as usize;
+            while self.slots[p] != 0 {
+                p = (p + 1) & mask;
+            }
+            self.slots[p] = s;
+        }
+    }
+}
+
+/// FxHash over 8-byte words with murmur3's finish, so the upper bits (the table position) are well
+/// mixed.
+fn hash(b: &[u8]) -> u64 {
+    const K: u64 = 0x517c_c1b7_2722_0a95;
+    let mut h = b.len() as u64;
+    let (words, rest) = b.as_chunks::<8>();
+    for w in words {
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(*w)).wrapping_mul(K);
+    }
+    if !rest.is_empty() {
+        let mut last = [0u8; 8];
+        last[..rest.len()].copy_from_slice(rest);
+        h = (h.rotate_left(5) ^ u64::from_le_bytes(last)).wrapping_mul(K);
+    }
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    h ^ (h >> 33)
+}
+
+/// Encodes the values of a state into `out`, replacing what it held.
+fn encode_into(s: &[Value], out: &mut Vec<u8>) {
+    out.clear();
+    for v in s {
+        v.encode(out);
+    }
 }
 
 /// The models of a machine, wherever they are declared.
@@ -156,7 +358,7 @@ impl<'a> Search<'a> {
         let fatal = matches!(v.what, Found::Error(_));
         self.cutoff = Some(self.cutoff.map_or(depth, |c| c.min(depth)));
         let states = &self.rep.states;
-        let vd = |x: &Violation| states[x.state].depth + x.step.is_some() as u32;
+        let vd = |x: &Violation| states.depth(x.state) + x.step.is_some() as u32;
         match self.rep.violations.iter().position(|x| x.what == v.what) {
             Some(i) if vd(&self.rep.violations[i]) > depth => self.rep.violations[i] = v,
             Some(_) => {}
@@ -188,13 +390,19 @@ impl<'a> Search<'a> {
         Ok(bad)
     }
 
-    /// Type and invariant checks of a newly reached state.
-    fn check_new(&mut self, idx: usize, step: Option<&Step>) {
-        let s = self.rep.states[idx].vals.clone();
-        let depth = self.rep.states[idx].depth;
-        if let Some(m) = self.ctx.type_error(self.prog, &s) {
-            let m = match step {
-                Some(st) => format!("{m} after {}", st.label()),
+    /// Type and invariant checks of a newly reached state `vals`. `via` is the action's name and
+    /// parameters that reached it; none for an initial state.
+    fn check_new(&mut self, idx: usize, vals: &[Value], via: Option<(&str, &[(String, Value)])>) {
+        let depth = self.rep.states.depth(idx);
+        if let Some(m) = self.ctx.type_error(self.prog, vals) {
+            let m = match via {
+                Some((action, params)) => {
+                    let st = Step {
+                        action: action.to_owned(),
+                        params: params.to_vec(),
+                    };
+                    format!("{m} after {}", st.label())
+                }
                 None => m,
             };
             self.record(
@@ -209,7 +417,7 @@ impl<'a> Search<'a> {
                 return;
             }
         }
-        match self.check_state(&s) {
+        match self.check_state(vals) {
             Ok(bad) => {
                 for b in bad {
                     self.record(
@@ -283,7 +491,7 @@ pub fn explore(
         machine: mdecl.name.clone(),
         model: model.name.clone(),
         ctx: ctx.clone(),
-        states: vec![],
+        states: States::new(actions.iter().map(|a| a.name.clone()).collect()),
         generated: 0,
         depth: 0,
         violations: vec![],
@@ -303,8 +511,7 @@ pub fn explore(
         cutoff: None,
         stop: false,
     };
-    let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
-    let mut queue = VecDeque::new();
+    let mut enc = Vec::with_capacity(256);
 
     let inits = match ctx.initial_states(prog) {
         Ok(v) => v,
@@ -319,30 +526,26 @@ pub fn explore(
         }
     };
     for st in inits {
-        let key = encode(&st);
-        if seen.contains_key(&key) {
+        encode_into(&st, &mut enc);
+        let Some(idx) = s.rep.states.add(&enc, None, None, 1) else {
             continue;
-        }
-        let idx = s.rep.states.len();
-        seen.insert(key, idx);
-        s.rep.states.push(StateRec {
-            vals: st,
-            parent: None,
-            via: None,
-            depth: 1,
-        });
+        };
         s.rep.generated += 1;
         s.rep.depth = 1;
-        s.check_new(idx, None);
+        s.check_new(idx, &st, None);
         if s.stop {
             return Ok(s.rep);
         }
-        queue.push_back(idx);
     }
 
-    while let Some(idx) = queue.pop_front() {
-        let cur = s.rep.states[idx].vals.clone();
-        let depth = s.rep.states[idx].depth;
+    // Every new state is appended to the store, so walking the states in index order visits them
+    // in the order of a breadth-first queue.
+    let mut next_idx = 0;
+    while next_idx < s.rep.states.len() {
+        let idx = next_idx;
+        next_idx += 1;
+        let cur = s.rep.states.vals(idx);
+        let depth = s.rep.states.depth(idx);
         if s.cutoff.is_some_and(|c| depth > c) {
             continue;
         }
@@ -374,7 +577,7 @@ pub fn explore(
             continue;
         }
         let mut enabled = 0usize;
-        for a in &actions {
+        for (ai, a) in actions.iter().enumerate() {
             let succs = match ctx.successors(prog, a, &cur) {
                 Ok(v) => v,
                 Err(d) => {
@@ -401,10 +604,6 @@ pub fn explore(
             }
             for sc in succs {
                 s.rep.generated += 1;
-                let step = Step {
-                    action: a.name.clone(),
-                    params: sc.params,
-                };
                 let next = sc.next;
                 if next != cur {
                     let nx: Vec<Option<Value>> = next.iter().cloned().map(Some).collect();
@@ -418,7 +617,13 @@ pub fn explore(
                                 let v = Violation {
                                     what: Found::Transition(name.to_string()),
                                     state: idx,
-                                    step: Some((step.clone(), next.clone())),
+                                    step: Some((
+                                        Step {
+                                            action: a.name.clone(),
+                                            params: sc.params.clone(),
+                                        },
+                                        next.clone(),
+                                    )),
                                 };
                                 s.record(v, depth + 1);
                             }
@@ -452,18 +657,14 @@ pub fn explore(
                         }
                     }
                 }
-                let key = encode(&next);
-                if seen.contains_key(&key) {
+                encode_into(&next, &mut enc);
+                let Some(nidx) =
+                    s.rep
+                        .states
+                        .add(&enc, Some(idx), Some((ai, sc.params.as_slice())), depth + 1)
+                else {
                     continue;
-                }
-                let nidx = s.rep.states.len();
-                seen.insert(key, nidx);
-                s.rep.states.push(StateRec {
-                    vals: next,
-                    parent: Some(idx),
-                    via: Some(step.clone()),
-                    depth: depth + 1,
-                });
+                };
                 s.rep.depth = s.rep.depth.max(depth + 1);
                 if s.rep.states.len() > opts.max_states {
                     let msg = format!(
@@ -480,11 +681,10 @@ pub fn explore(
                     );
                     return Ok(s.rep);
                 }
-                s.check_new(nidx, Some(&step));
+                s.check_new(nidx, &next, Some((a.name.as_str(), sc.params.as_slice())));
                 if s.stop {
                     return Ok(s.rep);
                 }
-                queue.push_back(nidx);
             }
         }
         if enabled == 0 && check_deadlock {
@@ -515,7 +715,7 @@ pub fn explore(
     if let Some(c) = s.cutoff {
         let states = &s.rep.states;
         s.rep.violations.retain(|v| {
-            states[v.state].depth + v.step.is_some() as u32 == c
+            states.depth(v.state) + v.step.is_some() as u32 == c
                 || matches!(v.what, Found::Error(_))
         });
     }
@@ -526,7 +726,7 @@ impl Report {
     pub fn path_to(&self, idx: usize) -> Vec<usize> {
         let mut v = vec![idx];
         let mut i = idx;
-        while let Some(p) = self.states[i].parent {
+        while let Some(p) = self.states.parent(i) {
             v.push(p);
             i = p;
         }
@@ -537,23 +737,20 @@ impl Report {
     /// The shortest trace to a violation, one line per step: action, parameters, changed vars.
     pub fn render_trace(&self, v: &Violation, indent: &str) -> String {
         let path = self.path_to(v.state);
+        let vals: Vec<State> = path.iter().map(|&i| self.states.vals(i)).collect();
         let mut rows: Vec<(String, String)> = Vec::new();
-        let mut prev: Option<&State> = None;
-        for &i in &path {
-            let s = &self.states[i];
-            let label = s
-                .via
-                .as_ref()
+        let mut prev: Option<&[Value]> = None;
+        for (k, &i) in path.iter().enumerate() {
+            let label = self
+                .states
+                .via(i)
                 .map(|x| x.label())
                 .unwrap_or_else(|| "init".into());
-            rows.push((label, self.ctx.show(&s.vals, prev.map(|p| p.as_slice()))));
-            prev = Some(&s.vals);
+            rows.push((label, self.ctx.show(&vals[k], prev)));
+            prev = Some(vals[k].as_slice());
         }
         if let Some((step, next)) = &v.step {
-            rows.push((
-                step.label(),
-                self.ctx.show(next, prev.map(|p| p.as_slice())),
-            ));
+            rows.push((step.label(), self.ctx.show(next, prev)));
         }
         let w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
         let mut out = String::new();
@@ -565,8 +762,9 @@ impl Report {
 
     /// The first state (in BFS order, so at least depth) where `e` holds.
     pub fn find(&self, prog: &Program, pack: usize, e: &Expr) -> Result<Option<usize>, Diag> {
-        for (i, s) in self.states.iter().enumerate() {
-            let mut env = Env::machine(prog, &self.ctx, Some(&s.vals));
+        for i in 0..self.states.len() {
+            let vals = self.states.vals(i);
+            let mut env = Env::machine(prog, &self.ctx, Some(&vals));
             env.pack = pack;
             if env.eval_bool(e, "a witness")? == Some(true) {
                 return Ok(Some(i));
@@ -732,7 +930,7 @@ pub fn run_mutant(prog: &Program, pack: usize, m: &MutantDecl) -> MutantOutcome 
                     "caught in \"{}\": {} at depth {}",
                     md.name,
                     v.what.describe(),
-                    rep.states[v.state].depth + v.step.is_some() as u32
+                    rep.states.depth(v.state) + v.step.is_some() as u32
                 );
                 if !others.is_empty() {
                     line.push_str(&format!(" (also: {})", others.join("; ")));
@@ -799,7 +997,7 @@ mod tests {
             assert_eq!(r.depth, 3); // x starts in {0, 1}: 1 → 2 → 3
             assert_eq!(r.violations.len(), 1);
             assert_eq!(r.violations[0].what, Found::Deadlock);
-            assert_eq!(r.states[r.violations[0].state].vals[0], Value::int(3));
+            assert_eq!(r.states.vals(r.violations[0].state)[0], Value::int(3));
         }
         // shortest_counterexample: the trace to a violation is the shortest one.
         {
@@ -888,5 +1086,35 @@ mod tests {
         assert!(out[3].1, "{:?}", out[3]);
         assert!(out[4].1, "{:?}", out[4]);
         assert!(!out[5].1 && out[5].2.contains("NOT caught"), "{:?}", out[5]);
+    }
+
+    #[test]
+    fn the_packed_store_finds_states_again_and_rebuilds_them() {
+        let mut st = States::new(vec!["go".into()]);
+        let state_of = |i: usize| vec![Value::int(i as i128), Value::Bool(i.is_multiple_of(2))];
+        let mut enc = Vec::new();
+        for i in 0..5000usize {
+            encode_into(&state_of(i), &mut enc);
+            let params = [("n".to_string(), Value::int(i as i128))];
+            let (parent, via) = if i == 0 {
+                (None, None)
+            } else {
+                (Some(i - 1), Some((0, &params[..])))
+            };
+            assert_eq!(st.add(&enc, parent, via, 1 + i as u32), Some(i));
+        }
+        // Adding every state again finds each one, across several doublings of the table.
+        for i in 0..5000usize {
+            encode_into(&state_of(i), &mut enc);
+            assert_eq!(st.add(&enc, None, None, 1), None);
+        }
+        assert_eq!(st.len(), 5000);
+        assert_eq!(st.vals(1234), state_of(1234));
+        assert_eq!(st.parent(1234), Some(1233));
+        assert_eq!(st.depth(1234), 1235);
+        assert!(st.via(0).is_none());
+        let via = st.via(7).expect("state 7 has a step");
+        assert_eq!(via.action, "go");
+        assert_eq!(via.params, vec![("n".to_string(), Value::int(7))]);
     }
 }

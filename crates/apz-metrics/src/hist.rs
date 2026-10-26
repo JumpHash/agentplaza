@@ -14,6 +14,7 @@ pub const GROWTH: f64 = 1.04;
 pub const MIN: f64 = 0.01;
 
 /// The bucket of a value (NaN and negatives go to bucket 0).
+#[inline]
 pub fn bucket_of(v: f64) -> u16 {
     if v.is_nan() || v <= MIN {
         return 0;
@@ -32,10 +33,10 @@ pub fn bucket_value(b: u16) -> f64 {
 }
 
 /// A histogram that many threads record into. Recording is lock-free: one atomic add on the bucket, plus the
-/// count and the sum/min/max (kept as f64 bits, updated with compare-and-swap).
+/// sum/min/max (kept as f64 bits, updated with compare-and-swap). The count is the sum of the buckets, so it
+/// has no atomic of its own.
 pub struct AtomicHist {
-    counts: Box<[AtomicU64]>,
-    count: AtomicU64,
+    counts: [AtomicU64; BUCKETS],
     sum_bits: AtomicU64,
     min_bits: AtomicU64,
     max_bits: AtomicU64,
@@ -50,8 +51,7 @@ impl Default for AtomicHist {
 impl AtomicHist {
     pub fn new() -> AtomicHist {
         AtomicHist {
-            counts: (0..BUCKETS).map(|_| AtomicU64::new(0)).collect(),
-            count: AtomicU64::new(0),
+            counts: [const { AtomicU64::new(0) }; BUCKETS],
             sum_bits: AtomicU64::new(0f64.to_bits()),
             min_bits: AtomicU64::new(f64::INFINITY.to_bits()),
             max_bits: AtomicU64::new(f64::NEG_INFINITY.to_bits()),
@@ -59,6 +59,7 @@ impl AtomicHist {
     }
 
     /// Records one value.
+    #[inline]
     pub fn record(&self, v: f64) {
         if !v.is_finite() {
             return;
@@ -67,7 +68,6 @@ impl AtomicHist {
         update(&self.sum_bits, |s| s + v);
         update(&self.min_bits, |m| m.min(v));
         update(&self.max_bits, |m| m.max(v));
-        self.count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The values recorded so far, without resetting.
@@ -105,10 +105,6 @@ impl AtomicHist {
             })
             .collect();
         let count = buckets.iter().map(|b| b.1).sum::<u64>();
-        self.count.fetch_sub(
-            count.min(self.count.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
         let swap =
             |a: &AtomicU64, empty: f64| f64::from_bits(a.swap(empty.to_bits(), Ordering::Relaxed));
         let sum = swap(&self.sum_bits, 0.0);

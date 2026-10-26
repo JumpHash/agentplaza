@@ -448,7 +448,7 @@ mod tests {
     /// A temporary object store for the candidate's pictures, and a review graph with the change `c1` in it.
     fn env() -> (tempfile::TempDir, Blobs, Reviews) {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = Blobs::open(&dir.path().join("ux")).unwrap();
+        let blobs = Blobs::scratch(&dir.path().join("ux")).unwrap();
         let reviews = reviews_in(&dir);
         reviews.put_run(review_of("c1"));
         (dir, blobs, reviews)
