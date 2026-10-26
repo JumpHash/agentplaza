@@ -279,32 +279,29 @@ impl VsockChannel for VsockMuxer {
             return;
         }
 
-        if !self.conn_map.contains_key(&conn_key) {
-            // This packet can't be routed to any active connection (based on its src and dst
-            // ports).  The only orphan / unroutable packets we know how to handle are
-            // connection requests.
-            if pkt.hdr.op() == uapi::VSOCK_OP_REQUEST {
-                // Oh, this is a connection request!
-                self.handle_peer_request_pkt(pkt);
-            } else {
-                // Send back an RST, to let the drive know we weren't expecting this packet.
-                self.enq_rst(pkt.hdr.dst_port(), pkt.hdr.src_port());
+        // Forward the packet to its owning connection, if there is one. An RST for a known
+        // connection forcefully terminates it instead, so there's no point in forwarding it.
+        if pkt.hdr.op() != uapi::VSOCK_OP_RST {
+            if self.apply_conn_mutation(conn_key, |conn| {
+                conn.send_pkt(pkt);
+            }) {
+                return;
             }
-            return;
-        }
-
-        // Right, we know where to send this packet, then (to `conn_key`).
-        // However, if this is an RST, we have to forcefully terminate the connection, so
-        // there's no point in forwarding it the packet.
-        if pkt.hdr.op() == uapi::VSOCK_OP_RST {
+        } else if self.conn_map.contains_key(&conn_key) {
             self.remove_connection(conn_key);
             return;
         }
 
-        // Alright, everything looks in order - forward this packet to its owning connection.
-        self.apply_conn_mutation(conn_key, |conn| {
-            conn.send_pkt(pkt);
-        });
+        // This packet can't be routed to any active connection (based on its src and dst
+        // ports).  The only orphan / unroutable packets we know how to handle are
+        // connection requests.
+        if pkt.hdr.op() == uapi::VSOCK_OP_REQUEST {
+            // Oh, this is a connection request!
+            self.handle_peer_request_pkt(pkt);
+        } else {
+            // Send back an RST, to let the drive know we weren't expecting this packet.
+            self.enq_rst(pkt.hdr.dst_port(), pkt.hdr.src_port());
+        }
     }
 
     /// Check if the muxer has any pending RX data, with which to fill a guest-provided RX
@@ -335,7 +332,8 @@ impl VsockEpollListener for VsockMuxer {
 
     /// Notify the muxer about a pending event having occurred under its nested epoll FD.
     fn notify(&mut self, _: EventSet) {
-        let mut epoll_events = vec![EpollEvent::new(EventSet::empty(), 0); 32];
+        let mut epoll_events: [EpollEvent; 32] =
+            std::array::from_fn(|_| EpollEvent::new(EventSet::empty(), 0));
         match self.epoll.wait(0, epoll_events.as_mut_slice()) {
             Ok(ev_cnt) => {
                 for ev in &epoll_events[0..ev_cnt] {
@@ -607,7 +605,7 @@ impl VsockMuxer {
             .next()
             .ok_or(VsockUnixBackendError::InvalidPortRequest)
             .and_then(|word| {
-                if word.to_lowercase() == "connect" {
+                if word.eq_ignore_ascii_case("connect") {
                     Ok(())
                 } else {
                     Err(VsockUnixBackendError::InvalidPortRequest)
@@ -910,7 +908,9 @@ impl VsockMuxer {
     /// - update the connection's epoll listener;
     /// - schedule the connection to be queried for RX data;
     /// - kill the connection if an unrecoverable error occurs.
-    fn apply_conn_mutation<F>(&mut self, key: ConnMapKey, mut_fn: F)
+    ///
+    /// Returns `false`, without running `mut_fn`, if no connection has `key`.
+    fn apply_conn_mutation<F>(&mut self, key: ConnMapKey, mut_fn: F) -> bool
     where
         F: FnOnce(&mut MuxerConnection),
     {
@@ -959,7 +959,7 @@ impl VsockMuxer {
                 // If the connection no longer needs epoll notifications, remove its listener
                 // from our list.
                 self.remove_listener(fd);
-                return;
+                return true;
             }
             if let Some(EpollListener::Connection { evset, .. }) = self.listener_map.get_mut(&fd) {
                 if *evset != new_evset {
@@ -1008,6 +1008,9 @@ impl VsockMuxer {
                     METRICS.muxer_event_fails.inc();
                 });
             }
+            true
+        } else {
+            false
         }
     }
 
