@@ -72,19 +72,18 @@ struct InstanceIn {
 
 struct Varyings {
     @builtin(position) clip: vec4<f32>,
-    @location(0) world: vec3<f32>,
-    @location(1) normal: vec3<f32>,
+    // xyz: world position; w: view depth.
+    @location(0) world: vec4<f32>,
+    // xyz: normal; w: grass tip shade (1 elsewhere).
+    @location(1) normal: vec4<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
     @location(4) emissive: vec4<f32>,
-    @location(5) view_depth: f32,
-    // x: grass tip shade (1 elsewhere).
-    @location(6) extra: vec4<f32>,
     // Robot slots, flat (the vertex's own, not blended across a triangle): rgb: the slot's base
     // colour (hue x vertex colour) for slots 1 to 3; w: 1 when that applies. Zero elsewhere.
-    @location(7) @interpolate(flat) robot: vec4<f32>,
+    @location(5) @interpolate(flat) robot: vec4<f32>,
     // 1 on a robot's glass (slot 4): no emissive.
-    @location(8) @interpolate(flat) glass: f32,
+    @location(6) @interpolate(flat) glass: f32,
 };
 
 fn model(i: InstanceIn) -> mat4x4<f32> {
@@ -111,12 +110,11 @@ fn has(flags: f32, bit: f32) -> bool {
 
 fn finish(v: Varyings, world: vec4<f32>, n: vec3<f32>, uv: vec2<f32>, i: InstanceIn) -> Varyings {
     var o = v;
-    o.world = world.xyz;
-    o.normal = n;
+    o.world = vec4<f32>(world.xyz, -(g.view * world).z);
+    o.normal = vec4<f32>(n, v.normal.w);
     o.uv = uv * i.uv_xform.xy + i.uv_xform.zw;
     o.color = i.color;
     o.emissive = i.emissive;
-    o.view_depth = -(g.view * world).z;
     o.clip = g.view_proj * world;
     return o;
 }
@@ -134,7 +132,7 @@ fn lift(slot: u32) -> vec4<f32> {
 fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
     let m = model(i);
     var o: Varyings;
-    o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    o.normal = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     var r: Varyings;
     if has(i.emissive.a, 16.0) {
         // A billboard (three's Sprite): the quad on the camera's right and up axes, at the node's position and scale.
@@ -172,7 +170,7 @@ fn vs_mesh(v: VertexIn, i: InstanceIn) -> Varyings {
 fn vs_line(v: VertexIn, i: InstanceIn) -> Varyings {
     let m = model(i);
     var o: Varyings;
-    o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    o.normal = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     var r = finish(o, m * vec4<f32>(v.position, 1.0) + lift(v.slot), vec3<f32>(0.0, 1.0, 0.0), v.uv, i);
     r.color = vec4<f32>(r.color.rgb * v.color.rgb, r.color.a);
     r.clip.z = r.clip.z - 0.0006 * r.clip.w;
@@ -190,7 +188,7 @@ fn vs_grass(v: VertexIn, i: InstanceIn) -> Varyings {
     p.x += sway * v.position.y * 0.45;
     p.z += sway * v.position.y * 0.2;
     var o: Varyings;
-    o.extra = vec4<f32>(0.75 + v.position.y * 1.1, 0.0, 0.0, 0.0);
+    o.normal = vec4<f32>(0.0, 0.0, 0.0, 0.75 + v.position.y * 1.1);
     return finish(o, m * vec4<f32>(p, 1.0), world_normal(m, v.normal.xyz), v.uv, i);
 }
 
@@ -204,13 +202,11 @@ fn vs_outline(v: VertexIn, i: InstanceIn) -> Varyings {
     mv = vec4<f32>(mv.xyz + n * grow, 1.0);
     var o: Varyings;
     o.clip = g.proj * mv;
-    o.world = (m * vec4<f32>(v.position, 1.0) + lift(v.slot)).xyz;
-    o.normal = n;
+    o.world = vec4<f32>((m * vec4<f32>(v.position, 1.0) + lift(v.slot)).xyz, -mv.z);
+    o.normal = vec4<f32>(n, 1.0);
     o.uv = vec2<f32>(0.0);
     o.color = vec4<f32>(g.ink.rgb, 1.0);
     o.emissive = vec4<f32>(0.0);
-    o.view_depth = -mv.z;
-    o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
     return o;
 }
 
@@ -222,13 +218,11 @@ fn vs_sky(v: VertexIn, i: InstanceIn) -> Varyings {
     let world = m * vec4<f32>(v.position, 1.0);
     o.clip = g.view_proj * world;
     o.clip.z = o.clip.w;
-    o.world = world.xyz;
-    o.normal = normalize(v.position);
+    o.world = vec4<f32>(world.xyz, 0.0);
+    o.normal = vec4<f32>(normalize(v.position), 1.0);
     o.uv = vec2<f32>(0.0);
     o.color = vec4<f32>(1.0);
     o.emissive = vec4<f32>(0.0);
-    o.view_depth = 0.0;
-    o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
     return o;
 }
 
@@ -251,13 +245,11 @@ fn vs_points(@builtin(vertex_index) vi: u32, i: InstanceIn) -> Varyings {
     clip.y += corners[vi].y * half_ndc * clip.w;
     var o: Varyings;
     o.clip = clip;
-    o.world = world.xyz;
-    o.normal = vec3<f32>(0.0, 1.0, 0.0);
+    o.world = vec4<f32>(world.xyz, -mv.z);
+    o.normal = vec4<f32>(0.0, 1.0, 0.0, 1.0);
     o.uv = vec2<f32>(0.0);
     o.color = i.color;
     o.emissive = vec4<f32>(0.0);
-    o.view_depth = -mv.z;
-    o.extra = vec4<f32>(1.0, 0.0, 0.0, 0.0);
     return o;
 }
 
@@ -276,13 +268,7 @@ fn vs_shadow_grass(v: VertexIn, i: InstanceIn) -> @builtin(position) vec4<f32> {
 // three's toon ramp: a 3-texel nearest-filtered gradient (90, 170, 255) read at dotNL * 0.5 + 0.5.
 fn ramp(dot_nl: f32) -> f32 {
     let coord = dot_nl * 0.5 + 0.5;
-    if coord < 1.0 / 3.0 {
-        return 90.0 / 255.0;
-    }
-    if coord < 2.0 / 3.0 {
-        return 170.0 / 255.0;
-    }
-    return 1.0;
+    return mix(mix(90.0 / 255.0, 170.0 / 255.0, step(1.0 / 3.0, coord)), 1.0, step(2.0 / 3.0, coord));
 }
 
 // 1 lit, 0 in the sun's shadow (3x3 comparison taps, three's bias and normal bias).
@@ -305,9 +291,17 @@ fn sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
 }
 
 fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
-    var a = 1.0 / max(pow(distance, decay), 0.01);
+    var fall: f32;
+    if decay == 2.0 {
+        fall = distance * distance;
+    } else {
+        fall = pow(distance, decay);
+    }
+    var a = 1.0 / max(fall, 0.01);
     if cutoff > 0.0 {
-        let k = clamp(1.0 - pow(distance / cutoff, 4.0), 0.0, 1.0);
+        let q = distance / cutoff;
+        let q2 = q * q;
+        let k = clamp(1.0 - q2 * q2, 0.0, 1.0);
         a *= k * k;
     }
     return a;
@@ -342,19 +336,19 @@ fn encode(c: vec3<f32>) -> vec3<f32> {
 
 fn toon(v: Varyings, front: bool) -> vec4<f32> {
     var c = base_color(v);
-    c = vec4<f32>(c.rgb * v.extra.x, c.a);
-    var n = normalize(v.normal);
+    c = vec4<f32>(c.rgb * v.normal.w, c.a);
+    var n = normalize(v.normal.xyz);
     if !front && has(v.emissive.a, 4.0) {
         n = -n;
     }
     var shadow = 1.0;
     if has(v.emissive.a, 1.0) {
-        shadow = sun_shadow(v.world, n);
+        shadow = sun_shadow(v.world.xyz, n);
     }
     var irradiance = ramp(dot(n, g.sun_dir.xyz)) * g.sun_color.rgb * shadow;
     let n_points = i32(g.counts.x);
     for (var k = 0; k < n_points; k++) {
-        let to_light = g.point_pos[k].xyz - v.world;
+        let to_light = g.point_pos[k].xyz - v.world.xyz;
         let d = length(to_light);
         let l = to_light / max(d, 1e-5);
         irradiance += ramp(dot(n, l)) * g.point_color[k].rgb * attenuation(d, g.point_pos[k].w, g.point_color[k].w);
@@ -363,7 +357,7 @@ fn toon(v: Varyings, front: bool) -> vec4<f32> {
     // A robot's glass (slot 4) takes no emissive.
     let emissive = select(v.emissive.rgb, vec3<f32>(0.0), v.glass > 0.5);
     let lit = c.rgb / PI * irradiance + emissive;
-    return vec4<f32>(encode(fogged(lit, v.view_depth)), c.a);
+    return vec4<f32>(encode(fogged(lit, v.world.w)), c.a);
 }
 
 @fragment
@@ -374,27 +368,27 @@ fn fs_toon(v: Varyings, @builtin(front_facing) front: bool) -> @location(0) vec4
 @fragment
 fn fs_basic(v: Varyings) -> @location(0) vec4<f32> {
     let c = base_color(v);
-    return vec4<f32>(encode(fogged(c.rgb, v.view_depth)), c.a);
+    return vec4<f32>(encode(fogged(c.rgb, v.world.w)), c.a);
 }
 
 // three's ShadowMaterial: only the shadow, as colour x opacity.
 @fragment
 fn fs_shadow_catcher(v: Varyings) -> @location(0) vec4<f32> {
-    let lit = sun_shadow(v.world, normalize(v.normal));
+    let lit = sun_shadow(v.world.xyz, normalize(v.normal.xyz));
     return vec4<f32>(encode(v.color.rgb), v.color.a * (1.0 - lit));
 }
 
 @fragment
 fn fs_outline(v: Varyings) -> @location(0) vec4<f32> {
     // three's ink hull was a ShaderMaterial with no colour-space output: its linear ink reached the screen as it was.
-    return vec4<f32>(raw(fogged(g.ink.rgb, v.view_depth)), 1.0);
+    return vec4<f32>(raw(fogged(g.ink.rgb, v.world.w)), 1.0);
 }
 
 // The painted sky: hard-edged bands near the horizon. three's sky was a ShaderMaterial with no colour-space output, so
 // its linear colours reached the screen as they were (a darker night than the hexes): `raw` writes them the same way.
 @fragment
 fn fs_sky(v: Varyings) -> @location(0) vec4<f32> {
-    let h = normalize(v.normal).y;
+    let h = normalize(v.normal.xyz).y;
     var t = smoothstep(0.0, 0.55, h);
     t = floor(t * 6.0 + 0.5) / 6.0;
     var c = mix(g.sky_horizon.rgb, g.sky_top.rgb, t);
