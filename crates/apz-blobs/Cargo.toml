@@ -9,7 +9,7 @@ publish = false
 [dependencies]
 apz-store = { path = "../apz-store" }
 blake3 = "1.8"
-zstd = "0.13"
+zstd = "0.14.3"
 fastcdc = "3"
 serde.workspace = true
 
