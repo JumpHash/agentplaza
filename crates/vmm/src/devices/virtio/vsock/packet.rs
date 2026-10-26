@@ -190,6 +190,17 @@ impl VsockPacketHeader {
 /// The vsock packet header struct size (the struct is packed).
 pub const VSOCK_PKT_HDR_SIZE: u32 = 44;
 
+/// Where `count` payload bytes at `offset` start in a packet buffer of `len` bytes (the header first), or
+/// `GuestMemoryBounds` when they do not fit. An offset past the payload is refused even with no bytes to copy, so the
+/// sum below cannot overflow.
+fn payload_at(len: u32, offset: u32, count: u32) -> Result<usize, VsockError> {
+    let room = len.saturating_sub(VSOCK_PKT_HDR_SIZE);
+    if offset > room || count > room - offset {
+        return Err(VsockError::GuestMemoryBounds);
+    }
+    Ok((offset + VSOCK_PKT_HDR_SIZE) as usize)
+}
+
 // SAFETY: `VsockPacketHeader` is a POD and contains no padding.
 unsafe impl ByteValued for VsockPacketHeader {}
 
@@ -268,18 +279,9 @@ impl VsockPacketTx {
         offset: u32,
         count: u32,
     ) -> Result<u32, VsockError> {
-        if count
-            > self
-                .buffer
-                .len()
-                .saturating_sub(VSOCK_PKT_HDR_SIZE)
-                .saturating_sub(offset)
-        {
-            return Err(VsockError::GuestMemoryBounds);
-        }
-
+        let at = payload_at(self.buffer.len(), offset, count)?;
         self.buffer
-            .read_volatile_at(dst, (offset + VSOCK_PKT_HDR_SIZE) as usize, count as usize)
+            .read_volatile_at(dst, at, count as usize)
             .map_err(|err| VsockError::GuestMemoryMmap(GuestMemoryError::from(err)))
             .and_then(|read| read.try_into().map_err(|_| VsockError::DescChainOverflow))
     }
@@ -379,18 +381,9 @@ impl VsockPacketRx {
         offset: u32,
         count: u32,
     ) -> Result<u32, VsockError> {
-        if count
-            > self
-                .buffer
-                .len()
-                .saturating_sub(VSOCK_PKT_HDR_SIZE)
-                .saturating_sub(offset)
-        {
-            return Err(VsockError::GuestMemoryBounds);
-        }
-
+        let at = payload_at(self.buffer.len(), offset, count)?;
         self.buffer
-            .write_volatile_at(src, (offset + VSOCK_PKT_HDR_SIZE) as usize, count as usize)
+            .write_volatile_at(src, at, count as usize)
             .map_err(|err| VsockError::GuestMemoryMmap(GuestMemoryError::from(err)))
             .and_then(|read| read.try_into().map_err(|_| VsockError::DescChainOverflow))
     }
@@ -763,8 +756,16 @@ mod tests {
             assert_eq!(buf, data[offset as usize..]);
         }
 
-        // Out-of-bounds offset/count pairs are rejected by both views.
-        let oob_cases = [(1, buf_size), (buf_size, 1), (u32::MAX, 1), (1, u32::MAX)];
+        // Out-of-bounds offset/count pairs are rejected by both views, an offset past the payload even with nothing to
+        // copy (the fuzzer's u32::MAX offset with a count of 0 overflowed the sum).
+        let oob_cases = [
+            (1, buf_size),
+            (buf_size, 1),
+            (u32::MAX, 1),
+            (1, u32::MAX),
+            (u32::MAX, 0),
+            (buf_size + 1, 0),
+        ];
         for (offset, count) in oob_cases {
             let mut buf = vec![0; buf_size as usize];
             assert!(matches!(
