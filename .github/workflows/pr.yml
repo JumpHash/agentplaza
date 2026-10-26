@@ -230,6 +230,7 @@ jobs:
       - name: Coverage of every test type
         id: measure
         shell: bash
+        env: { APZ_CI_TMPFS: 4g }
         run: .github/ci/in-image.sh '.github/ci/coverage.sh coverage-out' 2>&1 | tee coverage.log
       - name: The coverage data (coverage.json)
         if: steps.measure.outcome == 'success'

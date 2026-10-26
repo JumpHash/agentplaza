@@ -13,7 +13,9 @@
 #
 # Passed through when set: VERSION, APZ_ALLOW_NO_GUEST, APZ_REQUIRE_ENGINE, CROSS_COMPILE,
 # APZ_BUSYBOX, APZ_PERF_SLACK, CI (the tests' timing budgets read it), GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA.
-# APZ_CI_NETWORK joins a docker network.
+# APZ_CI_NETWORK joins a docker network. APZ_CI_TMPFS=<size> (a test step's) puts /tmp, where the tests make their
+# temporary folders, in memory, at most that size: on the shared runners another job's writes stalled the tests' own
+# file creates and writes (a store test past two minutes with nothing synced), and /tmp never outlives the container.
 set -eu
 
 : "${CI_IMAGE:?CI_IMAGE names the CI image}"
@@ -44,15 +46,20 @@ if [ -z "$jobs" ] && [ -r /proc/meminfo ]; then
   echo "in-image: $jobs parallel compiles ($((avail_kib / 1024 / 1024)) GiB available, $cores cores)" >&2
 fi
 
+tmpfs_args=""
+if [ -n "${APZ_CI_TMPFS:-}" ]; then
+  tmpfs_args="--tmpfs /tmp:rw,exec,nosuid,nodev,mode=1777,size=$APZ_CI_TMPFS"
+fi
+
 target_args=""
 if [ "${APZ_CI_TARGET:-shared}" != workspace ]; then
   target_args="-v $cache/target:/ci-target -e CARGO_TARGET_DIR=/ci-target"
 fi
 
-# shellcheck disable=SC2086 # target_args is a list of words, userns one or none
+# shellcheck disable=SC2086 # target_args and tmpfs_args are lists of words, userns one or none
 exec docker run --rm \
   ${APZ_CI_NETWORK:+--network "$APZ_CI_NETWORK"} \
-  $userns -u "$user" -e HOME=/tmp --ulimit nofile=65536:65536 \
+  $userns -u "$user" -e HOME=/tmp --ulimit nofile=65536:65536 $tmpfs_args \
   -v "$PWD:$PWD" -w "$PWD" \
   -v "$cache/registry:/usr/local/cargo/registry" -v "$cache/git:/usr/local/cargo/git" \
   $target_args \
