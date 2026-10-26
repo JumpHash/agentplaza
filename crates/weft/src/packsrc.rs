@@ -126,12 +126,17 @@ pub fn bundled_manifest(name: &str) -> Option<Manifest> {
 
 /// The bundled pack a path would use (by file name, then extension), whether or not it is added.
 pub fn bundled_for(path: &str) -> Option<&'static str> {
+    // The bundled manifests are parsed once, on first use.
+    static MANIFESTS: std::sync::OnceLock<Vec<(&'static str, Manifest)>> =
+        std::sync::OnceLock::new();
+    let manifests = MANIFESTS.get_or_init(|| {
+        BUNDLED
+            .iter()
+            .filter_map(|b| Some((b.0, serde_json::from_str::<Manifest>(b.1).ok()?)))
+            .collect()
+    });
     let file = path.rsplit('/').next().unwrap_or(path);
     let ext = file.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    let manifests: Vec<(&str, Manifest)> = BUNDLED
-        .iter()
-        .filter_map(|b| Some((b.0, serde_json::from_str::<Manifest>(b.1).ok()?)))
-        .collect();
     manifests
         .iter()
         .find(|(_, m)| m.filenames.iter().any(|f| f == file))

@@ -163,9 +163,9 @@ impl Store {
         drop(log);
         self.notify(Event {
             seq: rec.seq,
-            kind: stmt.kind.clone(),
+            kind: stmt.kind,
             summary: summary.clone(),
-            body: stmt.body.clone(),
+            body: stmt.body,
         });
         Ok((rec, summary))
     }
@@ -270,18 +270,24 @@ impl Store {
             at = r.base.clone();
             chain.push(r);
         };
+        // One working tree, moved forward through the chain. Cache the landed revisions on the
+        // way (the spine every lane starts from); the one asked for goes in at the end.
         let mut tree = (*start).clone();
-        let mut result = Arc::new(tree.clone());
         for r in chain.iter().rev() {
             apply_deltas(&mut tree, &r.deltas);
-            result = Arc::new(tree.clone());
-            // Cache landed revisions (the spine every lane starts from) and the one asked for.
-            if r.id.ends_with(".l") || r.id == rev {
+            if r.id.ends_with(".l") && r.id != rev {
                 self.trees
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .insert(r.id.clone(), result.clone());
+                    .insert(r.id.clone(), Arc::new(tree.clone()));
             }
+        }
+        let result = Arc::new(tree);
+        if !chain.is_empty() {
+            self.trees
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(rev.to_string(), result.clone());
         }
         Ok(result)
     }
