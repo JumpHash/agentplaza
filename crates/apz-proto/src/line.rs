@@ -60,6 +60,10 @@ pub struct Lines<S> {
     /// How much of `buf` is known to hold no `\n`.
     scanned: usize,
     eof: bool,
+    /// Reused as the read buffer: each read fills it, then its bytes are appended to `buf`.
+    chunk: Box<[u8]>,
+    /// Reused as the write buffer: a line and its newline go out in one write.
+    out: Vec<u8>,
 }
 
 impl<S> Lines<S> {
@@ -69,6 +73,8 @@ impl<S> Lines<S> {
             buf: Vec::new(),
             scanned: 0,
             eof: false,
+            chunk: vec![0; READ_CHUNK].into_boxed_slice(),
+            out: Vec::new(),
         }
     }
 
@@ -116,13 +122,10 @@ impl<S: Read> Lines<S> {
                 self.scanned = 0;
                 return decode(std::mem::take(&mut self.buf)).map(Recv::Line);
             }
-            let start = self.buf.len();
-            self.buf.resize(start + READ_CHUNK, 0);
-            let read = self.inner.read(&mut self.buf[start..]);
-            self.buf.truncate(start + *read.as_ref().unwrap_or(&0));
+            let read = self.inner.read(&mut self.chunk[..]);
             match read {
                 Ok(0) => self.eof = true,
-                Ok(_) => {}
+                Ok(n) => self.buf.extend_from_slice(&self.chunk[..n]),
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
                 Err(err)
                     if matches!(
@@ -148,8 +151,10 @@ impl<S: Write> Lines<S> {
                 "line contains a newline",
             ));
         }
-        self.inner.write_all(line.as_bytes())?;
-        self.inner.write_all(b"\n")?;
+        self.out.clear();
+        self.out.extend_from_slice(line.as_bytes());
+        self.out.push(b'\n');
+        self.inner.write_all(&self.out)?;
         self.inner.flush()
     }
 }

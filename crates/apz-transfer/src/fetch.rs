@@ -71,7 +71,16 @@ pub fn fetch(
         Route::Direct(_) => Via::Direct,
         Route::Brokered { .. } => Via::Brokered,
     };
-    let get = |hash: &Hash| chunk(route, me, grant, &pin, hash);
+    let target = Target {
+        base: format!("https://{}", first_hop(route)),
+        pin: Some(pin),
+        bearer: None,
+        headers: vec![
+            (GRANT_HEADER.to_string(), grant.encode()),
+            (RECEIVER_HEADER.to_string(), me.to_string()),
+        ],
+    };
+    let get = |hash: &Hash| chunk(route, &target, hash);
     let mut report = Report {
         via,
         ..Report::default()
@@ -113,10 +122,15 @@ fn pin_bytes(text: &str) -> Result<[u8; 32], String> {
 
 /// Whether the route's first hop accepts a connection (the hub's broker, for a brokered route).
 fn probe(route: &Route) -> io::Result<TcpStream> {
-    dial(match route {
+    dial(first_hop(route))
+}
+
+/// The address the receiver dials first: the sender's, or the hub's broker for a brokered route.
+fn first_hop(route: &Route) -> &str {
+    match route {
         Route::Direct(addr) => addr,
         Route::Brokered { broker, .. } => broker,
-    })
+    }
 }
 
 fn dial(addr: &str) -> io::Result<TcpStream> {
@@ -129,38 +143,21 @@ fn dial(addr: &str) -> io::Result<TcpStream> {
 
 /// One chunk from the sender over the route, in a pinned TLS session. A brokered route first says its ticket to the
 /// hub's broker, which relays the rest of the connection.
-fn chunk(
-    route: &Route,
-    me: &str,
-    grant: &Grant,
-    pin: &[u8; 32],
-    hash: &Hash,
-) -> Result<Vec<u8>, String> {
-    let (addr, stream) = match route {
-        Route::Direct(addr) => (addr.clone(), dial(addr)),
-        Route::Brokered { broker, ticket } => (
-            broker.clone(),
-            dial(broker).and_then(|mut s| {
-                s.write_all(format!("{}{ticket}\n", crate::broker::PREFIX).as_bytes())?;
-                Ok(s)
-            }),
-        ),
+fn chunk(route: &Route, target: &Target, hash: &Hash) -> Result<Vec<u8>, String> {
+    let addr = first_hop(route);
+    let stream = match route {
+        Route::Direct(_) => dial(addr),
+        Route::Brokered { ticket, .. } => dial(addr).and_then(|mut s| {
+            s.write_all(format!("{}{ticket}\n", crate::broker::PREFIX).as_bytes())?;
+            Ok(s)
+        }),
     };
     let stream = stream.map_err(|err| format!("{addr}: {err}"))?;
-    let target = Target {
-        base: format!("https://{addr}"),
-        pin: Some(*pin),
-        bearer: None,
-        headers: vec![
-            (GRANT_HEADER.to_string(), grant.encode()),
-            (RECEIVER_HEADER.to_string(), me.to_string()),
-        ],
-    };
     let path = format!("/v1/transfer/chunks/{}", hash.hex());
     let reply = request_over(
         stream,
         Some("localhost"),
-        &target,
+        target,
         "GET",
         &path,
         None,
