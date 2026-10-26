@@ -52,9 +52,6 @@ struct Globals {
     machine_state: array<vec4<f32>, 128>,
     // Each machine's status colour (rgb; w unused).
     machine_status: array<vec4<f32>, 128>,
-    // The activity LEDs' on colour (leds[0]) and off colour (leds[1]), rgb. No vertex reads them: an activity LED keeps
-    // its own colour (hardware.ts attach), and only its emissive blinks.
-    leds: array<vec4<f32>, 2>,
 }
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -66,8 +63,7 @@ struct Out {
     @location(0) color: vec4<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) emissive: vec3<f32>, // the emissive term: its colour x its factor, added to the lit base colour
-    @location(3) world: vec3<f32>,
-    @location(4) view_depth: f32,
+    @location(3) world: vec4<f32>, // xyz: the world position; w: the view depth
 }
 
 // ---- Lighting (floor.wgsl's toon, for a part with no texture) --------------------------------
@@ -75,13 +71,7 @@ struct Out {
 // three's toon ramp: a 3-texel nearest-filtered gradient (90, 170, 255) read at dotNL * 0.5 + 0.5.
 fn ramp(dot_nl: f32) -> f32 {
     let coord = dot_nl * 0.5 + 0.5;
-    if coord < 1.0 / 3.0 {
-        return 90.0 / 255.0;
-    }
-    if coord < 2.0 / 3.0 {
-        return 170.0 / 255.0;
-    }
-    return 1.0;
+    return mix(mix(90.0 / 255.0, 170.0 / 255.0, step(1.0 / 3.0, coord)), 1.0, step(2.0 / 3.0, coord));
 }
 
 // 1 lit, 0 in the sun's shadow (3x3 comparison taps, three's bias and normal bias).
@@ -104,9 +94,17 @@ fn sun_shadow(world: vec3<f32>, n: vec3<f32>) -> f32 {
 }
 
 fn attenuation(distance: f32, cutoff: f32, decay: f32) -> f32 {
-    var a = 1.0 / max(pow(distance, decay), 0.01);
+    var fall: f32;
+    if decay == 2.0 {
+        fall = distance * distance;
+    } else {
+        fall = pow(distance, decay);
+    }
+    var a = 1.0 / max(fall, 0.01);
     if cutoff > 0.0 {
-        let k = clamp(1.0 - pow(distance / cutoff, 4.0), 0.0, 1.0);
+        let q = distance / cutoff;
+        let q2 = q * q;
+        let k = clamp(1.0 - q2 * q2, 0.0, 1.0);
         a *= k * k;
     }
     return a;
@@ -146,19 +144,19 @@ fn shade(c: vec4<f32>, normal: vec3<f32>, world: vec3<f32>, view_depth: f32, emi
 
 @fragment
 fn fs_color(i: Out) -> @location(0) vec4<f32> {
-    return shade(i.color, i.normal, i.world, i.view_depth, vec3<f32>(0.0));
+    return shade(i.color, i.normal, i.world.xyz, i.world.w, vec3<f32>(0.0));
 }
 
 // The emissive term is the vertex's (the blink's on and off levels, a machine LED's colour x factor).
 @fragment
 fn fs_emissive(i: Out) -> @location(0) vec4<f32> {
-    return shade(i.color, i.normal, i.world, i.view_depth, i.emissive);
+    return shade(i.color, i.normal, i.world.xyz, i.world.w, i.emissive);
 }
 
 // The ink hull (floor.wgsl's fs_outline).
 @fragment
 fn fs_outline(i: Out) -> @location(0) vec4<f32> {
-    return vec4<f32>(raw(fogged(g.ink.rgb, i.view_depth)), 1.0);
+    return vec4<f32>(raw(fogged(g.ink.rgb, i.world.w)), 1.0);
 }
 
 // floor.wgsl's raw: the colour as stored, with no colour-space encoding (three's ShaderMaterial).
@@ -173,8 +171,11 @@ fn raw(c: vec3<f32>) -> vec3<f32> {
 
 // `v` turned by `angle` about the unit axis `k` (Rodrigues; right-handed, as Quat::from_axis_angle).
 fn rotate_about(k: vec3<f32>, angle: f32, v: vec3<f32>) -> vec3<f32> {
-    let c = cos(angle);
-    let s = sin(angle);
+    return rotate_about_cs(k, cos(angle), sin(angle), v);
+}
+
+// `rotate_about` given the angle's cosine and sine, so spin_pose computes them once for two vectors.
+fn rotate_about_cs(k: vec3<f32>, c: f32, s: f32, v: vec3<f32>) -> vec3<f32> {
     return v * c + cross(k, v) * s + k * (dot(k, v) * (1.0 - c));
 }
 
@@ -190,8 +191,7 @@ fn hull(world: vec3<f32>, normal: vec3<f32>) -> Out {
     o.color = vec4<f32>(g.ink.rgb, 1.0);
     o.normal = n;
     o.emissive = vec3<f32>(0.0);
-    o.world = world;
-    o.view_depth = -mv.z;
+    o.world = vec4<f32>(world, -mv.z);
     return o;
 }
 
@@ -241,9 +241,11 @@ fn spin_pose(v: SpinIn) -> Pose {
     let m = machine_of(v.slots);
     let angle = select(own, fan_angle(u32(max(m, 0i))), m >= 0);
     let k = v.axis_rps.xyz;
+    let c = cos(angle);
+    let s = sin(angle);
     var p: Pose;
-    p.world = v.pivot_phase.xyz + rotate_about(k, angle, v.pos - v.pivot_phase.xyz) + lift_at(lift_of(v.slots));
-    p.normal = rotate_about(k, angle, v.normal.xyz);
+    p.world = v.pivot_phase.xyz + rotate_about_cs(k, c, s, v.pos - v.pivot_phase.xyz) + lift_at(lift_of(v.slots));
+    p.normal = rotate_about_cs(k, c, s, v.normal.xyz);
     return p;
 }
 
@@ -255,8 +257,7 @@ fn vs_spin(v: SpinIn) -> Out {
     o.color = v.color;
     o.normal = p.normal;
     o.emissive = v.color.rgb;
-    o.world = p.world;
-    o.view_depth = -(g.view * vec4<f32>(p.world, 1.0)).z;
+    o.world = vec4<f32>(p.world, -(g.view * vec4<f32>(p.world, 1.0)).z);
     return o;
 }
 
@@ -291,8 +292,7 @@ fn vs_blink(v: BlinkIn) -> Out {
     o.color = v.color;
     o.normal = v.normal.xyz;
     o.emissive = v.color.rgb * select(v.blink.z * v.blink.w, v.blink.z, on);
-    o.world = pos;
-    o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
+    o.world = vec4<f32>(pos, -(g.view * vec4<f32>(pos, 1.0)).z);
     return o;
 }
 
@@ -348,7 +348,6 @@ fn vs_machine(v: MachineIn) -> Out {
     o.color = vec4<f32>(c, v.color.a);
     o.normal = v.normal.xyz;
     o.emissive = emit * e;
-    o.world = pos;
-    o.view_depth = -(g.view * vec4<f32>(pos, 1.0)).z;
+    o.world = vec4<f32>(pos, -(g.view * vec4<f32>(pos, 1.0)).z);
     return o;
 }

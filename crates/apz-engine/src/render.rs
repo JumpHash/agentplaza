@@ -494,8 +494,6 @@ struct Globals {
     machine_state: [[f32; 4]; crate::fleet::MACHINE_SLOTS],
     /// Each machine's status colour (`fleet::FleetInstances::machine_statuses`): rgb, 0. Read by hw_anim.wgsl only.
     machine_status: [[f32; 4]; crate::fleet::MACHINE_SLOTS],
-    /// The activity LEDs' on colour and off colour (rgb, 0). Read by hw_anim.wgsl only.
-    leds: [[f32; 4]; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2207,7 +2205,6 @@ impl Primitive {
             machine_angle: machine_angles(f.animated.as_deref()),
             machine_state: machine_rows(f.animated.as_deref().map(|x| &x.machine_states)),
             machine_status: machine_rows(f.animated.as_deref().map(|x| &x.machine_statuses)),
-            leds: crate::fleet::led_colours(),
         };
         queue.write_buffer(&p.globals, 0, bytemuck::bytes_of(&globals));
         p.anim.prepare(
@@ -2286,6 +2283,13 @@ impl Primitive {
             let in_main = bounds_visible(d, &main_frustum);
             let in_shadow =
                 shadows && d.cast_shadow && casts_shadow(d) && bounds_visible(d, &shadow_frustum);
+            // Culled draws keep their mesh and texture, so they are not evicted and uploaded again.
+            if !matches!(d.kind, DrawKind::Points(_)) {
+                used_meshes.insert(d.geo.id);
+            }
+            if let Some(t) = &d.material.map {
+                used_textures.insert(t.id);
+            }
             if !in_main {
                 culled += 1;
             }
@@ -2310,7 +2314,6 @@ impl Primitive {
                     if !p.meshes.contains_key(&d.geo.id) {
                         p.upload_mesh(device, queue, &d.geo);
                     }
-                    used_meshes.insert(d.geo.id);
                     Some(d.geo.id)
                 }
             };
@@ -2319,7 +2322,6 @@ impl Primitive {
                     if !p.textures.contains_key(&t.id) {
                         p.upload_texture(device, queue, t);
                     }
-                    used_textures.insert(t.id);
                     t.id
                 }
                 None => 0,
@@ -2652,7 +2654,12 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
             occlusion_query_set: None,
         });
         pass.set_bind_group(0, &p.globals_group, &[]);
+        // The rows stay in vertex slot 1 for the whole pass, so they are bound once.
+        pass.set_vertex_buffer(1, rows.slice(..));
         let mut current: Option<Key> = None;
+        // The texture and mesh bound last; a draw that repeats them skips the binds.
+        let mut last_tex: Option<u64> = None;
+        let mut last_mesh = None;
         for cmd in &p.cmds {
             // A card's clear is transparent: its sky dome would paint an opaque square behind the machine, so only the meshes draw.
             if p.clear_alpha < 1.0 && cmd.key.prog == Prog::Sky {
@@ -2664,15 +2671,22 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
             if current != Some(cmd.key) {
                 pass.set_pipeline(pipeline);
                 current = Some(cmd.key);
+                last_tex = None;
+                last_mesh = None;
             }
-            if let Some(tex) = p.textures.get(&cmd.tex).or_else(|| p.textures.get(&0)) {
+            if last_tex != Some(cmd.tex)
+                && let Some(tex) = p.textures.get(&cmd.tex).or_else(|| p.textures.get(&0))
+            {
                 pass.set_bind_group(1, &tex.group, &[]);
+                last_tex = Some(cmd.tex);
             }
             match cmd.mesh.and_then(|id| p.meshes.get(&id)) {
                 Some(mesh) => {
-                    pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                    pass.set_vertex_buffer(1, rows.slice(..));
-                    pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    if last_mesh != cmd.mesh {
+                        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                        last_mesh = cmd.mesh;
+                    }
                     p.count(PASS_MESH);
                     p.count_tris(
                         u64::from(mesh.count / 3) * u64::from(cmd.rows.end - cmd.rows.start),
@@ -2684,7 +2698,9 @@ fn record(p: &Pipeline, device: &wgpu::Device, queue: &wgpu::Queue) {
                     pass.draw_indexed(0..mesh.count, 0, cmd.rows.clone());
                 }
                 None if cmd.key.prog == Prog::Points => {
+                    // Slot 0 holds the rows now, so the next mesh draw binds its own again.
                     pass.set_vertex_buffer(0, rows.slice(..));
+                    last_mesh = None;
                     p.count(PASS_QUAD);
                     p.count_program(cmd.key.prog);
                     if tally {
@@ -2741,7 +2757,7 @@ mod tests {
 
     #[test]
     fn globals_match_the_shaders_layout() {
-        // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4 + the fan table + the machine state and status tables + 2 LED colours, all 16-byte aligned.
+        // 4 mat4 + 11 vec4 + 2 x 4 vec4 + 1 vec4 + the fan table + the machine state and status tables, all 16-byte aligned.
         assert_eq!(
             std::mem::size_of::<Globals>(),
             4 * 64
@@ -2750,7 +2766,6 @@ mod tests {
                 + 16
                 + MACHINE_VEC4 * 16
                 + 2 * crate::fleet::MACHINE_SLOTS * 16
-                + 2 * 16
         );
         // The affine transform's three rows (48 bytes), the colour (unorm8x4), the emissive (f16x4), the uv transform
         // (16 bytes), and the robot hues (shell, shell2, panel) as three unorm8x4.
