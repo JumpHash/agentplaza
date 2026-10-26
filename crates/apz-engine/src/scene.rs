@@ -1394,21 +1394,26 @@ fn draw_of(kind: DrawKind, geo: &Geo, mat: &Mat, world: Mat4, at: Place) -> Opti
     })
 }
 
-/// A mesh's draws at `world`: the mesh, then its ink hull (`hull` as geometry, without shadows).
-fn mesh_draws(geo: &Geo, mat: &Mat, hull: Option<&Geo>, world: Mat4, at: Place) -> Vec<Draw> {
-    if matches!(mat.get().shading, Shading::Line) {
-        return draw_of(DrawKind::Lines, geo, mat, world, at)
-            .map(|d| Draw {
-                cast_shadow: false,
-                receive_shadow: false,
-                ..d
-            })
-            .into_iter()
-            .collect();
-    }
-    let Some(d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else {
-        return Vec::new();
+/// A mesh's draws at `world`, pushed onto `out`: the mesh, then its ink hull (`hull` as geometry,
+/// without shadows). A line mesh draws only its lines.
+fn mesh_draws(
+    geo: &Geo,
+    mat: &Mat,
+    hull: Option<&Geo>,
+    world: Mat4,
+    at: Place,
+    out: &mut Vec<Draw>,
+) {
+    let Some(mut d) = draw_of(DrawKind::Mesh, geo, mat, world, at) else {
+        return;
     };
+    if matches!(d.material.shading, Shading::Line) {
+        d.kind = DrawKind::Lines;
+        d.cast_shadow = false;
+        d.receive_shadow = false;
+        out.push(d);
+        return;
+    }
     let outline = hull.map(|hull| Draw {
         kind: DrawKind::Outline,
         geo: Arc::clone(hull),
@@ -1417,7 +1422,8 @@ fn mesh_draws(geo: &Geo, mat: &Mat, hull: Option<&Geo>, world: Mat4, at: Place) 
         receive_shadow: false,
         ..d.clone()
     });
-    std::iter::once(d).chain(outline).collect()
+    out.push(d);
+    out.extend(outline);
 }
 
 /// The draws (and point lights) of one node's own geometry at `world`: a mesh and its ink hull, its
@@ -1429,7 +1435,7 @@ fn emit(node: &Obj, world: Mat4, draws: &mut Vec<Draw>, lights: &mut Vec<PointLi
     };
     match &kind {
         Kind::Group => {}
-        Kind::Mesh { geo, mat } => draws.extend(mesh_draws(geo, mat, hull.as_ref(), world, at)),
+        Kind::Mesh { geo, mat } => mesh_draws(geo, mat, hull.as_ref(), world, at, draws),
         Kind::Instanced {
             geo,
             mat,
@@ -1642,7 +1648,7 @@ fn gather(node: &Obj, parent: Mat4, root: bool, rig: &mut Rig, meshes: &mut Vec<
         match kind {
             Kind::Group => {}
             Kind::Mesh { geo, mat } => {
-                meshes.extend(mesh_draws(&geo, &mat, hull.as_ref(), rel, at))
+                mesh_draws(&geo, &mat, hull.as_ref(), rel, at, meshes);
             }
             _ => rig.loose.push((node.clone(), rel)),
         }
@@ -1774,6 +1780,24 @@ fn frame_rig_into<'a>(
     }
 }
 
+/// Hashes a u64 key to itself. The keys are already 64-bit hashes, so SipHash would only add work.
+#[derive(Default)]
+struct PassThrough(u64);
+
+impl std::hash::Hasher for PassThrough {
+    fn write(&mut self, _: &[u8]) {
+        unreachable!("PassThrough hashes u64 keys only")
+    }
+
+    fn write_u64(&mut self, v: u64) {
+        self.0 = v;
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 /// [`flatten_rigs`], with the rigs of one content (the same hardware built alike, at several places)
 /// sharing one instanced draw per merged draw: its instances are those rigs' frames. Loose draws stay
 /// one each, as they move on their own. An instanced draw keeps a tally only when all its instances
@@ -1786,7 +1810,11 @@ pub fn flatten_rigs_instanced(list: &[Rig]) -> (Vec<Draw>, Vec<PointLightDraw>) 
     for rig in list {
         frame_rig_into(rig, Mat4::IDENTITY, &mut shown, &mut draws, &mut lights);
     }
-    let mut at: HashMap<u64, usize> = HashMap::new();
+    let mut at: HashMap<u64, usize, std::hash::BuildHasherDefault<PassThrough>> =
+        HashMap::with_capacity_and_hasher(
+            shown.len(),
+            std::hash::BuildHasherDefault::<PassThrough>::default(),
+        );
     let mut groups: Vec<(&Rig, Vec<(Mat4, u32)>)> = Vec::new();
     for (rig, frame) in shown {
         match at.get(&rig.sig) {
