@@ -306,9 +306,11 @@ fn run(mut conn: Connection, rx: Receiver<Msg>, shared: &Shared, path: &Path) {
                 since_checkpoint = 0;
             }
         }
-        let seq = shared.get();
-        for reply in flushes {
-            let _ = reply.send(seq);
+        if !flushes.is_empty() {
+            let seq = shared.get();
+            for reply in flushes {
+                let _ = reply.send(seq);
+            }
         }
         if stop {
             break;
@@ -344,10 +346,9 @@ fn commit(
     for (op, reply) in jobs {
         outcomes.push((reply, run_one(&tx, op)));
     }
-    let recorded = tx.execute(
-        "UPDATE store_commit SET seq = seq + 1, at_ms = ?1 WHERE id = 1",
-        [crate::now_ms()],
-    );
+    let recorded = tx
+        .prepare_cached("UPDATE store_commit SET seq = seq + 1, at_ms = ?1 WHERE id = 1")
+        .and_then(|mut stmt| stmt.execute([crate::now_ms()]));
     match recorded
         .map_err(StoreError::from)
         .and_then(|_| tx.commit().map_err(StoreError::from))
@@ -388,20 +389,32 @@ fn fail_all(replies: impl Iterator<Item = Option<SyncSender<Reply>>>, why: &str,
     }
 }
 
+/// Runs one savepoint statement from the statement cache, so it is parsed once.
+fn savepoint_step(conn: &Connection, sql: &str) -> rusqlite::Result<()> {
+    conn.prepare_cached(sql)?.execute([])?;
+    Ok(())
+}
+
+/// Rolls the operation's savepoint back, then releases it.
+fn rollback_op(conn: &Connection) -> rusqlite::Result<()> {
+    savepoint_step(conn, "ROLLBACK TO op")?;
+    savepoint_step(conn, "RELEASE op")
+}
+
 /// Runs one operation inside its own savepoint: kept on success, rolled back on an error or a panic.
 fn run_one(conn: &Connection, op: Op) -> Result<Value, StoreError> {
-    conn.execute_batch("SAVEPOINT op")?;
+    savepoint_step(conn, "SAVEPOINT op")?;
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| op(conn)))
         .unwrap_or_else(|_| Err(StoreError::invalid("a write operation panicked")));
     let end = if result.is_ok() {
-        conn.execute_batch("RELEASE op")
+        savepoint_step(conn, "RELEASE op")
     } else {
-        conn.execute_batch("ROLLBACK TO op; RELEASE op")
+        rollback_op(conn)
     };
     match end {
         Ok(()) => result,
         Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK TO op; RELEASE op");
+            let _ = rollback_op(conn);
             Err(e.into())
         }
     }

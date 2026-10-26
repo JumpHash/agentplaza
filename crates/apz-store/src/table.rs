@@ -779,7 +779,12 @@ impl RowSet {
 
     /// Adds a row (its key's values, then its columns') to `table`.
     pub fn push(&mut self, table: &str, row: Vec<Value>) {
-        self.tables.entry(table.to_string()).or_default().push(row);
+        match self.tables.get_mut(table) {
+            Some(rows) => rows.push(row),
+            None => {
+                self.tables.insert(table.to_string(), vec![row]);
+            }
+        }
     }
 
     /// Every row `def`'s tables hold now (each its key's values, then its columns', as [`RowSet::list`] lays them
@@ -1132,6 +1137,12 @@ pub fn take_map_values<K: Column, V: Column>(
 /// Encodes a key's values as bytes, so keys can be compared and looked up whatever their types.
 fn encode(values: &[Value]) -> Vec<u8> {
     let mut out = Vec::new();
+    encode_into(&mut out, values);
+    out
+}
+
+/// Appends the bytes [`encode`] gives `values` to `out`.
+fn encode_into(out: &mut Vec<u8>, values: &[Value]) {
     for v in values {
         match v {
             Value::Null => out.push(0),
@@ -1155,12 +1166,14 @@ fn encode(values: &[Value]) -> Vec<u8> {
             }
         }
     }
-    out
 }
 
-fn hash_row(row: &[Value]) -> u64 {
+/// Hashes a row's encoding, reusing `buf` for the bytes.
+fn hash_row(buf: &mut Vec<u8>, row: &[Value]) -> u64 {
+    buf.clear();
+    encode_into(buf, row);
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    encode(row).hash(&mut h);
+    buf.hash(&mut h);
     h.finish()
 }
 
@@ -1261,10 +1274,11 @@ impl Saved {
     /// What `rows` (as stored now) means as a saved state.
     pub fn of(def: &TableDef, rows: &RowSet) -> Saved {
         let mut saved = Saved::default();
+        let mut buf = Vec::new();
         for table in def.walk() {
             let mut hashes = HashMap::new();
             for row in rows.tables.get(&table.name).into_iter().flatten() {
-                hashes.insert(encode(&row[..table.key.len()]), hash_row(row));
+                hashes.insert(encode(&row[..table.key.len()]), hash_row(&mut buf, row));
             }
             saved.rows.insert(table.name.clone(), hashes);
         }
@@ -1274,12 +1288,13 @@ impl Saved {
     /// The writes from the saved state to `rows`. Apply them with [`apply`], then [`Saved::commit`] them.
     pub fn diff(&self, def: &TableDef, rows: &RowSet) -> Changes {
         let mut changes = Changes::default();
+        let mut buf = Vec::new();
         for table in def.walk() {
             let before = self.rows.get(&table.name);
             let mut now = HashMap::new();
             for row in rows.tables.get(&table.name).into_iter().flatten() {
                 let key = encode(&row[..table.key.len()]);
-                let hash = hash_row(row);
+                let hash = hash_row(&mut buf, row);
                 if before.and_then(|b| b.get(&key)) != Some(&hash) {
                     changes.upserts.push((table.name.clone(), row.clone()));
                 }
@@ -1336,19 +1351,19 @@ fn decode(mut bytes: &[u8]) -> Vec<Value> {
 /// Applies `changes` to the tables of `def` through `conn` (inside the writer's transaction): deletes, then upserts.
 /// Foreign keys are deferred, so the order of tables does not matter within the transaction.
 pub fn apply(conn: &Connection, def: &TableDef, changes: &Changes) -> Result<(), StoreError> {
-    let tables: HashMap<&str, &TableDef> = def
+    let tables: HashMap<&str, (String, String)> = def
         .walk()
         .into_iter()
-        .map(|t| (t.name.as_str(), t))
+        .map(|t| (t.name.as_str(), (t.delete_sql(), t.upsert_sql())))
         .collect();
     for (table, key) in &changes.deletes {
-        let t = tables[table.as_str()];
-        conn.prepare_cached(&t.delete_sql())?
+        let (delete, _) = &tables[table.as_str()];
+        conn.prepare_cached(delete)?
             .execute(params_from_iter(key.iter()))?;
     }
     for (table, row) in &changes.upserts {
-        let t = tables[table.as_str()];
-        conn.prepare_cached(&t.upsert_sql())?
+        let (_, upsert) = &tables[table.as_str()];
+        conn.prepare_cached(upsert)?
             .execute(params_from_iter(row.iter()))?;
     }
     Ok(())
