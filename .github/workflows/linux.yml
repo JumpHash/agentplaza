@@ -147,6 +147,7 @@ jobs:
       - name: Test
         id: test
         if: inputs.tests
+        env: { APZ_CI_TMPFS: 4g }
         run: .github/ci/in-image.sh "cargo nextest run ${{ env.PACKAGES }} --locked --cargo-profile ${{ matrix.arch == 'x86_64' && 'release' || 'checked' }} --profile ci ${{ env.TARGET_ARG }} ${NEXTEST_FILTER:-}"
       # The pull request's Tests comment (check-results.yml) is made from these.
       - name: Results for the pull request
