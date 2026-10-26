@@ -6,9 +6,10 @@
 #             tests, and main cuts no version and no release.
 #   ci        the build itself changed (.github/workflows, .github/ci): the gate runs to test it
 #   build     code or ci: the pull request gate builds, lints and tests
-#   release   main should release: code changed, or a workflow the release runs (not pr.yml,
-#             nightly.yml, ci-image.yml, or the pull-request reporting: api-report.yml,
-#             check-results.yml)
+#   release   main should release: code changed, the build scripts (.github/ci), or a workflow the
+#             release runs (release.yml and the platform workflows it calls: console, guest, linux,
+#             macos, raspberry-pi, windows). The other workflows (the gate, the nightly, the deep
+#             checks, the evals, the reports) only set ci.
 #   web       the web console or what it compiles from (apps/web, the wasm crates, the engine)
 #   platform  code that differs per OS: the platform crates, `#[cfg]`-gated Rust, packaging, the
 #             lockfile and toolchain. Windows and macOS test only then.
@@ -60,9 +61,11 @@ for f in "${files[@]}"; do
       code=true release=true ;;
     *.md | docs/* | .claude/* | LICENSE* | VERSION | .github/CODEOWNERS | .github/actionlint.yaml) continue ;;
     .gitignore | */.gitignore | .gitattributes | */.gitattributes | .editorconfig | */.editorconfig) continue ;;
-    .github/workflows/pr.yml | .github/workflows/nightly.yml | .github/workflows/ci-image.yml | \
-    .github/workflows/api-report.yml | .github/workflows/check-results.yml | .github/ci/changes.sh) ci=true; continue ;;
-    .github/workflows/* | .github/ci/*) ci=true release=true ;;
+    .github/ci/changes.sh) ci=true; continue ;;
+    .github/workflows/release.yml | .github/workflows/console.yml | .github/workflows/guest.yml | \
+    .github/workflows/linux.yml | .github/workflows/macos.yml | .github/workflows/raspberry-pi.yml | \
+    .github/workflows/windows.yml | .github/ci/*) ci=true release=true ;;
+    .github/workflows/*) ci=true; continue ;;
     *) code=true release=true ;;
   esac
   # The hub's catalogue parity test reads harness source without a Cargo dependency.
