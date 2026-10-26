@@ -27,6 +27,7 @@ pub struct Readers {
 struct PoolState {
     idle: Vec<Connection>,
     open: usize,
+    waiting: usize,
 }
 
 impl Readers {
@@ -38,6 +39,7 @@ impl Readers {
             state: Mutex::new(PoolState {
                 idle: Vec::new(),
                 open: 0,
+                waiting: 0,
             }),
             returned: Condvar::new(),
         }
@@ -72,11 +74,13 @@ impl Readers {
                     }
                 };
             }
+            state.waiting += 1;
             let (next, timeout) = self
                 .returned
                 .wait_timeout(state, CHECKOUT_TIMEOUT)
                 .unwrap_or_else(PoisonError::into_inner);
             state = next;
+            state.waiting -= 1;
             if timeout.timed_out() && state.idle.is_empty() && state.open >= self.max {
                 return Err(StoreError::invalid(format!(
                     "{}: every reader connection has been busy for {}s",
@@ -93,10 +97,10 @@ impl Readers {
         f: impl FnOnce(&Connection) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         let reader = self.get()?;
-        let tx = reader.unchecked_transaction()?;
-        let value = f(&tx)?;
+        reader.prepare_cached("BEGIN DEFERRED")?.execute([])?;
+        let value = f(&reader)?;
         // A read transaction has nothing to commit; ending it releases its snapshot.
-        tx.finish()?;
+        reader.prepare_cached("COMMIT")?.execute([])?;
         Ok(value)
     }
 
@@ -138,8 +142,14 @@ impl Drop for Reader<'_> {
             if !conn.is_autocommit() {
                 let _ = conn.execute_batch("ROLLBACK");
             }
-            self.pool.lock().idle.push(conn);
-            self.pool.returned.notify_one();
+            let mut state = self.pool.lock();
+            state.idle.push(conn);
+            // Read under the lock `get` waits with, so no waiter can miss this wakeup.
+            let waiting = state.waiting > 0;
+            drop(state);
+            if waiting {
+                self.pool.returned.notify_one();
+            }
         }
     }
 }

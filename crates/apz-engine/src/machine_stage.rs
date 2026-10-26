@@ -168,6 +168,8 @@ pub struct MachineStage {
     statics_version: u64,
     anim_batches: Arc<Vec<scene::AnimBatch>>,
     lights: Vec<PointLightDraw>,
+    /// The stage has no cutaways: one empty list, shared by every frame.
+    fades: Arc<Vec<scene::Fade>>,
 }
 
 impl MachineStage {
@@ -226,6 +228,7 @@ impl MachineStage {
             statics_version: scene::next_id(), // process-unique: the renderer never reuses another scene's bake
             anim_batches: Arc::new(baked.animated),
             lights,
+            fades: Arc::new(Vec::new()),
         };
         stage.fit(1.0);
         Some(stage)
@@ -384,7 +387,7 @@ impl MachineStage {
             lights: self.lights.clone(),
             time: self.time,
             overlays: Vec::new(),
-            fades: Arc::new(Vec::new()), // no cutaways on the stage
+            fades: Arc::clone(&self.fades), // no cutaways on the stage
             plaza: None,
             anim_batches: Arc::clone(&self.anim_batches),
             focus: None,
@@ -466,7 +469,10 @@ impl Stage {
             return Motion::Rest;
         };
         let motion = m.step(dt, aspect, reduced);
-        self.frame = Arc::new(m.frame());
+        match Arc::get_mut(&mut self.frame) {
+            Some(f) => *f = m.frame(),
+            None => self.frame = Arc::new(m.frame()),
+        }
         motion
     }
 }

@@ -24,7 +24,7 @@ apz-http.workspace = true
 ureq.workspace = true
 blake3 = "1.8"
 apz-blobs = { path = "../apz-blobs" }
-zstd = "0.13"
+zstd = "0.14.3"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha1 = "0.10"

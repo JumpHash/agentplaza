@@ -1,5 +1,6 @@
 //! The threaded server.
 
+use std::cell::Cell;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
@@ -196,7 +197,9 @@ fn serve_accepted<H>(
         let Some(left) = head_deadline.checked_duration_since(Instant::now()) else {
             return;
         };
-        let _ = tls.sock.set_read_timeout(Some(left.min(TIMEOUT)));
+        if left < TIMEOUT {
+            let _ = tls.sock.set_read_timeout(Some(left));
+        }
         if tls.conn.complete_io(&mut tls.sock).is_err() {
             return;
         }
@@ -245,6 +248,7 @@ fn serve_connection<S, H>(
     let mut reader = BufReader::new(Deadlined {
         inner: stream,
         deadline: Some(head_deadline),
+        at_timeout: Cell::new(true),
     });
     let (response, pooled) = match read_admitted(&mut reader, peer, limits, admit) {
         Err(refused) => (refused, false),
@@ -316,6 +320,8 @@ fn read_admitted<S: ws::Duplex>(
 struct Deadlined<S> {
     inner: S,
     deadline: Option<Instant>,
+    /// Whether the socket's read timeout is already TIMEOUT, so a read need not set it again.
+    at_timeout: Cell<bool>,
 }
 
 impl<S: ws::Duplex> Read for Deadlined<S> {
@@ -327,7 +333,11 @@ impl<S: ws::Duplex> Read for Deadlined<S> {
                     "the request took too long to arrive",
                 ));
             };
-            self.inner.set_read_timeout(Some(left.min(TIMEOUT)))?;
+            let want = left.min(TIMEOUT);
+            if want != TIMEOUT || !self.at_timeout.get() {
+                self.inner.set_read_timeout(Some(want))?;
+                self.at_timeout.set(want == TIMEOUT);
+            }
         }
         self.inner.read(buf)
     }
@@ -345,6 +355,7 @@ impl<S: ws::Duplex> Write for Deadlined<S> {
 
 impl<S: ws::Duplex> ws::Duplex for Deadlined<S> {
     fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.at_timeout.set(false);
         self.inner.set_read_timeout(timeout)
     }
 }
@@ -719,6 +730,7 @@ mod tests {
             .expect("an instant 1 ms back");
         let mut stream = Deadlined {
             inner: near,
+            at_timeout: Cell::new(true),
             deadline: Some(past),
         };
         let err = stream.read(&mut buf).expect_err("the deadline has passed");
@@ -729,6 +741,7 @@ mod tests {
         let (near, _far) = UnixStream::pair().expect("a socket pair");
         let mut stream = Deadlined {
             inner: near,
+            at_timeout: Cell::new(true),
             deadline: Some(Instant::now() + Duration::from_millis(100)),
         };
         let started = Instant::now();
@@ -755,6 +768,7 @@ mod tests {
         far.write_all(b"x").expect("send");
         let mut stream = Deadlined {
             inner: near,
+            at_timeout: Cell::new(true),
             deadline: None,
         };
         let mut buf = [0u8; 8];

@@ -370,10 +370,11 @@ impl<const L: u16> IoVecBufferMut<L> {
 
     /// Drop descriptor chain from the `IoVecBufferMut` back
     ///
-    /// This will drop memory described by the `IoVecBufferMut` from the beginning.
+    /// This will drop memory described by the `IoVecBufferMut` from the end.
     pub fn drop_chain_back(&mut self, parse_descriptor: &ParsedDescriptorChain) {
         self.vecs.pop_back(parse_descriptor.nr_iovecs);
-        self.len -= parse_descriptor.length;
+        // Clamps like `drop_chain_front`: a chain larger than the buffer must not wrap `len`.
+        self.len = self.len.saturating_sub(parse_descriptor.length);
     }
 
     /// Create an `IoVecBuffer` from a `DescriptorChain`
@@ -534,6 +535,20 @@ mod tests {
             nr_iovecs: 0,
         });
         assert_eq!(buffer.len(), 6);
+    }
+
+    #[test]
+    fn drop_chain_back_does_not_wrap_len() {
+        let mut buffer: IoVecBufferMut = IoVecBufferMut::new().unwrap();
+        // A chain claiming more bytes than the buffer holds clamps `len` to zero
+        // rather than wrapping it.
+        buffer.len = 10;
+        buffer.drop_chain_back(&ParsedDescriptorChain {
+            head_index: 0,
+            length: 25,
+            nr_iovecs: 0,
+        });
+        assert_eq!(buffer.len(), 0);
     }
 
     #[test]

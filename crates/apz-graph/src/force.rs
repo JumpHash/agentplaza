@@ -161,20 +161,28 @@ fn relax(
 
     // The ideal distance between two nodes: the box's area shared out evenly.
     let k = (width * height / count as f32).sqrt().max(1e-3);
+    let k2 = k * k;
     let start_temperature = width.max(height) / 10.0;
+    let mut shift = vec![(0.0_f32, 0.0_f32); count];
     for step in 0..iterations {
         let temperature = start_temperature * (1.0 - step as f32 / iterations as f32);
-        let mut shift = vec![(0.0_f32, 0.0_f32); count];
+        shift.fill((0.0, 0.0));
         for a in 0..count {
+            let (ax, ay) = pos[a];
+            // Accumulated in locals, then stored once: the same additions in the same order.
+            let (mut sx, mut sy) = shift[a];
             for b in a + 1..count {
-                let dx = pos[a].0 - pos[b].0;
-                let dy = pos[a].1 - pos[b].1;
-                let push = k * k / (dx * dx + dy * dy).max(1e-6);
-                shift[a].0 += dx * push;
-                shift[a].1 += dy * push;
-                shift[b].0 -= dx * push;
-                shift[b].1 -= dy * push;
+                let dx = ax - pos[b].0;
+                let dy = ay - pos[b].1;
+                let push = k2 / (dx * dx + dy * dy).max(1e-6);
+                let fx = dx * push;
+                let fy = dy * push;
+                sx += fx;
+                sy += fy;
+                shift[b].0 -= fx;
+                shift[b].1 -= fy;
             }
+            shift[a] = (sx, sy);
         }
         for &(a, b) in edges {
             let dx = pos[a].0 - pos[b].0;

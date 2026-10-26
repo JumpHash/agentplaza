@@ -1632,18 +1632,61 @@ impl canvas::Program<Msg> for Surface<'_> {
             };
             let line = screen.abs_of_view_row(y);
             let top = PAD + y as f32 * CELL_H;
+            // Adjacent cells of one colour are one rectangle, not one fill per cell.
+            let mut fill: Option<(usize, Color)> = None;
+            for col in 0..screen.cols() {
+                let c = row.cells.get(col).copied().unwrap_or_default();
+                let (_, bg) = colors(c.style(), p);
+                if let Some((start, open)) = fill
+                    && open != bg
+                {
+                    frame.fill_rectangle(
+                        Point::new(PAD + start as f32 * CELL_W, top),
+                        Size::new((col - start) as f32 * CELL_W, CELL_H),
+                        open,
+                    );
+                    fill = None;
+                }
+                if fill.is_none() && bg != p.paper {
+                    fill = Some((col, bg));
+                }
+            }
+            if let Some((start, open)) = fill {
+                frame.fill_rectangle(
+                    Point::new(PAD + start as f32 * CELL_W, top),
+                    Size::new((screen.cols() - start) as f32 * CELL_W, CELL_H),
+                    open,
+                );
+            }
+            let mut sel: Option<usize> = None;
+            for col in 0..screen.cols() {
+                let selected = range.is_some_and(|(start, end)| in_range(start, end, line, col));
+                if let Some(start) = sel {
+                    if !selected {
+                        frame.fill_rectangle(
+                            Point::new(PAD + start as f32 * CELL_W, top),
+                            Size::new((col - start) as f32 * CELL_W, CELL_H),
+                            Color { a: 0.3, ..p.info },
+                        );
+                        sel = None;
+                    }
+                } else if selected {
+                    sel = Some(col);
+                }
+            }
+            if let Some(start) = sel {
+                frame.fill_rectangle(
+                    Point::new(PAD + start as f32 * CELL_W, top),
+                    Size::new((screen.cols() - start) as f32 * CELL_W, CELL_H),
+                    Color { a: 0.3, ..p.info },
+                );
+            }
             let mut run: Option<Run> = None;
             for col in 0..screen.cols() {
                 let c = row.cells.get(col).copied().unwrap_or_default();
                 let style = c.style();
-                let (fg, bg) = colors(style, p);
+                let (fg, _) = colors(style, p);
                 let x = PAD + col as f32 * CELL_W;
-                if bg != p.paper {
-                    frame.fill_rectangle(Point::new(x, top), cell, bg);
-                }
-                if range.is_some_and(|(start, end)| in_range(start, end, line, col)) {
-                    frame.fill_rectangle(Point::new(x, top), cell, Color { a: 0.3, ..p.info });
-                }
                 if style.underline && c.width() != 0 {
                     frame.fill_rectangle(
                         Point::new(x, top + CELL_H - 2.0),

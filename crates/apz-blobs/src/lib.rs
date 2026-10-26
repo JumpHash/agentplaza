@@ -208,7 +208,7 @@ impl Blobs {
     }
 
     fn loc(&self, hash: &Hash) -> Option<Loc> {
-        let key = hash.0.to_vec();
+        let key = hash.0;
         self.db()
             .read(move |conn| {
                 Ok(conn
@@ -241,7 +241,7 @@ impl Blobs {
 
     /// Marks a held blob touched now (so a sweep running now spares it). False when the store does not hold it.
     fn touch(&self, hash: &Hash) -> Result<bool, String> {
-        let key = hash.0.to_vec();
+        let key = hash.0;
         let now = now_ms();
         let w = self
             .db()
@@ -566,15 +566,18 @@ impl Blobs {
         }
         let stored_len =
             u32::try_from(stored.len()).map_err(|_| "an entry is at most 4 GiB".to_string())?;
-        let mut entry = Vec::with_capacity(HEAD + stored.len());
-        entry.extend_from_slice(&stored_len.to_le_bytes());
-        entry.extend_from_slice(&hash.0);
-        entry.push(flags);
-        entry.extend_from_slice(&raw.to_le_bytes());
-        entry.extend_from_slice(stored);
+        let mut head = [0u8; HEAD];
+        head[..4].copy_from_slice(&stored_len.to_le_bytes());
+        head[4..36].copy_from_slice(&hash.0);
+        head[36] = flags;
+        head[37..].copy_from_slice(&raw.to_le_bytes());
         current
             .file
-            .write_all(&entry)
+            .write_all(&head)
+            .map_err(|e| format!("blob write: {e}"))?;
+        current
+            .file
+            .write_all(stored)
             .map_err(|e| format!("blob write: {e}"))?;
         if self.sync {
             current
@@ -589,7 +592,7 @@ impl Blobs {
             flags,
             raw,
         };
-        current.len += entry.len() as u64;
+        current.len += (head.len() + stored.len()) as u64;
         Ok(loc)
     }
 
@@ -604,7 +607,7 @@ impl Blobs {
                          stored = excluded.stored, flags = excluded.flags, touched_ms = excluded.touched_ms",
                 )?
                 .execute(params![
-                    hash.0.to_vec(),
+                    hash.0,
                     loc.pack,
                     i64_of(loc.offset),
                     loc.stored,
