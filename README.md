@@ -1,5 +1,11 @@
 <p align="center"><a href="https://agentplaza.io"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/hero-light.svg"><img src="docs/assets/readme/hero-dark.svg" alt="AgentPlaza: your AI agents, governed. Each agent sealed in its own microVM, held to laws you write and run on a budget you control." width="100%"></picture></a></p>
 
+<h3 align="center">AI agents you can leave running overnight</h3>
+
+<p align="center">AgentPlaza gives each agent its own sealed machine, checks every tool call against laws you write,
+and holds the spend to a budget. In the morning you read a signed record of what happened, and nothing you did not
+allow.</p>
+
 <p align="center">
   <a href="https://github.com/JumpHash/agentplaza/releases/latest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fagentplaza.io%2Fbadge%2Frelease.json" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
@@ -16,11 +22,10 @@
   <a href="https://github.com/JumpHash/agentplaza/releases/latest">Releases</a>
 </p>
 
-Each agent lives in its own microVM, works under laws you can read and change, and runs on a budget you control.
-You describe the work; the hub plans it as a project, runs each task as sessions in its own VMs, has every change
-reviewed on a second model, and lands it through Weft, the plaza's own version control. One hub holds the plaza,
-nodes and workstations do the work, and the web console, the desktop app and the `agentplaza` command all show the
-same plaza. One button, STOP ALL, holds everything at once.
+You describe the work: the hub plans it as a project, runs each task as sessions in their own microVMs, has every
+change reviewed on a second model, and lands it through Weft, the plaza's own version control. One hub holds the
+plaza, nodes and workstations do the work, and the web console, the desktop app and the `agentplaza` command all show
+the same plaza. One button, STOP ALL, holds everything at once.
 
 <table>
 <tr>
@@ -35,6 +40,28 @@ same plaza. One button, STOP ALL, holds everything at once.
 </table>
 
 ## See it run
+
+**The console, recorded on sample data.** Every flow below is the real web console against sample data. Each image
+opens its recording in the [gallery](https://agentplaza.io/gallery/).
+
+<table>
+<tr>
+<td width="50%" valign="top"><a href="https://agentplaza.io/gallery/#laws"><img src="docs/assets/flows/approve-dark.webp" alt="Approve a held deploy: a release agent asked to deploy; the call waits on you, and one click lets it run" width="100%"></a><br><b>Approve a held deploy.</b> A release agent asked to deploy. The call waits on you; one click lets it run.</td>
+<td width="50%" valign="top"><a href="https://agentplaza.io/gallery/#work"><img src="docs/assets/flows/work-dark.webp" alt="Follow the work: each project's graph, from the brief, the research, the proposal and the critique to the tasks" width="100%"></a><br><b>Follow the work.</b> Each project's graph: the brief, the research, the proposal, the critique and the tasks.</td>
+</tr>
+<tr>
+<td valign="top"><a href="https://agentplaza.io/gallery/#sealed"><img src="docs/assets/flows/machines-dark.webp" alt="Every machine, in 3D: the fleet on its plinths, one machine opened, its model turning" width="100%"></a><br><b>Every machine, in 3D.</b> The fleet on its plinths, one machine opened, its model turning.</td>
+<td valign="top"><a href="https://agentplaza.io/gallery/#record"><img src="docs/assets/flows/history-dark.webp" alt="The plaza's own version control: Weft's repositories, lanes and changes, each with its intent and review" width="100%"></a><br><b>The plaza's own version control.</b> Weft: repositories, lanes and changes, each with its intent and review.</td>
+</tr>
+<tr>
+<td valign="top"><a href="https://agentplaza.io/gallery/#money"><img src="docs/assets/flows/metrics-dark.webp" alt="Spend and load, live: seven days of spend, then one VM's own numbers, then the whole plaza again" width="100%"></a><br><b>Spend and load, live.</b> Seven days of spend, then one VM's own numbers, then the whole plaza again.</td>
+<td valign="top"><a href="https://agentplaza.io/gallery/#stop"><img src="docs/assets/flows/stop-dark.webp" alt="STOP ALL, then RESUME: one press holds every agent and refuses model calls; RESUME lets them carry on" width="100%"></a><br><b>STOP ALL, then RESUME.</b> One press holds every agent and refuses model calls; RESUME lets them carry on.</td>
+</tr>
+<tr>
+<td valign="top"><a href="https://agentplaza.io/gallery/#laws"><img src="docs/assets/flows/rules-dark.webp" alt="Read the laws: the plaza's laws by kind, from forbids and the constitution to statutes, tools and operations" width="100%"></a><br><b>Read the laws.</b> The plaza's laws by kind: forbids, the constitution, statutes, tools and operations.</td>
+<td valign="top"><a href="https://agentplaza.io/gallery/#look"><img src="docs/assets/flows/looks-dark.webp" alt="Change the whole look: Graphite cobalt, violet and teal, then Loom moss and clay, live on every screen" width="100%"></a><br><b>Change the whole look.</b> Graphite cobalt, violet, teal, then Loom moss and clay, live on every screen.</td>
+</tr>
+</table>
 
 **The desktop app.** A goal goes to the orchestrator with its effort, and the context bar breaks down what the
 conversation holds; then the agents that took the work.
@@ -327,10 +354,6 @@ desktop app too.
 <td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-health-setup-light.webp"><img src="docs/assets/shots/settings-health-setup-dark.webp" alt="Setup: The plaza checks its own health: the hub, Weft, the network, the vault." width="100%"></picture><br><b>Setup.</b> The plaza checks its own health: the hub, Weft, the network, the vault.</td>
 </tr>
 </table>
-
-Short videos of the main flows (approving a held deploy, reading the laws, the machines in 3D, following the
-work, Weft, spend and load, STOP ALL, and changing the look) are in the
-[gallery](https://agentplaza.io/gallery/).
 
 ## How it works
 
