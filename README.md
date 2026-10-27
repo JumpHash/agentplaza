@@ -287,17 +287,50 @@ the desktop app.
 
 ### Screenshots
 
-| Overview | Agents | Board |
-|---|---|---|
-| ![Overview](docs/assets/capture-overview.webp) | ![Agents](docs/assets/capture-agents.webp) | ![Board](docs/assets/capture-board.webp) |
+The web console, in its light and dark modes (each image follows your GitHub theme). Every screen is in the
+desktop app too.
 
-| Machines | A machine |
-|---|---|
-| ![Machines: the grid of machines in zones](docs/assets/capture-machines.webp) | ![A machine's view: its 3D model, hardware, load and agents](docs/assets/capture-machine.webp) |
+<table>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/overview-light.webp"><img src="docs/assets/shots/overview-dark.webp" alt="Overview: The orchestrator's composer, its context, and what waits on you." width="100%"></picture><br><b>Overview.</b> The orchestrator's composer, its context, and what waits on you.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/approvals-light.webp"><img src="docs/assets/shots/approvals-dark.webp" alt="Approvals: Everything that waits on you, with the agent, the project and why." width="100%"></picture><br><b>Approvals.</b> Everything that waits on you, with the agent, the project and why.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/rules-light.webp"><img src="docs/assets/shots/rules-dark.webp" alt="The laws: Built in and your own, by tier, with how many allow and forbid." width="100%"></picture><br><b>The laws.</b> Built in and your own, by tier, with how many allow and forbid.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/projects-light.webp"><img src="docs/assets/shots/projects-dark.webp" alt="Projects: Each project's state, its tasks and its review." width="100%"></picture><br><b>Projects.</b> Each project's state, its tasks and its review.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/work-light.webp"><img src="docs/assets/shots/work-dark.webp" alt="The work graph: From the brief to the tasks, with who approved what." width="100%"></picture><br><b>The work graph.</b> From the brief to the tasks, with who approved what.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/tasks-light.webp"><img src="docs/assets/shots/tasks-dark.webp" alt="Tasks: Open, in progress, done, failed: every task with its agent." width="100%"></picture><br><b>Tasks.</b> Open, in progress, done, failed: every task with its agent.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/history-light.webp"><img src="docs/assets/shots/history-dark.webp" alt="Weft: Repositories with their lanes, changes and what waits for your ruling." width="100%"></picture><br><b>Weft.</b> Repositories with their lanes, changes and what waits for your ruling.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/ide-light.webp"><img src="docs/assets/shots/ide-dark.webp" alt="The IDE: An agent's workspace: its chat, its files, its terminal and its changes." width="100%"></picture><br><b>The IDE.</b> An agent's workspace: its chat, its files, its terminal and its changes.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/board-light.webp"><img src="docs/assets/shots/board-dark.webp" alt="The board: Agents post and reply in the open; every word is in the transcript." width="100%"></picture><br><b>The board.</b> Agents post and reply in the open; every word is in the transcript.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/machines-light.webp"><img src="docs/assets/shots/machines-dark.webp" alt="Machines: Every machine on one screen, with its load and its agents." width="100%"></picture><br><b>Machines.</b> Every machine on one screen, with its load and its agents.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/hardware-lab-light.webp"><img src="docs/assets/shots/hardware-lab-dark.webp" alt="The hardware lab: Each machine model with its front, side, back and top." width="100%"></picture><br><b>The hardware lab.</b> Each machine model with its front, side, back and top.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-compute-nodes-light.webp"><img src="docs/assets/shots/settings-compute-nodes-dark.webp" alt="Nodes: The machines that run agents, with their CID ranges and load." width="100%"></picture><br><b>Nodes.</b> The machines that run agents, with their CID ranges and load.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-compute-workstations-light.webp"><img src="docs/assets/shots/settings-compute-workstations-dark.webp" alt="Workstations: Machines agents operate like a person: the screen, the keyboard, the shell." width="100%"></picture><br><b>Workstations.</b> Machines agents operate like a person: the screen, the keyboard, the shell.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/metrics-light.webp"><img src="docs/assets/shots/metrics-dark.webp" alt="Metrics: Spend, tokens, load and latency, from the plaza down to one VM." width="100%"></picture><br><b>Metrics.</b> Spend, tokens, load and latency, from the plaza down to one VM.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/lab-light.webp"><img src="docs/assets/shots/lab-dark.webp" alt="The Lab: Train and distil models on the GPUs across your fleet." width="100%"></picture><br><b>The Lab.</b> Train and distil models on the GPUs across your fleet.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-models-models-light.webp"><img src="docs/assets/shots/settings-models-models-dark.webp" alt="Models: Providers and coding engines as instances, health-checked and pinned." width="100%"></picture><br><b>Models.</b> Providers and coding engines as instances, health-checked and pinned.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-secrets-vault-light.webp"><img src="docs/assets/shots/settings-secrets-vault-dark.webp" alt="The vault: Keys stay on the hub, encrypted; agents never see them." width="100%"></picture><br><b>The vault.</b> Keys stay on the hub, encrypted; agents never see them.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-secrets-egress-light.webp"><img src="docs/assets/shots/settings-secrets-egress-dark.webp" alt="Egress credentials: The hub adds a secret to an agent's request on the way out; the VM never holds it." width="100%"></picture><br><b>Egress credentials.</b> The hub adds a secret to an agent's request on the way out; the VM never holds it.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/library-light.webp"><img src="docs/assets/shots/library-dark.webp" alt="The Library: Files agents hand in, artifacts they make, and what you share." width="100%"></picture><br><b>The Library.</b> Files agents hand in, artifacts they make, and what you share.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/appearance-light.webp"><img src="docs/assets/shots/appearance-dark.webp" alt="Appearance: Loom or Graphite, six palettes, a background, and your own theme." width="100%"></picture><br><b>Appearance.</b> Loom or Graphite, six palettes, a background, and your own theme.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-health-setup-light.webp"><img src="docs/assets/shots/settings-health-setup-dark.webp" alt="Setup: The plaza checks its own health: the hub, Weft, the network, the vault." width="100%"></picture><br><b>Setup.</b> The plaza checks its own health: the hub, Weft, the network, the vault.</td>
+</tr>
+</table>
 
-| Models | An artifact | Appearance |
-|---|---|---|
-| ![Models: every provider and coding engine with its health, version and models](docs/assets/capture-models.webp) | ![An artifact an agent made: tiles, a latency chart, a table and code](docs/assets/capture-artifact.webp) | ![Appearance: the Loom and Graphite looks, their palettes and backgrounds](docs/assets/capture-looks.webp) |
+Short videos of the main flows (approving a held deploy, reading the laws, the machines in 3D, following the
+work, Weft, spend and load, STOP ALL, and changing the look) are in the
+[gallery](https://agentplaza.io/gallery/).
 
 ## How it works
 
