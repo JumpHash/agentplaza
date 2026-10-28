@@ -137,7 +137,7 @@ jobs:
           for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
           echo "the tests of $ONLY and of what depends on them: $filter"
           echo "NEXTEST_FILTER=$filter" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
         if: inputs.tests
         with: { tool: nextest }
       # A report from an earlier run must not pass for this one's.
