@@ -1307,6 +1307,9 @@ mod tests {
             .start("pr1", &Runs::Current, |port| fresh(&two, port))
             .unwrap();
         let port = sessions.proxy_port("pr1").expect("pr1 has a proxy");
+        // The proxy and its serving thread each own this flag. Its weak reference lets us
+        // check their lifetime even if another test reuses the released ephemeral port.
+        let lifetime = Arc::downgrade(&sessions.proxies["pr1"].0.stop);
         assert!(reachable(port));
         assert_eq!(sessions.running(), 2);
         for line in &sessions.spawner.lines {
@@ -1331,7 +1334,10 @@ mod tests {
         );
         sessions.end(second).unwrap();
         assert_eq!(sessions.proxy_port("pr1"), None);
-        assert!(!reachable(port), "the last session ending stops the proxy");
+        assert!(
+            lifetime.upgrade().is_none(),
+            "the last session ending stops and joins its proxy"
+        );
         assert!(
             reachable(other_port),
             "another project's proxy is not stopped"
