@@ -1694,7 +1694,10 @@ mod tests {
         w.set_pick(Pick::Api("opencode-local".into()));
         w.executable = "opencode".into();
         assert!(w.config_problem().is_some());
-        w.executable = "/usr/bin/opencode".into();
+        w.executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(w.config_problem(), None);
         w.key = "do-not-reuse".into();
         w.set_pick(Pick::Api("codex-app-server".into()));
