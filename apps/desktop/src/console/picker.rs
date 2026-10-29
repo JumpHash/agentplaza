@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use iced::widget::{Space, button, column, container, pick_list, row, text_input};
+use iced::widget::{Space, button, column, container, pick_list, row, text, text_input, tooltip};
 use iced::{Alignment, Border, Color, Element, Length, Theme};
 use serde_json::Value;
 
@@ -143,6 +143,10 @@ const EFFORTS: &[EffortOpt] = &[
     EffortOpt {
         value: "max",
         label: "Max",
+    },
+    EffortOpt {
+        value: "ultra",
+        label: "Ultra",
     },
 ];
 
@@ -353,6 +357,50 @@ pub fn mark<'a, M: 'a>(key: &str, accent: Option<&str>, size: f32) -> Element<'a
     .into()
 }
 
+/// The model's vendor mark, including models served by a custom local instance or a router.
+/// Instance ids describe the connection; the model family identifies the mark users recognise.
+pub fn model_mark<'a, M: 'a>(model: &str, size: f32) -> Element<'a, M> {
+    mark(model_brand(model), None, size)
+}
+
+fn model_brand(model: &str) -> &str {
+    let base = model.split('@').next().unwrap_or(model);
+    let name = base.rsplit('/').next().unwrap_or(base);
+    let family = name.to_ascii_lowercase();
+    if family.starts_with("gpt-")
+        || family.starts_with("o1")
+        || family.starts_with("o3")
+        || family.starts_with("o4")
+    {
+        "openai"
+    } else if family.starts_with("deepseek") {
+        "deepseek"
+    } else if family.starts_with("glm-") {
+        "zai"
+    } else if family.starts_with("claude") {
+        "claude"
+    } else if family.starts_with("gemini") {
+        "google"
+    } else {
+        base.split('/')
+            .rev()
+            .find(|part| brands::get(part).is_some())
+            .unwrap_or(split_id(base).0)
+    }
+}
+
+/// A compact display name; the complete route remains in the trigger's tooltip.
+fn selected_name<'a>(choice: Option<&'a Choice>, current: &'a str) -> &'a str {
+    let label = choice.map(display_name).unwrap_or(current);
+    label
+        .split('@')
+        .next()
+        .unwrap_or(label)
+        .rsplit('/')
+        .next()
+        .unwrap_or(label)
+}
+
 /// Whether the hub lists the `provider/model` `id` as a contributor model (`trains_on_data`).
 pub fn trains_on_data(models: &Value, id: &str) -> bool {
     models
@@ -549,16 +597,22 @@ pub fn view<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let cur = choices.iter().find(|c| c.id == current);
     let mut trigger_row = row![].spacing(8).align_y(Alignment::Center);
-    if let Some(c) = cur {
-        trigger_row = trigger_row.push(mark(&c.provider, accent_of(state, &c.provider), 16.0));
+    if !current.is_empty() {
+        trigger_row = trigger_row.push(model_mark(current, 16.0));
     }
     let (shown, color) = if current.is_empty() {
         ("Choose a model".to_string(), crate::theme::palette().ink_3)
     } else {
-        (current.to_string(), crate::theme::palette().ink)
+        (
+            ui::ellipsize(selected_name(cur, current), 34),
+            crate::theme::palette().ink,
+        )
     };
-    trigger_row = trigger_row.push(ui::sans(shown, 12.0, color));
-    trigger_row = trigger_row.push(Space::new().width(Length::Fill));
+    trigger_row = trigger_row.push(
+        container(ui::sans(shown, 12.0, color).wrapping(text::Wrapping::None))
+            .width(Length::Fill)
+            .clip(true),
+    );
     trigger_row = trigger_row.push(ui::icon(
         "chevron-down",
         14.0,
@@ -569,29 +623,30 @@ pub fn view<'a, M: Clone + 'a>(
         .width(Length::Fill)
         .padding([6, 10])
         .style(plain);
+    let trigger = tooltip(
+        trigger,
+        container(ui::faint(current))
+            .padding(8)
+            .style(ui::card_style),
+        tooltip::Position::Bottom,
+    );
 
     let mut head = row![trigger].spacing(8).align_y(Alignment::Center);
     if let Some(sel) = effort {
         let selected = EFFORTS.iter().copied().find(|o| o.value == sel);
-        head = head.push(pick_list(EFFORTS, selected, move |o: EffortOpt| {
-            wrap(PickerMsg::Effort(o.value.to_string()))
-        }));
+        head = head.push(
+            pick_list(EFFORTS, selected, move |o: EffortOpt| {
+                wrap(PickerMsg::Effort(o.value.to_string()))
+            })
+            .text_size(12)
+            .padding([6, 8]),
+        );
     }
     let mut col = column![head].spacing(6);
     if state.open {
         col = col.push(popover(state, choices, current, wrap));
     }
     col.into()
-}
-
-/// The accent the picker knows for `provider`'s instance, if any.
-fn accent_of<'a>(state: &'a Picker, provider: &str) -> Option<&'a str> {
-    state
-        .meta
-        .instances
-        .iter()
-        .find(|i| i.id == provider)
-        .and_then(|i| i.accent.as_deref())
 }
 
 /// The instances the rail shows: the picker's own (enabled, with their accents) and any provider the choices
@@ -833,11 +888,23 @@ fn model_row<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let is_current = c.id == current;
     let starred = state.meta.favourites.contains(&c.id);
-    let mut line = row![ui::mono(
-        split_id(&c.id).1.to_string(),
-        12.0,
-        crate::theme::palette().ink
-    )]
+    let name = container(
+        ui::mono(
+            ui::ellipsize(display_name(c), 60),
+            12.0,
+            crate::theme::palette().ink,
+        )
+        .wrapping(text::Wrapping::None),
+    )
+    .width(Length::Fill)
+    .clip(true);
+    let instance = container(ui::faint(instance_label(state, c)).wrapping(text::Wrapping::None))
+        .width(Length::Fill)
+        .clip(true);
+    let mut line = row![
+        model_mark(&c.id, 16.0),
+        column![name, instance].spacing(3).width(Length::Fill)
+    ]
     .spacing(8)
     .align_y(Alignment::Center);
     if trains(c) {
@@ -846,13 +913,16 @@ fn model_row<'a, M: Clone + 'a>(
     if is_current {
         line = line.push(ui::badge("current", Tone::Signal));
     }
-    line = line.push(Space::new().width(Length::Fill));
-    line = line.push(ui::faint(instance_label(state, c).to_string()));
     let pick = button(line)
         .on_press(wrap(PickerMsg::Pick(c.id.clone())))
         .width(Length::Fill)
         .padding([6, 10])
         .style(plain);
+    let pick = tooltip(
+        pick,
+        container(ui::faint(&c.id)).padding(8).style(ui::card_style),
+        tooltip::Position::Bottom,
+    );
     let star_ink = if starred {
         crate::theme::palette().signal
     } else {
@@ -887,6 +957,36 @@ fn plain(_: &Theme, status: button::Status) -> button::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_and_routed_models_use_the_upstream_mark_and_compact_name() {
+        for (model, brand, name) in [
+            ("codex-local/gpt-6-astra@ultra", "openai", "gpt-6-astra"),
+            (
+                "local-deepseek/deepseek/deepseek-flash",
+                "deepseek",
+                "deepseek-flash",
+            ),
+            ("local-glm/opencode/glm-5.3", "zai", "glm-5.3"),
+            (
+                "openrouter/anthropic/claude-sonnet-4.5",
+                "claude",
+                "claude-sonnet-4.5",
+            ),
+            ("custom/google/gemini-3.1-pro", "google", "gemini-3.1-pro"),
+            ("my-instance/custom-model", "my-instance", "custom-model"),
+        ] {
+            assert_eq!(model_brand(model), brand);
+            assert_eq!(selected_name(None, model), name);
+        }
+        let friendly = Choice {
+            id: "codex-local/gpt-6-astra".into(),
+            provider: "codex-local".into(),
+            label: "GPT-6 Astra".into(),
+        };
+        assert_eq!(selected_name(Some(&friendly), &friendly.id), "GPT-6 Astra");
+        assert!(EFFORTS.iter().any(|e| e.value == "ultra"));
+    }
 
     #[test]
     fn picker_choices_list_hub_models_and_flag_contributors() {

@@ -97,6 +97,7 @@ export function openProviderWizard(opts: ProviderWizardOptions): void {
   let baseUrl = '';
   let key = '';
   let models = '';
+  let localExecutable = '';
   let versionSel = '';
   let versionText = '';
   let home = '';
@@ -144,6 +145,7 @@ export function openProviderWizard(opts: ProviderWizardOptions): void {
     baseUrl = c.kind === 'api' ? (c.preset.base_url ?? '') : '';
     key = '';
     models = '';
+    localExecutable = '';
     home = '';
     argsText = '';
     command = '';
@@ -451,6 +453,15 @@ export function openProviderWizard(opts: ProviderWizardOptions): void {
   }
 
   function apiConfig(p: ApiPreset): HTMLElement {
+    const local = p.kind === 'codex-app-server' || p.kind === 'opencode-local';
+    const executableIn = h('input.input', {
+      value: localExecutable,
+      placeholder: p.kind === 'codex-app-server' ? '/path/to/codex' : '/path/to/opencode',
+      autocomplete: 'off',
+      spellcheck: 'false',
+      'aria-label': 'Local executable',
+      oninput: (e: Event) => { localExecutable = (e.target as HTMLInputElement).value; },
+    });
     const baseIn = h('input.input', {
       value: baseUrl,
       placeholder: p.base_url ?? 'https://',
@@ -489,7 +500,10 @@ export function openProviderWizard(opts: ProviderWizardOptions): void {
       p.base_url !== null || p.kind === 'openai-compatible'
         ? row('Base URL', baseIn, 'The API root the requests go to.')
         : null,
-      row('Key', keyIn, 'Optional. Stored in the vault and never shown again; you can set it later.'),
+      local ? row('Local executable', executableIn, 'Optional. The installed program on this hub; empty uses the command on PATH.') : null,
+      p.kind === 'codex-app-server'
+        ? h('p.pw-muted', null, 'Uses the existing Codex login on this hub. Sign in with Codex before checking the provider.')
+        : row('Key', keyIn, 'Optional. Stored in the vault and never shown again; you can set it later.'),
       row('Models', modelsIn, "Optional, comma separated. Empty uses the kind's own list."),
     );
   }
@@ -701,6 +715,8 @@ export function openProviderWizard(opts: ProviderWizardOptions): void {
           base_url: baseUrl.trim() || null,
           auth,
           models: list.length ? list : c.preset.models,
+          ...((c.preset.kind === 'codex-app-server' || c.preset.kind === 'opencode-local') && localExecutable.trim()
+            ? { options: { executable: localExecutable.trim() } } : {}),
           enabled: true,
         });
         if (typed) {

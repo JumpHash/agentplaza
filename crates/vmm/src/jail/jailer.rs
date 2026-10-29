@@ -434,9 +434,10 @@ impl Jailer {
             let prepared = if bind.dir {
                 std::fs::create_dir_all(&target)
             } else {
-                // A file bind needs a file to land on; the bind replaces it.
+                // An earlier directory bind may already expose the real source at this
+                // path. Never truncate it while preparing a later, nested file bind.
                 let parent = std::fs::create_dir_all(target.parent().unwrap_or(&self.root));
-                parent.and_then(|()| std::fs::File::create(&target).map(|_| ()))
+                parent.and_then(|()| prepare_file_target(&target))
             };
             prepared.map_err(|source| JailerError::Setup {
                 step: "lay out a jail path",
@@ -776,6 +777,29 @@ pub fn root_for(base: &Path, id: u32) -> PathBuf {
     base.join(format!("{}-{id}-{run}", std::process::id()))
 }
 
+/// Makes a missing file bind target without opening or changing an existing source
+/// exposed by a previously mounted parent directory.
+fn prepare_file_target(target: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) => {
+            let kind = metadata.file_type();
+            if kind.is_dir() || kind.is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a jail file bind target must not be a directory or symlink",
+                ));
+            }
+            Ok(())
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)
+            .map(|_| ()),
+        Err(err) => Err(err),
+    }
+}
+
 /// The path `source` is mirrored at inside `root`: the same path, rooted. An
 /// absolute source drops its leading separator (`/boot/vmlinuz-linux` →
 /// `{root}/boot/vmlinuz-linux`); a relative one is rooted the same way, which
@@ -881,6 +905,30 @@ pub fn enter_thread(jailer: Jailer, id: u32) -> Result<Entered, JailerError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_file_bind_preserves_the_already_exposed_source() {
+        let dir = std::env::temp_dir().join(format!(
+            "apz-jail-file-target-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).expect("scratch directory");
+        let image = dir.join("workspace.img");
+        prepare_file_target(&image).expect("new placeholder");
+        std::fs::write(&image, b"existing workspace data").expect("source contents");
+        prepare_file_target(&image).expect("existing source beneath a directory bind");
+        assert_eq!(std::fs::read(&image).unwrap(), b"existing workspace data");
+        assert!(prepare_file_target(&dir).is_err());
+        let link = dir.join("link.img");
+        std::os::unix::fs::symlink(&image, &link).expect("symlink");
+        assert!(prepare_file_target(&link).is_err());
+        assert_eq!(std::fs::read(&image).unwrap(), b"existing workspace data");
+        std::fs::remove_dir_all(&dir).expect("remove scratch directory");
+    }
 
     #[test]
     fn a_mirror_is_the_same_path_rooted() {

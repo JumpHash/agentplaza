@@ -338,7 +338,7 @@ fn stop(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 pub fn view<'a>(state: &'a State) -> Element<'a, Msg> {
     let back = ui::text_link("All sessions", Msg::Go(Id::Sessions));
     if !state.loaded {
-        return column![back, ui::loading()].spacing(16).into();
+        return ui::sheet(back, ui::loading());
     }
     let Some(session) = &state.session else {
         let empty = match &state.failure {
@@ -349,11 +349,10 @@ pub fn view<'a>(state: &'a State) -> Element<'a, Msg> {
                 "Its last session is in the Sessions list.",
             ),
         };
-        return column![back, empty].spacing(16).into();
+        return ui::sheet(back, empty);
     };
-    let page = column![
-        back,
-        header(state, session),
+    let head = column![back, header(state, session)].spacing(16);
+    let body = column![
         ui::card("Details", facts(state.expert, session)),
         failure_line(state),
         ui::tabs(
@@ -368,10 +367,11 @@ pub fn view<'a>(state: &'a State) -> Element<'a, Msg> {
     ]
     .spacing(16)
     .width(Length::Fill);
+    let page = ui::sheet(head.into(), body.into());
     if state.confirm_stop {
-        ui::with_modal(page.into(), Some(stop_dialog()))
+        ui::with_modal(page, Some(stop_dialog()))
     } else {
-        page.into()
+        page
     }
 }
 

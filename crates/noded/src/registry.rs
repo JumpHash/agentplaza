@@ -905,6 +905,15 @@ fn prepare_persistent_workspace(
         vmm::clonefile::clone_file(base, &partial)?;
         std::fs::rename(&partial, &image)?;
     }
+    if std::fs::metadata(&image)?.len() == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "the persistent workspace image {} is empty",
+                image.display()
+            ),
+        ));
+    }
     Ok(image)
 }
 
@@ -5853,6 +5862,12 @@ mod persistent_workspace_tests {
         let second = prepare_persistent_workspace(&base, &persist, 42).expect("the reused image");
         assert_eq!(second, first);
         assert_eq!(std::fs::read(&second).expect("the reused image"), b"M");
+        // A damaged image must be reported, never silently used or replaced with
+        // the base (which could conceal loss of an agent's previous workspace).
+        std::fs::write(&second, []).expect("simulate a truncated workspace");
+        let err = prepare_persistent_workspace(&base, &persist, 42).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::metadata(&second).unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

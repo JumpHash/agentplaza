@@ -58,6 +58,42 @@ pub struct Installation {
 }
 
 impl GitHub {
+    /// Creates one empty, private repository. Existing names and ambiguous HTTP failures are
+    /// returned as errors; no retry can silently adopt somebody else's existing history.
+    pub fn create_private_repository(
+        &self,
+        auth: &Auth,
+        namespace: &Namespace,
+        name: &str,
+    ) -> Result<Repo, String> {
+        let path = match namespace.kind.as_str() {
+            "user" if !auth.installation => "/user/repos".to_string(),
+            "org" => format!("/orgs/{}/repos", escape(&namespace.name)),
+            _ => {
+                return Err(
+                    "this authorization cannot create repositories in that namespace".into(),
+                );
+            }
+        };
+        let response = self.http.call(
+            "POST",
+            &format!("{}{path}", self.api),
+            &headers(&auth.token),
+            Some(Body::Json(
+                json!({ "name": name, "private": true, "auto_init": false }),
+            )),
+        )?;
+        if response.status != 201 {
+            return match response.ok("creating the private repository") {
+                Err(error) => Err(error),
+                Ok(_) => Err(
+                    "creating the private repository: GitHub did not confirm creation (201)".into(),
+                ),
+            };
+        }
+        Ok(repo_of(&response.body, auth.installation))
+    }
+
     pub fn new(host: &str, http: Arc<dyn Http>) -> Self {
         GitHub {
             web: host.trim_end_matches('/').to_string(),
@@ -730,6 +766,49 @@ mod tests {
     use super::*;
 
     const KEY: &str = include_str!("testdata/github-app-test-key.pem");
+
+    #[test]
+    fn repository_creation_is_private_empty_and_uses_the_namespace_endpoint() {
+        for (kind, path) in [("user", "/user/repos"), ("org", "/orgs/team/repos")] {
+            let (client, seen) = github(move |method, url, body| {
+                assert_eq!(method, "POST");
+                assert!(url.ends_with(path));
+                assert_eq!(
+                    body,
+                    Some(&Body::Json(
+                        json!({"name":"shop", "private":true, "auto_init":false})
+                    ))
+                );
+                (201, json!({"full_name":"team/shop", "private":true}))
+            });
+            let namespace = Namespace {
+                name: "team".into(),
+                kind: kind.into(),
+                ..Namespace::default()
+            };
+            let repo = client
+                .create_private_repository(&Auth::user("secret"), &namespace, "shop")
+                .unwrap();
+            assert_eq!(repo.full_name, "team/shop");
+            assert!(repo.private);
+            assert_eq!(seen.seen().len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_conflicting_repository_is_not_adopted_and_creation_is_not_retried() {
+        let (client, seen) = github(|_, _, _| (422, json!({"message":"name already exists"})));
+        let namespace = Namespace {
+            name: "owner".into(),
+            kind: "user".into(),
+            ..Namespace::default()
+        };
+        let error = client
+            .create_private_repository(&Auth::user("secret"), &namespace, "shop")
+            .unwrap_err();
+        assert!(error.contains("422"));
+        assert_eq!(seen.seen().len(), 1);
+    }
 
     fn github(
         answer: impl Fn(&str, &str, Option<&Body>) -> (u16, Value) + Send + Sync + 'static,

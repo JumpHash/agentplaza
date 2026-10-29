@@ -21,7 +21,7 @@ interface SettingSpec {
 
 const SPECS: SettingSpec[] = [
   { key: 'default_model', label: 'Model', hint: "The project's agents' model, for a role with none of its own here", kind: 'model' },
-  { key: 'effort', label: 'Effort', hint: 'The reasoning effort of their model calls', kind: 'choice', choices: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] },
+  { key: 'effort', label: 'Effort', hint: 'The reasoning effort of their model calls', kind: 'choice', choices: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
   { key: 'max_tokens', label: 'Longest answer', hint: 'Tokens per model call (0 at the plaza: the provider decides)', kind: 'number' },
   { key: 'max_turns', label: 'Turns per task', hint: 'How many model turns a work item may take (1 to 500)', kind: 'number' },
   { key: 'compress_at', label: 'Compress at', hint: 'The conversation size, in bytes, at which it is compressed (0: never)', kind: 'number' },

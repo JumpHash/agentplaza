@@ -539,6 +539,9 @@ impl App {
             let Some(app) = stopping.upgrade() else {
                 return;
             };
+            // Shutdown exits the process without running Rust destructors. Stop local model
+            // transports explicitly, including children currently serving a model call.
+            app.providers.gateway().shutdown_local_providers();
             eprintln!("apid: stopping: writing state");
             // The archives first: a snapshot that no longer holds what moved out is saved after its lines are.
             save_archives(&app);

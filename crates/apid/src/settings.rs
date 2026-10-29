@@ -693,8 +693,9 @@ impl Store {
 }
 
 /// The reasoning efforts a settings `effort` may name. `None` (unset) is the provider's own default.
-pub(crate) const EFFORT_LEVELS: [&str; 7] =
-    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub(crate) const EFFORT_LEVELS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 
 /// Whether `model` may run for `tier` under `policy` (always in dev mode). The error names the
 /// tier's list.
@@ -1558,6 +1559,27 @@ mod tests {
         assert_eq!(store.get(), s);
         // A fresh store reads the same values back from the store's rows.
         assert_eq!(reloaded(&store, false).get(), s);
+    }
+
+    #[test]
+    fn ultra_effort_survives_settings_and_pinned_model_round_trip() {
+        let store = Store::new(false);
+        let mut settings = Settings {
+            effort: Some("ultra".into()),
+            orchestrator_model: "codex-local/gpt-6-astra@ultra".into(),
+            ..Settings::default()
+        };
+        settings
+            .model_policy
+            .orchestrator
+            .push("codex-local/gpt-6-astra".into());
+        let saved = store.put(settings).unwrap();
+        assert_eq!(reloaded(&store, false).get(), saved);
+        assert!(
+            store
+                .allowed(Tier::Orchestrator, "codex-local/gpt-6-astra@ultra")
+                .is_ok()
+        );
     }
 
     #[test]

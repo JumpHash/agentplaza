@@ -12,7 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iced::alignment::{Horizontal, Vertical};
 use iced::keyboard::{Key, key::Named};
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{Space, button, column, container, row, space, text, text_editor};
+use iced::widget::{
+    Space, button, column, container, responsive, row, space, text, text_editor, tooltip,
+};
 use iced::{Background, Border, Color, Element, Font, Length, Padding, Task, Theme};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -20,7 +22,7 @@ use serde_json::{Map, Value, json};
 use super::Id;
 use super::approvals::{self, Approval, Proposal};
 use super::work_model::{self as model};
-use crate::console::{Ctx, chat_tools, client, roles, ui};
+use crate::console::{Ctx, chat_tools, client, picker, roles, ui};
 use crate::theme::{self, TYPE_META, TYPE_PROSE, TYPE_UI};
 
 const FEED_MAX: usize = 40;
@@ -291,14 +293,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
         Msg::Goal(action) => state.goal.perform(action),
         Msg::Send => {
             let text = state.goal.text().trim().to_string();
-            let Some(cid) = state
-                .agents
-                .iter()
-                .find(|a| a.tier == "orchestrator")
-                .map(|a| a.cid)
-            else {
+            if !state.agents.iter().any(|a| a.tier == "orchestrator") {
                 return Task::none();
-            };
+            }
             if state.sending || text.is_empty() {
                 return Task::none();
             }
@@ -307,8 +304,8 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> Task<Msg> {
             let client = ctx.client.clone();
             return client::task(
                 move || {
-                    client
-                        .post::<Value>(&format!("/v1/agents/{cid}/chat"), &json!({ "text": text }))
+                    // Share the main chat with the web console, including draft cards and replies.
+                    client.post::<Value>("/v1/chats/main/messages", &json!({ "text": text }))
                 },
                 Msg::Sent,
             );
@@ -337,6 +334,10 @@ fn landed(state: &mut State, ctx: &Ctx) -> Task<Msg> {
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
+    responsive(move |size| view_sized(state, ctx, size)).into()
+}
+
+fn view_sized<'a>(state: &'a State, ctx: &'a Ctx, size: iced::Size) -> Element<'a, Msg> {
     let scope = ctx.project.as_deref();
     let p = crate::theme::palette();
     // Under a project, the project's title is the page's question; the plaza's asks what it should work on.
@@ -355,16 +356,12 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
             roles::agent_label(&o.role, o.cid),
             o.model
         ),
-        None => String::new(),
+        None => {
+            "Draft your goal here. Connect the orchestrator to send it to the fleet.".to_string()
+        }
     };
-    let composer: Element<'a, Msg> = match orch {
-        Some(o) => composer_box(state, o),
-        None => boxed_card(ui::empty(
-            "orchestrator",
-            "No orchestrator connected",
-            "Add the orchestrator role to the fleet to delegate work by goal.",
-        )),
-    };
+    let compact = size.width < 720.0;
+    let composer = composer_box(state, orch, compact);
     let hero = column![
         container(
             text(title)
@@ -375,15 +372,25 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
         )
         .width(Length::Fill)
         .align_x(Horizontal::Center),
-        container(text(sub).font(theme::SANS).size(TYPE_UI).color(p.ink_3))
-            .width(Length::Fill)
-            .align_x(Horizontal::Center),
+        container(
+            text(sub)
+                .font(theme::SANS)
+                .size(TYPE_UI)
+                .color(p.ink_3)
+                .align_x(Horizontal::Center)
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Center),
     ]
     .spacing(8);
 
     let stats = match (&state.overview, scope) {
         (Some(_), Some(s)) => project_stats(state, s),
-        (Some(o), None) => stat_row(o, state.agents.iter().filter(|a| a.no_project()).count()),
+        (Some(o), None) => stat_row(
+            o,
+            state.agents.iter().filter(|a| a.no_project()).count(),
+            compact,
+        ),
         (None, _) => boxed_card(ui::empty(
             "alert",
             "apid is unreachable",
@@ -395,29 +402,39 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
     if let Some(e) = &state.error {
         page = page.push(ui::error_line(e));
     }
-    page = page.push(
+    let secondary: Element<'a, Msg> = if compact {
+        column![waiting(state, scope), activity(state)]
+            .spacing(16)
+            .into()
+    } else {
         row![
             container(waiting(state, scope)).width(Length::FillPortion(1)),
             container(activity(state)).width(Length::FillPortion(1)),
         ]
         .spacing(16)
-        .align_y(Vertical::Top),
-    );
+        .align_y(Vertical::Top)
+        .into()
+    };
+    page = page.push(secondary);
     page = page.push(projects(state));
     let fleet_agents: Vec<&Agent> = state.agents.iter().filter(|a| a.in_scope(scope)).collect();
     page = page.push(fleet(fleet_agents));
 
     // The page is centred at 820 wide and scrolls under the window; its gutters are the web's `.home` padding.
     container(ui::scroll(
-        container(page)
-            .max_width(820.0)
-            .width(Length::Fill)
-            .padding(Padding {
-                top: 48.0,
-                right: 28.0,
-                bottom: 48.0,
-                left: 28.0,
-            }),
+        container(
+            container(page)
+                .max_width(820.0)
+                .width(Length::Fill)
+                .padding(Padding {
+                    top: if compact { 24.0 } else { size.height * 0.07 },
+                    right: if compact { 16.0 } else { 28.0 },
+                    bottom: 48.0,
+                    left: if compact { 16.0 } else { 28.0 },
+                }),
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Center),
     ))
     .width(Length::Fill)
     .height(Length::Fill)
@@ -493,11 +510,11 @@ fn project_stats<'a>(state: &'a State, project: &str) -> Element<'a, Msg> {
     .into()
 }
 
-fn stat_row<'a>(o: &Overview, no_project: usize) -> Element<'a, Msg> {
+fn stat_row<'a>(o: &Overview, no_project: usize, compact: bool) -> Element<'a, Msg> {
     let open =
         o.tasks.get("open").copied().unwrap_or(0) + o.tasks.get("claimed").copied().unwrap_or(0);
     let done = o.tasks.get("done").copied().unwrap_or(0);
-    row![
+    let counts = row![
         stat(
             "Agents",
             figure(o.agents.total.to_string()),
@@ -511,16 +528,26 @@ fn stat_row<'a>(o: &Overview, no_project: usize) -> Element<'a, Msg> {
             figure(open.to_string()),
             format!("{done} done")
         ),
-        model_stat("Worker model", &o.default_model),
-        model_stat("Orchestrator model", &o.orchestrator_model),
     ]
     .spacing(16)
-    .into()
+    .width(Length::FillPortion(1));
+    let models = row![
+        model_stat("Worker model", &o.default_model),
+        model_stat("Orchestrator model", &o.orchestrator_model)
+    ]
+    .spacing(16)
+    .width(Length::FillPortion(1));
+    if compact {
+        column![counts, models].spacing(16).into()
+    } else {
+        row![counts, models].spacing(16).into()
+    }
 }
 
 /// A model's stat: its name in mono, its provider under it (the web's `modelStat`).
 fn model_stat<'a>(label: &str, model: &str) -> Element<'a, Msg> {
-    let s = model.to_string();
+    let (base, effort) = chat_tools::split_effort(model);
+    let s = base.to_string();
     let (name, provider) = match s.find('/') {
         Some(i) => (
             s.rsplit('/').next().unwrap_or("").to_string(),
@@ -533,16 +560,33 @@ fn model_stat<'a>(label: &str, model: &str) -> Element<'a, Msg> {
     } else {
         name
     };
-    stat(
-        label,
-        text(name)
-            .font(theme::MONO)
-            .size(15.0)
-            .wrapping(Wrapping::None)
-            .color(crate::theme::palette().ink)
+    let sub = if effort.is_empty() {
+        provider
+    } else {
+        format!("{provider} · {effort}")
+    };
+    tooltip(
+        stat(
+            label,
+            row![
+                picker::model_mark(model, 20.0),
+                text(name)
+                    .font(theme::MONO)
+                    .size(15.0)
+                    .wrapping(Wrapping::None)
+                    .color(crate::theme::palette().ink)
+                    .width(Length::Fill)
+            ]
+            .spacing(8)
+            .align_y(Vertical::Center)
+            .height(26)
             .into(),
-        provider,
+            sub,
+        ),
+        text(model.to_string()).size(12),
+        tooltip::Position::Top,
     )
+    .into()
 }
 
 /// A stat's figure: semibold 19, one line.
@@ -560,9 +604,9 @@ fn stat<'a>(label: &str, value: Element<'a, Msg>, sub: String) -> Element<'a, Ms
     let p = crate::theme::palette();
     container(
         column![
-            text(label.to_string())
-                .font(theme::SANS)
-                .size(TYPE_META)
+            text(crate::theme::skin().label_text(label))
+                .font(crate::theme::skin().label_font())
+                .size(crate::theme::skin().label_size)
                 .color(p.ink_3)
                 .wrapping(Wrapping::None),
             value,
@@ -588,24 +632,37 @@ fn stat<'a>(label: &str, value: Element<'a, Msg>, sub: String) -> Element<'a, Ms
 
 /// The composer to the orchestrator, as the web's `.composer`: the message, and its bar with the agent it goes to,
 /// the transcript link and Send.
-fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
+fn composer_box<'a>(state: &'a State, orch: Option<&'a Agent>, compact: bool) -> Element<'a, Msg> {
     let p = crate::theme::palette();
-    let (label, tone) = match orch.status.as_str() {
-        "working" => ("Working", p.info),
-        "idle" => ("Idle", p.ok),
-        "asleep" => ("Asleep", p.ink_3),
-        "dozing" => ("Asleep (light)", p.ink_3),
+    let (label, tone) = match orch.map(|o| o.status.as_str()) {
+        Some("working") => ("Working", p.info),
+        Some("idle") => ("Idle", p.ok),
+        Some("asleep") => ("Asleep", p.ink_3),
+        Some("dozing") => ("Asleep (light)", p.ink_3),
+        None => ("Not connected", p.ink_3),
         _ => ("Offline", p.ink_3),
     };
-    let chip = container(chat_tools::chip(&state.chat_tools).map(Msg::ChatTools))
-        .width(Length::Fixed(360.0));
+    let chip: Element<'a, Msg> = if orch.is_some() {
+        container(chat_tools::chip(&state.chat_tools).map(Msg::ChatTools))
+            .width(if compact {
+                Length::Fill
+            } else {
+                Length::Fixed(300.0)
+            })
+            .into()
+    } else {
+        Space::new().into()
+    };
     let pick = row![
         ui::dot::<Msg>(tone),
-        text(roles::agent_label(&orch.role, orch.cid))
-            .font(SANS_MEDIUM)
-            .size(TYPE_UI)
-            .color(p.ink)
-            .wrapping(Wrapping::None),
+        text(orch.map_or_else(
+            || "Orchestrator".to_string(),
+            |o| roles::agent_label(&o.role, o.cid)
+        ))
+        .font(SANS_MEDIUM)
+        .size(TYPE_UI)
+        .color(p.ink)
+        .wrapping(Wrapping::None),
         text(label)
             .font(theme::SANS)
             .size(TYPE_META)
@@ -643,36 +700,81 @@ fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
             selection: crate::theme::palette().signal,
         });
 
-    let bar = row![
-        pick,
-        chip,
-        space::horizontal(),
-        ui::btn_sm(
-            "Open transcript",
-            Some("scroll-text"),
-            ui::Kind::Ghost,
-            Some(Msg::Go(Id::Agent(orch.cid)))
-        ),
-        ui::btn_sm(
-            "Send",
-            Some("arrow-up"),
-            ui::Kind::Primary,
-            (!state.sending).then_some(Msg::Send)
-        ),
-    ]
-    .spacing(8)
-    .align_y(Vertical::Center);
+    let transcript = ui::btn_sm(
+        if orch.is_some() {
+            "Open transcript"
+        } else {
+            "Setup"
+        },
+        Some(if orch.is_some() {
+            "scroll-text"
+        } else {
+            "settings"
+        }),
+        ui::Kind::Ghost,
+        Some(Msg::Go(orch.map_or(Id::Setup, |o| Id::Agent(o.cid)))),
+    );
+    let send = tooltip(
+        button(container(ui::icon("arrow-up", 16.0, p.on_signal)).center(Length::Fill))
+            .width(32)
+            .height(32)
+            .padding(0)
+            .on_press_maybe(
+                (orch.is_some() && !state.sending && !state.goal.text().trim().is_empty())
+                    .then_some(Msg::Send),
+            )
+            .style(|_: &Theme, status| {
+                let p = crate::theme::palette();
+                button::Style {
+                    background: Some(
+                        Color {
+                            a: if status == button::Status::Disabled {
+                                0.4
+                            } else {
+                                1.0
+                            },
+                            ..p.signal_fill
+                        }
+                        .into(),
+                    ),
+                    text_color: p.on_signal,
+                    border: Border::default().rounded(16.0),
+                    ..Default::default()
+                }
+            }),
+        text("Send (Ctrl+Enter)").size(12),
+        tooltip::Position::Top,
+    );
+    let bar: Element<'a, Msg> = if compact {
+        column![
+            row![pick, space::horizontal(), transcript, send]
+                .spacing(6)
+                .align_y(Vertical::Center),
+            chip
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        row![pick, transcript, chip, space::horizontal(), send]
+            .spacing(6)
+            .align_y(Vertical::Center)
+            .into()
+    };
 
-    let context = container(chat_tools::bar(&state.chat_tools).map(Msg::ChatTools))
-        .padding(Padding {
-            top: 10.0,
-            right: 16.0,
-            bottom: 0.0,
-            left: 16.0,
-        })
-        .width(Length::Fill);
+    let context: Element<'a, Msg> = if orch.is_some() {
+        container(chat_tools::bar(&state.chat_tools).map(Msg::ChatTools))
+            .padding(Padding {
+                top: 0.0,
+                right: 16.0,
+                bottom: 0.0,
+                left: 16.0,
+            })
+            .width(Length::Fill)
+            .into()
+    } else {
+        Space::new().into()
+    };
     let mut body = column![
-        context,
         goal,
         container(bar)
             .padding(Padding {
@@ -700,7 +802,7 @@ fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
             left: 16.0,
         }));
     }
-    container(body)
+    let composer = container(body)
         .width(Length::Fill)
         .clip(true)
         .style(|_: &Theme| container::Style {
@@ -712,7 +814,9 @@ fn composer_box<'a>(state: &'a State, orch: &'a Agent) -> Element<'a, Msg> {
             },
             shadow: crate::theme::skin().shadow_card,
             ..Default::default()
-        })
+        });
+    column![context, composer]
+        .spacing(if orch.is_some() { 8 } else { 0 })
         .into()
 }
 

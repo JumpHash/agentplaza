@@ -48,6 +48,111 @@ fn every_file_migrates_and_passes_the_lint() {
 }
 
 #[test]
+fn local_provider_upgrade_preserves_existing_rows_and_foreign_keys() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    conn.execute_batch(super::PLAZA_MIGRATIONS[0].sql).unwrap();
+    conn.execute_batch(
+        r#"
+        INSERT INTO providers VALUES (0);
+        INSERT INTO provider (providers_pos, providers_pos_2, id, kind, enabled, auth_kind, auth_secret, label, base_url, extra_body_content)
+            VALUES (0, 0, 'existing', 'openai-compatible', 1, 'secret', 'stored-key-name', 'Existing provider', 'https://example.invalid/v1', '{"safe":true}');
+        INSERT INTO provider_extra_headers VALUES (0, 0, 'X-Client', 'test');
+        INSERT INTO provider_models VALUES (0, 0, 0, 'model-a'), (0, 0, 1, 'model-b');
+        INSERT INTO provider_options (providers_pos, providers_pos_2, region, project, websocket, models_cache_secs, reasoning_effort)
+            VALUES (0, 0, 'eu-west-1', 'project-a', 0, 42, 1);
+        INSERT INTO provider_options_trains_on_data VALUES (0, 0, 0, 'model-b');
+        INSERT INTO provider_offered VALUES (0, 0, 'existing/model-a');
+        "#,
+    ).unwrap();
+    let tables = [
+        "providers",
+        "provider",
+        "provider_extra_headers",
+        "provider_models",
+        "provider_options",
+        "provider_options_trains_on_data",
+        "provider_offered",
+    ];
+    let snapshots: Vec<_> = tables
+        .iter()
+        .map(|table| {
+            let names: Vec<_> = columns(&conn, table)
+                .into_iter()
+                .map(|column| format!("\"{}\"", column.0))
+                .collect();
+            let sql = format!("SELECT {} FROM \"{table}\" ORDER BY 1, 2", names.join(", "));
+            // The root table has only one column.
+            let sql = if names.len() == 1 {
+                sql.replace("ORDER BY 1, 2", "ORDER BY 1")
+            } else {
+                sql
+            };
+            let read = |conn: &Connection| {
+                let mut stmt = conn.prepare(&sql).unwrap();
+                stmt.query_map([], |row| {
+                    (0..names.len())
+                        .map(|index| row.get::<_, apz_store::rusqlite::types::Value>(index))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+            };
+            let expected = read(&conn);
+            (sql, expected)
+        })
+        .collect();
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch(super::PLAZA_MIGRATIONS[1].sql).unwrap();
+    tx.commit().unwrap();
+    for (sql, expected) in snapshots {
+        let mut stmt = conn.prepare(&sql).unwrap();
+        let count = stmt.column_count();
+        let actual = stmt
+            .query_map([], |row| {
+                (0..count)
+                    .map(|index| row.get::<_, apz_store::rusqlite::types::Value>(index))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(actual, expected, "{sql}");
+    }
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    assert_eq!(conn.query_row("SELECT count(*) FROM provider_options WHERE executable IS NULL AND working_directory IS NULL", [], |r| r.get::<_, u64>(0)).unwrap(), 1);
+    for kind in ["codex-app-server", "opencode-local"] {
+        assert_eq!(
+            conn.execute("UPDATE provider SET kind = ?1", [kind])
+                .unwrap(),
+            1
+        );
+    }
+    assert!(
+        conn.execute("UPDATE provider SET kind = 'unknown'", [])
+            .is_err()
+    );
+    assert!(lint::schema(&conn).unwrap().is_empty());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM sqlite_temp_master WHERE name LIKE '_local_upgrade_%'",
+            [],
+            |r| r.get::<_, u64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn every_component_table_is_in_the_migration_as_defined() {
     let plaza = FILES.iter().find(|f| f.name == super::PLAZA).unwrap();
     let conn = migrated(plaza);

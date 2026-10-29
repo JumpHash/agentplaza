@@ -30,11 +30,18 @@ pub const TRANSCRIPTS: &str = "transcripts";
 /// The metric samples and rollups.
 pub const METRICS: &str = "metrics";
 
-const PLAZA_MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "init",
-    sql: include_str!("../../sql/plaza/0001_init.sql"),
-}];
+const PLAZA_MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "init",
+        sql: include_str!("../../sql/plaza/0001_init.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "local_providers",
+        sql: include_str!("../../sql/plaza/0002_local_providers.sql"),
+    },
+];
 
 const TRANSCRIPT_MIGRATIONS: &[Migration] = &[Migration {
     version: 1,

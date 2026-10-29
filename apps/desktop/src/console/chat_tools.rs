@@ -25,16 +25,10 @@ const PARTS: [(&str, &str); 6] = [
     ("attachments", "Attachments"),
     ("summary", "Summary"),
 ];
-/// The efforts a chat offers, each saved as its `@effort` suffix ("" is the model's default).
-const EFFORT_ROW: [(&str, &str); 5] = [
-    ("", "Default"),
-    ("low", "Low"),
-    ("medium", "Medium"),
-    ("high", "High"),
-    ("max", "Max"),
-];
 /// Every `@effort` suffix a model value may carry; "none" is the default, so it reads as no effort.
-const SUFFIXES: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const SUFFIXES: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 /// The breakdown popover's width.
 const POPOVER_W: f32 = 360.0;
 /// The context track's height.
@@ -236,6 +230,9 @@ pub fn update(state: &mut ChatTools, msg: ChatToolsMsg, client: &Client) -> Task
             Task::none()
         }
         ChatToolsMsg::Picker(m) => {
+            if let PickerMsg::Effort(effort) = &m {
+                return update(state, ChatToolsMsg::Effort(effort.clone()), client);
+            }
             let pick = match &m {
                 PickerMsg::Pick(id) => Some(id.clone()),
                 _ => None,
@@ -409,21 +406,16 @@ impl ChatTools {
     }
 }
 
-/// The model chip: the picker (the instance's mark, the model id, a chevron, its popover) and the effort row
-/// under it.
+/// The model chip and compact effort picker share one line, as in the web composer.
 pub fn chip(st: &ChatTools) -> Element<'_, ChatToolsMsg> {
     let (model, effort) = split_effort(st.value());
-    let trigger = picker::view(&st.picker, &st.choices, model, None, ChatToolsMsg::Picker);
-    let efforts = ui::seg(&EFFORT_ROW, effort, |e: &str| {
-        ChatToolsMsg::Effort(e.to_string())
-    });
-    let suffix: Element<'_, ChatToolsMsg> = if effort.is_empty() {
-        iced::widget::Space::new().into()
-    } else {
-        ui::mono(format!("· {effort}"), 12.0, theme::palette().ink_2).into()
-    };
-    let head = row![trigger, suffix].spacing(6).align_y(Alignment::Start);
-    column![head, efforts].spacing(6).into()
+    picker::view(
+        &st.picker,
+        &st.choices,
+        model,
+        Some(effort),
+        ChatToolsMsg::Picker,
+    )
 }
 
 /// The context bar: a thin track in the parts' colours, the count and the share of the window at its right, and

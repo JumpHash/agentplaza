@@ -72,7 +72,13 @@ be connected.
   commits and tags show as Verified.
 - **Push now** exports what Weft has at once; otherwise the next landing does.
 
-The plaza never creates a repository on a platform: connect one that exists. **Disconnect** stops the export; **Remove**
+The orchestrator can create an empty **private GitHub repository** with `plaza_repository`. First grant its exact
+`owner/name` using `agentplaza platforms grant <id> <owner> --repo <name>`; an all-repositories grant alone does not
+authorize creation. The orchestrator lists authorizations, creates the repository, then connects it to the project
+before the first task lands. A failed or repeated create is reported as an error; it never silently adopts an
+existing repository. GitLab and Forgejo still require an existing repository.
+
+**Disconnect** stops the export; **Remove**
 forgets an authorization and its tokens (its connections stop exporting until another authorization covers them).
 
 `agentplaza platforms connect <id> owner/repo --project pr1`.

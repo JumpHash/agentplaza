@@ -103,15 +103,51 @@ pub fn icon<'a, M: 'a>(name: &str, size: f32, color: Color) -> Element<'a, M> {
 /// unknown key.
 pub fn brand_logo<'a, M: 'a>(key: &str, size: f32) -> Element<'a, M> {
     match crate::console::brands::get(key) {
-        Some(brand) => svg(svg::Handle::from_memory(on_dark(brand.svg).into_bytes()))
-            .width(Length::Fixed(size))
-            .height(Length::Fixed(size))
-            .into(),
+        Some(brand) => svg(svg::Handle::from_memory(
+            brand_svg(
+                &brand,
+                crate::theme::is_light(),
+                crate::theme::palette().ink,
+            )
+            .into_bytes(),
+        ))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .into(),
         None => Space::new()
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
             .into(),
     }
+}
+
+/// Match the web kit's dim-brand rule without recolouring multi-colour artwork.
+fn brand_svg(brand: &super::brands::Brand, light: bool, ink: Color) -> String {
+    let r = ((brand.hex >> 16) & 0xff) as f32 / 255.0;
+    let g = ((brand.hex >> 8) & 0xff) as f32 / 255.0;
+    let b = (brand.hex & 0xff) as f32 / 255.0;
+    if !light
+        && brand.svg.matches("<path").count() == 1
+        && 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.22
+    {
+        let ink = color_hex(ink);
+        brand
+            .svg
+            .replace(&format!("#{:06X}", brand.hex), &ink)
+            .replace(&format!("#{:06x}", brand.hex), &ink)
+            .replace("#121613", &ink)
+    } else {
+        brand.svg.to_string()
+    }
+}
+
+fn color_hex(color: Color) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (color.r * 255.0).round() as u8,
+        (color.g * 255.0).round() as u8,
+        (color.b * 255.0).round() as u8
+    )
 }
 
 /// The AgentPlaza mark: the hive (three ink cells around the signal-orange core).
@@ -129,7 +165,7 @@ fn on_dark(svg: &str) -> String {
     if crate::theme::is_light() {
         svg.to_string()
     } else {
-        svg.replace("#121613", "#e3e8f4")
+        svg.replace("#121613", &color_hex(crate::theme::palette().ink))
     }
 }
 
@@ -182,22 +218,37 @@ fn head_line<'a, M: 'a>(
             .size(TYPE_H1)
             .line_height(LineHeight::Relative(1.25))
             .color(crate::theme::palette().ink)
+            .width(Length::Fill)
     ]
+    .width(Length::Fill)
     .align_y(Alignment::Center)
     .spacing(12);
-    line = line.push(Space::new().width(Length::Fill));
     if !actions.is_empty() {
-        line = line.push(row(actions).spacing(8).align_y(Alignment::Center));
+        // Reserve the actions' natural width first, then let the title wrap in
+        // the space left. A shrinking title plus a fill spacer can push controls
+        // outside the page; the action group itself wraps when it is wider than it.
+        line = line.push(
+            row(actions)
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .wrap()
+                .vertical_spacing(8)
+                .align_x(iced::alignment::Horizontal::Right),
+        );
     }
-    let mut head = column![line].spacing(6);
+    let mut head = column![line].spacing(6).width(Length::Fill);
     if let Some(intro) = intro {
         head = head.push(
-            text(intro.to_string())
-                .font(SANS)
-                .size(TYPE_PROSE)
-                .line_height(READING)
-                .color(crate::theme::palette().ink_2)
-                .width(Length::Fixed(620.0)),
+            container(
+                text(intro.to_string())
+                    .font(SANS)
+                    .size(TYPE_PROSE)
+                    .line_height(READING)
+                    .color(crate::theme::palette().ink_2)
+                    .width(Length::Fill),
+            )
+            .width(Length::Fill)
+            .max_width(620.0),
         );
     }
     head.into()
@@ -1577,6 +1628,20 @@ pub fn open_url(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod open_url_tests {
     use super::{commas, openable, usd};
+
+    #[test]
+    fn dim_brand_marks_follow_the_palette_without_tinting_multicolour_art() {
+        let ink = iced::Color::from_rgb8(227, 232, 244);
+        let openai = crate::console::brands::get("openai").unwrap();
+        assert_eq!(super::brand_svg(&openai, true, ink), openai.svg);
+        let dark = super::brand_svg(&openai, false, ink);
+        assert!(dark.contains("#e3e8f4"));
+        assert!(!dark.contains("#412991"));
+        let multicolour = crate::console::brands::get("huggingface").unwrap();
+        assert_eq!(super::brand_svg(&multicolour, false, ink), multicolour.svg);
+        let deepseek = crate::console::brands::get("deepseek").unwrap();
+        assert_eq!(super::brand_svg(&deepseek, false, ink), deepseek.svg);
+    }
 
     #[test]
     fn openable_accepts_https_links_and_refuses_every_other_url() {

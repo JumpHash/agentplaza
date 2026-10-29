@@ -9,7 +9,7 @@ import { api, type Tier } from '../api';
 import { contextApi, CONTEXT_PARTS, type ContextPart, type ContextView } from '../api-context';
 import { providersApi } from '../api-providers';
 import { agents, on } from '../store';
-import { brandLogo, button, toast } from './components';
+import { brandLogo, button, modelBrand, toast } from './components';
 import { tierChoices } from './tier-choices';
 import { h, lu, replace } from './dom';
 import { modelPicker, type ModelChoice, type ModelPicker } from './model-picker';
@@ -94,13 +94,14 @@ export function withEffort(base: string, effort: string): string {
   return base && effort ? `${base}@${effort}` : base;
 }
 
-/** The effort row's levels: the default, then low to max. */
+/** The effort row's levels: the default, then low to ultra. */
 export const EFFORT_LEVELS: [string, string][] = [
   ['', 'Default'],
   ['low', 'Low'],
   ['medium', 'Medium'],
   ['high', 'High'],
   ['max', 'Max'],
+  ['ultra', 'Ultra'],
 ];
 
 // ---- Model choices -----------------------------------------------------------------------------------------------
@@ -225,7 +226,8 @@ export function modelChip(opts: ModelChipOpts): ModelChip {
     const { base, effort } = splitModel(value || shown);
     const provider = base.split('/')[0] ?? '';
     const id = base.includes('/') ? base.slice(base.indexOf('/') + 1) : base;
-    const brand = brandOf.get(provider) ?? provider;
+    const inferred = modelBrand(base);
+    const brand = inferred === provider ? (brandOf.get(provider) ?? provider) : inferred;
     const { effort: pinned } = splitModel(value);
     const shownEffort = pinned || effort;
     chipBtn.replaceChildren(

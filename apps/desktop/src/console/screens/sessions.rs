@@ -151,7 +151,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Msg> {
             column(lines).spacing(12).into()
         }
     };
-    column![head, body].spacing(16).width(Length::Fill).into()
+    ui::sheet(head, body)
 }
 
 /// The sessions table, or the empty state that says why there is none.

@@ -104,8 +104,43 @@ To check now, click **Check every provider now** in the card, or run `agentplaza
 
 ## 4. Subscription accounts
 
-An API key is not the only way to reach a model. A ChatGPT or Claude subscription is not an API, so the plaza reaches
-it through a **CLIProxyAPI** hub that you run:
+### Local Codex and OpenCode
+
+The **Codex (local login)** preset runs the installed Codex app-server on the hub's machine. It uses that
+installation's existing ChatGPT login; AgentPlaza never reads or copies its tokens. Configure the provider's
+`options.executable` with the Codex executable to use, especially when the desktop app and the CLI on `PATH`
+have different versions. `options.working_directory` may name an empty local directory. Use `auth: "none"`;
+HTTP endpoint, header and body overrides are not supported for this local provider.
+
+The preset's provider id is `codex-local` and its kind is `codex-app-server`. A model selection such as
+`codex-local/gpt-6-astra@ultra` keeps both the model and the effort explicit. The installed Codex catalog must
+offer them, and the adapter checks the model and effort returned when it starts the thread. Listing a model
+does not prove account access: a completed inference turn is the check that it can actually run.
+
+Codex receives the AgentPlaza tools as dynamic tools. It returns calls to the normal guest harness for policy
+checks and execution. Its own shell, plugins, integrations, subagents and environment access are disabled.
+Consequently, an Astra orchestrator delegates through AgentPlaza's configured worker models. Codex's native
+conversation remains authoritative when the guest compacts its wire transcript; completed tool calls are
+never replayed as new calls.
+
+The **OpenCode (local)** preset uses an installed OpenCode executable with a private temporary configuration.
+Use a separate provider instance and scoped key for each upstream: for example, models
+`["deepseek/deepseek-flash"]` with a DeepSeek key, or `["opencode/glm-5.3"]` with an OpenCode Zen key. With instance
+ids `local-deepseek` and `local-glm`, the complete model routes are
+`local-deepseek/deepseek/deepseek-flash` and `local-glm/opencode/glm-5.3`. A key cannot be sent to a different
+upstream by changing the requested model. OpenCode's native tools are denied; its structured response supplies
+tool calls that AgentPlaza validates and executes. This transport returns complete responses, without native
+tool-call streaming.
+
+Both local providers keep execution in AgentPlaza and stop their child processes during normal hub shutdown.
+Codex continuations are bound to their original caller, model, tools and transcript. Losing the child process,
+restarting the hub, or changing those settings requires a fresh conversation; the adapter reports the loss
+instead of replaying earlier actions. Model health listings check the local installation and configuration;
+they do not spend tokens to test inference.
+
+### CLIProxyAPI
+
+An existing **CLIProxyAPI** hub is another option for subscription accounts:
 
 1. Run a CLIProxyAPI hub on a machine the plaza can reach, with your subscription accounts added to it.
 2. Add the hub's models as an ordinary **OpenAI-compatible** provider, with the hub's client key in the vault.

@@ -208,6 +208,19 @@ export function pmono(p: { id: string; title: string }, size = 18): HTMLElement 
 
 // ---- Brand logos -----------------------------------------------------------
 
+/** The model's vendor, even when its connection has a custom local instance name. */
+export function modelBrand(model: string): string {
+  const base = model.split('@')[0] ?? model;
+  const parts = base.split('/');
+  const name = (parts.at(-1) ?? '').toLowerCase();
+  if (/^(gpt-|o[134])/.test(name)) return 'openai';
+  if (name.startsWith('deepseek')) return 'deepseek';
+  if (name.startsWith('glm-')) return 'zai';
+  if (name.startsWith('claude')) return 'claude';
+  if (name.startsWith('gemini')) return 'google';
+  return parts.reverse().find((p) => p in BRAND_ICONS) ?? parts.at(-1) ?? '';
+}
+
 const MONOGRAMS: Record<string, string> = {
   groq: 'Gq', together: 'Tg', fireworks: 'Fw', cerebras: 'Cb', llamacpp: 'll', mock: 'M',
 };

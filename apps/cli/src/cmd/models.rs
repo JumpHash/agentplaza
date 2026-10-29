@@ -10,8 +10,8 @@ use crate::ctx::{self, Ctx, confirm};
 /// The provider kinds whose models are decision models (as the console decides it).
 const DECISION_KINDS: [&str; 3] = ["openai-decisions", "systemone", "azure-decisions"];
 /// The effort levels the hub's settings accept, and `default`, which clears the setting (the provider's own default).
-const EFFORTS: [&str; 8] = [
-    "none", "minimal", "low", "medium", "high", "xhigh", "max", "default",
+const EFFORTS: [&str; 9] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "default",
 ];
 
 #[derive(Subcommand, Debug)]
@@ -319,7 +319,7 @@ pub enum PolicyCmd {
         /// The worker tier's models, comma-separated.
         #[arg(long)]
         worker: Option<String>,
-        /// The effort agents run at: none, minimal, low, medium, high, xhigh, max. `default` clears it (the provider's own default).
+        /// The effort agents run at: none, minimal, low, medium, high, xhigh, max, ultra. `default` clears it (the provider's own default).
         #[arg(long)]
         effort: Option<String>,
         /// The most turns an agent takes.
@@ -1923,7 +1923,9 @@ mod tests {
     #[test]
     fn effort_takes_the_hubs_levels_and_default_clears_it() {
         let mut root = serde_json::Map::new();
-        for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        for level in [
+            "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+        ] {
             set_effort(&mut root, level).unwrap();
             assert_eq!(root["effort"], json!(level));
         }
@@ -1936,7 +1938,7 @@ mod tests {
         let err = set_effort(&mut root, "extreme").unwrap_err();
         assert_eq!(
             err,
-            "effort is one of none, minimal, low, medium, high, xhigh, max, default"
+            "effort is one of none, minimal, low, medium, high, xhigh, max, ultra, default"
         );
     }
 

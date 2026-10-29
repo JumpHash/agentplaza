@@ -80,6 +80,18 @@ law "T-003" "Only the orchestrator plans and delegates" {
   when (resource.name in ["plaza_agents", "plaza_post_task", "plaza_tasks_post", "plaza_task_link", "plaza_assign", "plaza_cancel_task", "plaza_task_result", "plaza_project_open", "plaza_project_draft"]) and principal.tier == "orchestrator"
 }
 
+law "T-003b" "Only the orchestrator provisions explicitly granted repositories" {
+  tier statute
+  enforcement preventive
+  severity info
+  statement "The orchestrator may list Git authorizations, create a private GitHub repository explicitly granted by name, and connect a granted repository to a project. Namespace-wide access alone does not authorize creation."
+  rationale "The owner chooses the exact new repository. Credentials remain on the hub and worker agents cannot provision remote repositories."
+  permit tool.call
+  principal is Agent
+  resource is Tool
+  when resource.name == "plaza_repository" and principal.tier == "orchestrator"
+}
+
 law "T-006" "The reviewer rules on work" {
   tier statute
   enforcement preventive
