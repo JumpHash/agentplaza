@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn a_background_job_returns_at_once_and_its_end_is_noted_in_a_later_result() {
+    fn a_background_job_returns_at_once_and_its_end_is_noted_in_a_result() {
         let ws = workspace("job");
         let started = run_in(
             &ws,
@@ -639,8 +639,10 @@ mod tests {
         let id = started["job"].as_u64().expect("a job id");
         assert_eq!(started["log"], format!("{PLAZA_DIR}/jobs/{id}.log"));
         let deadline = Instant::now() + Duration::from_secs(20);
+        // A fast job can finish before serve drains the notes for the start reply.
+        // That reply counts too: the note is delivered once, not repeated later.
+        let mut text = started.to_string();
         loop {
-            let text = serve(&ws, 1, "run", &json!({ "command": "true" })).expect("a run");
             if text.contains(&format!("job {id} ended: exit 0")) {
                 assert!(
                     text.contains("done-soon"),
@@ -650,6 +652,7 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "the job's end was never noted");
             thread::sleep(POLL);
+            text = serve(&ws, 1, "run", &json!({ "command": "true" })).expect("a run");
         }
     }
 

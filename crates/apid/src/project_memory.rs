@@ -136,6 +136,9 @@ struct Pending {
 #[derive(Default)]
 pub struct Store {
     entries: Mutex<Vec<Entry>>,
+    /// Orders main's snapshot read through cache publication, so an older refresh cannot replace a newer one.
+    /// Separate from `landing`: a landing may refresh while pruning its already-landed changes.
+    refreshing: Mutex<()>,
     /// The projects whose entries were read in this process (a project not in here is read at first use).
     read: Mutex<HashSet<String>>,
     proposals: Mutex<Vec<Proposal>>,
@@ -179,6 +182,19 @@ impl Store {
         entries.retain(|e| e.project != project);
         entries.extend(read);
         lock(&self.read).insert(project.to_string());
+    }
+
+    /// Reads a snapshot of main and publishes it as the project's cached entries.
+    fn refresh(
+        &self,
+        project: &str,
+        read_main: impl FnOnce() -> Result<Vec<Entry>, String>,
+    ) -> Result<usize, String> {
+        let _order = lock(&self.refreshing);
+        let read = read_main()?;
+        let count = read.len();
+        self.replace(project, read);
+        Ok(count)
     }
 
     /// Stores a proposal under the next `mp<n>` id; returns it with the id.
@@ -250,6 +266,16 @@ pub fn entries(app: &App, project: &str) -> Vec<Entry> {
 
 /// Reads the project's entries from its repo's main and replaces the index with them; the count read.
 pub fn refresh(app: &App, project: &str) -> Result<usize, String> {
+    let count = app
+        .project_memory
+        .refresh(project, || read_main(app, project))?;
+    // Saved now, so the index holds the entries before the next search reads it.
+    crate::store::saver::save_now(app, "memory_entries");
+    Ok(count)
+}
+
+/// Loads the entry files from the revision main currently names.
+fn read_main(app: &App, project: &str) -> Result<Vec<Entry>, String> {
     let repo = app
         .projects
         .get(project)
@@ -273,11 +299,7 @@ pub fn refresh(app: &App, project: &str) -> Result<usize, String> {
             read.push(entry);
         }
     }
-    let count = read.len();
-    app.project_memory.replace(project, read);
-    // Saved now, so the index holds the entries before the next search reads it.
-    crate::store::saver::save_now(app, "memory_entries");
-    Ok(count)
+    Ok(read)
 }
 
 /// A change landed on `repo`: the projects on it read their entries again, so the index follows main, and the entries
@@ -1285,6 +1307,60 @@ A move must release its claim before waking the agent on the target: `wake_with`
             &format!("---\nid: {id}\ntype: {kind}\nstatus: {status}\n---\n{text}\n"),
         )
         .unwrap_or_else(|| panic!("{id} parses"))
+    }
+
+    #[test]
+    fn an_older_refresh_cannot_overwrite_a_landed_invalidation() {
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let store = Store::default();
+        let active = entry("P-0002", "pitfall", "active", "Release the claim first.");
+        let mut flagged = active.clone();
+        flagged.status = "flagged".into();
+        flagged.provenance_change = "changed-placement".into();
+        let (reading, has_read) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (attempting, attempted) = mpsc::channel();
+        let (published, publication) = mpsc::channel();
+
+        thread::scope(|scope| {
+            // Drop the release sender before joining children if a rendezvous fails, so the held
+            // loader also exits instead of making the test's failure hang the scoped join.
+            let release_older = release;
+            let store = &store;
+            // The earlier landing has read the active revision but is still fetching its file.
+            let old = scope.spawn(move || {
+                store.refresh("pr-1", || {
+                    reading.send(()).unwrap();
+                    released.recv().unwrap();
+                    Ok(vec![active])
+                })
+            });
+            has_read.recv_timeout(Duration::from_secs(5)).unwrap();
+            // Main now contains the flagged entry. Its landing attempts another refresh while the
+            // older snapshot is held. Without ordering, it publishes first and the old one erases it.
+            let newer = flagged.clone();
+            let new = scope.spawn(move || {
+                attempting.send(()).unwrap();
+                let result = store.refresh("pr-1", || Ok(vec![newer]));
+                published.send(()).unwrap();
+                result
+            });
+            attempted.recv_timeout(Duration::from_secs(5)).unwrap();
+            let completed_out_of_order = publication.recv_timeout(Duration::from_secs(2)).is_ok();
+            release_older.send(()).unwrap();
+            assert_eq!(old.join().unwrap(), Ok(1));
+            assert_eq!(new.join().unwrap(), Ok(1));
+
+            assert_eq!(store.entries_of("pr-1"), vec![flagged]);
+            assert!(
+                !completed_out_of_order,
+                "the newer read overtook the older snapshot"
+            );
+            assert!(store.is_read("pr-1"));
+        });
     }
 
     #[test]
