@@ -909,20 +909,8 @@ fn repo_for(app: &App, project: &Project) -> Option<String> {
     if !app.weft.running() {
         return None;
     }
-    let slug: String = project
-        .title
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .take(6)
-        .collect::<Vec<_>>()
-        .join("-");
-    let name = format!("{}-{}", project.id, slug);
-    // The project's repo in Weft (created by the owner's console when it is not there yet).
-    app.projects.set_repo(&project.id, &name).ok()?;
+    // ensure_repo records the attachment only after Weft creates it. STOP ALL may
+    // refuse the write while still allowing the owner to open the project.
     crate::weft_hub::ensure_repo(app, &project.id).ok()
 }
 

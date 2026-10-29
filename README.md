@@ -1,5 +1,11 @@
 <p align="center"><a href="https://agentplaza.io"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/hero-light.svg"><img src="docs/assets/readme/hero-dark.svg" alt="AgentPlaza: your AI agents, governed. Each agent sealed in its own microVM, held to laws you write and run on a budget you control." width="100%"></picture></a></p>
 
+<h3 align="center">AI agents you can leave running overnight</h3>
+
+<p align="center">AgentPlaza gives each agent its own sealed machine, checks every tool call against laws you write,
+and holds the spend to a budget. In the morning you read a signed record of what happened, and nothing you did not
+allow.</p>
+
 <p align="center">
   <a href="https://github.com/JumpHash/agentplaza/releases/latest"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fagentplaza.io%2Fbadge%2Frelease.json" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
@@ -16,9 +22,10 @@
   <a href="https://github.com/JumpHash/agentplaza/releases/latest">Releases</a>
 </p>
 
-Each agent lives in its own microVM, works under laws you can read and change, and runs on a budget you control.
-One hub holds the plaza, nodes and workstations do the work, and the web console, the desktop app and the
-`agentplaza` command all show the same plaza. One button, STOP ALL, holds everything at once.
+You describe the work: the hub plans it as a project, runs each task as sessions in their own microVMs, has every
+change reviewed on a second model, and lands it through Weft, the plaza's own version control. One hub holds the
+plaza, nodes and workstations do the work, and the web console, the desktop app and the `agentplaza` command all show
+the same plaza. One button, STOP ALL, holds everything at once.
 
 <table>
 <tr>
@@ -33,6 +40,28 @@ One hub holds the plaza, nodes and workstations do the work, and the web console
 </table>
 
 ## See it run
+
+**The console, recorded on sample data.** Every flow below is the real web console against sample data. Each image
+opens its recording in the [gallery](https://agentplaza.io/gallery/).
+
+<table>
+<tr>
+<td width="50%" valign="top"><a href="https://agentplaza.io/gallery/#laws"><img src="docs/assets/flows/approve-dark.webp" alt="Approve a held deploy: a release agent asked to deploy; the call waits on you, and one click lets it run" width="100%"></a><br><b>Approve a held deploy.</b> A release agent asked to deploy. The call waits on you; one click lets it run.</td>
+<td width="50%" valign="top"><a href="https://agentplaza.io/gallery/#work"><img src="docs/assets/flows/work-dark.webp" alt="Follow the work: each project's graph, from the brief, the research, the proposal and the critique to the tasks" width="100%"></a><br><b>Follow the work.</b> Each project's graph: the brief, the research, the proposal, the critique and the tasks.</td>
+</tr>
+<tr>
+<td valign="top"><a href="https://agentplaza.io/gallery/#sealed"><img src="docs/assets/flows/machines-dark.webp" alt="Every machine, in 3D: the fleet on its plinths, one machine opened, its model turning" width="100%"></a><br><b>Every machine, in 3D.</b> The fleet on its plinths, one machine opened, its model turning.</td>
+<td valign="top"><a href="https://agentplaza.io/gallery/#record"><img src="docs/assets/flows/history-dark.webp" alt="The plaza's own version control: Weft's repositories, lanes and changes, each with its intent and review" width="100%"></a><br><b>The plaza's own version control.</b> Weft: repositories, lanes and changes, each with its intent and review.</td>
+</tr>
+<tr>
+<td valign="top"><a href="https://agentplaza.io/gallery/#money"><img src="docs/assets/flows/metrics-dark.webp" alt="Spend and load, live: seven days of spend, then one VM's own numbers, then the whole plaza again" width="100%"></a><br><b>Spend and load, live.</b> Seven days of spend, then one VM's own numbers, then the whole plaza again.</td>
+<td valign="top"><a href="https://agentplaza.io/gallery/#stop"><img src="docs/assets/flows/stop-dark.webp" alt="STOP ALL, then RESUME: one press holds every agent and refuses model calls; RESUME lets them carry on" width="100%"></a><br><b>STOP ALL, then RESUME.</b> One press holds every agent and refuses model calls; RESUME lets them carry on.</td>
+</tr>
+<tr>
+<td valign="top"><a href="https://agentplaza.io/gallery/#laws"><img src="docs/assets/flows/rules-dark.webp" alt="Read the laws: the plaza's laws by kind, from forbids and the constitution to statutes, tools and operations" width="100%"></a><br><b>Read the laws.</b> The plaza's laws by kind: forbids, the constitution, statutes, tools and operations.</td>
+<td valign="top"><a href="https://agentplaza.io/gallery/#look"><img src="docs/assets/flows/looks-dark.webp" alt="Change the whole look: Graphite cobalt, violet and teal, then Loom moss and clay, live on every screen" width="100%"></a><br><b>Change the whole look.</b> Graphite cobalt, violet, teal, then Loom moss and clay, live on every screen.</td>
+</tr>
+</table>
 
 **The desktop app.** A goal goes to the orchestrator with its effort, and the context bar breaks down what the
 conversation holds; then the agents that took the work.
@@ -70,8 +99,10 @@ are made by the scripts in [`scripts/readme/`](scripts/readme/).</sub>
   inside that VM, and its traffic goes only to the hub, over vsock.
 - **Laws on every tool call.** The laws are written in JHRL and checked before each tool call runs. A call is
   allowed, refused, or sent to you to decide. A call that no law permits is refused.
-- **Budgets you set.** Each project and task runs within a budget in dollars or tokens, and the spend of every model
-  call is metered.
+- **Budgets you set.** Each project and task has a budget in dollars or tokens. Every model call is held against it
+  before it is sent and settled after, and a task that reaches its cap pauses and asks you.
+- **Every change reviewed, then landed.** A task's builder works in its own VM, a reviewer on a different model checks
+  the change, and it lands through Weft's queue with its intent, its review and a signature.
 - **STOP ALL.** One button holds the whole plaza. It cancels the running work, refuses model calls until you resume,
   and records who pressed it.
 - **Any model provider, through one gateway.** Agents reach models only through the hub's gateway, which covers
@@ -117,16 +148,19 @@ systems marked yes:
 | Windows 11 (or 10 2004+), x64 | yes | yes, with the Windows Hypervisor Platform feature |
 | Windows, arm64 | yes (the node link) | not yet: run them on a node elsewhere |
 
-The desktop app's "Start locally" and "Host a hub" need no Docker and no database server: the hub keeps its state in
-SQLite files in its state folder. They use the ports 7700 (hub), 8899 (node daemon) and 19080 (node agent gateway).
-The macOS builds are not notarized yet, and the MSI is not code-signed yet.
+The desktop app is self-contained: "Start locally" and "Host a hub" start the hub and the node services themselves,
+with no Docker, database server or object store to provision. The hub keeps its state in three SQLite files
+(`plaza.db`, `transcripts.db` and `metrics.db`) and an object store in one state folder. They use the ports 7700
+(hub), 8899 (`noded`) and 19080 (`vsockd`). The macOS builds are not notarized yet, and the MSI is not code-signed
+yet.
 
 ## Quick start
 
-1. **Set up a plaza.** Open the desktop app and choose *Start locally*. It checks the requirements and sets up the
-   containers. On Linux you can instead start the services with
-   `systemctl --user enable --now agentplaza-hub agentplaza-node`, or run `apid` in a terminal on any system. The hub
-   keeps its state in SQLite files in its state folder.
+1. **Set up a plaza.** Open the desktop app and choose *Start locally*. It checks what this machine needs (a
+   hypervisor for the agents and free ports; `agentplaza setup` runs the same checks), then starts the hub and the
+   node services. It installs nothing: a requirement that is not met says what to do. On Linux you can instead start
+   the services with `systemctl --user enable --now agentplaza-hub agentplaza-node`, or run `apid` in a terminal on
+   any system.
 2. **Open the console** at <http://127.0.0.1:7700>. The owner token is written once to the state folder
    (`owner-token`), and the console on this machine signs in without a password.
 3. **Add a model key.** On the Models screen, add a key to a provider card. From the command line:
@@ -135,10 +169,11 @@ The macOS builds are not notarized yet, and the MSI is not code-signed yet.
    `agentplaza node join <code>`. The node shows as online in `agentplaza nodes list`.
 5. **Start a project.** Choose *New project* in the switcher at the top of the console, and tell the orchestrator
    what you want done. It drafts the project beside the conversation (its tasks, its team and its budget), and you
-   press *Start project*. From the command line: `agentplaza chat "Fix the flaky scheduler tests and ship 0.9"`, then
-   `/start`. A fresh plaza runs the orchestrator alone: every other agent works on one project at a time, through the
-   seats its tasks give it, and an agent on none does nothing. Proposals from the orchestrator wait in Approvals until
-   you approve them.
+   press *Start project*. From the command line, post to the orchestrator's chat with
+   `agentplaza chats post main "Fix the flaky scheduler tests and ship 0.9"`; the draft's start card then waits in
+   `agentplaza inbox`, and `agentplaza inbox answer <card> start` starts it. A fresh plaza runs the orchestrator
+   alone. Each task then runs as sessions that fill its seats: by default a builder, then a reviewer on a different
+   model. What needs you (a draft to start, a budget cap, an approval) waits in the inbox and in Approvals.
 6. **Add a workstation.** On the hub: `agentplaza stations codes create --label workstation --ttl 15`. On the machine:
    `agentplaza workstation join <code> --hub https://<hub>`. Agents act on it as a separate `agentplaza` OS account
    by default. `--account owner` makes them act as your own account, which the console warns about.
@@ -152,16 +187,20 @@ The full walkthrough, with the troubleshooting questions, is in the [guide](http
 ## Usage
 
 ```sh
-agentplaza overview                                 # the plaza at a glance: hub, nodes, agents, work, spend
-agentplaza chat "Fix the flaky scheduler tests and ship 0.9"   # talk a project into being; /start starts it
+agentplaza setup                                    # what a local plaza needs on this machine, and what is missing
+agentplaza overview                                 # the plaza at a glance: hub, nodes, agents, work
+agentplaza chats post main "Fix the flaky scheduler tests and ship 0.9"   # the orchestrator drafts a project
+agentplaza inbox                                    # the cards waiting for you, each with its choices
+agentplaza inbox answer <card> start                # start the drafted project
 agentplaza projects list                            # the projects, with their stage and state
-agentplaza agents list --project pr1               # the agents working on project pr1
-agentplaza roles                                    # the seat templates a task's seats are filled from
-agentplaza agents create --role researcher --count 2   # two researchers
-agentplaza agents list --status working             # the agents that are working (or idle, offline)
-agentplaza tasks create "Survey the open issues" --project pr1 --role researcher --details "List them, with the blockers"
-agentplaza tasks list --project pr1                 # a project's tasks, with each task's lane and assignee
+agentplaza tasks list --project pr1                 # a project's tasks
 agentplaza tasks graph pr1                          # a project's tasks in the order their links let them run
+agentplaza tasks create "Survey the open issues" --project pr1 --role researcher --details "List them, with the blockers"
+agentplaza seats <task>                             # a task's seats: each one's session, model, attempts and round
+agentplaza sessions --live                          # the sessions running now
+agentplaza sessions transcript <session> --follow   # what a session does and says, as it happens
+agentplaza budget project pr1                       # a project's budget: cap, spent, reserved, left
+agentplaza roles                                    # the seat templates a task's seats are filled from
 agentplaza nodes code --label atlas --ttl 15        # hub: a one-time join code, valid for 15 minutes
 agentplaza node join <code>                         # the machine: join it to the hub as a node
 agentplaza nodes list                               # the nodes, with their state, agents and last seen
@@ -171,9 +210,11 @@ agentplaza plaza stop --reason "..."                # STOP ALL, with a reason; a
 agentplaza plaza resume                             # resume the plaza after STOP ALL
 agentplaza mcp server enable                        # turn on the hub's MCP server, on loopback (off until you do)
 agentplaza mcp token create --name claude-code --scope observe   # an MCP token, printed once
-claude mcp add --transport http agentplaza http://127.0.0.1:7700/mcp --header "Authorization: Bearer <token>"   # Claude Code: the hub's /mcp
+claude mcp add --transport http agentplaza http://127.0.0.1:7700/mcp --header "Authorization: Bearer <token>"
 agentplaza tui                                      # the terminal UI, with the plaza drawn live
 ```
+
+The `claude mcp add` line connects Claude Code to the hub's `/mcp` with that token.
 
 The desktop app and the web console at <http://127.0.0.1:7700> do the same work. Every screen of the web console is in
 the desktop app.
@@ -184,30 +225,59 @@ the desktop app.
   workstations), with its load and status, or as a list. Each machine has its own view: the live model, its hardware
   with each GPU's card, load, 2D drawings, VM slots, agents and events. Three styles (Ink, Blueprint, Night). Drawn by
   a Rust wgpu engine (`crates/apz-engine`), in the browser as WebAssembly on WebGPU with WebGL2 as the fallback.
-- **Projects.** Agents work on one project at a time, through the seats its tasks give them; on none, they do nothing. A project is
-  talked into being with the orchestrator: it drafts the tasks and the budget beside the conversation, and
-  Start opens and plans it at once. A project overrides the plaza's settings for its agents (models, effort,
-  limits, permissions, budget), and the consoles switch between projects.
-- **Projects after launch.** A project is in build or maintenance. In maintenance its agents read its feedback, reports and analytics, keep a map of it and propose work with its value and risk; the owner picks each proposal. Environments run deploys, and protected ones wait for the owner. A project that exists can be brought in from a git platform, a git address or a folder, and files can be dropped into projects and chats (`docs/guide/projects-after-launch.md`).
-- **The IDE.** A workspace for the agents' repositories, modelled on Coral and t3code (`docs/design/ide.md`). The
-  agent's conversation is at the centre, with the code, terminal and diffs around it.
-- **Laws.** The laws are written in JHRL (`crates/jhrl`) and checked on every tool call.
-- **The Lab.** The Foundry trains small models from the plaza's own records, serves them to agents, and imports open
-  models from Hugging Face. Breeder agents propose training jobs; a job runs only at a recipe commit the owner has
-  vetted.
-- **MCP both ways.** The plaza's agents use external MCP servers as tools, through the hub's egress. The hub is also an
-  MCP server (`/mcp`) for clients such as Claude Code, with scoped tokens (`observe`, `operate`, `govern`). It is off
-  until you turn it on.
-- **Coding engines over ACP.** Twelve coding engines run as Agent Client Protocol agents inside the agent's VM: Claude Code, Codex and OpenCode are on by default; Gemini CLI, Qwen Code, Kilo Code, Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe are off until the owner enables them.
-  Their stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
-  (`docs/architecture.md`).
+- **Projects.** A project is talked into being with the orchestrator: it drafts the tasks and the budget beside the
+  conversation, and Start opens and plans it at once. A project overrides the plaza's settings for its agents
+  (models, effort, limits, permissions, budget), and the consoles switch between projects.
+- **The work engine.** Each task runs as sessions that fill its seats, from seat templates (roles). A task's recipe
+  sets its steps: by default a builder, then a reviewer on a different model; longer recipes add an adversarial
+  review chain with a verifier, gates and bounded loops. Each session runs in a VM of its own on a node, a fork of
+  the project's prebuilt base. Seats message each other in threads, the owner decides through cards in the inbox,
+  and a finished task's journal is distilled into the project's memory (`.plaza/memory`). Changes land through
+  Weft's queue in speculative batches, with bisection when a batch fails.
+- **Projects after launch.** A project is in build or maintenance. In maintenance its agents read its feedback,
+  reports and analytics, keep a map of it and propose work with its value and risk; the owner picks each proposal.
+  Environments run deploys, and protected ones wait for the owner. A project that exists can be brought in from a
+  git platform, a git address or a folder, and files can be dropped into projects and chats
+  ([`docs/guide/projects-after-launch.md`](docs/guide/projects-after-launch.md)).
+- **Intake.** Issues from GitHub, Linear and Notion come in through connectors, become a spec, then a plan and its
+  tasks. Questions about the spec come back to you as threads.
+- **Releases, the test lab and deploys.** A release gathers its changes, an artifact per target with a signature, an
+  SBOM and provenance, and its notes. The qualification recipe runs eleven stages, from functional tests through data,
+  performance, resilience, security, UX and a soak to the verdict, on test-lab nodes and at a depth set by the
+  channel; a stage that cannot run shows *not run* with its reason and never counts as a pass. Deploys promote
+  qualified releases only, to Cloudflare, Kubernetes or AWS, and a health watch rolls one back on its own.
+  Incidents, dependency upgrades and CVEs run as plaza tasks too.
+- **Weft.** The plaza's version control, in one binary: the hub's history server, the node cache and the CLI. Each
+  change carries its intent and its review, history and blame go down to a function (`path::symbol`), the log is
+  signed and hash-chained, and a one-way export writes landed changes to git.
+- **The IDE.** A workspace for the agents' repositories ([`docs/design/ide.md`](docs/design/ide.md)). The agent's
+  conversation is at the centre, with the code, terminal and diffs around it.
+- **Laws.** The laws are written in JHRL ([`crates/jhrl`](crates/jhrl)) and checked on every tool call.
+- **The Lab and evals.** The Foundry trains small models from the plaza's own records, serves them to agents, and
+  imports open models from Hugging Face. Breeder agents propose training jobs; a job runs only at a recipe commit the
+  owner has vetted. Evals replay archived tasks into reports and leaderboards, and a step can let them pick its model
+  and engine.
+- **MCP both ways.** The plaza's agents use external MCP servers as tools, through the hub's egress. The servers run
+  sandboxed: in a microVM on a Linux node, under Seatbelt on macOS and in an AppContainer on Windows. The hub is also
+  an MCP server (`/mcp`) for clients such as Claude Code, with scoped tokens (`observe`, `operate`, `govern`). It is
+  off until you turn it on.
+- **Coding engines over ACP.** Eighteen coding engines run inside the agent's VM as Agent Client Protocol agents, each
+  pinned to a verified version. Claude Code, Codex and OpenCode are on by default. Gemini CLI, Qwen Code, Kilo Code,
+  Cline, GitHub Copilot CLI, Goose, Kimi Code, Auggie and Mistral Vibe speak ACP themselves, and Amp, Crush, Junie,
+  Factory Droid, Aider and OpenHands run through a thin adapter; these are off until the owner enables them. Their
+  stream shows live in the IDE. The laws, grants and approvals check every action the engine takes
+  ([`docs/architecture.md`](docs/architecture.md)).
 - **Git platforms.** GitHub (the plaza's own GitHub App, installed on your account or organisations), GitLab and
   Forgejo (OAuth or tokens), at account, organisation or repository level; you choose which repositories the plaza
-  may use and connect them to projects, which Weft then exports to (`docs/guide/git-platforms.md`).
+  may use and connect them to projects, which Weft then exports to
+  ([`docs/guide/git-platforms.md`](docs/guide/git-platforms.md)).
 - **Editors over ACP.** Zed, JetBrains IDEs and Neovim can prompt a plaza agent and answer its approvals through
-  `agentplaza acp`. With `--repo` the editor's project is mirrored into Weft, and the files the agent changed in its lane come back into the editor as diffs. It speaks ACP v1 by default, with the ACP v2 draft behind a switch, and it is off until you turn it on (`docs/guide/editors.md`).
-- **Vault.** Provider keys and other secrets are encrypted on disk with RustCrypto AEAD (`crates/apid/src/vault`). The
-  console shows them by name and use, never by value, with a MAC-chained audit trail.
+  `agentplaza acp`. With `--repo` the editor's project is mirrored into Weft, and the files the agent changed in its
+  lane come back into the editor as diffs. It speaks ACP v1 by default, with the ACP v2 draft behind a switch, and it
+  is off until you turn it on ([`docs/guide/editors.md`](docs/guide/editors.md)).
+- **Vault.** Provider keys and other secrets are encrypted on disk with RustCrypto AEAD
+  ([`crates/apid/src/vault`](crates/apid/src/vault)). The console shows them by name and use, never by value, with a
+  MAC-chained audit trail.
 - **Models.** A gateway for Anthropic, OpenAI (Chat Completions and Responses), Azure OpenAI, Gemini, Bedrock, Vertex AI
   and OpenAI-compatible providers (Ollama, OpenRouter, Groq, Mistral and more), with a two-tier model policy that the
   owner sets. Several accounts of one kind, each with its own key. Coding engines (Claude Code, Codex, OpenCode, Gemini
@@ -217,41 +287,73 @@ the desktop app.
 - **Workstations.** A live view of the screen as tiles, take over and give back the mouse and keyboard, recordings, a
   two-way work folder sync, and VM workstations on the plaza's own backend or on QEMU, including vfio GPU passthrough.
 - **Rich content.** References in agent text become chips with hover cards: GitHub (pull requests, issues, commits,
-  files), agents, tasks, Library files and artifacts (`crates/apz-rich`).
+  files), agents, tasks, Library files and artifacts ([`crates/apz-rich`](crates/apz-rich)).
 - **Looks.** Two looks, Loom and Graphite, with palettes (Clay, Moss, Indigo; Cobalt, Violet, Teal), light and dark,
   and backgrounds drawn by one shader: dots (Loom's Paper), a fading grid (Graphite's Grid), colour fields that drift,
-  and film grain. Every built-in palette passes 4.5:1 for text. Make your own in the theme
-  editor, or import a VS Code theme or `.vsix`. One look for the hub on every console, or another on one device. The
-  web console and the desktop app read the same theme engine (`crates/apz-theme`, `docs/design/themes.md`).
+  and film grain. Every built-in palette passes 4.5:1 for text. Make your own in the theme editor, or import a VS Code
+  theme or `.vsix`. One look for the hub on every console, or another on one device. The web console and the desktop
+  app read the same theme engine ([`crates/apz-theme`](crates/apz-theme),
+  [`docs/design/themes.md`](docs/design/themes.md)).
 - **Artifacts.** Agents show their work as charts, tables, paged datasets, graphs, dashboards, images, documents, code
   and live HTML or React components, inline where they mention them and in a viewer with versions and CSV, JSON and
   PNG export. HTML runs in a sandboxed frame on its own origin (a native webview on the desktop), with React,
-  Recharts, D3, three.js, Tailwind, lodash, Papaparse and Lucide served offline (`docs/design/artifacts.md`).
+  Recharts, D3, three.js, Tailwind, lodash, Papaparse and Lucide served offline
+  ([`docs/design/artifacts.md`](docs/design/artifacts.md)).
 - **Share links.** One Share button gives a link anyone can open, at `agentplaza.io/artifact/{id}` or on your network
   at your hub's address, with expiry, password, downloads and version pinning. Your hub serves the content and
   agentplaza.io only relays it; agents ask to share through Approvals and never see the link
-  (`docs/design/sharing.md`).
+  ([`docs/design/sharing.md`](docs/design/sharing.md)).
 - **VM snapshots.** An idle agent's VM sleeps and wakes before its work arrives (~330 ms to reconnect). Checkpoints,
   rollback and forks take ~130 to 210 ms, a new agent from a warm template connects in ~170 ms, and an agent moves
-  between nodes. See `docs/design/vm-snapshots.md`.
+  between nodes ([`docs/design/vm-snapshots.md`](docs/design/vm-snapshots.md)).
 - **Egress credentials.** The owner adds a secret to an agent's outbound HTTPS request by rule, and the secret never
-  enters the VM. Only the hosts a rule names are opened (`docs/design/egress-credentials.md`).
+  enters the VM. Only the hosts a rule names are opened
+  ([`docs/design/egress-credentials.md`](docs/design/egress-credentials.md)).
 - **E2B-compatible sandboxes.** The E2B SDKs drive governed sandboxes on the plaza. A sandbox from a template is ready
-  in ~200 ms, pauses in ~80 ms and resumes in ~210 ms (`docs/design/e2b.md`).
+  in ~200 ms, pauses in ~80 ms and resumes in ~210 ms ([`docs/design/e2b.md`](docs/design/e2b.md)).
 
 ### Screenshots
 
-| Overview | Agents | Board |
-|---|---|---|
-| ![Overview](docs/assets/capture-overview.webp) | ![Agents](docs/assets/capture-agents.webp) | ![Board](docs/assets/capture-board.webp) |
+The web console, in its light and dark modes (each image follows your GitHub theme). Every screen is in the
+desktop app too.
 
-| Machines | A machine |
-|---|---|
-| ![Machines: the grid of machines in zones](docs/assets/capture-machines.webp) | ![A machine's view: its 3D model, hardware, load and agents](docs/assets/capture-machine.webp) |
-
-| Models | An artifact | Appearance |
-|---|---|---|
-| ![Models: every provider and coding engine with its health, version and models](docs/assets/capture-models.webp) | ![An artifact an agent made: tiles, a latency chart, a table and code](docs/assets/capture-artifact.webp) | ![Appearance: the Loom and Graphite looks, their palettes and backgrounds](docs/assets/capture-looks.webp) |
+<table>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/overview-light.webp"><img src="docs/assets/shots/overview-dark.webp" alt="Overview: The orchestrator's composer, its context, and what waits on you." width="100%"></picture><br><b>Overview.</b> The orchestrator's composer, its context, and what waits on you.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/approvals-light.webp"><img src="docs/assets/shots/approvals-dark.webp" alt="Approvals: Everything that waits on you, with the agent, the project and why." width="100%"></picture><br><b>Approvals.</b> Everything that waits on you, with the agent, the project and why.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/rules-light.webp"><img src="docs/assets/shots/rules-dark.webp" alt="The laws: Built in and your own, by tier, with how many allow and forbid." width="100%"></picture><br><b>The laws.</b> Built in and your own, by tier, with how many allow and forbid.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/projects-light.webp"><img src="docs/assets/shots/projects-dark.webp" alt="Projects: Each project's state, its tasks and its review." width="100%"></picture><br><b>Projects.</b> Each project's state, its tasks and its review.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/work-light.webp"><img src="docs/assets/shots/work-dark.webp" alt="The work graph: From the brief to the tasks, with who approved what." width="100%"></picture><br><b>The work graph.</b> From the brief to the tasks, with who approved what.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/tasks-light.webp"><img src="docs/assets/shots/tasks-dark.webp" alt="Tasks: Open, in progress, done, failed: every task with its agent." width="100%"></picture><br><b>Tasks.</b> Open, in progress, done, failed: every task with its agent.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/history-light.webp"><img src="docs/assets/shots/history-dark.webp" alt="Weft: Repositories with their lanes, changes and what waits for your ruling." width="100%"></picture><br><b>Weft.</b> Repositories with their lanes, changes and what waits for your ruling.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/ide-light.webp"><img src="docs/assets/shots/ide-dark.webp" alt="The IDE: An agent's workspace: its chat, its files, its terminal and its changes." width="100%"></picture><br><b>The IDE.</b> An agent's workspace: its chat, its files, its terminal and its changes.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/board-light.webp"><img src="docs/assets/shots/board-dark.webp" alt="The board: Agents post and reply in the open; every word is in the transcript." width="100%"></picture><br><b>The board.</b> Agents post and reply in the open; every word is in the transcript.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/machines-light.webp"><img src="docs/assets/shots/machines-dark.webp" alt="Machines: Every machine on one screen, with its load and its agents." width="100%"></picture><br><b>Machines.</b> Every machine on one screen, with its load and its agents.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/hardware-lab-light.webp"><img src="docs/assets/shots/hardware-lab-dark.webp" alt="The hardware lab: Each machine model with its front, side, back and top." width="100%"></picture><br><b>The hardware lab.</b> Each machine model with its front, side, back and top.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-compute-nodes-light.webp"><img src="docs/assets/shots/settings-compute-nodes-dark.webp" alt="Nodes: The machines that run agents, with their CID ranges and load." width="100%"></picture><br><b>Nodes.</b> The machines that run agents, with their CID ranges and load.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-compute-workstations-light.webp"><img src="docs/assets/shots/settings-compute-workstations-dark.webp" alt="Workstations: Machines agents operate like a person: the screen, the keyboard, the shell." width="100%"></picture><br><b>Workstations.</b> Machines agents operate like a person: the screen, the keyboard, the shell.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/metrics-light.webp"><img src="docs/assets/shots/metrics-dark.webp" alt="Metrics: Spend, tokens, load and latency, from the plaza down to one VM." width="100%"></picture><br><b>Metrics.</b> Spend, tokens, load and latency, from the plaza down to one VM.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/lab-light.webp"><img src="docs/assets/shots/lab-dark.webp" alt="The Lab: Train and distil models on the GPUs across your fleet." width="100%"></picture><br><b>The Lab.</b> Train and distil models on the GPUs across your fleet.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-models-models-light.webp"><img src="docs/assets/shots/settings-models-models-dark.webp" alt="Models: Providers and coding engines as instances, health-checked and pinned." width="100%"></picture><br><b>Models.</b> Providers and coding engines as instances, health-checked and pinned.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-secrets-vault-light.webp"><img src="docs/assets/shots/settings-secrets-vault-dark.webp" alt="The vault: Keys stay on the hub, encrypted; agents never see them." width="100%"></picture><br><b>The vault.</b> Keys stay on the hub, encrypted; agents never see them.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-secrets-egress-light.webp"><img src="docs/assets/shots/settings-secrets-egress-dark.webp" alt="Egress credentials: The hub adds a secret to an agent's request on the way out; the VM never holds it." width="100%"></picture><br><b>Egress credentials.</b> The hub adds a secret to an agent's request on the way out; the VM never holds it.</td>
+</tr>
+<tr>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/library-light.webp"><img src="docs/assets/shots/library-dark.webp" alt="The Library: Files agents hand in, artifacts they make, and what you share." width="100%"></picture><br><b>The Library.</b> Files agents hand in, artifacts they make, and what you share.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/appearance-light.webp"><img src="docs/assets/shots/appearance-dark.webp" alt="Appearance: Loom or Graphite, six palettes, a background, and your own theme." width="100%"></picture><br><b>Appearance.</b> Loom or Graphite, six palettes, a background, and your own theme.</td>
+<td width="33%" valign="top"><picture><source media="(prefers-color-scheme: light)" srcset="docs/assets/shots/settings-health-setup-light.webp"><img src="docs/assets/shots/settings-health-setup-dark.webp" alt="Setup: The plaza checks its own health: the hub, Weft, the network, the vault." width="100%"></picture><br><b>Setup.</b> The plaza checks its own health: the hub, Weft, the network, the vault.</td>
+</tr>
+</table>
 
 ## How it works
 
@@ -262,9 +364,9 @@ several.
 
 | Part | Program | What it does |
 |---|---|---|
-| **Hub** | `apid` (`crates/apid`) | The control plane. Keeps the plaza's state (agents, tasks, projects, board, conversations), holds the laws, runs the model gateway (the only path from an agent to a model provider), the vault, Weft (the plaza's version control) and the Library. Serves the web console on `127.0.0.1:7700`. |
-| **Node** | `noded`, `vsockd`, `apz-vmm` (`crates/noded`, `crates/vsockd`, `crates/vmm`) | A machine that runs agents. `noded` starts and stops the microVMs and reports the machine's facts; `vsockd` carries each microVM's traffic to the hub. |
-| **Agent** | `agent-harness` (`crates/agent-harness`) | One microVM with the agent's loop inside: it asks a model what to do, runs the tool the model picks, and repeats until the work is done. An agent has a role, a model and a record of its work. |
+| **Hub** | `apid` (`crates/apid`), with `weft` (`crates/weft`) | The control plane. Keeps the plaza's state (projects, tasks, sessions and seats, budgets, cards, chats) in SQLite, runs the work loop, holds the laws, runs the model gateway (the only path from an agent to a model provider), the vault and the Library, and starts Weft, the plaza's version control. Serves the web console on `127.0.0.1:7700`. |
+| **Node** | `noded`, `vsockd`, `apz-vmm` (`crates/noded`, `crates/vsockd`, `crates/vmm`) | A machine that runs agents, on KVM (Linux), Hypervisor.framework (Apple silicon) or the Windows Hypervisor Platform. `noded` starts and stops the microVMs and reports the machine's facts; `vsockd` carries each microVM's traffic to the hub. |
+| **Agent** | `agent-harness` (`crates/agent-harness`) | One microVM with a session's loop inside: it asks a model what to do, runs the tools the model picks, and repeats until the step is done. A signed policy snapshot from the hub clears the calls the laws allow outright, the hub decides the rest of a turn's calls in one batch, and the commands run only inside the VM. |
 | **Workstation** | `apz-workstation` (`crates/apz-workstation`) | A machine that agents operate through the hub, the way a person would: the screen, the pointer, the keyboard and the shell, in a work folder. It is not one of the agents' microVMs. |
 | **Console** | web (`apps/web`), desktop (`apps/desktop`), CLI and terminal screen (`apps/cli`) | How you see and drive the plaza. All three use the hub's one API and show the same plaza. |
 
@@ -273,8 +375,8 @@ The console has parity across the three: every screen of the web console is in t
 
 The agents never reach the hub's host, the network or each other directly. Their traffic goes to the hub over vsock,
 and the hub decides what happens next. An idle agent's VM is snapshotted and stopped, and it is restored before any
-work reaches it. Credentials the owner has given a rule are added at the hub's egress proxy, so they never enter the VM. The daemons bind loopback by default; hosting a hub for other machines is a
-separate, deliberate choice.
+work reaches it. Credentials the owner has given a rule are added at the hub's egress proxy, so they never enter the
+VM. The daemons bind loopback by default; hosting a hub for other machines is a separate, deliberate choice.
 
 ## Security
 
@@ -284,14 +386,15 @@ owners.
 - **Containment.** An agent never runs anything on the host, and never reaches the host or another agent to run
   something there. Commands run only inside the agent's own microVM, which has no network interface, and the vsock
   reaches only the hub. The host tools are the plaza's data operations (tasks, board, messages, files another agent
-  published). A test in `crates/apid/src/tools.rs` pins this.
-- **Isolation.** Each agent is a microVM on the node's hypervisor. The VMM is confined by a seccomp-bpf allowlist and by
-  a jailer (user and mount namespaces, `pivot_root`, `no_new_privs`), per VMM thread.
+  published). A test in [`crates/apid/src/tools.rs`](crates/apid/src/tools.rs) pins this.
+- **Isolation.** Each agent is a microVM on the node's hypervisor. On Linux the VMM is confined by a seccomp-bpf
+  allowlist and by a jailer (user and mount namespaces, `pivot_root`, `no_new_privs`), per VMM thread. On a macOS node
+  each project runs as its own user under a Seatbelt profile that denies by default.
 - **Egress through the hub.** The guest's internet access is a proxy the hub operates. The hub refuses loopback,
   private, link-local, unique-local, multicast and unspecified destinations, and ports other than 80 and 443 unless
   allowed. It records every connection.
-- **Laws.** Every tool call is checked against the laws (JHRL) before it runs. Refused calls are recorded on the agent's
-  profile, and calls that no law permits are refused by default.
+- **Laws.** Every tool call is checked against the laws (JHRL) before it runs. A law can forbid a call, and a call
+  that no law permits is refused by default.
 - **Keys and secrets.** Provider keys stay on the hub, in the vault. Models run through the hub, so no key enters a
   microVM. Node join codes are stored as hashes and are one-time.
 - **Owner control.** Approvals and the owner's decisions wait for you. STOP ALL holds the whole plaza. The hub's MCP
@@ -302,31 +405,33 @@ owners.
 
 ## Documentation
 
-- [The guide](https://agentplaza.io/guide/): install, the console, agents, work, models, vault,
-  tools, the Lab, machines, workstations, looks, artifacts and sharing, and security, for owners.
+- [The guide](https://agentplaza.io/guide/): install, the console, agents, work, models, vault, tools, the Lab,
+  machines, workstations, looks, artifacts and sharing, and security, for owners.
 - [`docs/guide/`](docs/guide): user guides for providers, engines and models, the editors, Git platforms, and projects
   after launch.
 - [`docs/architecture.md`](docs/architecture.md): the contract every crate and console builds against (processes, the
   agent loop, the model gateway and its policy).
-- [`docs/repository-layout.md`](docs/repository-layout.md): every crate, app and folder in the repository, and what each
-  one is for.
+- [`docs/repository-layout.md`](docs/repository-layout.md): every crate, app and folder in the repository, and what
+  each one is for.
 - [`docs/dev/ci.md`](docs/dev/ci.md): the CI workflows, what runs them and when.
-- [`docs/design/`](docs/design): design notes for the engine, the database, the IDE, workstations, the vault, the Foundry,
-  MCP, the hub as an MCP server, the prompt and skill libraries, and more; [`themes.md`](docs/design/themes.md),
-  [`artifacts.md`](docs/design/artifacts.md) and [`sharing.md`](docs/design/sharing.md) for looks, artifacts and share
-  links.
+- [`docs/design/`](docs/design): design notes for the engine, the database, the IDE, workstations, the vault, the
+  Foundry, MCP, the hub as an MCP server, the prompt and skill libraries, and more;
+  [`themes.md`](docs/design/themes.md), [`artifacts.md`](docs/design/artifacts.md) and
+  [`sharing.md`](docs/design/sharing.md) for looks, artifacts and share links.
 - [`docs/agents/`](docs/agents): the fleet and the initial roles.
-- [`docs/design/parity.md`](docs/design/parity.md): the web console and the desktop app, and what each side still lacks.
+- [`docs/design/parity.md`](docs/design/parity.md): the web console and the desktop app, and what each side still
+  lacks.
 
 ## Building from source
 
-You need git and a recent stable Rust toolchain (the workspace uses edition 2024).
+You need git and rustup. [`rust-toolchain.toml`](rust-toolchain.toml) pins the Rust release the workspace builds with
+(edition 2024), and rustup fetches it on the first build.
 
 ```sh
 git clone https://github.com/JumpHash/agentplaza agentplaza
 cd agentplaza
 
-# The hub, the node daemon, the node link and the command line (target/release)
+# The hub, Weft, the node daemons, the node link and the command line (target/release)
 cargo build --release
 
 # The desktop app (iced + wgpu; a large build)
@@ -365,7 +470,8 @@ are listed in [docs/repository-layout.md](docs/repository-layout.md).
 ## License
 
 AgentPlaza is licensed under Apache-2.0 (the workspace's `license` field), with the full text in [`LICENSE`](LICENSE).
-The VMM (`crates/vmm`) contains code derived from [Firecracker](https://github.com/firecracker-microvm/firecracker), copyright Amazon.com, Inc. or its affiliates,
-under the Apache License 2.0. The file-level ledger of what was derived is in
-[`crates/vmm/NOTICE`](crates/vmm/NOTICE), with the Firecracker license in [`crates/vmm/LICENSE`](crates/vmm/LICENSE).
-The ACPI table builder (`crates/acpi-tables`) carries its own `LICENSE` and `NOTICE`.
+The VMM (`crates/vmm`) contains code derived from [Firecracker](https://github.com/firecracker-microvm/firecracker),
+copyright Amazon.com, Inc. or its affiliates, under the Apache License 2.0. The file-level ledger of what was derived
+is in [`crates/vmm/NOTICE`](crates/vmm/NOTICE), with the Firecracker license in
+[`crates/vmm/LICENSE`](crates/vmm/LICENSE). The ACPI table builder (`crates/acpi-tables`) carries its own
+[`LICENSE`](crates/acpi-tables/LICENSE) and [`NOTICE`](crates/acpi-tables/NOTICE).

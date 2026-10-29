@@ -535,11 +535,6 @@ pub(crate) fn rgba(c: Color) -> [f32; 4] {
     [r, g, b, 1.0]
 }
 
-/// The activity LEDs' on and off colours (hw_anim.wgsl's `leds`).
-pub fn led_colours() -> [[f32; 4]; 2] {
-    [rgba(Color::hex(0x4fa36a)), rgba(Color::hex(0x4a4f5c))]
-}
-
 /// Builds the Machines view from a fleet snapshot, in `palette`'s look.
 pub fn build_fleet(fleet: &FleetResponse, palette: &Palette) -> FleetScene {
     let mut scene = FleetScene {

@@ -1036,7 +1036,8 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
     let s = &mut *guard;
     // This tick has run, so none is queued now.
     s.raf = None;
-    if s.stopped || s.document.hidden() {
+    let hidden = s.document.hidden();
+    if s.stopped || hidden {
         return;
     }
     request_tick(s);
@@ -1050,7 +1051,7 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
         && !s.reduced_motion
         && s.last_draw
             .is_some_and(|t| now.saturating_duration_since(t) < AMBIENT_INTERVAL);
-    let drawable = s.visible && !s.document.hidden() && !ambient_wait && s.engine.busy();
+    let drawable = s.visible && !hidden && !ambient_wait && s.engine.busy();
     if s.in_flight.load(Ordering::SeqCst) >= MAX_FRAMES_IN_FLIGHT {
         // On WebGL, wgpu runs the work-done callbacks only when it maintains the queue: at a submit or a poll. With the
         // frames held back here nothing would submit again, and the view would freeze for good, so poll for them.
@@ -1079,12 +1080,10 @@ fn frame_tick(shared: &Rc<RefCell<Inner>>) {
     let view = texture
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
-    let out = s.engine.frame(
-        now,
-        &view,
-        (s.canvas.width(), s.canvas.height()),
-        s.dpr as f32,
-    );
+    // The surface config has the canvas's backing size: start and fit set both together.
+    let out = s
+        .engine
+        .frame(now, &view, (s.config.width, s.config.height), s.dpr as f32);
     drop(view);
     texture.present();
     let pending = Arc::clone(&s.in_flight);
