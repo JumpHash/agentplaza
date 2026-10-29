@@ -166,6 +166,15 @@ fn placement_json(placement: &Placement) -> Value {
 /// The build plan of `project`: its declared targets (`platform`, 3.1), each placed on the pool that builds it. Empty
 /// when the project declares no build target. Errors when its declaration does not read.
 pub fn build_plan(app: &App, project: &str) -> Result<Vec<Placement>, String> {
+    let state = app
+        .projects
+        .get(project)
+        .ok_or_else(|| format!("no project {project}"))?;
+    // A project opened while Weft is stopped has no repo yet, so it cannot have
+    // a stack declaration. Reading its empty plan does not require a repo write.
+    if state.repo.is_none() {
+        return Ok(Vec::new());
+    }
     let platforms: Vec<Platform> = project_stack::read(app, project)?
         .map(|stack| stack.targets.iter().filter_map(|t| t.platform).collect())
         .unwrap_or_default();
