@@ -101,6 +101,7 @@ pub struct Wizard {
     base_touched: bool,
     key: String,
     models: String,
+    executable: String,
     version: String,
     home: String,
     args: text_editor::Content,
@@ -144,6 +145,7 @@ pub enum WizMsg {
     BaseUrl(String),
     Key(String),
     Models(String),
+    Executable(String),
     Version(String),
     Home(String),
     Args(text_editor::Action),
@@ -168,6 +170,8 @@ pub struct ApiPlan {
     pub base_url: Option<String>,
     /// The models typed (comma separated); empty takes the preset's list.
     pub models: Vec<String>,
+    /// An optional program path for the two local provider kinds.
+    pub executable: Option<String>,
 }
 
 /// Whether `id` is a valid instance id: `[a-z0-9_-]`, 1 to 40 characters (the hub's rule).
@@ -270,10 +274,22 @@ pub fn api_body(plan: &ApiPlan, catalog: &Value) -> Value {
         .and_then(|p| p.get("auth"))
         .cloned()
         .unwrap_or_else(|| json!("none"));
-    let options = preset
+    let mut options = preset
         .and_then(|p| p.get("options"))
         .cloned()
         .unwrap_or(Value::Null);
+    if matches!(plan.kind.as_str(), "codex-app-server" | "opencode-local")
+        && let Some(executable) = plan
+            .executable
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    {
+        if !options.is_object() {
+            options = json!({});
+        }
+        options["executable"] = json!(executable);
+    }
     let headers = preset
         .and_then(|p| p.get("extra_headers"))
         .cloned()
@@ -358,6 +374,7 @@ impl Wizard {
             base_touched: false,
             key: String::new(),
             models: String::new(),
+            executable: String::new(),
             version: String::new(),
             home: String::new(),
             args: text_editor::Content::new(),
@@ -380,6 +397,13 @@ impl Wizard {
     /// Whether the pick creates an API instance (not an engine).
     fn is_api(&self) -> bool {
         matches!(self.pick, Pick::Api(_) | Pick::Compatible)
+    }
+
+    fn is_local_provider(&self) -> bool {
+        matches!(
+            self.api_kind().as_str(),
+            "codex-app-server" | "opencode-local"
+        )
     }
 
     /// The ProviderKind the instance is created with.
@@ -456,6 +480,10 @@ impl Wizard {
 
     /// Picks `pick`: the defaults follow it, and an engine's version starts at `pinned`.
     fn set_pick(&mut self, pick: Pick) {
+        if self.pick != pick {
+            self.executable.clear();
+            self.key.clear();
+        }
         self.pick = pick;
         self.label_touched = false;
         self.id_touched = false;
@@ -477,6 +505,12 @@ impl Wizard {
         match &self.pick {
             Pick::None => Some("Choose a provider first."),
             Pick::Api(_) | Pick::Compatible => {
+                if self.api_kind() == "opencode-local"
+                    && !self.executable.trim().is_empty()
+                    && !std::path::Path::new(self.executable.trim()).is_absolute()
+                {
+                    return Some("Use an absolute path to the installed OpenCode executable.");
+                }
                 if self.shows_base() {
                     url_problem(&self.base_url)
                 } else {
@@ -535,6 +569,10 @@ impl Wizard {
             accent: self.accent.clone(),
             base_url: self.shows_base().then(|| self.base_url.trim().to_string()),
             models: parse_models(&self.models),
+            executable: self
+                .is_local_provider()
+                .then(|| self.executable.trim().to_string())
+                .filter(|s| !s.is_empty()),
         }
     }
 
@@ -719,6 +757,10 @@ pub fn update(w: &mut Wizard, msg: WizMsg, client: &Client) -> (Task<WizMsg>, Op
         }
         WizMsg::Models(s) => {
             w.models = s;
+            idle()
+        }
+        WizMsg::Executable(s) => {
+            w.executable = s;
             idle()
         }
         WizMsg::Version(s) => {
@@ -1234,6 +1276,25 @@ fn config_step(w: &Wizard) -> Element<'_, WizMsg> {
 /// An API instance: the Base URL (when the kind has one), the key (optional, write-only), the models (optional).
 fn api_config(w: &Wizard) -> Element<'_, WizMsg> {
     let mut col = column![].spacing(0);
+    if w.is_local_provider() {
+        let (placeholder, hint) = if w.api_kind() == "codex-app-server" {
+            (
+                "/path/to/codex",
+                "The installed Codex program on this hub. Empty uses codex on PATH.",
+            )
+        } else {
+            (
+                "/usr/bin/opencode",
+                "Absolute path to the installed OpenCode program on this hub. Empty uses /usr/bin/opencode.",
+            )
+        };
+        col = col.push(setting(
+            "Local executable",
+            hint,
+            field(placeholder, &w.executable, WizMsg::Executable),
+        ));
+        col = col.push(ui::hairline());
+    }
     if w.shows_base() {
         let hint = if matches!(w.pick, Pick::Compatible) {
             "The endpoint the API answers on. Required for the OpenAI-compatible kind."
@@ -1243,18 +1304,22 @@ fn api_config(w: &Wizard) -> Element<'_, WizMsg> {
         col = col.push(setting("Base URL", hint, base_url_input(&w.base_url)));
         col = col.push(ui::hairline());
     }
-    let key = text_input("Optional", &w.key)
-        .on_input(WizMsg::Key)
-        .secure(true)
-        .padding(8)
-        .size(13.0)
-        .font(crate::theme::SANS)
-        .style(crate::theme::input);
-    col = col.push(setting(
-        "Key",
-        "Optional. Set it now or later. It goes into the hub's vault, never into an engine.",
-        key.into(),
-    ));
+    if w.api_kind() == "codex-app-server" {
+        col = col.push(container(ui::faint("Uses the existing Codex login on this hub. Sign in with Codex before checking the provider.")).padding([10, 0]));
+    } else {
+        let key = text_input("Optional", &w.key)
+            .on_input(WizMsg::Key)
+            .secure(true)
+            .padding(8)
+            .size(13.0)
+            .font(crate::theme::SANS)
+            .style(crate::theme::input);
+        col = col.push(setting(
+            "Key",
+            "Optional. Set it now or later. It goes into the hub's vault, never into an engine.",
+            key.into(),
+        ));
+    }
     col = col.push(ui::hairline());
     let preset_models = w.preset().map(|p| p.models.join(", ")).unwrap_or_default();
     col = col.push(setting(
@@ -1572,6 +1637,7 @@ mod tests {
             accent: Some("#7ee0b5".into()),
             base_url: Some("https://api.deepseek.com".into()),
             models: vec![],
+            executable: None,
         };
         let body = api_body(&plan, &raw);
         assert_eq!(body["auth"], json!({"env": "DEEPSEEK_API_KEY"}));
@@ -1596,6 +1662,47 @@ mod tests {
             ..typed
         };
         assert_eq!(api_body(&no_base, &raw)["base_url"], Value::Null);
+    }
+
+    #[test]
+    fn local_executable_is_scoped_and_preserves_the_presets_options() {
+        let raw = json!({"api": [{"id":"codex-local", "kind":"codex-app-server",
+            "auth":"none", "options":{"working_directory":"/work"}}]});
+        let plan = ApiPlan {
+            id: "codex-local".into(),
+            kind: "codex-app-server".into(),
+            preset: Some("codex-local".into()),
+            label: "Codex".into(),
+            accent: None,
+            base_url: None,
+            models: vec![],
+            executable: Some(" /opt/codex-desktop/resources/codex ".into()),
+        };
+        let body = api_body(&plan, &raw);
+        assert_eq!(body["auth"], "none");
+        assert_eq!(
+            body["options"],
+            json!({"working_directory":"/work", "executable":"/opt/codex-desktop/resources/codex"})
+        );
+        let remote = ApiPlan {
+            kind: "openai".into(),
+            preset: None,
+            ..plan
+        };
+        assert_eq!(api_body(&remote, &raw)["options"], Value::Null);
+        let mut w = Wizard::blank();
+        w.set_pick(Pick::Api("opencode-local".into()));
+        w.executable = "opencode".into();
+        assert!(w.config_problem().is_some());
+        w.executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(w.config_problem(), None);
+        w.key = "do-not-reuse".into();
+        w.set_pick(Pick::Api("codex-app-server".into()));
+        assert!(w.key.is_empty());
+        assert!(w.executable.is_empty());
     }
 
     #[test]

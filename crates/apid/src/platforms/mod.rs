@@ -47,6 +47,7 @@ pub mod github;
 pub mod gitlab;
 pub mod http;
 pub mod model;
+pub mod repositories;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};

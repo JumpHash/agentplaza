@@ -17,7 +17,7 @@ use crate::theme::{
 };
 
 const PROPOSAL_STEPS: [&str; 3] = ["The proposal", "The role", "Decide"];
-const EFFORTS: [&str; 6] = ["none", "low", "medium", "high", "xhigh", "max"];
+const EFFORTS: [&str; 7] = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
 const MAX_AGENTS: u32 = 8;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

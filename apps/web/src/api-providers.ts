@@ -2,8 +2,8 @@
 // instances (`/v1/engines`), the ACP registry, usage providers (CLIProxyAPI hubs) and the health checks.
 // Every call goes through the shared request helper in api.ts. This module only fetches; it draws nothing.
 //
-// An engine runs only inside an agent's VM and reaches models only through the plaza gateway, so no key ever
-// goes into an engine: subscription accounts come in through a CLIProxyAPI hub added as an API provider.
+// Guest coding engines reach models through the plaza gateway. Local Codex and OpenCode providers run on the hub
+// as model transports, returning tool calls to the same AgentPlaza harness; their credentials stay on the hub.
 
 import { call, readable } from './api';
 import type { Auth, ModelGroup } from './api';

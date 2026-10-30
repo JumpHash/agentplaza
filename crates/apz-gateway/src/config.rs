@@ -15,6 +15,12 @@ pub enum ProviderKind {
     OpenAi,
     #[serde(rename = "openai-responses")]
     OpenAiResponses,
+    /// A local Codex app-server using its existing login; tools stay in AgentPlaza.
+    #[serde(rename = "codex-app-server")]
+    CodexAppServer,
+    /// A locally installed OpenCode process, with tool execution returned to AgentPlaza.
+    #[serde(rename = "opencode-local")]
+    OpenCodeLocal,
     #[serde(rename = "azure-openai")]
     AzureOpenAi,
     #[serde(rename = "gemini")]
@@ -43,10 +49,12 @@ pub enum ProviderKind {
 
 impl ProviderKind {
     /// Every kind, in the order the contract lists them.
-    pub const ALL: [ProviderKind; 13] = [
+    pub const ALL: [ProviderKind; 15] = [
         ProviderKind::Anthropic,
         ProviderKind::OpenAi,
         ProviderKind::OpenAiResponses,
+        ProviderKind::CodexAppServer,
+        ProviderKind::OpenCodeLocal,
         ProviderKind::AzureOpenAi,
         ProviderKind::Gemini,
         ProviderKind::Bedrock,
@@ -69,6 +77,7 @@ impl ProviderKind {
                 | ProviderKind::OpenAi
                 | ProviderKind::OpenAiCompatible
                 | ProviderKind::AzureOpenAi
+                | ProviderKind::CodexAppServer
                 | ProviderKind::Mock
         )
     }
@@ -79,6 +88,8 @@ impl ProviderKind {
             ProviderKind::Anthropic => "anthropic",
             ProviderKind::OpenAi => "openai",
             ProviderKind::OpenAiResponses => "openai-responses",
+            ProviderKind::CodexAppServer => "codex-app-server",
+            ProviderKind::OpenCodeLocal => "opencode-local",
             ProviderKind::AzureOpenAi => "azure-openai",
             ProviderKind::Gemini => "gemini",
             ProviderKind::Bedrock => "bedrock",
@@ -174,6 +185,12 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, apz_store::Table)]
 #[serde(default)]
 pub struct ProviderOptions {
+    /// Local provider executable (Codex app-server); defaults to `codex` on PATH.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
+    /// Empty host working directory for local providers, never a guest workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
     /// The AWS region (`bedrock`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
@@ -332,6 +349,11 @@ pub fn presets() -> Vec<Preset> {
         "minimax-m3",
     ];
     vec![
+        p("opencode-local", OpenCodeLocal, "OpenCode (local)", "opencode", None, Auth::None,
+          "Uses the installed OpenCode with a scoped provider key. AgentPlaza executes tools returned by structured output.")
+          .with(&["deepseek/deepseek-flash"], None),
+        p("codex-local", CodexAppServer, "Codex (local login)", "openai", None, Auth::None,
+          "Uses the installed Codex app-server and its existing login. AgentPlaza executes its tools; credentials stay with Codex."),
         p("anthropic", Anthropic, "Anthropic", "anthropic", Some("https://api.anthropic.com"), env("ANTHROPIC_API_KEY"),
           "Claude via the Messages API. Use {\"env\": \"ANTHROPIC_AUTH_TOKEN\"} or a command for a bearer token. \
            options.refusal_fallbacks: true enables server-side refusal fallbacks.")
@@ -480,7 +502,9 @@ mod tests {
             ids.contains(&"ollama")
                 && ids.contains(&"mock")
                 && ids.contains(&"meta")
-                && ids.len() == 31,
+                && ids.contains(&"codex-local")
+                && ids.contains(&"opencode-local")
+                && ids.len() == 33,
             "{ids:?}"
         );
         assert_eq!(ProviderKind::SystemOne.group(), "decisions");

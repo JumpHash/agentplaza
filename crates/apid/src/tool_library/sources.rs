@@ -33,6 +33,7 @@ pub const HOST: &[(&str, &str)] = &[
     ("plaza_toolbox_share", "toolbox.share"),
     ("plaza_projects", "projects.browse"),
     ("plaza_project_attach", "projects.attach"),
+    ("plaza_repository", "projects.repository"),
     ("plaza_project_critique", "projects.critique"),
     ("plaza_project_open", "projects.open"),
     ("plaza_project_draft", "projects.draft"),

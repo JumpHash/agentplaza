@@ -4,7 +4,7 @@ import { api, type Agent, type AgentProposal, type AgentStep, type Approval, typ
 import { go, href } from '../router';
 import { inScope, isLive, projectTitle, scope } from '../scope';
 import { agents, on, overview, RESYNC } from '../store';
-import { ago, attempt, clip, dot, empty, stat, type Tone } from '../ui/components';
+import { ago, attempt, brandLogo, clip, dot, empty, modelBrand, stat, type Tone } from '../ui/components';
 import { attachBar, maySend } from '../ui/attach-bar';
 import { contextBar, loadModelChoices, modelChip } from '../ui/chat-tools';
 import { contextApi } from '../api-context';
@@ -49,8 +49,13 @@ function modelParts(m: string): [string, string] {
   return [s.slice(s.lastIndexOf('/') + 1) || '—', i > 0 ? s.slice(0, i) : ''];
 }
 
-const modelStat = (label: string, [name, provider]: [string, string]): HTMLElement =>
-  h('div.stat', null, h('span.stat-l', null, label), h('b.stat-v.ov-model', null, name), h('small', null, provider));
+const modelStat = (label: string, model: string): HTMLElement => {
+  const [name, provider] = modelParts(model);
+  const [base, effort] = name.split('@');
+  return h('div.stat', { title: model }, h('span.stat-l', null, label),
+    h('b.stat-v.ov-model', null, brandLogo(modelBrand(model)), h('span.ov-model-name', null, base)),
+    h('small', null, effort ? `${provider} · ${effort}` : provider));
+};
 
 export function mount(root: HTMLElement): Cleanup {
   // Under a project, the overview is that project's: its agents, its tasks, its activity.
@@ -163,8 +168,8 @@ export function mount(root: HTMLElement): Cleanup {
         null,
         stat('Agents', o.agents.total.toLocaleString('en-US'), `${o.agents.working.toLocaleString('en-US')} working`),
         stat('Open tasks', open.toLocaleString('en-US'), `${(o.tasks['done'] ?? 0).toLocaleString('en-US')} done`),
-        modelStat('Worker model', modelParts(o.default_model)),
-        modelStat('Orchestrator model', modelParts(o.orchestrator_model)),
+        modelStat('Worker model', o.default_model),
+        modelStat('Orchestrator model', o.orchestrator_model),
       ),
     );
   };
@@ -242,11 +247,12 @@ export function mount(root: HTMLElement): Cleanup {
     }),
   ];
 
-  // The orchestrator: its composer when one is connected, else a card that says so.
+  // Keep the draft visible while the orchestrator connects or reconnects.
   function renderOrchestrator(o: Agent | undefined): void {
     if (!o) {
-      subLine.textContent = '';
-      replace(orchSlot, h('div.card', null, empty('orchestrator', 'No orchestrator connected', 'Add the orchestrator role to the fleet to delegate work by goal.')));
+      subLine.textContent = 'Draft your goal here. Connect the orchestrator to send it to the fleet.';
+      orch.disconnect();
+      if (orchSlot.firstChild !== orch.el) replace(orchSlot, orch.el);
       return;
     }
     const [label, tone] = ORCH[o.status] ?? ['Offline', 'muted'];
@@ -319,6 +325,7 @@ interface Composer {
   aim: (cid: number, name: string, model: string, label: string, tone: Tone) => void;
   /** Shows the orchestrator's model and override on the chip. */
   follow: (agent: Agent) => void;
+  disconnect: () => void;
   unbind: () => void;
 }
 
@@ -341,12 +348,12 @@ function composerBox(): Composer {
   const el = h('div.composer.ov-composer', { 'data-ov': 'composer' }, bar.el, ta, cbar);
   const wrap = h('div.ov-compose-wrap', null, ctx.el, el, chip.note);
   const syncSend = (): void => {
-    send.disabled = sending || bar.busy() || bar.failed();
+    send.disabled = !cid || sending || bar.busy() || bar.failed();
   };
   const submit = async (): Promise<void> => {
     const text = ta.value.trim();
     const ids = bar.ids();
-    if (!maySend(text, ids, sending || bar.busy() || bar.failed())) return;
+    if (!cid || !maySend(text, ids, sending || bar.busy() || bar.failed())) return;
     sending = true;
     syncSend();
     // The owner's line to the orchestrator is the main chat: what is said here is read there too.
@@ -372,12 +379,26 @@ function composerBox(): Composer {
     aim: (next, name, model, label, tone) => {
       const moved = next !== cid;
       cid = next;
+      transcript.disabled = false;
+      chip.el.hidden = false;
+      ctx.el.hidden = false;
       const line = h('a.pick', { href: href('sessions', next), title: `${name} · ${model}` }, dot(tone), h('span', null, name), h('span.muted', null, label));
       if (pick) pick.replaceWith(line);
       else cbar.prepend(line);
       pick = line;
       syncSend();
       if (moved) ctx.refresh();
+    },
+    disconnect: () => {
+      cid = 0;
+      transcript.disabled = true;
+      chip.el.hidden = true;
+      ctx.el.hidden = true;
+      const line = h('span.pick', null, dot('muted'), h('span', null, 'Orchestrator'), h('span.muted', null, 'Not connected'));
+      if (pick) pick.replaceWith(line);
+      else cbar.prepend(line);
+      pick = line;
+      syncSend();
     },
     follow: (agent) => {
       if (!choicesLoaded) {

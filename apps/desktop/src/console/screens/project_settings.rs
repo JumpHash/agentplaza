@@ -33,7 +33,9 @@ struct Spec {
     input: Input,
 }
 
-const EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const EFFORTS: &[&str] = &[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 const MODES: &[&str] = &["autonomous", "ask", "read_only"];
 
 const SPECS: [Spec; 9] = [
@@ -454,6 +456,7 @@ fn dialog<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
                     |c: &'static str| Msg::Value(c.to_string()),
                 )
                 .width(Length::Fill)
+                .text_size(theme::TYPE_UI)
                 .padding(8)
                 .style(theme::pick_list)
                 .into(),
@@ -471,6 +474,7 @@ fn dialog<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
                         s.label
                     },
                     text_input(placeholder, &edit.value)
+                        .size(theme::TYPE_UI)
                         .on_input(Msg::Value)
                         .on_submit(Msg::Save)
                         .padding(8)
@@ -491,6 +495,7 @@ fn dialog<'a>(state: &'a State) -> Option<Element<'a, Msg>> {
     }
     if let Some(name) = &state.new_role {
         let role: Element<'a, Msg> = text_input("builder", name)
+            .size(theme::TYPE_UI)
             .on_input(Msg::RoleName)
             .on_submit(Msg::RoleNext)
             .padding(8)

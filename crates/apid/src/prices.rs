@@ -11,8 +11,9 @@
 //! The owner's manual prices (`settings.prices`, US dollars per million tokens) win over both.
 //! Lookup order for a plaza model id such as `anthropic/claude-opus-5-5`: manual price, then the
 //! built-in vendor prices ([`VENDOR`], Meta's Muse models), then the OpenRouter id as is, then
-//! LiteLLM by the full id, then LiteLLM by the part after the first `/`; ids compare
-//! case-insensitively.
+//! LiteLLM by the full id, then vendor prices and LiteLLM by the part after the first `/`.
+//! The last step retains an upstream's price when a named transport instance prefixes its id,
+//! such as `local-glm/opencode/glm-5.3`. Ids compare case-insensitively.
 //!
 //! GET  /v1/prices          → {fetched_at_ms, sources: [{name, url, models, ok, error?}], models: [{model, price}]}
 //! GET  /v1/prices/{model}  → {model, price} (404 when nothing prices it); `{model}` is percent-encoded
@@ -1029,11 +1030,20 @@ impl Catalog {
                 source: Source::Openrouter,
             });
         }
-        let by_full_id = state.litellm.get(&id);
-        let by_tail = id
-            .split_once('/')
-            .and_then(|(_, rest)| state.litellm.get(rest));
-        by_full_id.or(by_tail).map(|price| Priced {
+        if let Some(price) = state.litellm.get(&id) {
+            return Some(Priced {
+                price: *price,
+                source: Source::Litellm,
+            });
+        }
+        let (_, upstream) = id.split_once('/')?;
+        if let Some((_, price)) = VENDOR.iter().find(|(key, _)| *key == upstream) {
+            return Some(Priced {
+                price: *price,
+                source: Source::Vendor,
+            });
+        }
+        state.litellm.get(upstream).map(|price| Priced {
             price: *price,
             source: Source::Litellm,
         })
@@ -1658,6 +1668,37 @@ mod tests {
         }
         assert!(catalog.lookup("vllm/llama-3", &none).is_none());
         assert!(catalog.lookup("llamacpp/local-model", &none).is_none());
+    }
+
+    #[test]
+    fn a_named_local_transport_keeps_its_upstream_vendor_price() {
+        let catalog = Catalog::default();
+        let mut manual = BTreeMap::new();
+        let upstream = catalog.lookup("opencode/glm-5.3", &manual).unwrap();
+        let routed = catalog
+            .lookup("local-glm/opencode/glm-5.3@high", &manual)
+            .unwrap();
+        assert_eq!(routed, upstream);
+        assert!(routed.price.input > 0.0 && routed.price.output > 0.0);
+        assert!(
+            catalog
+                .lookup("local-glm/opencode/unknown", &manual)
+                .is_none()
+        );
+        // A price specifically configured for the instance still wins.
+        manual.insert(
+            "local-glm/opencode/glm-5.3".into(),
+            crate::settings::Price {
+                input: 2.0,
+                output: 5.0,
+            },
+        );
+        let custom = catalog
+            .lookup("local-glm/opencode/glm-5.3@high", &manual)
+            .unwrap();
+        assert_eq!(custom.source, Source::Manual);
+        assert_eq!(custom.price.input, 2.0);
+        assert_eq!(custom.price.output, 5.0);
     }
 
     #[test]

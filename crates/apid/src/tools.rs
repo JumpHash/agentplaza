@@ -157,6 +157,7 @@ const IN_VM: &[&str] = &[
 
 /// Host tools offered only by tier (see [`permitted`]).
 const GATED: &[&str] = &[
+    "plaza_repository",
     "plaza_agent_propose",
     "plaza_project_draft",
     "plan_post",
@@ -246,6 +247,7 @@ pub fn runs(name: &str) -> Option<Runs> {
         name if crate::curator::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::verifier::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::drafts::TOOLS.contains(&name) => Some(Runs::Host),
+        name if name == crate::platforms::repositories::TOOL => Some(Runs::Host),
         name if crate::review_graph::tools::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::test_select::TOOLS.contains(&name) => Some(Runs::Host),
         name if crate::lab_observe::TOOLS.contains(&name) => Some(Runs::Host),
@@ -711,6 +713,7 @@ fn build_spec(name: &str) -> Option<ToolSpec> {
         .or_else(|| crate::harness_control::spec(name))
         .or_else(|| crate::agent_proposals::spec(name))
         .or_else(|| crate::drafts::spec(name))
+        .or_else(|| crate::platforms::repositories::spec(name))
         .or_else(|| crate::review_graph::tools::spec(name))
         .or_else(|| crate::test_select::spec(name))
         .or_else(|| crate::skills::agent_tools::spec(name))
@@ -1141,6 +1144,9 @@ fn host_call(
         other if crate::curator::TOOLS.contains(&other) => crate::curator::run(app, agent, input),
         other if crate::verifier::TOOLS.contains(&other) => crate::verifier::run(app, agent, input),
         "plaza_project_draft" => crate::drafts::run(app, agent, input),
+        "plaza_repository" => {
+            crate::platforms::repositories::run(app, agent, input).map(|value| value.to_string())
+        }
         other if crate::review_graph::tools::TOOLS.contains(&other) => {
             crate::review_graph::tools::run(app, agent, work, other, input)
         }
@@ -1695,6 +1701,35 @@ mod tests {
             assert!(refusal("planner", "plaza_tasks_post").is_some());
             assert!(refusal("worker", "run").is_some());
         }
+    }
+
+    #[test]
+    fn repository_provisioning_is_offered_and_admitted_only_to_the_orchestrator() {
+        let name = "plaza_repository";
+        assert!(
+            offered(ORCHESTRATOR_ROLE, &[])
+                .iter()
+                .any(|tool| tool == name)
+        );
+        assert!(refusal(ORCHESTRATOR_ROLE, name).is_none());
+        for role in [
+            "worker", "planner", "builder", "reviewer", "verifier", "sceptic", "merger",
+        ] {
+            assert!(
+                !offered(role, &[]).iter().any(|tool| tool == name),
+                "{role} was offered repository provisioning"
+            );
+            assert!(
+                refusal(role, name).is_some(),
+                "{role} was admitted to repository provisioning"
+            );
+        }
+        let tool = spec(name).expect("repository provisioning has a declared schema");
+        assert_eq!(tool.input_schema["additionalProperties"], false);
+        assert_eq!(
+            tool.input_schema["properties"]["action"]["enum"],
+            json!(["list", "create", "connect"])
+        );
     }
 
     #[test]

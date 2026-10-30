@@ -41,7 +41,9 @@ fn a_message_said_before_the_orchestrators_role_is_known_is_delivered_when_it_is
             (200, r#"{"ok":true}"#.into())
         }
     });
-    let hub = Hub::start(&scratch, None, Some(noded.port));
+    // Promotion must deliver the trusted profile to a live gateway before queued work is admitted.
+    let gateway = FakeDaemon::serve(|_, _, _| (200, json!({"ok":true}).to_string()));
+    let hub = Hub::start(&scratch, Some(gateway.port), Some(noded.port));
 
     let (status, _) = hub.guest(CID, "hello", json!({ "role": "orchestrator", "vm": 0 }));
     assert_eq!(status, 200);

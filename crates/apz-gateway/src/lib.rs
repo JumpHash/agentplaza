@@ -21,13 +21,16 @@
 
 mod anthropic;
 mod bedrock;
+mod codex;
 mod config;
 mod decisions;
 mod error;
 mod gemini;
 mod http;
+mod local_process;
 mod mock;
 mod openai;
+mod opencode_local;
 mod responses;
 mod sigv4;
 pub use sigv4::{signed_headers, signed_headers_s3};
@@ -207,6 +210,8 @@ impl GatewayBuilder {
                 http: Http::new(self.retries, self.retry_delay),
                 listing: Http::with_timeout(0, self.retry_delay, LISTING_DEADLINE),
                 tokens: Mutex::new(HashMap::new()),
+                codex: Mutex::new(HashMap::new()),
+                local_processes: local_process::Registry::default(),
                 no_stream_options: Mutex::new(HashSet::new()),
             }),
         }
@@ -230,6 +235,9 @@ pub(crate) struct Inner {
     pub(crate) listing: Http,
     /// Command → (token, fetched at).
     tokens: Mutex<HashMap<String, (String, Instant)>>,
+    /// Local Codex conversations; dropping the gateway terminates their child processes.
+    codex: Mutex<HashMap<String, Option<codex::Session>>>,
+    pub(crate) local_processes: local_process::Registry,
     /// Providers that rejected `stream_options`.
     pub(crate) no_stream_options: Mutex<HashSet<String>>,
 }
@@ -238,6 +246,17 @@ pub(crate) struct Inner {
 pub const LISTING_DEADLINE: Duration = Duration::from_secs(10);
 
 impl Gateway {
+    /// Stop every local provider child, including calls currently outside the session pool.
+    /// Call this before a shutdown path that uses `process::exit` (which does not run Drop).
+    pub fn shutdown_local_providers(&self) {
+        self.inner.local_processes.shutdown();
+        self.inner
+            .codex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
     pub fn builder() -> GatewayBuilder {
         GatewayBuilder {
             providers: Vec::new(),
@@ -323,8 +342,6 @@ impl Gateway {
         let req = match &name.effort {
             Some(effort) if req.effort.as_ref() != Some(effort) => {
                 pinned = ChatRequest {
-                    system_parts: Vec::new(),
-                    cache_last_message: false,
                     effort: Some(effort.clone()),
                     ..req.clone()
                 };
@@ -354,6 +371,8 @@ impl Gateway {
                 openai::complete(&ctx, req, model, sink)
             }
             ProviderKind::OpenAiResponses => responses::complete(&ctx, req, model, sink),
+            ProviderKind::CodexAppServer => codex::complete(&ctx, req, model, sink),
+            ProviderKind::OpenCodeLocal => opencode_local::complete(&ctx, req, model, sink),
             ProviderKind::Gemini | ProviderKind::VertexGemini => {
                 gemini::complete(&ctx, req, model, sink)
             }
@@ -395,6 +414,8 @@ impl Gateway {
         };
         let mut models = match p.kind {
             ProviderKind::Anthropic => anthropic::list_models(&ctx)?,
+            ProviderKind::CodexAppServer => codex::list_models(&ctx)?,
+            ProviderKind::OpenCodeLocal => opencode_local::list_models(&ctx)?,
             ProviderKind::OpenAi
             | ProviderKind::OpenAiCompatible
             | ProviderKind::OpenAiResponses => openai::list_models(&ctx)?,
@@ -505,7 +526,9 @@ impl Gateway {
 }
 
 /// Effort levels a model name's `@effort` suffix may pin.
-pub const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+pub const EFFORTS: [&str; 8] = [
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+];
 
 /// A parsed model name: `provider/model` or `provider/model@effort`.
 ///

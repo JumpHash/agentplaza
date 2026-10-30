@@ -37,8 +37,8 @@ const SANS_SEMIBOLD: Font = Font {
     ..SANS
 };
 
-const EFFORTS: [&str; 8] = [
-    "default", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+const EFFORTS: [&str; 9] = [
+    "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
 /// The web's `--fs-sm`: the lede and the faint notes of the Models screens.
 const FS_SM: f32 = 12.5;
@@ -2012,9 +2012,28 @@ fn brand_of(id: &str) -> &str {
     match id {
         "gemini" => "google",
         "claude" => "claude",
-        "codex" => "openai",
+        "codex" | "codex-app-server" => "openai",
         other => other,
     }
+}
+
+/// A compatible API kind is transport, so known instance ids retain their vendor's mark.
+/// A local OpenCode instance is scoped to one upstream and can use its configured model's mark.
+fn api_mark<'a>(instance: &ApiInstance, size: f32) -> Element<'a, Msg> {
+    if crate::console::brands::get(&instance.id).is_some() {
+        return ui::brand_logo(&instance.id, size);
+    }
+    if instance.kind == "opencode-local"
+        && let Some(model) = instance.models.first()
+    {
+        return crate::console::picker::model_mark(model, size);
+    }
+    mark(
+        brand_of(&instance.kind),
+        &instance.label,
+        instance.accent.as_deref(),
+        size,
+    )
 }
 
 fn policy_task(ctx: &Ctx) -> Task<Msg> {
@@ -2248,6 +2267,9 @@ fn picker<'a>(options: Vec<Opt>, current: &str, slot: Slot) -> Element<'a, Msg> 
         Msg::PolicyDefault(slot.clone(), o)
     })
     .width(Length::Fill)
+    .text_size(TYPE_UI)
+    .padding([5, 10])
+    .style(theme::pick_list)
     .into()
 }
 
@@ -2428,7 +2450,7 @@ fn list_column<'a>(state: &'a State) -> Element<'a, Msg> {
         rows.push(list_row(
             Sel::Api(a.id.clone()),
             selected,
-            mark(brand_of(&a.kind), &a.label, a.accent.as_deref(), 22.0),
+            api_mark(a, 22.0),
             a.label.clone(),
             None,
             a.enabled,
@@ -3111,11 +3133,7 @@ fn api_detail<'a>(state: &'a State, a: &'a ApiInstance, draft: &'a Draft) -> Ele
         .map(|b| b.title.to_string())
         .unwrap_or_else(|| a.kind.clone());
     let head: Element<'a, Msg> = column![
-        detail_head(
-            mark(brand_of(&a.kind), &a.label, a.accent.as_deref(), 28.0),
-            &a.label,
-            Vec::new(),
-        ),
+        detail_head(api_mark(a, 28.0), &a.label, Vec::new(),),
         ui::mono(
             format!("{kind} · {}", a.id),
             TYPE_META,
@@ -3857,7 +3875,8 @@ fn tier_column<'a>(p: &'a Policy, tier: Tier, title: &str) -> Element<'a, Msg> {
     let add: Element<'a, Msg> = text_input("provider/model", p.add_text(tier))
         .on_input(move |v| Msg::PolicyAddInput(tier, v))
         .on_submit(Msg::PolicyAdd(tier))
-        .padding(8)
+        .size(TYPE_UI)
+        .padding([5, 10])
         .into();
     let add_row: Element<'a, Msg> = row(vec![
         add,
@@ -3869,6 +3888,7 @@ fn tier_column<'a>(p: &'a Policy, tier: Tier, title: &str) -> Element<'a, Msg> {
         ),
     ])
     .spacing(8)
+    .align_y(Alignment::Center)
     .into();
     let items: Vec<Element<'a, Msg>> = vec![h3(title), column(rows).spacing(6).into(), add_row];
     column(items)
@@ -3980,6 +4000,7 @@ fn defaults_card<'a>(p: &'a Policy) -> Element<'a, Msg> {
     items.push(
         iced::widget::checkbox(s.allow_training_models)
             .label("Allow as defaults, role models and policy entries")
+            .text_size(TYPE_UI)
             .on_toggle(Msg::PolicyAllowTraining)
             .into(),
     );
@@ -4250,7 +4271,7 @@ mod tests {
         assert_eq!(
             EFFORTS,
             [
-                "default", "none", "minimal", "low", "medium", "high", "xhigh", "max"
+                "default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"
             ]
         );
     }

@@ -335,6 +335,11 @@ pub fn load(ctx: &Ctx) -> Task<Msg> {
             let approvals = client
                 .get::<serde_json::Value>("/v1/approvals")
                 .unwrap_or_default();
+            // Like the web sidebar, Inbox counts open cards across the plaza. A failed read keeps
+            // the last count instead of clearing a badge for work still waiting on the owner.
+            let inbox = work_api::cards(&client, true, None)
+                .ok()
+                .map(|cards| cards.len());
             let tasks = client
                 .get::<serde_json::Value>("/v1/tasks")
                 .unwrap_or_default();
@@ -343,7 +348,7 @@ pub fn load(ctx: &Ctx) -> Task<Msg> {
                 .unwrap_or_default();
             Ok(serde_json::json!({
                 "overview": overview, "control": control, "projects": projects, "approvals": approvals,
-                "tasks": tasks, "agents": agents,
+                "tasks": tasks, "agents": agents, "inbox": inbox,
             }))
         },
         Msg::Loaded,
@@ -587,7 +592,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
         Msg::Done(Ok(_)) => (load(ctx), None),
         Msg::Done(Err(_)) => (Task::none(), None),
         Msg::Loaded(Ok(v)) => {
-            state.hub_ok = v["overview"]["hub"].as_bool().unwrap_or(false);
+            // A successful API read proves apid is reachable. `overview.hub` probes
+            // the separate vsock daemon, which can be down while this UI works.
+            state.hub_ok = true;
             state.node_ok = v["overview"]["noded"].as_bool().unwrap_or(false);
             state.working = v["overview"]["agents"]["working"].as_u64().unwrap_or(0) as u32;
             state.idle = v["overview"]["agents"]["idle"].as_u64().unwrap_or(0) as u32;
@@ -613,6 +620,9 @@ pub fn update(state: &mut State, msg: Msg, ctx: &Ctx) -> (Task<Msg>, Option<Id>)
                 state
                     .counts
                     .insert("approvals", state.approvals.len() as u32);
+            }
+            if let Some(count) = v["inbox"].as_u64() {
+                state.counts.insert("inbox", count as u32);
             }
             if let Some(list) = v["tasks"]["tasks"].as_array().or(v["tasks"].as_array()) {
                 state.tasks = list.clone();
@@ -696,7 +706,7 @@ fn apply_frame(state: &mut State, kind: &str, data: &serde_json::Value) -> bool 
             set_control(state, data);
             false
         }
-        "agent" | "work" => true,
+        "agent" | "work" | "card" => true,
         _ => false,
     }
 }
@@ -718,7 +728,7 @@ pub fn view<'a, M: Clone + 'a>(
         container(screen)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(ui::paper)
+            .style(crate::theme::paper)
             .into()
     } else {
         let mut main = column![top_bar(state, wrap)];
@@ -757,7 +767,7 @@ pub fn view<'a, M: Clone + 'a>(
         let main = container(main)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(ui::paper);
+            .style(crate::theme::paper);
         row![sidebar(state, wrap), main].height(Length::Fill).into()
     };
     let mut layers = Stack::new().push(base);
@@ -1348,9 +1358,13 @@ fn sidebar<'a, M: Clone + 'a>(state: &'a State, wrap: fn(Msg) -> M) -> Element<'
     let more_on = state.more || MORE.iter().any(|(id, _, _)| shows(id, &state.current));
     let mut nav = column![].spacing(1);
     for (id, label, ic) in MAIN {
-        let end = (*id == Id::Approvals)
-            .then(|| state.counts.get("approvals").copied().filter(|n| *n > 0))
-            .flatten()
+        let count_key = match id {
+            Id::Approvals => Some("approvals"),
+            Id::Inbox => Some("inbox"),
+            _ => None,
+        };
+        let end = count_key
+            .and_then(|key| state.counts.get(key).copied().filter(|n| *n > 0))
             .map(ui::count_hot);
         nav = nav.push(nrow(
             ic,
@@ -2813,7 +2827,7 @@ mod tests {
     }
 
     #[test]
-    fn events_agent_and_work_frames_ask_for_a_reload_and_others_do_not() {
+    fn agent_work_and_card_frames_refresh_sidebar_counts() {
         let mut s = State::default();
         assert!(apply_frame(
             &mut s,
@@ -2821,6 +2835,41 @@ mod tests {
             &serde_json::json!({ "cid": 1 })
         ));
         assert!(apply_frame(&mut s, "work", &serde_json::json!({})));
+        assert!(apply_frame(
+            &mut s,
+            "card",
+            &serde_json::json!({"status":"answered"})
+        ));
         assert!(!apply_frame(&mut s, "transcript", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn inbox_badge_renders_open_cards_and_survives_a_failed_refresh() {
+        let mut state = State::default();
+        let ctx = Ctx::new(super::super::client::Client::new(
+            "http://127.0.0.1:1",
+            None,
+            None,
+        ));
+        let loaded = |inbox| Msg::Loaded(Ok(serde_json::json!({"inbox":inbox})));
+        let _ = update(&mut state, loaded(serde_json::json!(14)), &ctx);
+        assert_eq!(state.counts.get("inbox"), Some(&14));
+        assert!(
+            iced_test::simulator(sidebar(&state, |msg| msg))
+                .find("14")
+                .is_ok()
+        );
+
+        // A card endpoint failure is represented as null; retain the last successful count.
+        let _ = update(&mut state, loaded(serde_json::Value::Null), &ctx);
+        assert_eq!(state.counts.get("inbox"), Some(&14));
+
+        let _ = update(&mut state, loaded(serde_json::json!(0)), &ctx);
+        assert_eq!(state.counts.get("inbox"), Some(&0));
+        assert!(
+            iced_test::simulator(sidebar(&state, |msg| msg))
+                .find("14")
+                .is_err()
+        );
     }
 }

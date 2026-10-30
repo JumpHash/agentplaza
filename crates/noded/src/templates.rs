@@ -201,11 +201,15 @@ impl Templates {
 
     /// The template of `shape` at `key` when it is complete.
     fn ready(&self, key: &str, shape: &Shape) -> Option<Template> {
-        self.root
-            .join(key)
-            .join(TEMPLATE_FILE)
-            .is_file()
-            .then(|| self.template(key, shape.workspace_base.is_some()))
+        let dir = self.root.join(key);
+        if !dir.join(TEMPLATE_FILE).is_file()
+            || (shape.workspace_base.is_some()
+                && !fs::metadata(dir.join(WORKSPACE_FILE))
+                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0))
+        {
+            return None;
+        }
+        Some(self.template(key, shape.workspace_base.is_some()))
     }
 
     /// The template at `key`, whose disk is there when `workspace` is set.
@@ -237,6 +241,10 @@ impl Templates {
         let (socket, _socket_dir) = socket_path(&dir, key)?;
         boot_and_snapshot(&dir, &socket, shape)?;
         write_template(&dir, key, shape, started)?;
+        // A previous incomplete or corrupt cache entry must not prevent publishing
+        // its validated replacement. Live restores retain their open descriptors.
+        self.remove(key)
+            .map_err(|err| format!("remove incomplete template {key}: {err}"))?;
         fs::rename(&dir, self.root.join(key))
             .map_err(|err| format!("publish template {key}: {err}"))?;
         Ok(self.template(key, shape.workspace_base.is_some()))
@@ -389,6 +397,9 @@ fn write_template(dir: &Path, key: &str, shape: &Shape, started: Instant) -> Res
             .len(),
         None => 0,
     };
+    if shape.workspace_base.is_some() && disk_bytes == 0 {
+        return Err("the template workspace image is empty".into());
+    }
     let view = TemplateView {
         key: key.to_string(),
         role: role_of(&shape.cmdline),
@@ -624,6 +635,7 @@ mod tests {
             fs::create_dir_all(&built).unwrap();
             let json = serde_json::to_vec(&view(&key, Some("workstation"))).unwrap();
             write_private(&built.join(TEMPLATE_FILE), &json).unwrap();
+            fs::write(built.join(WORKSPACE_FILE), b"workspace contents").unwrap();
             // The fake kernel cannot boot, so a build here would fail.
             let template = templates.get_or_build(&shape).unwrap();
             assert_eq!(template.key, key);
@@ -652,6 +664,25 @@ mod tests {
             assert_eq!(template.snapshot, built.join(SNAP_DIR));
             assert_eq!(template.workspace, None);
         }
+    }
+
+    #[test]
+    fn a_missing_or_empty_template_workspace_is_not_ready_or_publishable() {
+        let (dir, _clean) = test_dir("invalid-workspace");
+        let shape = fake_shape(&dir);
+        let templates = Templates::new(dir.join("templates"));
+        let key = templates.key(&shape).unwrap();
+        let built = templates.root.join(&key);
+        fs::create_dir_all(&built).unwrap();
+        fs::write(built.join(TEMPLATE_FILE), b"{}").unwrap();
+        assert!(templates.ready(&key, &shape).is_none());
+        assert!(write_template(&built, &key, &shape, Instant::now()).is_err());
+        fs::write(built.join(WORKSPACE_FILE), []).unwrap();
+        assert!(templates.ready(&key, &shape).is_none());
+        assert!(write_template(&built, &key, &shape, Instant::now()).is_err());
+        fs::write(built.join(WORKSPACE_FILE), b"valid disk").unwrap();
+        assert!(templates.ready(&key, &shape).is_some());
+        write_template(&built, &key, &shape, Instant::now()).unwrap();
     }
 
     #[test]

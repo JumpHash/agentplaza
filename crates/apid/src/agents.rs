@@ -255,10 +255,20 @@ pub fn push_profiles(app: &App) {
 
 /// Pushes one agent its current profile.
 pub fn push_profile(app: &App, agent: &Agent) {
+    let _ = try_push_profile(app, agent);
+}
+
+/// Whether the gateway accepted the profile before work is admitted for a newly trusted role.
+fn try_push_profile(app: &App, agent: &Agent) -> bool {
     let push = json!({"message": HostMessage::Profile { profile: profile(app, agent) }});
-    let _ = crate::fleet::send(app, agent.cid, &push);
+    if !crate::fleet::send(app, agent.cid, &push)
+        .is_ok_and(|(status, _)| (200..300).contains(&status))
+    {
+        return false;
+    }
     // What the profile grants, and the agent's mode and hold, decide its policy too.
     crate::policy::push(app, agent.cid);
+    true
 }
 
 /// The human label of a role, or the raw name when it is not a known role.
@@ -782,6 +792,7 @@ fn reconcile_once(app: &App) {
             .unwrap_or_else(|| agent.role.clone());
         if agent.run.as_deref() != Some(run.as_str()) || agent.vm != Some(vm) || role != agent.role
         {
+            let role_changed = role != agent.role;
             let became_orchestrator = role == crate::settings::ORCHESTRATOR_ROLE
                 && agent.role != crate::settings::ORCHESTRATOR_ROLE;
             let updated = app.agents.update(agent.cid, |slot| {
@@ -790,6 +801,18 @@ fn reconcile_once(app: &App) {
                 slot.role = role;
             });
             if updated && let Some(fresh) = app.agents.get(agent.cid) {
+                // A hello can precede the trusted run inventory. Updating only the
+                // roster leaves the guest on its initial unprivileged worker model
+                // and tools, even while the UI reports an orchestrator. Deliver the
+                // trusted profile before adoption can dispatch queued owner work.
+                if role_changed && !try_push_profile(app, &fresh) {
+                    // Leave the role unadopted so the next reconciliation retries.
+                    // Otherwise a transient send failure would permanently strand
+                    // the guest on its welcome profile while the roster looks ready.
+                    app.agents
+                        .update(agent.cid, |slot| slot.role = agent.role.clone());
+                    continue;
+                }
                 app.bus.publish("agent", &fresh);
             }
             // An orchestrator whose hello came before its role was known was not adopted then: adopt it now, as its

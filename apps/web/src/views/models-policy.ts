@@ -14,7 +14,7 @@ import { CONTRIBUTOR_NOTE } from './models-providers';
 type Tier = 'orchestrator' | 'worker';
 type Price = { input: number; output: number };
 
-const EFFORTS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS = ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const LIST_ID = 'mdl-known';
 
 export function mountModelPolicy(root: HTMLElement, actions: HTMLElement): Cleanup {
