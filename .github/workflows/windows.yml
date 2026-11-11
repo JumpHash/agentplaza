@@ -146,7 +146,7 @@ jobs:
           for p in $ONLY; do filter="${filter:+$filter | }rdeps(=$p)"; done
           echo "the tests of $ONLY and of what depends on them: $filter"
           echo "NEXTEST_FILTER=$filter" >> "$GITHUB_ENV"
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         if: inputs.tests
         with: { tool: nextest }
       # A report from an earlier run must not pass for this one's.
@@ -213,7 +213,7 @@ jobs:
           # A hand-run package (no release job built the guest) may go without it.
           APZ_ALLOW_NO_GUEST: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: packaging/scripts/stage.sh ${{ env.TRIPLE }} "$CARGO_TARGET_DIR/${{ env.TRIPLE }}/release" stage "$VERSION"
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         if: inputs.package
         with: { dotnet-version: 8.0.x }
       - name: Package
